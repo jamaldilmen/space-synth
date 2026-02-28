@@ -1,0 +1,194 @@
+#include <metal_stdlib>
+using namespace metal;
+
+// GPU particle state — matches GPUParticle struct in C++
+struct Particle {
+    float4 posW;   // x, y, z, pad
+    float4 velW;   // vx, vy, vz, pad
+};
+
+struct VoiceData {
+    int m;
+    int n;
+    float alpha;
+    float amplitude;
+};
+
+struct PhysicsUniforms {
+    float dt;
+    float totalAmplitude;
+    int voiceCount;
+    int particleCount;
+    float maxWaveDepth;
+    float plateRadius;
+    float padding[2];
+};
+
+// ── Bessel J_n(x) — power series, 15 terms sufficient for GPU ───────────────
+
+static float besselJ(int n, float x) {
+    if (abs(x) < 1e-6f) return n == 0 ? 1.0f : 0.0f;
+
+    float sum = 0.0f;
+    float hx = x * 0.5f;
+    float term = 1.0f;
+
+    // Compute initial term: (x/2)^n / n!
+    for (int i = 1; i <= n; i++) {
+        term *= hx / float(i);
+    }
+    sum = term;
+
+    // Add remaining terms of series
+    float hx2 = -hx * hx;  // negative for alternating sign
+    for (int k = 1; k < 15; k++) {
+        term *= hx2 / (float(k) * float(k + n));
+        sum += term;
+        if (abs(term) < 1e-10f) break;
+    }
+
+    return sum;
+}
+
+// ── Compute kernel: update particle positions/velocities ────────────────────
+
+kernel void particle_physics(
+    device Particle* particles [[buffer(0)]],
+    device const VoiceData* voices [[buffer(1)]],
+    constant PhysicsUniforms& u [[buffer(2)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (int(id) >= u.particleCount) return;
+
+    device Particle& p = particles[id];
+    float px = p.posW.x;
+    float py = p.posW.y;
+    float pz = p.posW.z;
+    float vx = p.velW.x;
+    float vy = p.velW.y;
+    float vz = p.velW.z;
+
+    float r = sqrt(px * px + py * py);
+    float th = atan2(py, px);
+
+    float baseFric = pow(0.06f, u.dt);
+    float k = M_PI_F / u.maxWaveDepth;  // modeP=1 for now
+    float kz = k * pz;
+
+    float dynamicFric = baseFric;
+
+    if (u.voiceCount > 0) {
+        float polyNorm = 1.0f / sqrt(float(u.voiceCount));
+        float fxTotal = 0.0f, fyTotal = 0.0f, fzTotal = 0.0f;
+        float jitterTotal = 0.0f;
+
+        for (int vi = 0; vi < u.voiceCount; vi++) {
+            float m_f = float(voices[vi].m);
+            float alpha = voices[vi].alpha;
+            float amp = voices[vi].amplitude;
+
+            float w = min(amp, 1.0f) * 0.45f * polyNorm;
+
+            float jm = besselJ(voices[vi].m, alpha * r);
+            float phase = m_f * th - kz;
+            float h3d = jm * cos(phase);
+
+            // Numerical gradient (simplified — full LUT version in Phase 2)
+            float eps = 0.02f;
+            float pxp = px + eps, pxm = px - eps;
+            float pyp = py + eps, pym = py - eps;
+
+            float rp_x = sqrt(pxp * pxp + py * py);
+            float rm_x = sqrt(pxm * pxm + py * py);
+            float rp_y = sqrt(px * px + pyp * pyp);
+            float rm_y = sqrt(px * px + pym * pym);
+
+            float jp_x = besselJ(voices[vi].m, alpha * rp_x);
+            float jm_x = besselJ(voices[vi].m, alpha * rm_x);
+            float jp_y = besselJ(voices[vi].m, alpha * rp_y);
+            float jm_y = besselJ(voices[vi].m, alpha * rm_y);
+
+            float ap_x = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(py, pxp));
+            float am_x = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(py, pxm));
+            float ap_y = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(pyp, px));
+            float am_y = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(pym, px));
+
+            float z2_px = jp_x * ap_x * jp_x * ap_x;
+            float z2_mx = jm_x * am_x * jm_x * am_x;
+            float z2_py = jp_y * ap_y * jp_y * ap_y;
+            float z2_my = jm_y * am_y * jm_y * am_y;
+
+            float gx = (z2_px - z2_mx) / (2.0f * eps);
+            float gy = (z2_py - z2_my) / (2.0f * eps);
+
+            fxTotal -= gx * w;
+            fyTotal -= gy * w;
+
+            // Z-axis gradient
+            float zGrad = k * jm * jm * sin(2.0f * phase);
+            fzTotal -= zGrad * w * 200.0f;
+
+            jitterTotal += abs(h3d) * amp;
+        }
+
+        vx += fxTotal;
+        vy += fyTotal;
+        vz += fzTotal;
+
+        // Node braking
+        if (u.totalAmplitude > 0.01f) {
+            float distToNode = jitterTotal / u.totalAmplitude;
+            float nodeBrake = min(1.0f, distToNode * 3.5f + 0.15f);
+            dynamicFric = baseFric * nodeBrake;
+        }
+    }
+
+    // Retraction pull (when no sound, pull back to center sphere)
+    float retractPull = (1.0f - u.totalAmplitude) * 15.0f;
+    float R = u.plateRadius;
+    float vxN = px;
+    float vyN = py;
+    float vzN = pz / (R > 0 ? R : 1.0f);
+    float rMag = sqrt(vxN * vxN + vyN * vyN + vzN * vzN);
+
+    if (rMag > 0.001f) {
+        float pull = (rMag - 0.35f) * retractPull;
+        vx -= (vxN / rMag) * pull * u.dt;
+        vy -= (vyN / rMag) * pull * u.dt;
+        vz -= (vzN / rMag) * pull * u.dt * R;
+    }
+
+    // Friction
+    vx *= dynamicFric;
+    vy *= dynamicFric;
+    vz *= dynamicFric;
+
+    // Speed cap
+    float speedU = sqrt(vx * vx + vy * vy + (vz / R) * (vz / R));
+    if (speedU > 1.2f) {
+        float s = 1.2f / speedU;
+        vx *= s; vy *= s; vz *= s;
+    }
+
+    // Integrate
+    px += vx * u.dt * 60.0f;
+    py += vy * u.dt * 60.0f;
+    pz += vz * u.dt * 60.0f;
+
+    // Boundary clamp (circular plate)
+    float rr = sqrt(px * px + py * py);
+    if (rr > 0.96f) {
+        px = px / rr * 0.95f;
+        py = py / rr * 0.95f;
+        vx *= -0.3f; vy *= -0.3f;
+    }
+
+    // Z clamp
+    if (abs(pz) > u.maxWaveDepth) {
+        pz = sign(pz) * u.maxWaveDepth * 0.95f;
+        vz *= -0.3f;
+    }
+
+    p.posW = float4(px, py, pz, 0.0f);
+    p.velW = float4(vx, vy, vz, 0.0f);
+}

@@ -1,0 +1,66 @@
+#pragma once
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+#include <atomic>
+
+namespace space {
+
+struct AudioDevice {
+    uint32_t id;
+    std::string name;
+    int inputChannels;
+    int sampleRate;
+};
+
+// Lock-free SPSC ring buffer for audio→render thread communication
+class AudioRingBuffer {
+public:
+    explicit AudioRingBuffer(int capacity = 8192);
+
+    bool write(const float* data, int frames);
+    int read(float* data, int maxFrames);
+    int available() const;
+
+private:
+    std::vector<float> buffer_;
+    std::atomic<int> readPos_{0};
+    std::atomic<int> writePos_{0};
+    int capacity_;
+};
+
+// CoreAudio input engine
+// Captures audio from a selected device and delivers samples via ring buffer
+class AudioEngine {
+public:
+    AudioEngine();
+    ~AudioEngine();
+
+    // Enumerate available input devices (including BlackHole/Loopback)
+    std::vector<AudioDevice> enumerateDevices();
+
+    // Start capture from a specific device
+    bool start(uint32_t deviceId = 0, int sampleRate = 48000);
+    void stop();
+
+    bool isRunning() const { return running_; }
+    int sampleRate() const { return sampleRate_; }
+
+    // Read captured audio (call from render thread)
+    int readSamples(float* buffer, int maxFrames);
+
+    // Get current RMS amplitude (lock-free)
+    float currentAmplitude() const { return amplitude_.load(std::memory_order_relaxed); }
+
+private:
+    struct Impl;
+    Impl* impl_ = nullptr;
+
+    AudioRingBuffer ringBuffer_;
+    std::atomic<float> amplitude_{0.0f};
+    std::atomic<bool> running_{false};
+    int sampleRate_ = 48000;
+};
+
+} // namespace space

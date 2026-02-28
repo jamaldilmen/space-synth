@@ -1,0 +1,24 @@
+{
+    "name": "Default",
+    "particles": {
+        "count": 100000,
+        "size": 0.8,
+        "friction": 0.06,
+        "speedCap": 1.2,
+        "jitterScale": 6.0
+    },
+    "envelope": {
+        "attack": 0.020,
+        "decay": 0.100,
+        "sustain": 0.700,
+        "release": 0.400
+    },
+    "render": {
+        "bloomIntensity": 0.0,
+        "trailDecay": 0.0,
+        "chromaticAberration": 0.0
+    },
+    "palette": "Sand",
+    "modeDepth": 1,
+    "keyboardMode": false
+}

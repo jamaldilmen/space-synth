@@ -1,11 +1,9 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// ── Shared types ────────────────────────────────────────────────────────────
-
 struct Particle {
-    float4 posW;
-    float4 velW;
+    float4 posW;   // x, y, z, pad  (normalized plate coords)
+    float4 velW;   // vx, vy, vz, pad
 };
 
 struct CameraUniforms {
@@ -18,55 +16,53 @@ struct CameraUniforms {
 
 struct VertexOut {
     float4 position [[position]];
-    float3 color;
-    float3 normal;
     float pointSize [[point_size]];
+    float3 color;
 };
 
-// ── Low-poly sphere vertices (generated procedurally) ───────────────────────
-
-// For instanced rendering: each instance = one particle
-// Using point sprites initially, upgrade to sphere mesh later
-
 vertex VertexOut particle_vertex(
-    uint vertexId [[vertex_id]],
-    uint instanceId [[instance_id]],
+    uint vid [[vertex_id]],
     device const Particle* particles [[buffer(0)]],
     constant CameraUniforms& cam [[buffer(1)]])
 {
     VertexOut out;
-
-    device const Particle& p = particles[instanceId];
+    device const Particle& p = particles[vid];
     float R = cam.plateRadius;
 
-    // Map from normalized plate coords to world space
-    // x,y are plate coords [-1,1], z is wave depth
+    // Map normalized plate coords to world: x*R, z (wave depth), y*R
+    // Top-down orthographic: Y is up (wave depth), X/Z are the plate
     float3 worldPos = float3(p.posW.x * R, p.posW.z, p.posW.y * R);
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
-
-    // Color based on height (z displacement)
-    float h = p.posW.z / 100.0;  // normalize
-    float hue = 0.08 + h * 0.15;  // warm sand tones
-    // HSL to RGB approximation
-    float r = clamp(abs(hue * 6.0 - 3.0) - 1.0, 0.0, 1.0);
-    float g = clamp(2.0 - abs(hue * 6.0 - 2.0), 0.0, 1.0);
-    float b = clamp(2.0 - abs(hue * 6.0 - 4.0), 0.0, 1.0);
-    out.color = float3(r, g, b) * 0.8;
-
-    out.normal = float3(0, 1, 0);
     out.pointSize = cam.particleSize;
+
+    // Color: warm sand tones based on wave height
+    float h = clamp(p.posW.z / 120.0f, -1.0f, 1.0f);
+    float base = 0.55f + h * 0.25f;
+
+    // Sand palette: warm browns/golds
+    out.color = float3(
+        base * 0.95f,
+        base * 0.78f,
+        base * 0.55f
+    );
+
+    // Speed-based brightness boost
+    float speed = length(p.velW.xyz);
+    float boost = clamp(speed * 3.0f, 0.0f, 0.4f);
+    out.color += float3(boost * 0.3f, boost * 0.2f, boost * 0.05f);
 
     return out;
 }
 
 fragment float4 particle_fragment(
-    VertexOut in [[stage_in]])
+    VertexOut in [[stage_in]],
+    float2 pointCoord [[point_coord]])
 {
-    // Simple shading
-    float3 lightDir = normalize(float3(0.3, 1.0, 0.2));
-    float diffuse = max(dot(in.normal, lightDir), 0.3);
-    float3 color = in.color * diffuse;
+    // Smooth circle falloff — no discard (preserves early-Z)
+    float dist = length(pointCoord - 0.5f) * 2.0f;
+    float alpha = saturate(1.0f - dist * dist);
+    alpha *= alpha;  // sharper falloff
 
-    return float4(color, 1.0);
+    return float4(in.color * alpha, alpha);
 }

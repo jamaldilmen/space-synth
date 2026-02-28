@@ -93,34 +93,48 @@ kernel void particle_physics(
             float phase = m_f * th - kz;
             float h3d = jm * cos(phase);
 
-            // Numerical gradient (simplified — full LUT version in Phase 2)
-            float eps = 0.02f;
-            float pxp = px + eps, pxm = px - eps;
-            float pyp = py + eps, pym = py - eps;
+            // Analytical gradient of Bessel function
+            // J'_m(x) = 0.5 * (J_{m-1}(x) - J_{m+1}(x))
+            // where x = alpha * r
+            // Let F(r, th) = J_m(alpha * r) * cos(m*th - kz)
+            // dF/dx = dF/dr * dr/dx + dF/dth * dth/dx
+            // dr/dx = x/r,  dth/dx = -y/r^2
+            // dr/dy = y/r,  dth/dy = x/r^2
 
-            float rp_x = sqrt(pxp * pxp + py * py);
-            float rm_x = sqrt(pxm * pxm + py * py);
-            float rp_y = sqrt(px * px + pyp * pyp);
-            float rm_y = sqrt(px * px + pym * pym);
+            float alpha_r = alpha * r;
+            // Derivative of J_m with respect to its argument
+            float jm_prime;
+            if (voices[vi].m == 0) {
+                jm_prime = -besselJ(1, alpha_r);
+            } else {
+                jm_prime = 0.5f * (besselJ(voices[vi].m - 1, alpha_r) - besselJ(voices[vi].m + 1, alpha_r));
+            }
 
-            float jp_x = besselJ(voices[vi].m, alpha * rp_x);
-            float jm_x = besselJ(voices[vi].m, alpha * rm_x);
-            float jp_y = besselJ(voices[vi].m, alpha * rp_y);
-            float jm_y = besselJ(voices[vi].m, alpha * rm_y);
+            // Chain rule for dr
+            float dJ_dr = alpha * jm_prime;
+            float cos_term = cos(phase);
+            float sin_term = sin(phase);
 
-            float ap_x = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(py, pxp));
-            float am_x = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(py, pxm));
-            float ap_y = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(pyp, px));
-            float am_y = voices[vi].m == 0 ? 1.0f : cos(m_f * atan2(pym, px));
+            // dF/dr = dJ_dr * cos_term
+            float dF_dr = dJ_dr * cos_term;
 
-            float z2_px = jp_x * ap_x * jp_x * ap_x;
-            float z2_mx = jm_x * am_x * jm_x * am_x;
-            float z2_py = jp_y * ap_y * jp_y * ap_y;
-            float z2_my = jm_y * am_y * jm_y * am_y;
+            // dF/dth = J_m * (-m * sin_term)
+            float dF_dth = jm * (-m_f * sin_term);
 
-            float gx = (z2_px - z2_mx) / (2.0f * eps);
-            float gy = (z2_py - z2_my) / (2.0f * eps);
+            // Convert polar gradients to Cartesian gradients
+            float r_inv = 1.0f / (r + 1e-6f);
+            float dr_dx = px * r_inv;
+            float dr_dy = py * r_inv;
+            float dth_dx = -py * r_inv * r_inv;
+            float dth_dy = px * r_inv * r_inv;
 
+            float gx = dF_dr * dr_dx + dF_dth * dth_dx;
+            float gy = dF_dr * dr_dy + dF_dth * dth_dy;
+
+            // Notice we subtracted gx*w earlier so we keep the sign.
+            // The numerical code was (F(x+eps) - F(x-eps))/(2eps).
+            // Here gx is exactly dF/dx.
+            // Force is minus gradient of the 'potential' if w is positive amplitude.
             fxTotal -= gx * w;
             fyTotal -= gy * w;
 

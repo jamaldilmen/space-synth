@@ -1,246 +1,301 @@
+#include "render/renderer.h"
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
-#include "render/renderer.h"
+#include <algorithm>
+#include <cstring>
 
 namespace space {
 
 struct Renderer::Impl {
-    id<MTLDevice> device = nil;
-    id<MTLCommandQueue> commandQueue = nil;
-    id<MTLLibrary> library = nil;
+  id<MTLDevice> device = nil;
+  id<MTLCommandQueue> commandQueue = nil;
+  id<MTLLibrary> library = nil;
 
-    // Compute pipelines
-    id<MTLComputePipelineState> physicsPipeline = nil;
+  id<MTLComputePipelineState> physicsPipeline = nil;
+  id<MTLRenderPipelineState> particlePipeline = nil;
 
-    // Render pipelines
-    id<MTLRenderPipelineState> particlePipeline = nil;
-    id<MTLRenderPipelineState> postfxPipeline = nil;
+  id<MTLBuffer> particleBuffer = nil;
 
-    // Buffers
-    id<MTLBuffer> particleBuffer = nil;
-    id<MTLBuffer> voiceBuffer = nil;
-    id<MTLBuffer> uniformBuffer = nil;
+  static const int kMaxInFlightFrames = 3;
+  dispatch_semaphore_t inFlightSemaphore;
+  int currentFrame = 0;
 
-    // Depth
-    id<MTLDepthStencilState> depthState = nil;
-    id<MTLTexture> depthTexture = nil;
+  id<MTLBuffer> voiceBuffer[kMaxInFlightFrames];
+  id<MTLBuffer> uniformBuffer[kMaxInFlightFrames];
+  id<MTLBuffer> cameraBuffer[kMaxInFlightFrames];
 
-    // Off-screen render targets for post-fx
-    id<MTLTexture> colorTargetA = nil;
-    id<MTLTexture> colorTargetB = nil;
+  id<MTLDepthStencilState> depthState = nil;
+  id<MTLTexture> depthTexture = nil;
 
-    CAMetalLayer* metalLayer = nil;
-    int particleCount = 0;
-    int width = 0;
-    int height = 0;
+  CAMetalLayer *metalLayer = nil;
+  int particleCount = 0;
+  int width = 0;
+  int height = 0;
+
+  // Pending compute data (set before render)
+  bool hasCompute = false;
+  PhysicsUniforms physicsUniforms;
 };
 
 Renderer::Renderer() : impl_(new Impl()) {}
+Renderer::~Renderer() { delete impl_; }
 
-Renderer::~Renderer() {
-    delete impl_;
-}
+bool Renderer::init(void *metalDevice, void *metalLayer, int width,
+                    int height) {
+  impl_->device = (__bridge id<MTLDevice>)metalDevice;
+  impl_->metalLayer = (__bridge CAMetalLayer *)metalLayer;
 
-bool Renderer::init(void* metalLayer, int width, int height) {
-    impl_->metalLayer = (__bridge CAMetalLayer*)metalLayer;
-    impl_->device = MTLCreateSystemDefaultDevice();
-    if (!impl_->device) return false;
+  // Enable vsync (displaySyncEnabled defaults to YES, explicit for clarity)
+  impl_->metalLayer.displaySyncEnabled = YES;
 
-    impl_->metalLayer.device = impl_->device;
-    impl_->metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    impl_->metalLayer.framebufferOnly = NO;  // Need for Syphon
+  impl_->commandQueue = [impl_->device newCommandQueue];
+  impl_->inFlightSemaphore =
+      dispatch_semaphore_create(Impl::kMaxInFlightFrames);
+  impl_->currentFrame = 0;
 
-    impl_->commandQueue = [impl_->device newCommandQueue];
+  NSError *error = nil;
+  NSString *execPath = [[[NSProcessInfo processInfo] arguments][0]
+      stringByDeletingLastPathComponent];
+  NSString *libPath =
+      [execPath stringByAppendingPathComponent:@"default.metallib"];
+  NSURL *libURL = [NSURL fileURLWithPath:libPath];
+  impl_->library = [impl_->device newLibraryWithURL:libURL error:&error];
 
-    // Load compiled shader library
-    NSString* libPath = [[NSBundle mainBundle] pathForResource:@"default" ofType:@"metallib"];
-    if (!libPath) {
-        // Fallback: look next to executable
-        NSString* execPath = [[NSBundle mainBundle] executablePath];
-        NSString* execDir = [execPath stringByDeletingLastPathComponent];
-        libPath = [execDir stringByAppendingPathComponent:@"default.metallib"];
-    }
+  if (!impl_->library) {
+    NSLog(@"Failed to load Metal library at %@: %@", libPath, error);
+    return false;
+  }
 
-    NSError* error = nil;
-    if (libPath) {
-        NSURL* libURL = [NSURL fileURLWithPath:libPath];
-        impl_->library = [impl_->device newLibraryWithURL:libURL error:&error];
-    }
+  // ── Compute pipeline ────────────────────────────────────────────────
+  id<MTLFunction> physicsFunc =
+      [impl_->library newFunctionWithName:@"particle_physics"];
+  if (physicsFunc) {
+    impl_->physicsPipeline =
+        [impl_->device newComputePipelineStateWithFunction:physicsFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Compute pipeline error: %@", error);
+  }
 
-    if (!impl_->library) {
-        NSLog(@"Failed to load Metal library: %@", error);
-        return false;
-    }
+  // ── Render pipeline ─────────────────────────────────────────────────
+  id<MTLFunction> vertexFunc =
+      [impl_->library newFunctionWithName:@"particle_vertex"];
+  id<MTLFunction> fragmentFunc =
+      [impl_->library newFunctionWithName:@"particle_fragment"];
 
-    // ── Compute pipeline: particle physics ──────────────────────────────
-    id<MTLFunction> physicsFunc = [impl_->library newFunctionWithName:@"particle_physics"];
-    if (physicsFunc) {
-        impl_->physicsPipeline = [impl_->device newComputePipelineStateWithFunction:physicsFunc error:&error];
-    }
+  if (vertexFunc && fragmentFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vertexFunc;
+    desc.fragmentFunction = fragmentFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorAttachments[0].blendingEnabled = YES;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+    desc.colorAttachments[0].destinationRGBBlendFactor =
+        MTLBlendFactorOneMinusSourceAlpha;
+    desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationAlphaBlendFactor =
+        MTLBlendFactorOneMinusSourceAlpha;
+    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 
-    // ── Render pipeline: instanced particles ────────────────────────────
-    id<MTLFunction> vertexFunc = [impl_->library newFunctionWithName:@"particle_vertex"];
-    id<MTLFunction> fragmentFunc = [impl_->library newFunctionWithName:@"particle_fragment"];
+    impl_->particlePipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Render pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing shader functions: vertex=%@, fragment=%@", vertexFunc,
+          fragmentFunc);
+  }
 
-    if (vertexFunc && fragmentFunc) {
-        MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
-        desc.vertexFunction = vertexFunc;
-        desc.fragmentFunction = fragmentFunc;
-        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        desc.colorAttachments[0].blendingEnabled = YES;
-        desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-        desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-        impl_->particlePipeline = [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
-    }
+  // ── Depth state ─────────────────────────────────────────────────────
+  MTLDepthStencilDescriptor *depthDesc =
+      [[MTLDepthStencilDescriptor alloc] init];
+  depthDesc.depthCompareFunction = MTLCompareFunctionLess;
+  depthDesc.depthWriteEnabled = YES;
+  impl_->depthState =
+      [impl_->device newDepthStencilStateWithDescriptor:depthDesc];
 
-    // ── Post-FX pipeline ────────────────────────────────────────────────
-    id<MTLFunction> postVert = [impl_->library newFunctionWithName:@"postfx_vertex"];
-    id<MTLFunction> postFrag = [impl_->library newFunctionWithName:@"postfx_fragment"];
-
-    if (postVert && postFrag) {
-        MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
-        desc.vertexFunction = postVert;
-        desc.fragmentFunction = postFrag;
-        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        impl_->postfxPipeline = [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
-    }
-
-    // ── Depth state ─────────────────────────────────────────────────────
-    MTLDepthStencilDescriptor* depthDesc = [[MTLDepthStencilDescriptor alloc] init];
-    depthDesc.depthCompareFunction = MTLCompareFunctionLess;
-    depthDesc.depthWriteEnabled = YES;
-    impl_->depthState = [impl_->device newDepthStencilStateWithDescriptor:depthDesc];
-
-    resize(width, height);
-    return true;
-}
-
-void Renderer::uploadParticles(const GPUParticle* data, int count) {
-    size_t size = count * sizeof(GPUParticle);
-    impl_->particleCount = count;
-
-    if (!impl_->particleBuffer || impl_->particleBuffer.length < size) {
-        impl_->particleBuffer = [impl_->device newBufferWithLength:size
-                                    options:MTLResourceStorageModeShared];
-    }
-    memcpy(impl_->particleBuffer.contents, data, size);
-}
-
-void Renderer::computeStep(float dt, const VoiceGPUData* voices, int voiceCount,
-                           float totalAmplitude) {
-    if (!impl_->physicsPipeline || impl_->particleCount == 0) return;
-
-    // Upload voice data
-    size_t voiceSize = voiceCount * sizeof(VoiceGPUData);
-    if (!impl_->voiceBuffer || impl_->voiceBuffer.length < voiceSize) {
-        impl_->voiceBuffer = [impl_->device newBufferWithLength:std::max(voiceSize, (size_t)64)
-                                 options:MTLResourceStorageModeShared];
-    }
-    if (voiceCount > 0) {
-        memcpy(impl_->voiceBuffer.contents, voices, voiceSize);
-    }
-
-    // Uniforms
-    struct PhysicsUniforms {
-        float dt;
-        float totalAmplitude;
-        int voiceCount;
-        int particleCount;
-        float maxWaveDepth;
-        float plateRadius;
-        float padding[2];
-    } uniforms = {dt, totalAmplitude, voiceCount, impl_->particleCount, 100.0f, 1.0f, {0, 0}};
-
-    if (!impl_->uniformBuffer) {
-        impl_->uniformBuffer = [impl_->device newBufferWithLength:256
+  for (int i = 0; i < Impl::kMaxInFlightFrames; i++) {
+    impl_->cameraBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(CameraUniforms)
                                    options:MTLResourceStorageModeShared];
-    }
-    memcpy(impl_->uniformBuffer.contents, &uniforms, sizeof(uniforms));
+    impl_->uniformBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(PhysicsUniforms)
+                                   options:MTLResourceStorageModeShared];
+  }
 
-    id<MTLCommandBuffer> cmdBuf = [impl_->commandQueue commandBuffer];
-    id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
-
-    [encoder setComputePipelineState:impl_->physicsPipeline];
-    [encoder setBuffer:impl_->particleBuffer offset:0 atIndex:0];
-    [encoder setBuffer:impl_->voiceBuffer offset:0 atIndex:1];
-    [encoder setBuffer:impl_->uniformBuffer offset:0 atIndex:2];
-
-    NSUInteger threadGroupSize = impl_->physicsPipeline.maxTotalThreadsPerThreadgroup;
-    if (threadGroupSize > 256) threadGroupSize = 256;
-    MTLSize threads = MTLSizeMake(impl_->particleCount, 1, 1);
-    MTLSize groups = MTLSizeMake(threadGroupSize, 1, 1);
-
-    [encoder dispatchThreads:threads threadsPerThreadgroup:groups];
-    [encoder endEncoding];
-    [cmdBuf commit];
+  resize(width, height);
+  return true;
 }
 
-void Renderer::render(const RenderConfig& config) {
-    if (impl_->particleCount == 0) return;
+void Renderer::uploadParticles(const GPUParticle *data, int count) {
+  size_t size = count * sizeof(GPUParticle);
+  impl_->particleCount = count;
 
-    id<CAMetalDrawable> drawable = [impl_->metalLayer nextDrawable];
-    if (!drawable) return;
+  if (!impl_->particleBuffer || (size_t)impl_->particleBuffer.length < size) {
+    impl_->particleBuffer =
+        [impl_->device newBufferWithLength:size
+                                   options:MTLResourceStorageModeShared];
+  }
+  memcpy(impl_->particleBuffer.contents, data, size);
+}
 
-    id<MTLCommandBuffer> cmdBuf = [impl_->commandQueue commandBuffer];
+void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
+                           float totalAmplitude, float maxWaveDepth) {
+  if (!impl_->physicsPipeline || impl_->particleCount == 0)
+    return;
 
-    // ── Main render pass ────────────────────────────────────────────────
-    MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
-    passDesc.colorAttachments[0].texture = drawable.texture;
-    passDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
-    passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-    passDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
+  // Upload voice data
+  size_t voiceSize =
+      std::max((size_t)(voiceCount * sizeof(VoiceGPUData)), (size_t)16);
 
-    if (impl_->depthTexture) {
-        passDesc.depthAttachment.texture = impl_->depthTexture;
-        passDesc.depthAttachment.loadAction = MTLLoadActionClear;
-        passDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
-        passDesc.depthAttachment.clearDepth = 1.0;
-    }
+  int frameIdx = impl_->currentFrame;
+  if (!impl_->voiceBuffer[frameIdx] ||
+      (size_t)impl_->voiceBuffer[frameIdx].length < voiceSize) {
+    impl_->voiceBuffer[frameIdx] =
+        [impl_->device newBufferWithLength:voiceSize
+                                   options:MTLResourceStorageModeShared];
+  }
+  if (voiceCount > 0) {
+    memcpy(impl_->voiceBuffer[frameIdx].contents, voices,
+           voiceCount * sizeof(VoiceGPUData));
+  }
 
-    id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
+  // Stage uniforms — will be dispatched in render()
+  impl_->physicsUniforms = {};
+  impl_->physicsUniforms.dt = dt;
+  impl_->physicsUniforms.totalAmplitude = totalAmplitude;
+  impl_->physicsUniforms.voiceCount = voiceCount;
+  impl_->physicsUniforms.particleCount = impl_->particleCount;
+  impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
+  impl_->physicsUniforms.plateRadius = 1.0f;
+  impl_->hasCompute = true;
+}
 
-    if (impl_->particlePipeline) {
-        [encoder setRenderPipelineState:impl_->particlePipeline];
-        [encoder setDepthStencilState:impl_->depthState];
-        [encoder setVertexBuffer:impl_->particleBuffer offset:0 atIndex:0];
+void Renderer::render(const RenderConfig &config) {
+  if (impl_->particleCount == 0 || !impl_->particlePipeline)
+    return;
 
-        // TODO: Set camera uniforms at index 1
-        // TODO: Draw instanced spheres
-        // [encoder drawPrimitives:MTLPrimitiveTypeTriangle
-        //            vertexStart:0 vertexCount:sphereVertexCount
-        //          instanceCount:impl_->particleCount];
-    }
+  dispatch_semaphore_wait(impl_->inFlightSemaphore, DISPATCH_TIME_FOREVER);
+  int frameIdx = impl_->currentFrame;
 
-    [encoder endEncoding];
-    [cmdBuf presentDrawable:drawable];
-    [cmdBuf commit];
+  id<CAMetalDrawable> drawable = [impl_->metalLayer nextDrawable];
+  if (!drawable) {
+    dispatch_semaphore_signal(impl_->inFlightSemaphore);
+    return;
+  }
+
+  id<MTLCommandBuffer> cmdBuf = [impl_->commandQueue commandBuffer];
+
+  __block dispatch_semaphore_t block_sema = impl_->inFlightSemaphore;
+  [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+    dispatch_semaphore_signal(block_sema);
+  }];
+
+  // ── Compute pass (if physics update was staged) ─────────────────────
+  if (impl_->hasCompute && impl_->physicsPipeline) {
+    memcpy(impl_->uniformBuffer[frameIdx].contents, &impl_->physicsUniforms,
+           sizeof(PhysicsUniforms));
+
+    id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+    [comp setComputePipelineState:impl_->physicsPipeline];
+    [comp setBuffer:impl_->particleBuffer offset:0 atIndex:0];
+    [comp setBuffer:impl_->voiceBuffer[frameIdx] offset:0 atIndex:1];
+    [comp setBuffer:impl_->uniformBuffer[frameIdx] offset:0 atIndex:2];
+
+    NSUInteger tgSize = std::min(
+        (NSUInteger)256, impl_->physicsPipeline.maxTotalThreadsPerThreadgroup);
+    [comp dispatchThreads:MTLSizeMake(impl_->particleCount, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [comp endEncoding];
+
+    impl_->hasCompute = false;
+  }
+
+  // ── Camera ──────────────────────────────────────────────────────────
+  float R = config.plateRadius;
+  float aspect = (float)impl_->width / (float)impl_->height;
+  float halfH = R * 1.3f;
+  float halfW = halfH * aspect;
+
+  CameraUniforms cam = {};
+  orthoMatrix(cam.viewProj, -halfW, halfW, -halfH, halfH, -R * 3.0f, R * 3.0f);
+  cam.cameraPos[0] = 0;
+  cam.cameraPos[1] = R;
+  cam.cameraPos[2] = 0;
+  cam.particleSize = config.particleSize;
+  cam.plateRadius = R;
+  memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
+
+  // ── Render pass ─────────────────────────────────────────────────────
+  MTLRenderPassDescriptor *passDesc =
+      [MTLRenderPassDescriptor renderPassDescriptor];
+  passDesc.colorAttachments[0].texture = drawable.texture;
+  passDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
+  passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+  passDesc.colorAttachments[0].clearColor =
+      MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
+
+  passDesc.depthAttachment.texture = impl_->depthTexture;
+  passDesc.depthAttachment.loadAction = MTLLoadActionClear;
+  passDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
+  passDesc.depthAttachment.clearDepth = 1.0;
+
+  id<MTLRenderCommandEncoder> enc =
+      [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
+
+  [enc setRenderPipelineState:impl_->particlePipeline];
+  [enc setDepthStencilState:impl_->depthState];
+  [enc setVertexBuffer:impl_->particleBuffer offset:0 atIndex:0];
+  [enc setVertexBuffer:impl_->cameraBuffer[frameIdx] offset:0 atIndex:1];
+
+  [enc drawPrimitives:MTLPrimitiveTypePoint
+          vertexStart:0
+          vertexCount:impl_->particleCount];
+
+  [enc endEncoding];
+
+  [cmdBuf presentDrawable:drawable];
+  [cmdBuf commit];
+
+  impl_->currentFrame = (impl_->currentFrame + 1) % Impl::kMaxInFlightFrames;
 }
 
 void Renderer::resize(int width, int height) {
-    impl_->width = width;
-    impl_->height = height;
+  impl_->width = width;
+  impl_->height = height;
 
-    // Recreate depth texture
-    MTLTextureDescriptor* depthDesc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-        width:width height:height mipmapped:NO];
-    depthDesc.storageMode = MTLStorageModePrivate;
-    depthDesc.usage = MTLTextureUsageRenderTarget;
-    impl_->depthTexture = [impl_->device newTextureWithDescriptor:depthDesc];
-
-    // Recreate post-fx targets
-    MTLTextureDescriptor* colorDesc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-        width:width height:height mipmapped:NO];
-    colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-    impl_->colorTargetA = [impl_->device newTextureWithDescriptor:colorDesc];
-    impl_->colorTargetB = [impl_->device newTextureWithDescriptor:colorDesc];
+  MTLTextureDescriptor *depthDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                   width:width
+                                  height:height
+                               mipmapped:NO];
+  depthDesc.storageMode = MTLStorageModePrivate;
+  depthDesc.usage = MTLTextureUsageRenderTarget;
+  impl_->depthTexture = [impl_->device newTextureWithDescriptor:depthDesc];
 }
 
-void* Renderer::currentTexture() const {
-    return (__bridge void*)impl_->colorTargetA;
+int Renderer::particleCount() const { return impl_->particleCount; }
+
+void Renderer::readbackParticles(GPUParticle *out, int count) {
+  if (!impl_->particleBuffer)
+    return;
+  size_t sz = std::min((size_t)count * sizeof(GPUParticle),
+                       (size_t)impl_->particleBuffer.length);
+  memcpy(out, impl_->particleBuffer.contents, sz);
+}
+
+void Renderer::orthoMatrix(float *m, float l, float r, float b, float t,
+                           float n, float f) {
+  memset(m, 0, 16 * sizeof(float));
+  m[0] = 2.0f / (r - l);
+  m[5] = 2.0f / (t - b);
+  m[10] = -1.0f / (f - n);
+  m[12] = -(r + l) / (r - l);
+  m[13] = -(t + b) / (t - b);
+  m[14] = -n / (f - n);
+  m[15] = 1.0f;
 }
 
 } // namespace space

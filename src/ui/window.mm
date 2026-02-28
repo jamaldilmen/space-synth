@@ -1,52 +1,92 @@
-#import <Cocoa/Cocoa.h>
-#import <MetalKit/MetalKit.h>
 #include "ui/window.h"
+#import <Cocoa/Cocoa.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
+#include <mach/mach_time.h>
 
-// ── Custom NSWindow delegate ────────────────────────────────────────────────
+// Forward declare
+namespace space { struct WindowImpl; }
 
-@interface SpaceSynthWindowDelegate : NSObject <NSWindowDelegate>
-@property (nonatomic, assign) space::Window::Impl* impl;
+// ── Custom NSView with Metal layer ──────────────────────────────────────────
+
+@interface SpaceSynthMetalView : NSView
+@property (nonatomic, assign) space::Window::Impl *impl;
 @end
 
-// ── Custom MTKView subclass for key events ──────────────────────────────────
-
-@interface SpaceSynthView : MTKView
-@property (nonatomic, assign) space::Window::Impl* impl;
+@interface SpaceSynthWindowDelegate : NSObject <NSWindowDelegate>
+@property (nonatomic, assign) space::Window::Impl *impl;
 @end
 
 namespace space {
 
 struct Window::Impl {
-    NSWindow* window = nil;
-    SpaceSynthView* metalView = nil;
-    SpaceSynthWindowDelegate* delegate = nil;
-    CAMetalLayer* layer = nil;
+    NSWindow *window = nil;
+    SpaceSynthMetalView *metalView = nil;
+    SpaceSynthWindowDelegate *delegate = nil;
+    CAMetalLayer *layer = nil;
+    id<MTLDevice> device = nil;
 
     KeyCallback keyCallback;
     ResizeCallback resizeCallback;
+    FrameCallback frameCallback;
 
     int width = 0;
     int height = 0;
     bool shouldClose = false;
+
+    uint64_t lastFrameTime = 0;
+    mach_timebase_info_data_t timebaseInfo;
+
+    CVDisplayLinkRef displayLink = nullptr;
+    dispatch_source_t frameSource = nullptr;
 };
+
+// CVDisplayLink callback — fires on display vsync
+static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
+                                     const CVTimeStamp *inNow,
+                                     const CVTimeStamp *inOutputTime,
+                                     CVOptionFlags flagsIn,
+                                     CVOptionFlags *flagsOut,
+                                     void *context) {
+    auto *impl = static_cast<Window::Impl*>(context);
+    // Signal the main thread to render
+    if (impl->frameSource) {
+        dispatch_source_merge_data(impl->frameSource, 1);
+    }
+    return kCVReturnSuccess;
+}
 
 } // namespace space
 
 @implementation SpaceSynthWindowDelegate
 
-- (BOOL)windowShouldClose:(NSWindow*)sender {
+- (BOOL)windowShouldClose:(NSWindow *)sender {
     self.impl->shouldClose = true;
+    if (self.impl->displayLink) {
+        CVDisplayLinkStop(self.impl->displayLink);
+    }
     [NSApp stop:nil];
+    // Post a dummy event to unblock the run loop
+    [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                        location:NSZeroPoint
+                                   modifierFlags:0
+                                       timestamp:0
+                                    windowNumber:0
+                                         context:nil
+                                         subtype:0
+                                           data1:0
+                                           data2:0]
+             atStart:YES];
     return YES;
 }
 
-- (void)windowDidResize:(NSNotification*)notification {
+- (void)windowDidResize:(NSNotification *)notification {
     NSRect frame = [self.impl->metalView bounds];
-    float scale = self.impl->window.backingScaleFactor;
-    int w = (int)(frame.size.width * scale);
-    int h = (int)(frame.size.height * scale);
+    int w = (int)frame.size.width;
+    int h = (int)frame.size.height;
     self.impl->width = w;
     self.impl->height = h;
+    self.impl->layer.drawableSize = CGSizeMake(w, h);
     if (self.impl->resizeCallback) {
         self.impl->resizeCallback(w, h);
     }
@@ -54,12 +94,20 @@ struct Window::Impl {
 
 @end
 
-@implementation SpaceSynthView
+@implementation SpaceSynthMetalView
+
+- (BOOL)wantsLayer { return YES; }
+- (BOOL)wantsUpdateLayer { return YES; }
+
+- (CALayer *)makeBackingLayer {
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    return layer;
+}
 
 - (BOOL)acceptsFirstResponder { return YES; }
 
-- (void)keyDown:(NSEvent*)event {
-    if (!self.impl->keyCallback) return;
+- (void)keyDown:(NSEvent *)event {
+    if (!self.impl || !self.impl->keyCallback) return;
     space::KeyEvent ke;
     ke.keyCode = event.keyCode;
     ke.isDown = true;
@@ -68,8 +116,8 @@ struct Window::Impl {
     self.impl->keyCallback(ke);
 }
 
-- (void)keyUp:(NSEvent*)event {
-    if (!self.impl->keyCallback) return;
+- (void)keyUp:(NSEvent *)event {
+    if (!self.impl || !self.impl->keyCallback) return;
     space::KeyEvent ke;
     ke.keyCode = event.keyCode;
     ke.isDown = false;
@@ -82,20 +130,40 @@ struct Window::Impl {
 
 namespace space {
 
-Window::Window() : impl_(new Impl()) {}
+Window::Window() : impl_(new Impl()) {
+    mach_timebase_info(&impl_->timebaseInfo);
+}
 
 Window::~Window() {
+    if (impl_->displayLink) {
+        CVDisplayLinkStop(impl_->displayLink);
+        CVDisplayLinkRelease(impl_->displayLink);
+    }
+    if (impl_->frameSource) {
+        dispatch_source_cancel(impl_->frameSource);
+    }
     delete impl_;
 }
 
-bool Window::create(int width, int height, const std::string& title) {
+bool Window::create(int width, int height, const std::string &title) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
+        NSMenu *menubar = [[NSMenu alloc] init];
+        NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
+        [menubar addItem:appMenuItem];
+        NSMenu *appMenu = [[NSMenu alloc] init];
+        [appMenu addItemWithTitle:@"Quit"
+                           action:@selector(terminate:)
+                    keyEquivalent:@"q"];
+        [appMenuItem setSubmenu:appMenu];
+        [NSApp setMainMenu:menubar];
+
         NSRect frame = NSMakeRect(100, 100, width, height);
         NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                           NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable;
+                           NSWindowStyleMaskResizable |
+                           NSWindowStyleMaskMiniaturizable;
 
         impl_->window = [[NSWindow alloc] initWithContentRect:frame
                                                     styleMask:style
@@ -105,60 +173,87 @@ bool Window::create(int width, int height, const std::string& title) {
         [impl_->window setTitle:[NSString stringWithUTF8String:title.c_str()]];
         [impl_->window setMinSize:NSMakeSize(640, 480)];
 
-        // Create delegate
         impl_->delegate = [[SpaceSynthWindowDelegate alloc] init];
         impl_->delegate.impl = impl_;
         [impl_->window setDelegate:impl_->delegate];
 
-        // Create Metal view
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) return false;
+        impl_->device = MTLCreateSystemDefaultDevice();
+        if (!impl_->device) return false;
 
-        impl_->metalView = [[SpaceSynthView alloc] initWithFrame:frame device:device];
+        // Create custom NSView with CAMetalLayer
+        impl_->metalView = [[SpaceSynthMetalView alloc] initWithFrame:frame];
         impl_->metalView.impl = impl_;
-        impl_->metalView.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
-        impl_->metalView.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
-        impl_->metalView.preferredFramesPerSecond = 120;
-        impl_->metalView.enableSetNeedsDisplay = NO;
-        impl_->metalView.paused = YES;  // We drive rendering ourselves
 
-        impl_->layer = (CAMetalLayer*)impl_->metalView.layer;
+        impl_->layer = (CAMetalLayer *)impl_->metalView.layer;
+        impl_->layer.device = impl_->device;
+        impl_->layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        impl_->layer.framebufferOnly = YES;
+        impl_->layer.contentsScale = 1.0;
+        impl_->layer.drawableSize = CGSizeMake(width, height);
+        impl_->layer.maximumDrawableCount = 3;
+        impl_->layer.displaySyncEnabled = YES;
 
         [impl_->window setContentView:impl_->metalView];
         [impl_->window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
 
-        float scale = impl_->window.backingScaleFactor;
-        impl_->width = (int)(width * scale);
-        impl_->height = (int)(height * scale);
+        impl_->width = width;
+        impl_->height = height;
     }
 
     return true;
 }
 
-void* Window::metalLayer() const {
-    return (__bridge void*)impl_->layer;
-}
-
+void *Window::metalLayer() const { return (__bridge void *)impl_->layer; }
+void *Window::metalDevice() const { return (__bridge void *)impl_->device; }
 int Window::width() const { return impl_->width; }
 int Window::height() const { return impl_->height; }
 
 void Window::setKeyCallback(KeyCallback cb) { impl_->keyCallback = cb; }
 void Window::setResizeCallback(ResizeCallback cb) { impl_->resizeCallback = cb; }
+void Window::setFrameCallback(FrameCallback cb) { impl_->frameCallback = cb; }
 
 void Window::run() {
-    // Main run loop — process events, then yield for rendering
-    while (!impl_->shouldClose) {
-        @autoreleasepool {
-            NSEvent* event;
-            while ((event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                              untilDate:nil
-                                                 inMode:NSDefaultRunLoopMode
-                                                dequeue:YES])) {
-                [NSApp sendEvent:event];
-            }
-        }
-        // TODO: Call into renderer here, driven by CVDisplayLink or manual timer
+    impl_->lastFrameTime = mach_absolute_time();
+
+    // Create a dispatch source that fires on the main queue when CVDisplayLink signals
+    impl_->frameSource = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, dispatch_get_main_queue());
+
+    dispatch_source_set_event_handler(impl_->frameSource, ^{
+        if (impl_->shouldClose || !impl_->frameCallback) return;
+
+        uint64_t now = mach_absolute_time();
+        uint64_t elapsed = now - impl_->lastFrameTime;
+        impl_->lastFrameTime = now;
+
+        double nanos = (double)elapsed * impl_->timebaseInfo.numer /
+                       impl_->timebaseInfo.denom;
+        float dt = (float)(nanos / 1.0e9);
+        if (dt > 0.033f) dt = 0.033f;
+
+        impl_->frameCallback(dt);
+    });
+    dispatch_resume(impl_->frameSource);
+
+    // Set up CVDisplayLink
+    CVDisplayLinkCreateWithActiveCGDisplays(&impl_->displayLink);
+    CVDisplayLinkSetOutputCallback(impl_->displayLink, displayLinkCallback, impl_);
+
+    // Use the display the window is on
+    NSNumber *screenNum = [impl_->window.screen deviceDescription][@"NSScreenNumber"];
+    CGDirectDisplayID displayID = screenNum ? [screenNum unsignedIntValue] : CGMainDisplayID();
+    CVDisplayLinkSetCurrentCGDisplay(impl_->displayLink, displayID);
+
+    CVDisplayLinkStart(impl_->displayLink);
+
+    // Run the app event loop — dispatch_source events fire on the main queue
+    [NSApp finishLaunching];
+    [NSApp run];
+
+    // Cleanup
+    if (impl_->displayLink) {
+        CVDisplayLinkStop(impl_->displayLink);
     }
 }
 

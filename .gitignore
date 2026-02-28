@@ -10,5 +10,4 @@ cmake-build-*/
 *.xcworkspace
 xcuserdata/
 DerivedData/
-third_party/imgui/
 third_party/syphon/

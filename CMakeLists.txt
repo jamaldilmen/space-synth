@@ -111,6 +111,7 @@ find_library(COREMIDI_FRAMEWORK CoreMIDI REQUIRED)
 find_library(AVFOUNDATION_FRAMEWORK AVFoundation REQUIRED)
 find_library(VIDEOTOOLBOX_FRAMEWORK VideoToolbox REQUIRED)
 find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
+find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${METAL_FRAMEWORK}
@@ -125,6 +126,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${AVFOUNDATION_FRAMEWORK}
     ${VIDEOTOOLBOX_FRAMEWORK}
     ${GAMECONTROLLER_FRAMEWORK}
+    ${COREVIDEO_FRAMEWORK}
 )
 
 # ── Syphon (optional, enable when framework is available) ────────────────────

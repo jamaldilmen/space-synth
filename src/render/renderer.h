@@ -1,54 +1,76 @@
 #pragma once
 #include "core/particles.h"
+#include <cmath>
 #include <cstdint>
 
 namespace space {
 
 struct RenderConfig {
-    int width = 1920;
-    int height = 1080;
-    float particleSize = 0.8f;
-    float bloomIntensity = 0.0f;
-    float trailDecay = 0.0f;
-    float chromaticAberration = 0.0f;
+  int width = 1920;
+  int height = 1080;
+  float particleSize = 2.0f;
+  float bloomIntensity = 0.0f;
+  float trailDecay = 0.0f;
+  float chromaticAberration = 0.0f;
+  float plateRadius = 400.0f;
 };
 
-// Metal renderer: compute pipeline for physics, instanced draw for particles
+// Camera uniforms — matches the struct in render.metal
+struct CameraUniforms {
+  float viewProj[16]; // 4x4 column-major
+  float cameraPos[3];
+  float particleSize;
+  float plateRadius;
+  float padding[3];
+};
+
+// Voice data for GPU compute
+struct VoiceGPUData {
+  int m;
+  int n;
+  float alpha;
+  float amplitude;
+};
+
+// Physics uniforms for compute shader
+struct PhysicsUniforms {
+  float dt;
+  float totalAmplitude;
+  int voiceCount;
+  int particleCount;
+  float maxWaveDepth;
+  float plateRadius;
+  float padding[2];
+};
+
 class Renderer {
 public:
-    Renderer();
-    ~Renderer();
+  Renderer();
+  ~Renderer();
 
-    // Initialize Metal device, command queue, pipelines, shaders
-    // metalLayer = CAMetalLayer from the window
-    bool init(void* metalLayer, int width, int height);
+  bool init(void *metalDevice, void *metalLayer, int width, int height);
 
-    // Upload particle data to GPU buffer
-    void uploadParticles(const GPUParticle* data, int count);
+  void uploadParticles(const GPUParticle *data, int count);
 
-    // Execute compute pass: particle physics step on GPU
-    // voiceData = per-voice mode/amplitude info for the compute shader
-    struct VoiceGPUData {
-        int m;
-        int n;
-        float alpha;
-        float amplitude;
-    };
-    void computeStep(float dt, const VoiceGPUData* voices, int voiceCount,
-                     float totalAmplitude);
+  void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
+                   float totalAmplitude, float maxWaveDepth);
 
-    // Execute render pass: instanced particle draw + post-fx
-    void render(const RenderConfig& config);
+  void render(const RenderConfig &config);
 
-    // Resize swap chain
-    void resize(int width, int height);
+  void resize(int width, int height);
 
-    // Get the Metal texture for Syphon output
-    void* currentTexture() const;
+  int particleCount() const;
+
+  // Read back particle positions from GPU buffer (for CPU-side access)
+  void readbackParticles(GPUParticle *out, int count);
 
 private:
-    struct Impl;
-    Impl* impl_;
+  struct Impl;
+  Impl *impl_;
+
+  // Build orthographic projection matrix
+  static void orthoMatrix(float *out, float left, float right, float bottom,
+                          float top, float near, float far);
 };
 
 } // namespace space

@@ -91,10 +91,12 @@ int main() {
     if (midi < 0 || midi > 127)
       return;
 
-    if (e.isDown)
+    if (e.isDown) {
       synth.noteOn(midi);
-    else
+      printf("[SYNTH] noteOn midi=%d voices=%d\n", midi, synth.activeVoiceCount());
+    } else {
       synth.noteOff(midi);
+    }
   });
 
   // ── Resize ──────────────────────────────────────────────────────────

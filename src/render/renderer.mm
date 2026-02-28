@@ -126,6 +126,7 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   }
 
   resize(width, height);
+
   return true;
 }
 

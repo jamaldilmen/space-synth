@@ -157,19 +157,21 @@ kernel void particle_physics(
         }
     }
 
-    // Retraction pull (when no sound, pull back to center sphere)
-    float retractPull = (1.0f - u.totalAmplitude) * 15.0f;
+    // Retraction pull (gentle — keep particles spread on the plate at rest)
+    float retractPull = (1.0f - u.totalAmplitude) * 1.5f;
     float R = u.plateRadius;
-    float vxN = px;
-    float vyN = py;
-    float vzN = pz / (R > 0 ? R : 1.0f);
-    float rMag = sqrt(vxN * vxN + vyN * vyN + vzN * vzN);
 
-    if (rMag > 0.001f) {
-        float pull = (rMag - 0.35f) * retractPull;
-        vx -= (vxN / rMag) * pull * u.dt;
-        vy -= (vyN / rMag) * pull * u.dt;
-        vz -= (vzN / rMag) * pull * u.dt * R;
+    // Only retract Z toward 0 (flatten onto plate), leave XY alone
+    float vzN = pz / (R > 0 ? R : 1.0f);
+    vz -= vzN * retractPull * u.dt * R;
+
+    // Boundary push — keep particles inside the plate radius
+    float rXY = sqrt(px * px + py * py);
+    if (rXY > 0.85f) {
+        float push = (rXY - 0.85f) * retractPull * 8.0f;
+        float rInv = 1.0f / (rXY + 1e-6f);
+        vx -= px * rInv * push * u.dt;
+        vy -= py * rInv * push * u.dt;
     }
 
     // Friction

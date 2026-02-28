@@ -107,6 +107,7 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 - (BOOL)acceptsFirstResponder { return YES; }
 
 - (void)keyDown:(NSEvent *)event {
+    printf("[KEY] down keyCode=%d\n", event.keyCode);
     if (!self.impl || !self.impl->keyCallback) return;
     space::KeyEvent ke;
     ke.keyCode = event.keyCode;
@@ -180,21 +181,26 @@ bool Window::create(int width, int height, const std::string &title) {
         impl_->device = MTLCreateSystemDefaultDevice();
         if (!impl_->device) return false;
 
-        // Create custom NSView with CAMetalLayer
+        // Create custom NSView with CAMetalLayer (layer-hosting)
         impl_->metalView = [[SpaceSynthMetalView alloc] initWithFrame:frame];
         impl_->metalView.impl = impl_;
 
-        impl_->layer = (CAMetalLayer *)impl_->metalView.layer;
-        impl_->layer.device = impl_->device;
-        impl_->layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        impl_->layer.framebufferOnly = YES;
-        impl_->layer.contentsScale = 1.0;
-        impl_->layer.drawableSize = CGSizeMake(width, height);
-        impl_->layer.maximumDrawableCount = 3;
-        impl_->layer.displaySyncEnabled = YES;
+        CAMetalLayer *layer = [CAMetalLayer layer];
+        layer.device = impl_->device;
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        layer.framebufferOnly = YES;
+        layer.contentsScale = 1.0;
+        layer.drawableSize = CGSizeMake(width, height);
+        layer.maximumDrawableCount = 3;
+        layer.displaySyncEnabled = YES;
+
+        [impl_->metalView setLayer:layer];
+        [impl_->metalView setWantsLayer:YES];
+        impl_->layer = layer;
 
         [impl_->window setContentView:impl_->metalView];
         [impl_->window makeKeyAndOrderFront:nil];
+        [impl_->window makeFirstResponder:impl_->metalView];
         [NSApp activateIgnoringOtherApps:YES];
 
         impl_->width = width;

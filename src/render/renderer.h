@@ -19,9 +19,10 @@ struct RenderConfig {
 struct CameraUniforms {
   float viewProj[16]; // 4x4 column-major
   float cameraPos[3];
+  float cameraPad; // Explicit padding for 16-byte alignment (Metal float3)
   float particleSize;
   float plateRadius;
-  float padding[3];
+  float padding[2]; // Reduced padding to keep total size consistent if needed
 };
 
 // Voice data for GPU compute
@@ -56,6 +57,7 @@ public:
                    float totalAmplitude, float maxWaveDepth);
 
   void render(const RenderConfig &config);
+  void render(const RenderConfig &config, const float *viewProj);
 
   void resize(int width, int height);
 
@@ -64,13 +66,15 @@ public:
   // Read back particle positions from GPU buffer (for CPU-side access)
   void readbackParticles(GPUParticle *out, int count);
 
+  // Camera helpers
+  static void orthoMatrix(float *out, float left, float right, float bottom,
+                          float top, float near, float far);
+  static void perspectiveMatrix(float *out, float fovY, float aspect,
+                                float near, float far);
+
 private:
   struct Impl;
   Impl *impl_;
-
-  // Build orthographic projection matrix
-  static void orthoMatrix(float *out, float left, float right, float bottom,
-                          float top, float near, float far);
 };
 
 } // namespace space

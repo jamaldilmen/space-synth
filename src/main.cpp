@@ -1,4 +1,6 @@
+#include "audio/audio_engine.h"
 #include "audio/synth.h"
+#include "core/camera.h"
 #include "core/modes.h"
 #include "core/particles.h"
 #include "render/renderer.h"
@@ -34,8 +36,21 @@ int main() {
   auto gpuData = packForGPU(particles);
   renderer.uploadParticles(gpuData.data(), PARTICLE_COUNT);
 
-  // ── Synth ───────────────────────────────────────────────────────────
+  // ── Camera ──────────────────────────────────────────────────────────
+  Camera camera;
+  window.setMouseCallback([&](const MouseEvent &e) {
+    if (e.isDown && e.button == 0) {
+      // Rotate: scaling deltas for sensitivity
+      camera.rotate(-e.dx * 0.005f, -e.dy * 0.005f);
+    }
+  });
+  window.setScrollCallback([&](float dx, float dy) { camera.zoom(dy * 0.5f); });
+
+  // ── Synth & Audio ──────────────────────────────────────────────────
   Synth synth;
+  AudioEngine audio;
+  audio.setSynth(&synth);
+  audio.start(0, 48000);
 
   // ── Keyboard mapping ────────────────────────────────────────────────
   // macOS keyCodes → semitone offsets (matches SOUND ARCHITECT.html)
@@ -87,13 +102,20 @@ int main() {
       return;
     }
 
+    // R = reset camera
+    if (e.keyCode == 15 && e.isDown) {
+      camera.reset();
+      return;
+    }
+
     int midi = getMidi(e.keyCode);
     if (midi < 0 || midi > 127)
       return;
 
     if (e.isDown) {
       synth.noteOn(midi);
-      printf("[SYNTH] noteOn midi=%d voices=%d\n", midi, synth.activeVoiceCount());
+      printf("[SYNTH] noteOn midi=%d voices=%d\n", midi,
+             synth.activeVoiceCount());
     } else {
       synth.noteOff(midi);
     }
@@ -124,13 +146,31 @@ int main() {
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
                          synth.totalAmplitude(), MAX_WAVE_DEPTH);
 
+    // Update camera
+    camera.update(dt);
+    float view[16], proj[16], viewProj[16];
+    camera.buildViewMatrix(view);
+    Renderer::perspectiveMatrix(proj, 45.0f * (M_PI_F / 180.0f),
+                                (float)window.width() / window.height(), 1.0f,
+                                5000.0f);
+
+    // viewProj = proj * view
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < 4; j++) {
+        viewProj[j * 4 + i] = 0;
+        for (int k = 0; k < 4; k++) {
+          viewProj[j * 4 + i] += proj[k * 4 + i] * view[j * 4 + k];
+        }
+      }
+    }
+
     // Render
     RenderConfig config;
     config.width = window.width();
     config.height = window.height();
-    config.particleSize = 2.0f;
+    config.particleSize = 4.0f; // Boosted for visibility
     config.plateRadius = PLATE_RADIUS;
-    renderer.render(config);
+    renderer.render(config, viewProj);
 
     // FPS
     frameCount++;

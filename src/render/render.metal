@@ -8,10 +8,10 @@ struct Particle {
 
 struct CameraUniforms {
     float4x4 viewProjection;
-    float3 cameraPos;
+    float4 cameraPos; // Use float4 to match 16-byte alignment and C++ padding
     float particleSize;
     float plateRadius;
-    float padding[3];
+    float padding[2];
 };
 
 struct VertexOut {
@@ -40,17 +40,17 @@ vertex VertexOut particle_vertex(
     float h = clamp(p.posW.z / 120.0f, -1.0f, 1.0f);
     float base = 0.55f + h * 0.25f;
 
-    // Sand palette: warm browns/golds
+    // Sand palette: warm browns/golds — boosted base
     out.color = float3(
-        base * 0.95f,
-        base * 0.78f,
-        base * 0.55f
+        base * 1.6f,
+        base * 1.3f,
+        base * 0.9f
     );
 
     // Speed-based brightness boost
     float speed = length(p.velW.xyz);
-    float boost = clamp(speed * 3.0f, 0.0f, 0.4f);
-    out.color += float3(boost * 0.3f, boost * 0.2f, boost * 0.05f);
+    float boost = clamp(speed * 4.0f, 0.0f, 0.6f);
+    out.color += float3(boost * 0.5f, boost * 0.3f, boost * 0.1f);
 
     return out;
 }
@@ -59,10 +59,11 @@ fragment float4 particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
-    // Smooth circle falloff — no discard (preserves early-Z)
+    // High-visibility bloom-like falloff
     float dist = length(pointCoord - 0.5f) * 2.0f;
-    float alpha = saturate(1.0f - dist * dist);
-    alpha *= alpha;  // sharper falloff
-
+    float alpha = saturate(1.2f - dist);
+    alpha = pow(alpha, 1.2f); // Flatter falloff for more "solid" particles
+    
+    // Return boosted color with alpha
     return float4(in.color * alpha, alpha);
 }

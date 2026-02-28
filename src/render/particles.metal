@@ -50,6 +50,12 @@ static float besselJ(int n, float x) {
     return sum;
 }
 
+// Simple hash for noise
+static float noise(uint id, float dt) {
+    uint x = id * 1103515245 + 12345;
+    return (float((x / 65536) % 32768) / 32767.0f) - 0.5f;
+}
+
 // ── Compute kernel: update particle positions/velocities ────────────────────
 
 kernel void particle_physics(
@@ -72,7 +78,7 @@ kernel void particle_physics(
     float th = atan2(py, px);
 
     float baseFric = pow(0.06f, u.dt);
-    float k = M_PI_F / u.maxWaveDepth;  // modeP=1 for now
+    float k = M_PI_F / u.maxWaveDepth;
     float kz = k * pz;
 
     float dynamicFric = baseFric;
@@ -89,20 +95,14 @@ kernel void particle_physics(
 
             float w = min(amp, 1.0f) * 0.45f * polyNorm;
 
-            float jm = besselJ(voices[vi].m, alpha * r);
-            float phase = m_f * th - kz;
-            float h3d = jm * cos(phase);
-
-            // Analytical gradient of Bessel function
-            // J'_m(x) = 0.5 * (J_{m-1}(x) - J_{m+1}(x))
-            // where x = alpha * r
-            // Let F(r, th) = J_m(alpha * r) * cos(m*th - kz)
-            // dF/dx = dF/dr * dr/dx + dF/dth * dth/dx
-            // dr/dx = x/r,  dth/dx = -y/r^2
-            // dr/dy = y/r,  dth/dy = x/r^2
-
             float alpha_r = alpha * r;
-            // Derivative of J_m with respect to its argument
+            float jm = besselJ(voices[vi].m, alpha_r);
+            float phase = m_f * th - kz;
+            float cos_p = cos(phase);
+            float h3d = jm * cos_p;
+
+            // Potential P = (J_m(alpha*r) * cos(phase))^2
+            // dP/dr = 2 * J_m * J'_m * alpha * cos^2(phase)
             float jm_prime;
             if (voices[vi].m == 0) {
                 jm_prime = -besselJ(1, alpha_r);
@@ -110,37 +110,44 @@ kernel void particle_physics(
                 jm_prime = 0.5f * (besselJ(voices[vi].m - 1, alpha_r) - besselJ(voices[vi].m + 1, alpha_r));
             }
 
-            // Chain rule for dr
-            float dJ_dr = alpha * jm_prime;
-            float cos_term = cos(phase);
-            float sin_term = sin(phase);
+            float dP_dr = 2.0f * jm * jm_prime * alpha * cos_p * cos_p;
+            
+            // Boundary potential
+            if (r > 0.85f) {
+                float t = (r - 0.85f) / 0.13f;
+                dP_dr += (0.5f * 3.0f / 0.13f) * t * t;
+            }
 
-            // dF/dr = dJ_dr * cos_term
-            float dF_dr = dJ_dr * cos_term;
+            // dP/dth = -m * J_m^2 * sin(2*phase)
+            float dP_dth = -m_f * jm * jm * sin(2.0f * phase);
 
-            // dF/dth = J_m * (-m * sin_term)
-            float dF_dth = jm * (-m_f * sin_term);
-
-            // Convert polar gradients to Cartesian gradients
+            // Polar to Cartesian
             float r_inv = 1.0f / (r + 1e-6f);
             float dr_dx = px * r_inv;
             float dr_dy = py * r_inv;
             float dth_dx = -py * r_inv * r_inv;
             float dth_dy = px * r_inv * r_inv;
 
-            float gx = dF_dr * dr_dx + dF_dth * dth_dx;
-            float gy = dF_dr * dr_dy + dF_dth * dth_dy;
+            float gx = (dP_dr * dr_dx + dP_dth * dth_dx);
+            float gy = (dP_dr * dr_dy + dP_dth * dth_dy);
 
-            // Notice we subtracted gx*w earlier so we keep the sign.
-            // The numerical code was (F(x+eps) - F(x-eps))/(2eps).
-            // Here gx is exactly dF/dx.
-            // Force is minus gradient of the 'potential' if w is positive amplitude.
+            // Normalize analytical gradient to match HTML's LUT behavior
+            float gradMag = sqrt(gx * gx + gy * gy + 1e-6f);
+            if (gradMag > 0.001f) {
+                gx /= gradMag;
+                gy /= gradMag;
+            }
+
             fxTotal -= gx * w;
             fyTotal -= gy * w;
 
-            // Z-axis gradient
-            float zGrad = k * jm * jm * sin(2.0f * phase);
-            fzTotal -= zGrad * w * 200.0f;
+            // dP/dz = k * J_m^2 * sin(2*phase)
+            float gz = k * jm * jm * sin(2.0f * phase);
+            // Specific center jitter for m=0 (from reference)
+            if (voices[vi].m == 0 && abs(pz) < 2.0f) {
+                gz += noise(id + 1000, u.dt) * jm * jm * k;
+            }
+            fzTotal -= gz * w * 200.0f; // Align with HTML scaling
 
             jitterTotal += abs(h3d) * amp;
         }
@@ -148,6 +155,25 @@ kernel void particle_physics(
         vx += fxTotal;
         vy += fyTotal;
         vz += fzTotal;
+
+        // Amplitude-modulated noise (Jitter)
+        if (jitterTotal > 0.01f) {
+            float velMagU = sqrt(vx * vx + vy * vy + (vz / 400.0f) * (vz / 400.0f));
+            if (velMagU > 0.001f) {
+                float n = jitterTotal * 6.0f * u.dt;
+                vx += noise(id, u.dt) * n;
+                vy += noise(id + 1, u.dt) * n;
+                vz += noise(id + 2, u.dt) * n * 400.0f;
+            }
+        }
+
+        // Apply jitter
+        if (jitterTotal > 0.01f) {
+            float n = jitterTotal * 12.0f * u.dt;
+            vx += noise(id, u.dt) * n;
+            vy += noise(id + 1, u.dt) * n;
+            vz += noise(id + 2, u.dt) * n * (u.maxWaveDepth / 400.0f);
+        }
 
         // Node braking
         if (u.totalAmplitude > 0.01f) {
@@ -157,21 +183,19 @@ kernel void particle_physics(
         }
     }
 
-    // Retraction pull (gentle — keep particles spread on the plate at rest)
-    float retractPull = (1.0f - u.totalAmplitude) * 1.5f;
-    float R = u.plateRadius;
-
-    // Only retract Z toward 0 (flatten onto plate), leave XY alone
-    float vzN = pz / (R > 0 ? R : 1.0f);
-    vz -= vzN * retractPull * u.dt * R;
-
-    // Boundary push — keep particles inside the plate radius
-    float rXY = sqrt(px * px + py * py);
-    if (rXY > 0.85f) {
-        float push = (rXY - 0.85f) * retractPull * 8.0f;
-        float rInv = 1.0f / (rXY + 1e-6f);
-        vx -= px * rInv * push * u.dt;
-        vy -= py * rInv * push * u.dt;
+    // 3D Spherical Retraction Pull
+    float R = 400.0f;
+    float rx = px;
+    float ry = py;
+    float rz = pz / R;
+    float rMag = sqrt(rx * rx + ry * ry + rz * rz);
+    
+    float retractPull = (1.0f - u.totalAmplitude) * 15.0f;
+    if (rMag > 0.001f) {
+        float pull = (rMag - 0.35f) * retractPull;
+        vx -= (rx / rMag) * pull * u.dt;
+        vy -= (ry / rMag) * pull * u.dt;
+        vz -= (rz / rMag) * pull * u.dt * R;
     }
 
     // Friction
@@ -191,7 +215,7 @@ kernel void particle_physics(
     py += vy * u.dt * 60.0f;
     pz += vz * u.dt * 60.0f;
 
-    // Boundary clamp (circular plate)
+    // Boundary clamp
     float rr = sqrt(px * px + py * py);
     if (rr > 0.96f) {
         px = px / rr * 0.95f;

@@ -36,6 +36,10 @@ struct Renderer::Impl {
   // Pending compute data (set before render)
   bool hasCompute = false;
   PhysicsUniforms physicsUniforms;
+
+  void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
+  void renderWithCamera(id<CAMetalDrawable> drawable,
+                        id<MTLCommandBuffer> cmdBuf, int frameIdx);
 };
 
 Renderer::Renderer() : impl_(new Impl()) {}
@@ -195,24 +199,7 @@ void Renderer::render(const RenderConfig &config) {
   }];
 
   // ── Compute pass (if physics update was staged) ─────────────────────
-  if (impl_->hasCompute && impl_->physicsPipeline) {
-    memcpy(impl_->uniformBuffer[frameIdx].contents, &impl_->physicsUniforms,
-           sizeof(PhysicsUniforms));
-
-    id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
-    [comp setComputePipelineState:impl_->physicsPipeline];
-    [comp setBuffer:impl_->particleBuffer offset:0 atIndex:0];
-    [comp setBuffer:impl_->voiceBuffer[frameIdx] offset:0 atIndex:1];
-    [comp setBuffer:impl_->uniformBuffer[frameIdx] offset:0 atIndex:2];
-
-    NSUInteger tgSize = std::min(
-        (NSUInteger)256, impl_->physicsPipeline.maxTotalThreadsPerThreadgroup);
-    [comp dispatchThreads:MTLSizeMake(impl_->particleCount, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
-    [comp endEncoding];
-
-    impl_->hasCompute = false;
-  }
+  impl_->runComputePass(cmdBuf, frameIdx);
 
   // ── Camera ──────────────────────────────────────────────────────────
   float R = config.plateRadius;
@@ -229,7 +216,69 @@ void Renderer::render(const RenderConfig &config) {
   cam.plateRadius = R;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
-  // ── Render pass ─────────────────────────────────────────────────────
+  impl_->renderWithCamera(drawable, cmdBuf, frameIdx);
+}
+
+void Renderer::render(const RenderConfig &config, const float *viewProj) {
+  if (impl_->particleCount == 0 || !impl_->particlePipeline)
+    return;
+
+  dispatch_semaphore_wait(impl_->inFlightSemaphore, DISPATCH_TIME_FOREVER);
+  int frameIdx = impl_->currentFrame;
+
+  id<CAMetalDrawable> drawable = [impl_->metalLayer nextDrawable];
+  if (!drawable) {
+    dispatch_semaphore_signal(impl_->inFlightSemaphore);
+    return;
+  }
+
+  id<MTLCommandBuffer> cmdBuf = [impl_->commandQueue commandBuffer];
+
+  __block dispatch_semaphore_t block_sema = impl_->inFlightSemaphore;
+  [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+    dispatch_semaphore_signal(block_sema);
+  }];
+
+  // ── Compute pass (if physics update was staged) ─────────────────────
+  impl_->runComputePass(cmdBuf, frameIdx);
+
+  // ── Camera ──────────────────────────────────────────────────────────
+  CameraUniforms cam = {};
+  memcpy(cam.viewProj, viewProj, 16 * sizeof(float));
+  // We don't have cameraPos here easily, but vertex shader mostly uses viewProj
+  cam.particleSize = config.particleSize;
+  cam.plateRadius = config.plateRadius;
+  memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
+
+  impl_->renderWithCamera(drawable, cmdBuf, frameIdx);
+}
+
+// Internal helper for compute
+void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
+  if (hasCompute && physicsPipeline) {
+    memcpy(uniformBuffer[frameIdx].contents, &physicsUniforms,
+           sizeof(PhysicsUniforms));
+
+    id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+    [comp setComputePipelineState:physicsPipeline];
+    [comp setBuffer:particleBuffer offset:0 atIndex:0];
+    [comp setBuffer:voiceBuffer[frameIdx] offset:0 atIndex:1];
+    [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
+
+    NSUInteger tgSize = std::min((NSUInteger)256,
+                                 physicsPipeline.maxTotalThreadsPerThreadgroup);
+    [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [comp endEncoding];
+
+    hasCompute = false;
+  }
+}
+
+// Internal helper for render pass
+void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
+                                      id<MTLCommandBuffer> cmdBuf,
+                                      int frameIdx) {
   MTLRenderPassDescriptor *passDesc =
       [MTLRenderPassDescriptor renderPassDescriptor];
   passDesc.colorAttachments[0].texture = drawable.texture;
@@ -238,7 +287,7 @@ void Renderer::render(const RenderConfig &config) {
   passDesc.colorAttachments[0].clearColor =
       MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
 
-  passDesc.depthAttachment.texture = impl_->depthTexture;
+  passDesc.depthAttachment.texture = depthTexture;
   passDesc.depthAttachment.loadAction = MTLLoadActionClear;
   passDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
   passDesc.depthAttachment.clearDepth = 1.0;
@@ -246,21 +295,21 @@ void Renderer::render(const RenderConfig &config) {
   id<MTLRenderCommandEncoder> enc =
       [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
 
-  [enc setRenderPipelineState:impl_->particlePipeline];
-  [enc setDepthStencilState:impl_->depthState];
-  [enc setVertexBuffer:impl_->particleBuffer offset:0 atIndex:0];
-  [enc setVertexBuffer:impl_->cameraBuffer[frameIdx] offset:0 atIndex:1];
+  [enc setRenderPipelineState:particlePipeline];
+  [enc setDepthStencilState:depthState];
+  [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
+  [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
 
   [enc drawPrimitives:MTLPrimitiveTypePoint
           vertexStart:0
-          vertexCount:impl_->particleCount];
+          vertexCount:particleCount];
 
   [enc endEncoding];
 
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
 
-  impl_->currentFrame = (impl_->currentFrame + 1) % Impl::kMaxInFlightFrames;
+  currentFrame = (currentFrame + 1) % kMaxInFlightFrames;
 }
 
 void Renderer::resize(int width, int height) {
@@ -297,6 +346,18 @@ void Renderer::orthoMatrix(float *m, float l, float r, float b, float t,
   m[13] = -(t + b) / (t - b);
   m[14] = -n / (f - n);
   m[15] = 1.0f;
+}
+
+void Renderer::perspectiveMatrix(float *m, float fovY, float aspect, float n,
+                                 float f) {
+  memset(m, 0, 16 * sizeof(float));
+  float h = 1.0f / tan(fovY * 0.5f);
+  float w = h / aspect;
+  m[0] = w;
+  m[5] = h;
+  m[10] = f / (n - f);
+  m[11] = -1.0f;
+  m[14] = (n * f) / (n - f);
 }
 
 } // namespace space

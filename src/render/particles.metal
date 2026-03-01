@@ -144,9 +144,9 @@ kernel void compute_physics(
 
             float dP_dr = 2.0f * jm * jm_prime * alpha * cos_p * cos_p;
 
-            if (r > 0.85f && u.totalAmplitude > 0.1f) {
+            if (r > 0.85f) {
                 float t = (r - 0.85f) / 0.13f;
-                dP_dr += (0.5f * 3.0f / 0.13f) * t * t * min(u.totalAmplitude, 1.0f);
+                dP_dr += (0.5f * 3.0f / 0.13f) * t * t;
             }
 
             float dP_dth = -m_f * jm * jm * sin(2.0f * phaseAngle);
@@ -264,21 +264,17 @@ kernel void compute_physics(
         }
     }
 
-    // 3D Spherical Retraction Pull — collapses to center when silent
+    // 3D Spherical Retraction Pull
     float R = 400.0f;
     float rx = px;
     float ry = py;
     float rz = pz / R;
     float rMag = sqrt(rx * rx + ry * ry + rz * rz);
 
-    float fadeAmplitude = min(u.totalAmplitude, 1.0f);
-    float retractPull = (1.0f - fadeAmplitude) * 15.0f * u.retractionPull;
+    float retractPull = (1.0f - min(u.totalAmplitude, 1.0f)) * 15.0f * u.retractionPull;
     if (rMag > 0.001f) {
-        // Blend target: shell when playing, center when silent
-        float shellR = (u.sphereMode == 1) ? 0.75f : 0.35f;
-        float targetR = shellR * fadeAmplitude; // → 0 as sound dies
+        float targetR = (u.sphereMode == 1) ? 0.75f : 0.35f;
         float pullMultiplier = (u.sphereMode == 1) ? 2.0f : 1.0f;
-        pullMultiplier *= (1.0f + (1.0f - fadeAmplitude) * 3.0f); // Up to 4x toward center
         float pull = (rMag - targetR) * retractPull * pullMultiplier;
         vx -= (rx / rMag) * pull * u.dt;
         vy -= (ry / rMag) * pull * u.dt;

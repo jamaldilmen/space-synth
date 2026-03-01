@@ -527,6 +527,7 @@ int main() {
       static int seqFpsCount = 0;
       static float seqMaxVel = 0.0f;
       static float seqLogTimer = 0.0f;
+      static std::vector<bool> seqNoteDone;
 
       // Define preset chord sequences (MIDI notes, base octave 4)
       // C4=60, E4=64, G4=67, Bb4=70, C5=72
@@ -538,6 +539,7 @@ int main() {
         }
         seqNotes = notes;
         seqNoteOn.assign(notes.size(), false);
+        seqNoteDone.assign(notes.size(), false);
         seqTime = 0.0f;
         seqRunning = true;
         seqFpsAccum = 0.0f;
@@ -603,7 +605,7 @@ int main() {
           float endTime = n.startTime + n.duration;
           maxEndTime = std::max(maxEndTime, endTime);
 
-          if (!seqNoteOn[i] && seqTime >= n.startTime) {
+          if (!seqNoteOn[i] && !seqNoteDone[i] && seqTime >= n.startTime) {
             synth.noteOn(n.midi);
             seqNoteOn[i] = true;
             printf("[SEQ] noteOn midi=%d t=%.2f\n", n.midi, seqTime);
@@ -611,6 +613,7 @@ int main() {
           if (seqNoteOn[i] && seqTime >= endTime) {
             synth.noteOff(n.midi);
             seqNoteOn[i] = false;
+            seqNoteDone[i] = true;
             printf("[SEQ] noteOff midi=%d t=%.2f\n", n.midi, seqTime);
           }
         }

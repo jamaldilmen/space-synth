@@ -183,7 +183,7 @@ kernel void compute_physics(
         if (jitterTotal > 0.01f) {
             float distToNode = jitterTotal / u.totalAmplitude;
             float uncertainty = max(0.0f, 1.0f - distToNode * 3.0f);
-            float n_strength = (jitterTotal * 6.0f + uncertainty * 12.0f) * u.dt * u.jitterFactor;
+            float n_strength = (jitterTotal * 6.0f + uncertainty * 3.0f) * u.dt * u.jitterFactor;
             vx += noise(id, u.frameCounter) * n_strength;
             vy += noise(id + 1, u.frameCounter) * n_strength;
             vz += noise(id + 2, u.frameCounter) * n_strength * (u.maxWaveDepth / 400.0f);
@@ -193,7 +193,7 @@ kernel void compute_physics(
         if (u.totalAmplitude > 0.01f) {
             float distToNode = jitterTotal / u.totalAmplitude;
             float nodeBrake = min(1.0f, distToNode * 3.5f + 0.15f);
-            dynamicFric = pow(u.damping, u.dt) * nodeBrake;
+            dynamicFric = baseFric * nodeBrake;
         }
     }
 
@@ -229,7 +229,7 @@ kernel void compute_physics(
                 uint startIdx = cellStarts[cID];
 
                 for (uint i = 0; i < count; i++) {
-                    Particle np = sortedParticles[startIdx + i]; 
+                    Particle np = sortedParticles[startIdx + i];
 
                     float ddx = px - np.posW.x;
                     float ddy = py - np.posW.y;
@@ -299,10 +299,10 @@ kernel void compute_physics(
     phase += (KE - PE) * u.dt;
     phase = fmod(phase + M_PI_F, 2.0f * M_PI_F) - M_PI_F;
 
-    // Integrate position (frame-rate independent)
-    px += vx * u.dt;
-    py += vy * u.dt;
-    pz += vz * u.dt;
+    // Integrate position (frame-rate independent, * 60 normalizes velocity units)
+    px += vx * u.dt * 60.0f;
+    py += vy * u.dt * 60.0f;
+    pz += vz * u.dt * 60.0f;
 
     // Boundary clamp
     float R2 = 400.0f;

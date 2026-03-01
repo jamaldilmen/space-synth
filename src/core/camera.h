@@ -28,7 +28,7 @@ public:
 
     phi += velPhi;
     theta = std::max(0.01f, std::min(M_PI_F - 0.01f, theta + velTheta));
-    rho = std::max(0.001f, std::min(2000.0f, rho + velRho));
+    rho = std::max(50.0f, std::min(2000.0f, rho + velRho));
 
     // Compute Cartesian position
     float sinTheta = std::sin(theta);

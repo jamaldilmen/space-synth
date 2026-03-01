@@ -9,10 +9,24 @@ struct RenderConfig {
   int width = 1920;
   int height = 1080;
   float particleSize = 2.0f;
-  float bloomIntensity = 0.0f;
-  float trailDecay = 0.0f;
-  float chromaticAberration = 0.0f;
   float plateRadius = 400.0f;
+
+  // Post-FX
+  float bloomIntensity = 0.0f;
+  float trailDecay = 0.0f; // Persistence of previous frame
+  float chromaticAmount = 0.0f;
+
+  // New Simulation
+  float modeP = 1.0f; // Depth Mode multiplier
+};
+
+// Matches postfx.metal struct
+struct PostFXUniforms {
+  float resolution[2];
+  float bloomIntensity;
+  float trailDecay;
+  float chromaticAmount;
+  float padding[3];
 };
 
 // Camera uniforms — matches the struct in render.metal
@@ -41,7 +55,12 @@ struct PhysicsUniforms {
   int particleCount;
   float maxWaveDepth;
   float plateRadius;
-  float padding[2];
+  float jitterFactor;
+  float retractionPull;
+  float damping;
+  float speedCap;
+  float modeP; // Depth Mode multiplier
+  float padding[1];
 };
 
 class Renderer {
@@ -54,14 +73,19 @@ public:
   void uploadParticles(const GPUParticle *data, int count);
 
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
-                   float totalAmplitude, float maxWaveDepth);
+                   float totalAmplitude, float maxWaveDepth, float jitterFactor,
+                   float retractionPull, float damping, float speedCap,
+                   float modeP);
 
   void render(const RenderConfig &config);
   void render(const RenderConfig &config, const float *viewProj);
 
   void resize(int width, int height);
 
+  void renderImGui(void *renderEncoder);
+
   int particleCount() const;
+  void *getMetalDevice() const;
 
   // Read back particle positions from GPU buffer (for CPU-side access)
   void readbackParticles(GPUParticle *out, int count);

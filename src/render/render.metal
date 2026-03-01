@@ -59,10 +59,9 @@ fragment float4 particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
-    // High-visibility bloom-like falloff
-    float dist = length(pointCoord - 0.5f) * 2.0f;
-    float alpha = saturate(1.2f - dist);
-    alpha = pow(alpha, 1.2f); // Flatter falloff for more "solid" particles
+    // Smoother exponential falloff for an organic "sand" look
+    float d = length(pointCoord - 0.5f) * 2.0f;
+    float alpha = exp(-d * d * 3.0f); // Fast decay but smooth edges
     
     // Return boosted color with alpha
     return float4(in.color * alpha, alpha);

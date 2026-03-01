@@ -21,7 +21,12 @@ struct PhysicsUniforms {
     int particleCount;
     float maxWaveDepth;
     float plateRadius;
-    float padding[2];
+    float jitterFactor;
+    float retractionPull;
+    float damping;
+    float speedCap;
+    float modeP;      // Depth Mode multiplier
+    float padding[1];
 };
 
 // ── Bessel J_n(x) — power series, 15 terms sufficient for GPU ───────────────
@@ -78,7 +83,7 @@ kernel void particle_physics(
     float th = atan2(py, px);
 
     float baseFric = pow(0.06f, u.dt);
-    float k = M_PI_F / u.maxWaveDepth;
+    float k = u.modeP * M_PI_F / u.maxWaveDepth;
     float kz = k * pz;
 
     float dynamicFric = baseFric;
@@ -160,7 +165,7 @@ kernel void particle_physics(
         if (jitterTotal > 0.01f) {
             float velMagU = sqrt(vx * vx + vy * vy + (vz / 400.0f) * (vz / 400.0f));
             if (velMagU > 0.001f) {
-                float n = jitterTotal * 6.0f * u.dt;
+                float n = jitterTotal * 6.0f * u.dt * u.jitterFactor;
                 vx += noise(id, u.dt) * n;
                 vy += noise(id + 1, u.dt) * n;
                 vz += noise(id + 2, u.dt) * n * 400.0f;
@@ -169,7 +174,7 @@ kernel void particle_physics(
 
         // Apply jitter
         if (jitterTotal > 0.01f) {
-            float n = jitterTotal * 12.0f * u.dt;
+            float n = jitterTotal * 12.0f * u.dt * u.jitterFactor;
             vx += noise(id, u.dt) * n;
             vy += noise(id + 1, u.dt) * n;
             vz += noise(id + 2, u.dt) * n * (u.maxWaveDepth / 400.0f);
@@ -179,7 +184,7 @@ kernel void particle_physics(
         if (u.totalAmplitude > 0.01f) {
             float distToNode = jitterTotal / u.totalAmplitude;
             float nodeBrake = min(1.0f, distToNode * 3.5f + 0.15f);
-            dynamicFric = baseFric * nodeBrake;
+            dynamicFric = pow(u.damping, u.dt) * nodeBrake;
         }
     }
 
@@ -190,7 +195,7 @@ kernel void particle_physics(
     float rz = pz / R;
     float rMag = sqrt(rx * rx + ry * ry + rz * rz);
     
-    float retractPull = (1.0f - u.totalAmplitude) * 15.0f;
+    float retractPull = (1.0f - u.totalAmplitude) * 15.0f * u.retractionPull;
     if (rMag > 0.001f) {
         float pull = (rMag - 0.35f) * retractPull;
         vx -= (rx / rMag) * pull * u.dt;
@@ -205,8 +210,8 @@ kernel void particle_physics(
 
     // Speed cap
     float speedU = sqrt(vx * vx + vy * vy + (vz / R) * (vz / R));
-    if (speedU > 1.2f) {
-        float s = 1.2f / speedU;
+    if (speedU > u.speedCap) {
+        float s = u.speedCap / speedU;
         vx *= s; vy *= s; vz *= s;
     }
 

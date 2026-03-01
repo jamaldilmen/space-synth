@@ -17,6 +17,7 @@ set(SOURCES
     src/core/modes.cpp
     src/core/particles.cpp
     src/core/envelope.cpp
+    src/core/preset_manager.cpp
     src/audio/audio_engine.mm
     src/audio/fft.cpp
     src/audio/synth.cpp
@@ -31,6 +32,7 @@ set(HEADERS
     src/core/modes.h
     src/core/particles.h
     src/core/envelope.h
+    src/core/preset_manager.h
     src/audio/audio_engine.h
     src/audio/fft.h
     src/audio/synth.h

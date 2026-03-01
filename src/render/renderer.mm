@@ -1,4 +1,6 @@
 #include "render/renderer.h"
+#include "backends/imgui_impl_metal.h"
+#include "imgui.h"
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -14,6 +16,7 @@ struct Renderer::Impl {
 
   id<MTLComputePipelineState> physicsPipeline = nil;
   id<MTLRenderPipelineState> particlePipeline = nil;
+  id<MTLRenderPipelineState> postPipeline = nil;
 
   id<MTLBuffer> particleBuffer = nil;
 
@@ -24,9 +27,12 @@ struct Renderer::Impl {
   id<MTLBuffer> voiceBuffer[kMaxInFlightFrames];
   id<MTLBuffer> uniformBuffer[kMaxInFlightFrames];
   id<MTLBuffer> cameraBuffer[kMaxInFlightFrames];
+  id<MTLBuffer> postUniformBuffer[kMaxInFlightFrames];
 
   id<MTLDepthStencilState> depthState = nil;
   id<MTLTexture> depthTexture = nil;
+  id<MTLTexture> offscreenTexture = nil;
+  id<MTLTexture> prevFrameTexture = nil;
 
   CAMetalLayer *metalLayer = nil;
   int particleCount = 0;
@@ -39,7 +45,8 @@ struct Renderer::Impl {
 
   void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
   void renderWithCamera(id<CAMetalDrawable> drawable,
-                        id<MTLCommandBuffer> cmdBuf, int frameIdx);
+                        id<MTLCommandBuffer> cmdBuf, int frameIdx,
+                        const RenderConfig &config);
 };
 
 Renderer::Renderer() : impl_(new Impl()) {}
@@ -112,6 +119,24 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
           fragmentFunc);
   }
 
+  // ── Post-FX pipeline ────────────────────────────────────────────────
+  id<MTLFunction> postVertexFunc =
+      [impl_->library newFunctionWithName:@"postfx_vertex"];
+  id<MTLFunction> postFragmentFunc =
+      [impl_->library newFunctionWithName:@"postfx_fragment"];
+
+  if (postVertexFunc && postFragmentFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = postVertexFunc;
+    desc.fragmentFunction = postFragmentFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    impl_->postPipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Post-FX pipeline error: %@", error);
+  }
+
   // ── Depth state ─────────────────────────────────────────────────────
   MTLDepthStencilDescriptor *depthDesc =
       [[MTLDepthStencilDescriptor alloc] init];
@@ -127,9 +152,14 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     impl_->uniformBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(PhysicsUniforms)
                                    options:MTLResourceStorageModeShared];
+    impl_->postUniformBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
+                                   options:MTLResourceStorageModeShared];
   }
 
-  resize(width, height);
+  // Use layer's drawableSize directly to ensure sync with window backing store
+  CGSize dSize = impl_->metalLayer.drawableSize;
+  resize((int)dSize.width, (int)dSize.height);
 
   return true;
 }
@@ -147,7 +177,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
 }
 
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
-                           float totalAmplitude, float maxWaveDepth) {
+                           float totalAmplitude, float maxWaveDepth,
+                           float jitterFactor, float retractionPull,
+                           float damping, float speedCap, float modeP) {
   if (!impl_->physicsPipeline || impl_->particleCount == 0)
     return;
 
@@ -175,6 +207,11 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.particleCount = impl_->particleCount;
   impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
   impl_->physicsUniforms.plateRadius = 1.0f;
+  impl_->physicsUniforms.jitterFactor = jitterFactor;
+  impl_->physicsUniforms.retractionPull = retractionPull;
+  impl_->physicsUniforms.damping = damping;
+  impl_->physicsUniforms.speedCap = speedCap;
+  impl_->physicsUniforms.modeP = modeP;
   impl_->hasCompute = true;
 }
 
@@ -216,7 +253,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.plateRadius = R;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
-  impl_->renderWithCamera(drawable, cmdBuf, frameIdx);
+  impl_->renderWithCamera(drawable, cmdBuf, frameIdx, config);
 }
 
 void Renderer::render(const RenderConfig &config, const float *viewProj) {
@@ -250,7 +287,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.plateRadius = config.plateRadius;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
-  impl_->renderWithCamera(drawable, cmdBuf, frameIdx);
+  impl_->renderWithCamera(drawable, cmdBuf, frameIdx, config);
 }
 
 // Internal helper for compute
@@ -277,34 +314,76 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
 
 // Internal helper for render pass
 void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
-                                      id<MTLCommandBuffer> cmdBuf,
-                                      int frameIdx) {
-  MTLRenderPassDescriptor *passDesc =
+                                      id<MTLCommandBuffer> cmdBuf, int frameIdx,
+                                      const RenderConfig &config) {
+  // ── First Pass: Render particles to offscreen texture ──────────────
+  MTLRenderPassDescriptor *offscreenPass =
       [MTLRenderPassDescriptor renderPassDescriptor];
-  passDesc.colorAttachments[0].texture = drawable.texture;
-  passDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
-  passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-  passDesc.colorAttachments[0].clearColor =
-      MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
+  offscreenPass.colorAttachments[0].texture = offscreenTexture;
+  offscreenPass.colorAttachments[0].loadAction = MTLLoadActionClear;
+  offscreenPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  offscreenPass.colorAttachments[0].clearColor =
+      MTLClearColorMake(0, 0, 0, 0); // Transparent black
 
-  passDesc.depthAttachment.texture = depthTexture;
-  passDesc.depthAttachment.loadAction = MTLLoadActionClear;
-  passDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
-  passDesc.depthAttachment.clearDepth = 1.0;
+  offscreenPass.depthAttachment.texture = depthTexture;
+  offscreenPass.depthAttachment.loadAction = MTLLoadActionClear;
+  offscreenPass.depthAttachment.storeAction = MTLStoreActionDontCare;
+  offscreenPass.depthAttachment.clearDepth = 1.0;
 
   id<MTLRenderCommandEncoder> enc =
-      [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
-
+      [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
   [enc setRenderPipelineState:particlePipeline];
   [enc setDepthStencilState:depthState];
   [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
   [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
-
   [enc drawPrimitives:MTLPrimitiveTypePoint
           vertexStart:0
           vertexCount:particleCount];
-
   [enc endEncoding];
+
+  // ── Second Pass: Post-FX to drawable ──────────────────────────────
+  MTLRenderPassDescriptor *finalPass =
+      [MTLRenderPassDescriptor renderPassDescriptor];
+  finalPass.colorAttachments[0].texture = drawable.texture;
+  finalPass.colorAttachments[0].loadAction = MTLLoadActionClear;
+  finalPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  finalPass.colorAttachments[0].clearColor =
+      MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
+
+  // Prepare Post-FX Uniforms
+  PostFXUniforms post = {};
+  post.resolution[0] = (float)width;
+  post.resolution[1] = (float)height;
+  post.bloomIntensity = config.bloomIntensity;
+  post.trailDecay = config.trailDecay;
+  post.chromaticAmount = config.chromaticAmount;
+  memcpy(postUniformBuffer[frameIdx].contents, &post, sizeof(post));
+
+  // Prepare ImGui for this pass
+  ImGui_ImplMetal_NewFrame(finalPass);
+
+  id<MTLRenderCommandEncoder> postEnc =
+      [cmdBuf renderCommandEncoderWithDescriptor:finalPass];
+  if (postPipeline) {
+    [postEnc setRenderPipelineState:postPipeline];
+    [postEnc setFragmentTexture:offscreenTexture atIndex:0];
+    [postEnc setFragmentTexture:prevFrameTexture atIndex:1];
+    [postEnc setFragmentBuffer:postUniformBuffer[frameIdx] offset:0 atIndex:0];
+    [postEnc drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:0
+                vertexCount:3];
+  }
+
+  // Render ImGui on top
+  ImGui::Render();
+  ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, postEnc);
+
+  [postEnc endEncoding];
+
+  // ── Copy result to prevFrameTexture for trails ────────────────────
+  id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+  [blit copyFromTexture:drawable.texture toTexture:prevFrameTexture];
+  [blit endEncoding];
 
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
@@ -312,7 +391,24 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   currentFrame = (currentFrame + 1) % kMaxInFlightFrames;
 }
 
+void Renderer::renderImGui(void *renderEncoder) {
+  ImGui::Render();
+  ImGui_ImplMetal_RenderDrawData(
+      ImGui::GetDrawData(),
+      (__bridge id<MTLCommandBuffer>)[(
+          __bridge id<MTLRenderCommandEncoder>)renderEncoder commandBuffer],
+      (__bridge id<MTLRenderCommandEncoder>)renderEncoder);
+}
+
+void *Renderer::getMetalDevice() const {
+  return (__bridge void *)impl_->device;
+}
+
 void Renderer::resize(int width, int height) {
+  // width/height MUST BE physical (backing) pixels
+  if (width <= 0 || height <= 0)
+    return;
+
   impl_->width = width;
   impl_->height = height;
 
@@ -324,6 +420,18 @@ void Renderer::resize(int width, int height) {
   depthDesc.storageMode = MTLStorageModePrivate;
   depthDesc.usage = MTLTextureUsageRenderTarget;
   impl_->depthTexture = [impl_->device newTextureWithDescriptor:depthDesc];
+
+  // ── Offscreen & Feedack textures for Post-FX ───────────────────────
+  MTLTextureDescriptor *colorDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                   width:width
+                                  height:height
+                               mipmapped:NO];
+  colorDesc.storageMode = MTLStorageModePrivate;
+  colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+
+  impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:colorDesc];
+  impl_->prevFrameTexture = [impl_->device newTextureWithDescriptor:colorDesc];
 }
 
 int Renderer::particleCount() const { return impl_->particleCount; }

@@ -1,4 +1,7 @@
 #include "ui/window.h"
+#include "backends/imgui_impl_metal.h"
+#include "backends/imgui_impl_osx.h"
+#include "imgui.h"
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -85,13 +88,19 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 
 - (void)windowDidResize:(NSNotification *)notification {
   NSRect frame = [self.impl->metalView bounds];
-  int w = (int)frame.size.width;
-  int h = (int)frame.size.height;
-  self.impl->width = w;
-  self.impl->height = h;
-  self.impl->layer.drawableSize = CGSizeMake(w, h);
+  CGFloat scale = [self.impl->window backingScaleFactor];
+  int logicalW = (int)frame.size.width;
+  int logicalH = (int)frame.size.height;
+  int physicalW = (int)(frame.size.width * scale);
+  int physicalH = (int)(frame.size.height * scale);
+
+  self.impl->width = logicalW;
+  self.impl->height = logicalH;
+  self.impl->layer.contentsScale = scale;
+  self.impl->layer.drawableSize = CGSizeMake(physicalW, physicalH);
+
   if (self.impl->resizeCallback) {
-    self.impl->resizeCallback(w, h);
+    self.impl->resizeCallback(physicalW, physicalH);
   }
 }
 
@@ -116,6 +125,9 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)keyDown:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureKeyboard)
+    return;
+
   printf("[KEY] down keyCode=%d\n", event.keyCode);
   if (!self.impl || !self.impl->keyCallback)
     return;
@@ -128,6 +140,9 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)keyUp:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureKeyboard)
+    return;
+
   if (!self.impl || !self.impl->keyCallback)
     return;
   space::KeyEvent ke;
@@ -139,6 +154,8 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)mouseDown:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureMouse)
+    return;
   [self handleMouseEvent:event isDown:YES button:0];
 }
 
@@ -163,6 +180,9 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)scrollWheel:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureMouse)
+    return;
+
   if (!self.impl || !self.impl->scrollCallback)
     return;
   self.impl->scrollCallback(event.scrollingDeltaX, event.scrollingDeltaY);
@@ -246,18 +266,43 @@ bool Window::create(int width, int height, const std::string &title) {
     impl_->metalView = [[SpaceSynthMetalView alloc] initWithFrame:frame];
     impl_->metalView.impl = impl_;
 
+    CGFloat scale = [impl_->window backingScaleFactor];
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.device = impl_->device;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = YES;
-    layer.contentsScale = 1.0;
-    layer.drawableSize = CGSizeMake(width, height);
+    layer.contentsScale = scale;
+    layer.drawableSize = CGSizeMake(width * scale, height * scale);
     layer.maximumDrawableCount = 3;
     layer.displaySyncEnabled = YES;
 
     [impl_->metalView setLayer:layer];
     [impl_->metalView setWantsLayer:YES];
     impl_->layer = layer;
+
+    // ── ImGui Initialization ──────────────────────────────────────────
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplOSX_Init(impl_->metalView);
+    ImGui_ImplMetal_Init(impl_->device);
+
+    // Load Roboto Font
+    ImGuiIO &io = ImGui::GetIO();
+    NSString *fontPath = [[NSString
+        stringWithUTF8String:space::Window::getExecutablePath().c_str()]
+        stringByDeletingLastPathComponent];
+    fontPath =
+        [fontPath stringByAppendingPathComponent:
+                      @"../third_party/imgui/misc/fonts/Roboto-Medium.ttf"];
+
+    float fontSize = 16.0f * scale;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:fontPath]) {
+      io.Fonts->AddFontFromFileTTF([fontPath UTF8String], fontSize);
+    }
+
+    io.FontGlobalScale = 1.0f / scale; // Since we loaded at physical size
 
     [impl_->window setContentView:impl_->metalView];
     [impl_->window makeKeyAndOrderFront:nil];
@@ -275,6 +320,11 @@ void *Window::metalLayer() const { return (__bridge void *)impl_->layer; }
 void *Window::metalDevice() const { return (__bridge void *)impl_->device; }
 int Window::width() const { return impl_->width; }
 int Window::height() const { return impl_->height; }
+
+std::string Window::getExecutablePath() {
+  NSString *path = [[NSProcessInfo processInfo] arguments][0];
+  return [path UTF8String];
+}
 
 void Window::setKeyCallback(KeyCallback cb) { impl_->keyCallback = cb; }
 void Window::setMouseCallback(MouseCallback cb) { impl_->mouseCallback = cb; }
@@ -307,6 +357,10 @@ void Window::run() {
     float dt = (float)(nanos / 1.0e9);
     if (dt > 0.033f)
       dt = 0.033f;
+
+    ImGui_ImplMetal_NewFrame(nil);
+    ImGui_ImplOSX_NewFrame(impl_->metalView);
+    ImGui::NewFrame();
 
     impl_->frameCallback(dt);
   });

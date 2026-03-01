@@ -46,6 +46,8 @@ public:
   void run();
   void close();
 
+  static std::string getExecutablePath();
+
   struct Impl;
   Impl *impl_;
 };

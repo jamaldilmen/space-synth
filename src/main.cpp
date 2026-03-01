@@ -73,7 +73,7 @@ int main() {
   }
 
   // ── Particles ───────────────────────────────────────────────────────
-  const int PARTICLE_COUNT = 100000;
+  const int PARTICLE_COUNT = 800000;
   const float MAX_WAVE_DEPTH = 100.0f;
   const float PLATE_RADIUS = 400.0f;
 
@@ -93,7 +93,10 @@ int main() {
       camera.rotate(-e.dx * 0.005f, -e.dy * 0.005f);
     }
   });
-  window.setScrollCallback([&](float dx, float dy) { camera.zoom(dy * 0.5f); });
+  window.setScrollCallback([&](float dx, float dy) {
+    // Ultra-smooth logarithmic zoom
+    camera.zoom(dy * std::max(0.001f, camera.getRho() * 0.015f));
+  });
 
   // ── Synth & Audio ──────────────────────────────────────────────────
   Synth synth;
@@ -139,12 +142,17 @@ int main() {
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
+  static int uiParticleCount = 800000;
   static float uiJitter = 1.0f;
   static float uiDamping = 0.95f;
   static float uiRetraction = 1.0f;
-  static float uiWaveDepth = 20.0f;
+  static float uiWaveDepth = 140.0f; // matches plate scale correctly
+
   static float uiSpeedCap = 1.2f;
   static float uiModeP = 1.0f;
+  static int uiSimMode = 0;        // 0=Classic, 1=Vortex
+  static int uiSphereMode = 1;     // 1=Sphere, 0=Flat
+  static bool uiOrthoMode = true;  // Use Orthographic projection
   static float uiAttack = 20.0f;   // ms
   static float uiRelease = 400.0f; // ms
 
@@ -209,13 +217,20 @@ int main() {
           {v.mode->m, v.mode->n, (float)v.mode->alpha, v.amplitude});
     }
 
-    // Update camera
     camera.update(dt);
     float view[16], proj[16], viewProj[16];
     camera.buildViewMatrix(view);
-    Renderer::perspectiveMatrix(proj, 45.0f * (M_PI_F / 180.0f),
-                                (float)window.width() / window.height(), 1.0f,
-                                5000.0f);
+
+    if (uiOrthoMode) {
+      float aspect = (float)window.width() / (float)window.height();
+      float frustum = camera.getRho() * 1.2f; // Dynamic orthographic zoom
+      Renderer::orthoMatrix(proj, -frustum * aspect, frustum * aspect, -frustum,
+                            frustum, -5000.0f, 5000.0f);
+    } else {
+      Renderer::perspectiveMatrix(proj, 45.0f * (M_PI_F / 180.0f),
+                                  (float)window.width() / window.height(),
+                                  0.001f, 5000.0f);
+    }
 
     // viewProj = proj * view
     for (int i = 0; i < 4; i++) {
@@ -228,11 +243,9 @@ int main() {
     }
 
     // Render configuration
-    RenderConfig config;
+    static RenderConfig config;
     config.width = window.width();
     config.height = window.height();
-    config.particleSize = 4.0f;
-    config.plateRadius = PLATE_RADIUS;
 
     // ── ImGui HUD ──────────────────────────────────────────────────
     static Preset currentPreset;
@@ -322,10 +335,35 @@ int main() {
       if (ImGui::CollapsingHeader("SIMULATION",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
+
+        ImGui::Text("Sim Mode:");
+        ImGui::SameLine();
+        ImGui::RadioButton("Classic", &uiSimMode, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("Vortex", &uiSimMode, 1);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip(
+              "Vortex Mode: Biblically Accurate Maxwellian Medium");
+
+        bool sphereOn = (uiSphereMode == 1);
+        if (ImGui::Checkbox("Sphere Mode", &sphereOn)) {
+          uiSphereMode = sphereOn ? 1 : 0;
+        }
+        ImGui::SetItemTooltip("Project particles onto a 3D spherical shell");
+
+        ImGui::Checkbox("Ortho Camera", &uiOrthoMode);
+        ImGui::SetItemTooltip(
+            "Toggle between Orthographic (HTML vibe) and Perspective");
+
         ImGui::SliderFloat("Size", &uiParticleSize, 0.5f, 10.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiParticleSize = 4.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
+
+        ImGui::SliderInt("Amount", &uiParticleCount, 10000, 800000);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiParticleCount = 800000;
+        ImGui::SetItemTooltip("Active number of particles");
 
         ImGui::SliderFloat("Limit", &uiSpeedCap, 0.1f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -444,15 +482,20 @@ int main() {
     }
 
     config.particleSize = uiParticleSize;
+    config.cameraRho = camera.getRho();
+    config.orthoMode = uiOrthoMode;
 
     // ── Update ADSR ────────────────────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;
     synth.envelopeParams().release = uiRelease / 1000.0f;
 
     // ── Update Physics ──────────────────────────────────────────────
+    renderer.setActiveParticleCount(uiParticleCount);
+
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
                          synth.totalAmplitude(), uiWaveDepth, uiJitter,
-                         uiRetraction, uiDamping, uiSpeedCap, uiModeP);
+                         uiRetraction, uiDamping, uiSpeedCap, uiModeP,
+                         uiSimMode, uiSphereMode);
 
     renderer.render(config, viewProj);
 

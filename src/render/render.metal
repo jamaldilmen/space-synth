@@ -18,6 +18,7 @@ struct VertexOut {
     float4 position [[position]];
     float pointSize [[point_size]];
     float3 color;
+    float dist; // Pass distance to fragment
 };
 
 vertex VertexOut particle_vertex(
@@ -34,7 +35,12 @@ vertex VertexOut particle_vertex(
     float3 worldPos = float3(p.posW.x * R, p.posW.z, p.posW.y * R);
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
-    out.pointSize = cam.particleSize;
+    
+    // Dynamic Point Size Scaling
+    float isOrtho = cam.padding[0];
+    float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
+    out.dist = dist; // Pass to fragment for fade out
+    out.pointSize = max(0.2f, cam.particleSize * (800.0f / max(0.0001f, dist)));
 
     // Color: warm sand tones based on wave height
     float h = clamp(p.posW.z / 120.0f, -1.0f, 1.0f);
@@ -59,10 +65,23 @@ fragment float4 particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
-    // Smoother exponential falloff for an organic "sand" look
     float d = length(pointCoord - 0.5f) * 2.0f;
-    float alpha = exp(-d * d * 3.0f); // Fast decay but smooth edges
     
-    // Return boosted color with alpha
-    return float4(in.color * alpha, alpha);
+    // High-res crisp rendering for macro-zoom
+    // Instead of a soft exp() blur, we use a sharper curve that holds 
+    // its shape beautifully at 500px wide.
+    float core = pow(max(0.0f, 1.0f - d), 3.0f); // Sharp, distinct edge
+    float glow = exp(-d * d * 3.5f);  // Tighter intense glow
+    
+    float3 coreColor = float3(1.0f, 0.95f, 0.9f);
+    float3 glowColor = in.color;
+    
+    float3 finalColor = mix(glowColor * glow, coreColor, core);
+    float alpha = core + glow * 0.4f;
+    
+    // Fill-rate optimization: Fade out particles just before the 512px limit
+    float fadeDistance = 6.0f; 
+    float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));
+    
+    return float4(finalColor * alpha * fadeAmount, alpha * fadeAmount);
 }

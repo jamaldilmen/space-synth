@@ -28,7 +28,7 @@ public:
 
     phi += velPhi;
     theta = std::max(0.01f, std::min(M_PI_F - 0.01f, theta + velTheta));
-    rho = std::max(100.0f, std::min(2000.0f, rho + velRho));
+    rho = std::max(0.001f, std::min(2000.0f, rho + velRho));
 
     // Compute Cartesian position
     float sinTheta = std::sin(theta);
@@ -47,6 +47,8 @@ public:
   }
 
   void zoom(float dRho) { velRho -= dRho; }
+
+  float getRho() const { return rho; }
 
   void buildViewMatrix(float *out) const {
     // LookAt(pos, [0,0,0], [0,1,0])

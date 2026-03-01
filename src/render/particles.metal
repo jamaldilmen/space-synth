@@ -25,7 +25,9 @@ struct PhysicsUniforms {
     float retractionPull;
     float damping;
     float speedCap;
-    float modeP;      // Depth Mode multiplier
+    float modeP;
+    int simMode;
+    int sphereMode;
     float padding[1];
 };
 
@@ -123,25 +125,24 @@ kernel void particle_physics(
                 dP_dr += (0.5f * 3.0f / 0.13f) * t * t;
             }
 
-            // dP/dth = -m * J_m^2 * sin(2*phase)
+            float gx = 0.0f;
+            float gy = 0.0f;
+
+            // VORTEX MODE (Phase-driven rotational forces)
             float dP_dth = -m_f * jm * jm * sin(2.0f * phase);
 
-            // Polar to Cartesian
             float r_inv = 1.0f / (r + 1e-6f);
             float dr_dx = px * r_inv;
             float dr_dy = py * r_inv;
             float dth_dx = -py * r_inv * r_inv;
             float dth_dy = px * r_inv * r_inv;
 
-            float gx = (dP_dr * dr_dx + dP_dth * dth_dx);
-            float gy = (dP_dr * dr_dy + dP_dth * dth_dy);
+            gx = (dP_dr * dr_dx + dP_dth * dth_dx);
+            gy = (dP_dr * dr_dy + dP_dth * dth_dy);
 
-            // Normalize analytical gradient to match HTML's LUT behavior
-            float gradMag = sqrt(gx * gx + gy * gy + 1e-6f);
-            if (gradMag > 0.001f) {
-                gx /= gradMag;
-                gy /= gradMag;
-            }
+            // Removed local gradient normalization! 
+            // In the HTML physics, the gradient approaches zero at the nodes.
+            // When normalized to 1.0f locally, particles shoot PAST the nodes causing glitchy chaos.
 
             fxTotal -= gx * w;
             fyTotal -= gy * w;
@@ -197,7 +198,9 @@ kernel void particle_physics(
     
     float retractPull = (1.0f - u.totalAmplitude) * 15.0f * u.retractionPull;
     if (rMag > 0.001f) {
-        float pull = (rMag - 0.35f) * retractPull;
+        float targetR = (u.sphereMode == 1) ? 0.75f : 0.35f;
+        float pullMultiplier = (u.sphereMode == 1) ? 2.0f : 1.0f;
+        float pull = (rMag - targetR) * retractPull * pullMultiplier;
         vx -= (rx / rMag) * pull * u.dt;
         vy -= (ry / rMag) * pull * u.dt;
         vz -= (rz / rMag) * pull * u.dt * R;
@@ -221,17 +224,28 @@ kernel void particle_physics(
     pz += vz * u.dt * 60.0f;
 
     // Boundary clamp
-    float rr = sqrt(px * px + py * py);
-    if (rr > 0.96f) {
-        px = px / rr * 0.95f;
-        py = py / rr * 0.95f;
-        vx *= -0.3f; vy *= -0.3f;
-    }
-
-    // Z clamp
-    if (abs(pz) > u.maxWaveDepth) {
-        pz = sign(pz) * u.maxWaveDepth * 0.95f;
-        vz *= -0.3f;
+    float R2 = 400.0f;
+    if (u.sphereMode == 1) {
+        float r3d = sqrt(px * px + py * py + (pz / R2) * (pz / R2));
+        if (r3d > 0.96f) {
+            float s = 0.95f / r3d;
+            px *= s;
+            py *= s;
+            pz *= s;
+            vx *= -0.3f; vy *= -0.3f; vz *= -0.3f;
+        }
+    } else {
+        float rr = sqrt(px * px + py * py);
+        if (rr > 0.96f) {
+            px = px / rr * 0.95f;
+            py = py / rr * 0.95f;
+            vx *= -0.3f; vy *= -0.3f;
+        }
+        // Z clamp for flat mode
+        if (abs(pz) > u.maxWaveDepth) {
+            pz = sign(pz) * u.maxWaveDepth * 0.95f;
+            vz *= -0.3f;
+        }
     }
 
     p.posW = float4(px, py, pz, 0.0f);

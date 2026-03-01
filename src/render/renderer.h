@@ -18,6 +18,8 @@ struct RenderConfig {
 
   // New Simulation
   float modeP = 1.0f; // Depth Mode multiplier
+  float cameraRho = 800.0f;
+  bool orthoMode = true;
 };
 
 // Matches postfx.metal struct
@@ -60,6 +62,8 @@ struct PhysicsUniforms {
   float damping;
   float speedCap;
   float modeP; // Depth Mode multiplier
+  int simMode;
+  int sphereMode;
   float padding[1];
 };
 
@@ -75,7 +79,7 @@ public:
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                    float totalAmplitude, float maxWaveDepth, float jitterFactor,
                    float retractionPull, float damping, float speedCap,
-                   float modeP);
+                   float modeP, int simMode, int sphereMode);
 
   void render(const RenderConfig &config);
   void render(const RenderConfig &config, const float *viewProj);
@@ -85,6 +89,7 @@ public:
   void renderImGui(void *renderEncoder);
 
   int particleCount() const;
+  void setActiveParticleCount(int count);
   void *getMetalDevice() const;
 
   // Read back particle positions from GPU buffer (for CPU-side access)

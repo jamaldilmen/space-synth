@@ -102,9 +102,8 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     desc.fragmentFunction = fragmentFunc;
     desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     desc.colorAttachments[0].blendingEnabled = YES;
-    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-    desc.colorAttachments[0].destinationRGBBlendFactor =
-        MTLBlendFactorOneMinusSourceAlpha;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
     desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     desc.colorAttachments[0].destinationAlphaBlendFactor =
         MTLBlendFactorOneMinusSourceAlpha;
@@ -141,7 +140,8 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   MTLDepthStencilDescriptor *depthDesc =
       [[MTLDepthStencilDescriptor alloc] init];
   depthDesc.depthCompareFunction = MTLCompareFunctionLess;
-  depthDesc.depthWriteEnabled = YES;
+  depthDesc.depthWriteEnabled = NO; // Fixes Z-fighting for additive particles
+
   impl_->depthState =
       [impl_->device newDepthStencilStateWithDescriptor:depthDesc];
 
@@ -157,7 +157,8 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
                                    options:MTLResourceStorageModeShared];
   }
 
-  // Use layer's drawableSize directly to ensure sync with window backing store
+  // Use layer's drawableSize directly to ensure sync with window backing
+  // store
   CGSize dSize = impl_->metalLayer.drawableSize;
   resize((int)dSize.width, (int)dSize.height);
 
@@ -179,7 +180,8 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                            float totalAmplitude, float maxWaveDepth,
                            float jitterFactor, float retractionPull,
-                           float damping, float speedCap, float modeP) {
+                           float damping, float speedCap, float modeP,
+                           int simMode, int sphereMode) {
   if (!impl_->physicsPipeline || impl_->particleCount == 0)
     return;
 
@@ -205,13 +207,15 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.totalAmplitude = totalAmplitude;
   impl_->physicsUniforms.voiceCount = voiceCount;
   impl_->physicsUniforms.particleCount = impl_->particleCount;
-  impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
-  impl_->physicsUniforms.plateRadius = 1.0f;
+  impl_->physicsUniforms.maxWaveDepth = maxWaveDepth / 400.0f;
+  impl_->physicsUniforms.plateRadius = 1.0f; // Normalized
   impl_->physicsUniforms.jitterFactor = jitterFactor;
   impl_->physicsUniforms.retractionPull = retractionPull;
   impl_->physicsUniforms.damping = damping;
   impl_->physicsUniforms.speedCap = speedCap;
   impl_->physicsUniforms.modeP = modeP;
+  impl_->physicsUniforms.simMode = simMode;
+  impl_->physicsUniforms.sphereMode = sphereMode;
   impl_->hasCompute = true;
 }
 
@@ -249,8 +253,10 @@ void Renderer::render(const RenderConfig &config) {
   cam.cameraPos[0] = 0;
   cam.cameraPos[1] = R;
   cam.cameraPos[2] = 0;
+  cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = R;
+  cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, cmdBuf, frameIdx, config);
@@ -282,9 +288,12 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // ── Camera ──────────────────────────────────────────────────────────
   CameraUniforms cam = {};
   memcpy(cam.viewProj, viewProj, 16 * sizeof(float));
-  // We don't have cameraPos here easily, but vertex shader mostly uses viewProj
+  // We don't have cameraPos here easily, but vertex shader mostly uses
+  // viewProj
+  cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
+  cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, cmdBuf, frameIdx, config);
@@ -400,6 +409,15 @@ void Renderer::renderImGui(void *renderEncoder) {
       (__bridge id<MTLRenderCommandEncoder>)renderEncoder);
 }
 
+int Renderer::particleCount() const { return impl_->particleCount; }
+
+void Renderer::setActiveParticleCount(int count) {
+  if (!impl_->particleBuffer)
+    return;
+  int maxCount = (int)(impl_->particleBuffer.length / sizeof(GPUParticle));
+  impl_->particleCount = std::max(0, std::min(count, maxCount));
+}
+
 void *Renderer::getMetalDevice() const {
   return (__bridge void *)impl_->device;
 }
@@ -433,8 +451,6 @@ void Renderer::resize(int width, int height) {
   impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:colorDesc];
   impl_->prevFrameTexture = [impl_->device newTextureWithDescriptor:colorDesc];
 }
-
-int Renderer::particleCount() const { return impl_->particleCount; }
 
 void Renderer::readbackParticles(GPUParticle *out, int count) {
   if (!impl_->particleBuffer)

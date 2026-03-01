@@ -430,263 +430,264 @@ int main() {
                             "linear mapping (Full Range)");
 
       ImGui::Unindent();
-    }
 
-    if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::Indent();
-      ImGui::SliderFloat("Jitter", &uiJitter, 0.0f, 5.0f, "%.2f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        uiJitter = 1.0f;
-      ImGui::SetItemTooltip("Random displacement factor");
+      if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::SliderFloat("Jitter", &uiJitter, 0.0f, 5.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiJitter = 1.0f;
+        ImGui::SetItemTooltip("Random displacement factor");
 
-      ImGui::SliderFloat("Fluid", &uiDamping, 0.8f, 1.0f, "%.3f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        uiDamping = 0.95f;
-      ImGui::SetItemTooltip("Simulation damping (Air resistance)");
-      ImGui::Unindent();
-    }
-
-    if (ImGui::CollapsingHeader("GEOMETRY", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::Indent();
-      ImGui::SliderFloat("Scale", &config.plateRadius, 100.0f, 1000.0f, "%.0f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        config.plateRadius = 400.0f;
-      ImGui::SetItemTooltip("Radius of the vibrating plate");
-
-      ImGui::SliderFloat("Retract", &uiRetraction, 0.0f, 5.0f, "%.2f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        uiRetraction = 1.0f;
-      ImGui::SetItemTooltip("Magnetic pull towards center");
-
-      ImGui::SliderFloat("Plate Depth", &uiWaveDepth, 5.0f, 100.0f, "%.1f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        uiWaveDepth = 20.0f;
-      ImGui::SetItemTooltip(
-          "Maximum displacement depth of the vibrating plate");
-
-      if (ImGui::Button("Reset Camera")) {
-        camera.reset();
+        ImGui::SliderFloat("Fluid", &uiDamping, 0.8f, 1.0f, "%.3f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiDamping = 0.95f;
+        ImGui::SetItemTooltip("Simulation damping (Air resistance)");
+        ImGui::Unindent();
       }
-      ImGui::SetItemTooltip("Restore camera to default position");
 
-      ImGui::Unindent();
-    }
+      if (ImGui::CollapsingHeader("GEOMETRY", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::SliderFloat("Scale", &config.plateRadius, 100.0f, 1000.0f,
+                           "%.0f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          config.plateRadius = 400.0f;
+        ImGui::SetItemTooltip("Radius of the vibrating plate");
 
-    if (ImGui::CollapsingHeader("POST-FX", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::Indent();
-      ImGui::SliderFloat("Bloom", &config.bloomIntensity, 0.0f, 1.0f, "%.2f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        config.bloomIntensity = 0.0f;
-      ImGui::SetItemTooltip("Cross-shaped bright-pass glow");
+        ImGui::SliderFloat("Retract", &uiRetraction, 0.0f, 5.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiRetraction = 1.0f;
+        ImGui::SetItemTooltip("Magnetic pull towards center");
 
-      ImGui::SliderFloat("Fluidity", &config.trailDecay, 0.0f, 0.99f, "%.2f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        config.trailDecay = 0.0f;
-      ImGui::SetItemTooltip("Motion trails (Feedback factor)");
+        ImGui::SliderFloat("Plate Depth", &uiWaveDepth, 5.0f, 100.0f, "%.1f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiWaveDepth = 20.0f;
+        ImGui::SetItemTooltip(
+            "Maximum displacement depth of the vibrating plate");
 
-      ImGui::SliderFloat("Chromatic", &config.chromaticAmount, 0.0f, 0.02f,
-                         "%.3f");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        config.chromaticAmount = 0.0f;
-      ImGui::SetItemTooltip("RGB split lens effect");
-      ImGui::Unindent();
-    }
-
-    if (ImGui::CollapsingHeader("PHYSICS STATS")) {
-      ImGui::Indent();
-      auto stats = renderer.getPhysicsStats();
-      ImGui::Text("Kinetic Energy: %.4f", stats.kineticEnergy);
-      ImGui::Text("Momentum: (%.4f, %.4f)", stats.momentumX, stats.momentumY);
-      float momentumMag = sqrtf(stats.momentumX * stats.momentumX +
-                                stats.momentumY * stats.momentumY);
-      ImGui::Text("  |p| = %.6f", momentumMag);
-      ImGui::Unindent();
-    }
-
-    // ── AUTOMATED TEST SEQUENCER ─────────────────────────────────
-    if (ImGui::CollapsingHeader("TEST SEQUENCER")) {
-      ImGui::Indent();
-
-      // Sequencer state
-      struct SeqNote {
-        int midi;
-        float startTime;
-        float duration;
-      };
-      struct SeqPreset {
-        const char *name;
-        std::vector<SeqNote> notes;
-      };
-
-      static bool seqRunning = false;
-      static float seqTime = 0.0f;
-      static int seqPresetIdx = -1;
-      static std::vector<SeqNote> seqNotes;
-      static std::vector<bool> seqNoteOn;
-      static float seqFpsAccum = 0.0f;
-      static int seqFpsCount = 0;
-      static float seqMaxVel = 0.0f;
-      static float seqLogTimer = 0.0f;
-      static std::vector<bool> seqNoteDone;
-
-      // Define preset chord sequences (MIDI notes, base octave 4)
-      // C4=60, E4=64, G4=67, Bb4=70, C5=72
-      auto firePreset = [&](const char *name, std::vector<SeqNote> notes) {
-        // Stop any current sequence
-        for (size_t i = 0; seqRunning && i < seqNotes.size(); i++) {
-          if (seqNoteOn[i])
-            synth.noteOff(seqNotes[i].midi);
+        if (ImGui::Button("Reset Camera")) {
+          camera.reset();
         }
-        seqNotes = notes;
-        seqNoteOn.assign(notes.size(), false);
-        seqNoteDone.assign(notes.size(), false);
-        seqTime = 0.0f;
-        seqRunning = true;
-        seqFpsAccum = 0.0f;
-        seqFpsCount = 0;
-        seqMaxVel = 0.0f;
-        seqLogTimer = 0.0f;
-        printf("[SEQ] Start: %s (%d notes)\n", name, (int)notes.size());
-      };
+        ImGui::SetItemTooltip("Restore camera to default position");
 
-      if (ImGui::Button("C Major", ImVec2(75, 0))) {
-        firePreset("C Major", {
-                                  {60, 0.0f, 2.0f}, // C4
-                                  {64, 0.0f, 2.0f}, // E4
-                                  {67, 0.0f, 2.0f}, // G4
-                              });
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cm7", ImVec2(55, 0))) {
-        firePreset("Cm7", {
-                              {60, 0.0f, 2.0f}, // C4
-                              {63, 0.0f, 2.0f}, // Eb4
-                              {67, 0.0f, 2.0f}, // G4
-                              {70, 0.0f, 2.0f}, // Bb4
-                          });
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("5th", ImVec2(45, 0))) {
-        firePreset("Power 5th", {
-                                    {48, 0.0f, 2.0f}, // C3
-                                    {55, 0.0f, 2.0f}, // G3
-                                });
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Run", ImVec2(45, 0))) {
-        firePreset("Chromatic Run", {
-                                        {60, 0.0f, 0.4f},
-                                        {61, 0.3f, 0.4f},
-                                        {62, 0.6f, 0.4f},
-                                        {63, 0.9f, 0.4f},
-                                        {64, 1.2f, 0.4f},
-                                        {65, 1.5f, 0.4f},
-                                        {66, 1.8f, 0.4f},
-                                        {67, 2.1f, 0.4f},
-                                    });
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Stop", ImVec2(45, 0)) && seqRunning) {
-        for (size_t i = 0; i < seqNotes.size(); i++) {
-          if (seqNoteOn[i])
-            synth.noteOff(seqNotes[i].midi);
-        }
-        seqRunning = false;
-        printf("[SEQ] Stopped\n");
+        ImGui::Unindent();
       }
 
-      // Run sequencer logic
-      if (seqRunning) {
-        seqTime += dt;
-        float maxEndTime = 0.0f;
+      if (ImGui::CollapsingHeader("POST-FX", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::SliderFloat("Bloom", &config.bloomIntensity, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          config.bloomIntensity = 0.0f;
+        ImGui::SetItemTooltip("Cross-shaped bright-pass glow");
 
-        for (size_t i = 0; i < seqNotes.size(); i++) {
-          auto &n = seqNotes[i];
-          float endTime = n.startTime + n.duration;
-          maxEndTime = std::max(maxEndTime, endTime);
+        ImGui::SliderFloat("Fluidity", &config.trailDecay, 0.0f, 0.99f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          config.trailDecay = 0.0f;
+        ImGui::SetItemTooltip("Motion trails (Feedback factor)");
 
-          if (!seqNoteOn[i] && !seqNoteDone[i] && seqTime >= n.startTime) {
-            synth.noteOn(n.midi);
-            seqNoteOn[i] = true;
-            printf("[SEQ] noteOn midi=%d t=%.2f\n", n.midi, seqTime);
+        ImGui::SliderFloat("Chromatic", &config.chromaticAmount, 0.0f, 0.02f,
+                           "%.3f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          config.chromaticAmount = 0.0f;
+        ImGui::SetItemTooltip("RGB split lens effect");
+        ImGui::Unindent();
+      }
+
+      if (ImGui::CollapsingHeader("PHYSICS STATS")) {
+        ImGui::Indent();
+        auto stats = renderer.getPhysicsStats();
+        ImGui::Text("Kinetic Energy: %.4f", stats.kineticEnergy);
+        ImGui::Text("Momentum: (%.4f, %.4f)", stats.momentumX, stats.momentumY);
+        float momentumMag = sqrtf(stats.momentumX * stats.momentumX +
+                                  stats.momentumY * stats.momentumY);
+        ImGui::Text("  |p| = %.6f", momentumMag);
+        ImGui::Unindent();
+      }
+
+      // ── AUTOMATED TEST SEQUENCER ─────────────────────────────────
+      if (ImGui::CollapsingHeader("TEST SEQUENCER")) {
+        ImGui::Indent();
+
+        // Sequencer state
+        struct SeqNote {
+          int midi;
+          float startTime;
+          float duration;
+        };
+        struct SeqPreset {
+          const char *name;
+          std::vector<SeqNote> notes;
+        };
+
+        static bool seqRunning = false;
+        static float seqTime = 0.0f;
+        static int seqPresetIdx = -1;
+        static std::vector<SeqNote> seqNotes;
+        static std::vector<bool> seqNoteOn;
+        static float seqFpsAccum = 0.0f;
+        static int seqFpsCount = 0;
+        static float seqMaxVel = 0.0f;
+        static float seqLogTimer = 0.0f;
+        static std::vector<bool> seqNoteDone;
+
+        // Define preset chord sequences (MIDI notes, base octave 4)
+        // C4=60, E4=64, G4=67, Bb4=70, C5=72
+        auto firePreset = [&](const char *name, std::vector<SeqNote> notes) {
+          // Stop any current sequence
+          for (size_t i = 0; seqRunning && i < seqNotes.size(); i++) {
+            if (seqNoteOn[i])
+              synth.noteOff(seqNotes[i].midi);
           }
-          if (seqNoteOn[i] && seqTime >= endTime) {
-            synth.noteOff(n.midi);
-            seqNoteOn[i] = false;
-            seqNoteDone[i] = true;
-            printf("[SEQ] noteOff midi=%d t=%.2f\n", n.midi, seqTime);
-          }
-        }
-
-        // Data collection
-        seqFpsAccum += 1.0f / std::max(0.001f, dt);
-        seqFpsCount++;
-        seqLogTimer += dt;
-
-        // Log stats every 0.5 seconds
-        if (seqLogTimer >= 0.5f) {
-          float avgFps = seqFpsAccum / std::max(1, seqFpsCount);
-          auto stats = renderer.getPhysicsStats();
-          printf("[SEQ-DATA] t=%.1f fps=%.0f voices=%d amp=%.2f "
-                 "KE=%.4f |p|=%.4f\n",
-                 seqTime, avgFps, synth.activeVoiceCount(),
-                 synth.totalAmplitude(), stats.kineticEnergy,
-                 sqrtf(stats.momentumX * stats.momentumX +
-                       stats.momentumY * stats.momentumY));
-          seqFpsAccum = 0;
+          seqNotes = notes;
+          seqNoteOn.assign(notes.size(), false);
+          seqNoteDone.assign(notes.size(), false);
+          seqTime = 0.0f;
+          seqRunning = true;
+          seqFpsAccum = 0.0f;
           seqFpsCount = 0;
-          seqLogTimer = 0;
-        }
+          seqMaxVel = 0.0f;
+          seqLogTimer = 0.0f;
+          printf("[SEQ] Start: %s (%d notes)\n", name, (int)notes.size());
+        };
 
-        // Auto-stop after all notes finished + 3s settle time
-        if (seqTime > maxEndTime + 3.0f) {
+        if (ImGui::Button("C Major", ImVec2(75, 0))) {
+          firePreset("C Major", {
+                                    {60, 0.0f, 2.0f}, // C4
+                                    {64, 0.0f, 2.0f}, // E4
+                                    {67, 0.0f, 2.0f}, // G4
+                                });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cm7", ImVec2(55, 0))) {
+          firePreset("Cm7", {
+                                {60, 0.0f, 2.0f}, // C4
+                                {63, 0.0f, 2.0f}, // Eb4
+                                {67, 0.0f, 2.0f}, // G4
+                                {70, 0.0f, 2.0f}, // Bb4
+                            });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("5th", ImVec2(45, 0))) {
+          firePreset("Power 5th", {
+                                      {48, 0.0f, 2.0f}, // C3
+                                      {55, 0.0f, 2.0f}, // G3
+                                  });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Run", ImVec2(45, 0))) {
+          firePreset("Chromatic Run", {
+                                          {60, 0.0f, 0.4f},
+                                          {61, 0.3f, 0.4f},
+                                          {62, 0.6f, 0.4f},
+                                          {63, 0.9f, 0.4f},
+                                          {64, 1.2f, 0.4f},
+                                          {65, 1.5f, 0.4f},
+                                          {66, 1.8f, 0.4f},
+                                          {67, 2.1f, 0.4f},
+                                      });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop", ImVec2(45, 0)) && seqRunning) {
+          for (size_t i = 0; i < seqNotes.size(); i++) {
+            if (seqNoteOn[i])
+              synth.noteOff(seqNotes[i].midi);
+          }
           seqRunning = false;
-          printf("[SEQ] Finished (%.1fs total)\n", seqTime);
+          printf("[SEQ] Stopped\n");
         }
-      }
 
-      // Status display
-      if (seqRunning) {
-        int activeNotes = 0;
-        for (auto on : seqNoteOn)
-          if (on)
-            activeNotes++;
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
-                           "RUNNING t=%.1fs notes=%d", seqTime, activeNotes);
-      } else {
-        ImGui::TextDisabled("Idle — pick a chord");
-      }
+        // Run sequencer logic
+        if (seqRunning) {
+          seqTime += dt;
+          float maxEndTime = 0.0f;
 
-      ImGui::Unindent();
-    }
+          for (size_t i = 0; i < seqNotes.size(); i++) {
+            auto &n = seqNotes[i];
+            float endTime = n.startTime + n.duration;
+            maxEndTime = std::max(maxEndTime, endTime);
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextDisabled(
-        "FPS: %.1f | Particles: %dk%s", ImGui::GetIO().Framerate,
-        renderer.particleCount() / 1000, uiCollisions ? " | COLL" : "");
-    // ── Generate GPU Debug Window ────────────────────
-    if (ImGui::CollapsingHeader("DEBUG GPU STATE",
-                                ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::Indent();
-      ImGui::Text("dt: %f | Particles: %d", dt, uiParticleCount);
-      ImGui::Text("Total Amplitude: %.3f", synth.totalAmplitude());
+            if (!seqNoteOn[i] && !seqNoteDone[i] && seqTime >= n.startTime) {
+              synth.noteOn(n.midi);
+              seqNoteOn[i] = true;
+              printf("[SEQ] noteOn midi=%d t=%.2f\n", n.midi, seqTime);
+            }
+            if (seqNoteOn[i] && seqTime >= endTime) {
+              synth.noteOff(n.midi);
+              seqNoteOn[i] = false;
+              seqNoteDone[i] = true;
+              printf("[SEQ] noteOff midi=%d t=%.2f\n", n.midi, seqTime);
+            }
+          }
 
-      if (ImGui::Button("Fetch GPU Particle Memory (first 4)")) {
-        std::vector<GPUParticle> debugParts(4);
-        renderer.readbackParticles(debugParts.data(), 4);
+          // Data collection
+          seqFpsAccum += 1.0f / std::max(0.001f, dt);
+          seqFpsCount++;
+          seqLogTimer += dt;
 
-        for (int i = 0; i < 4; i++) {
-          ImGui::Text("P[%d]: pos[%5.2f, %5.2f, %5.2f]", i, debugParts[i].x,
-                      debugParts[i].y, debugParts[i].z);
-          ImGui::Text("       vel[%5.2f, %5.2f, %5.2f] phase: %.2f",
-                      debugParts[i].vx, debugParts[i].vy, debugParts[i].vz,
-                      debugParts[i].phase);
+          // Log stats every 0.5 seconds
+          if (seqLogTimer >= 0.5f) {
+            float avgFps = seqFpsAccum / std::max(1, seqFpsCount);
+            auto stats = renderer.getPhysicsStats();
+            printf("[SEQ-DATA] t=%.1f fps=%.0f voices=%d amp=%.2f "
+                   "KE=%.4f |p|=%.4f\n",
+                   seqTime, avgFps, synth.activeVoiceCount(),
+                   synth.totalAmplitude(), stats.kineticEnergy,
+                   sqrtf(stats.momentumX * stats.momentumX +
+                         stats.momentumY * stats.momentumY));
+            seqFpsAccum = 0;
+            seqFpsCount = 0;
+            seqLogTimer = 0;
+          }
+
+          // Auto-stop after all notes finished + 3s settle time
+          if (seqTime > maxEndTime + 3.0f) {
+            seqRunning = false;
+            printf("[SEQ] Finished (%.1fs total)\n", seqTime);
+          }
         }
+
+        // Status display
+        if (seqRunning) {
+          int activeNotes = 0;
+          for (auto on : seqNoteOn)
+            if (on)
+              activeNotes++;
+          ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                             "RUNNING t=%.1fs notes=%d", seqTime, activeNotes);
+        } else {
+          ImGui::TextDisabled("Idle — pick a chord");
+        }
+
+        ImGui::Unindent();
       }
-      ImGui::Unindent();
-    }
-    ImGui::End();
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::TextDisabled(
+          "FPS: %.1f | Particles: %dk%s", ImGui::GetIO().Framerate,
+          renderer.particleCount() / 1000, uiCollisions ? " | COLL" : "");
+      // ── Generate GPU Debug Window ────────────────────
+      if (ImGui::CollapsingHeader("DEBUG GPU STATE",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::Text("dt: %f | Particles: %d", dt, uiParticleCount);
+        ImGui::Text("Total Amplitude: %.3f", synth.totalAmplitude());
+
+        if (ImGui::Button("Fetch GPU Particle Memory (first 4)")) {
+          std::vector<GPUParticle> debugParts(4);
+          renderer.readbackParticles(debugParts.data(), 4);
+
+          for (int i = 0; i < 4; i++) {
+            ImGui::Text("P[%d]: pos[%5.2f, %5.2f, %5.2f]", i, debugParts[i].x,
+                        debugParts[i].y, debugParts[i].z);
+            ImGui::Text("       vel[%5.2f, %5.2f, %5.2f] phase: %.2f",
+                        debugParts[i].vx, debugParts[i].vy, debugParts[i].vz,
+                        debugParts[i].phase);
+          }
+        }
+        ImGui::Unindent();
+      }
+      ImGui::End();
+    } // if (showHUD)
 
     config.particleSize = uiParticleSize;
     config.cameraRho = camera.getRho();

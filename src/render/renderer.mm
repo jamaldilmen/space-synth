@@ -328,7 +328,7 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.totalAmplitude = totalAmplitude;
   impl_->physicsUniforms.voiceCount = voiceCount;
   impl_->physicsUniforms.particleCount = impl_->particleCount;
-  impl_->physicsUniforms.maxWaveDepth = maxWaveDepth / 400.0f;
+  impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
   impl_->physicsUniforms.plateRadius = 1.0f; // Normalized
   impl_->physicsUniforms.jitterFactor = jitterFactor;
   impl_->physicsUniforms.retractionPull = retractionPull;

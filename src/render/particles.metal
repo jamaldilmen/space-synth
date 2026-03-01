@@ -146,11 +146,6 @@ kernel void compute_physics(
 
             float dP_dr = 2.0f * jm * jm_prime * alpha * cos_p * cos_p;
 
-            if (r > 0.85f) {
-                float t = (r - 0.85f) / 0.13f;
-                dP_dr += (0.5f * 3.0f / 0.13f) * t * t;
-            }
-
             float dP_dth = -m_f * jm * jm * sin(2.0f * phaseAngle);
 
             float r_inv = 1.0f / (r + 1e-6f);

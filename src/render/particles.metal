@@ -76,7 +76,7 @@ static float noise(uint id, uint frame) {
 }
 
 // Collision constants
-constant int MAX_PER_CELL = 32;            // Safety valve for dense clusters
+constant int MAX_PER_CELL = 16;            // Safety valve for dense clusters
 constant float COLLISION_RESTITUTION = 0.85f; // Slight energy loss per collision
 
 // ── Compute kernel: update particle positions/velocities ────────────────────
@@ -94,15 +94,15 @@ kernel void compute_physics(
 {
     if (int(id) >= u.particleCount) return;
 
-    Particle p0 = prevParticles ? prevParticles[id] : particles[id];
-    float px = p0.posW.x;
-    float py = p0.posW.y;
-    float pz = p0.posW.z;
-    float mass = p0.posW.w;
-    float vx = p0.velW.x;
-    float vy = p0.velW.y;
-    float vz = p0.velW.z;
-    float phase = p0.velW.w;
+    device Particle& p = particles[id];
+    float px = p.posW.x;
+    float py = p.posW.y;
+    float pz = p.posW.z;
+    float mass = p.posW.w;
+    float vx = p.velW.x;
+    float vy = p.velW.y;
+    float vz = p.velW.z;
+    float phase = p.velW.w;
 
     float r = sqrt(px * px + py * py);
     float th = atan2(py, px);
@@ -223,42 +223,41 @@ kernel void compute_physics(
         for (int y = startCellY; y <= endCellY; y++) {
             for (int x = startCellX; x <= endCellX; x++) {
                 uint cID = uint(y * su.gridSize + x);
+                uint count = min(cellCounts[cID], uint(MAX_PER_CELL)); // Cap to prevent O(n²) in dense cells
+                if (count == 0) continue; // Skip empty cells
                 uint startIdx = cellStarts[cID];
-                uint count = cellCounts[cID];
 
                 for (uint i = 0; i < count; i++) {
-                    uint nIdx = startIdx + i;
-                    // We no longer read sortedIndices[nIdx]! 
-                    // This is perfectly contiguous, cache-hot memory read.
-                    Particle np = sortedParticles[nIdx]; 
+                    Particle np = sortedParticles[startIdx + i]; 
 
-                    // Skip self 
-                    // (Since we don't have the explicit ID, we skip if distance is identically 0)
-                    float4 nPos = np.posW;
-                    float2 diff = float2(px, py) - nPos.xy;
-                    float dist2 = dot(diff, diff);
+                    float ddx = px - np.posW.x;
+                    float ddy = py - np.posW.y;
+                    float dist2 = ddx * ddx + ddy * ddy;
 
-                    if (dist2 > 0.01f && dist2 < colRad2) {
-                        float dist = sqrt(dist2);
-                        float overlap = colRad - dist;
-                        float2 dir = diff / dist;
-                        
-                        // Push apart
-                        px -= dir.x * overlap * 0.5f;
-                        py -= dir.y * overlap * 0.5f;
-                        
-                        // Elastic collision impulse
-                        float2 rVel = float2(vx, vy) - np.velW.xy;
-                        float relVelAlongNormal = dot(rVel, dir);
-                        if (relVelAlongNormal > 0.0f) {
-                            float restitution = 0.5f;
-                            float j = -(1.0f + restitution) * relVelAlongNormal;
-                            // Assume equal mass for simplicity in the GPU step
-                            j /= 2.0f; 
-                            
-                            vx += j * dir.x;
-                            vy += j * dir.y;
-                        }
+                    if (dist2 > colRad2 || dist2 < 1e-12f) continue;
+
+                    float dist = sqrt(dist2);
+                    float nx_dir = ddx / dist;
+                    float ny_dir = ddy / dist;
+
+                    // Push APART by half overlap
+                    float overlap = colRad - dist;
+                    float omass = np.posW.w;
+                    float totalMass = mass + omass;
+                    float pushRatio = omass / totalMass;
+                    px += nx_dir * overlap * pushRatio * 0.5f;
+                    py += ny_dir * overlap * pushRatio * 0.5f;
+
+                    // Elastic collision impulse along normal
+                    float dvx = vx - np.velW.x;
+                    float dvy = vy - np.velW.y;
+                    float dvDotN = dvx * nx_dir + dvy * ny_dir;
+
+                    // Only resolve if approaching
+                    if (dvDotN < 0.0f) {
+                        float impulse = (1.0f + COLLISION_RESTITUTION) * dvDotN * omass / totalMass;
+                        vx -= impulse * nx_dir;
+                        vy -= impulse * ny_dir;
                     }
                 }
             }
@@ -328,9 +327,8 @@ kernel void compute_physics(
         }
     }
 
-    // Write back
-    particles[id].posW = float4(px, py, pz, mass);
-    particles[id].velW = float4(vx, vy, vz, phase);
+    p.posW = float4(px, py, pz, mass);
+    p.velW = float4(vx, vy, vz, phase);
 }
 
 // ── Conservation law reduction kernel ───────────────────────────────────────

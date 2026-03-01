@@ -1,6 +1,7 @@
 #include "audio/audio_engine.h"
 #include "audio/synth.h"
 #include "core/camera.h"
+#include "core/midi_input.h"
 #include "core/modes.h"
 #include "core/particles.h"
 #include "core/preset_manager.h"
@@ -103,6 +104,19 @@ int main() {
   AudioEngine audio;
   audio.setSynth(&synth);
   audio.start(0, 48000);
+
+  // ── MIDI Input ──────────────────────────────────────────────────────
+  MidiInput midiInput;
+  midiInput.start([&](int note, float velocity, bool isNoteOn) {
+    if (isNoteOn) {
+      synth.noteOn(note, velocity);
+      printf("[MIDI] noteOn  note=%d vel=%.2f voices=%d\n", note, velocity,
+             synth.activeVoiceCount());
+    } else {
+      synth.noteOff(note);
+      printf("[MIDI] noteOff note=%d\n", note);
+    }
+  });
 
   // ── Keyboard mapping ────────────────────────────────────────────────
   // macOS keyCodes → semitone offsets (matches SOUND ARCHITECT.html)

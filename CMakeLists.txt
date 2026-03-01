@@ -15,6 +15,7 @@ set(SOURCES
     src/core/bessel.cpp
     src/core/lut.cpp
     src/core/modes.cpp
+    src/core/midi_input.mm
     src/core/particles.cpp
     src/core/envelope.cpp
     src/core/preset_manager.cpp

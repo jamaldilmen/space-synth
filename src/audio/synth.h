@@ -26,7 +26,7 @@ struct Voice {
   void init(float sampleRate);
 
   // Generate one sample and advance phase
-  float tick(float sampleRate);
+  float tick(float sampleRate, float synthJitter);
 };
 
 // Polyphonic synthesizer
@@ -63,6 +63,9 @@ public:
   void setDrive(float d) { drive_ = std::max(1.0f, d); }
   float drive() const { return drive_; }
 
+  void setJitter(float j) { jitter_ = std::max(0.0f, j); }
+  float jitter() const { return jitter_; }
+
   void setWaveform(Waveform w) { waveform_ = w; }
   Waveform waveform() const { return waveform_; }
   void cycleWaveform();
@@ -88,7 +91,8 @@ private:
   Waveform waveform_ = Waveform::Sine;
   bool keyboardMode_ = false;
   int octaveShift_ = 0;
-  float drive_ = 1.6f; // Default analog drive (Moog overdriven)
+  float drive_ = 1.6f;  // Default analog drive (Moog overdriven)
+  float jitter_ = 1.0f; // Heisenberg physics jitter
 
   static constexpr int BASE_OCTAVE = 3;
   int keyboardStart() const { return (BASE_OCTAVE + octaveShift_) * 12 + 12; }

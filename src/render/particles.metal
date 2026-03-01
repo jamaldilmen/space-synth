@@ -260,19 +260,30 @@ kernel void compute_physics(
         }
     }
 
-    // Retraction — match HTML: pull = (rMag - 0.35) * retractPull
+    // Retraction — match HTML but fix the Z-axis collapse bug
     float R = 400.0f;
-    float rx = px;
-    float ry = py;
-    float rz = pz / R;
-    float rMag = sqrt(rx * rx + ry * ry + rz * rz);
-
     float retractPull = (1.0f - min(u.totalAmplitude, 1.0f)) * 15.0f * u.retractionPull;
-    if (rMag > 0.001f) {
-        float pull = (rMag - 0.35f) * retractPull;
-        vx -= (rx / rMag) * pull * u.dt;
-        vy -= (ry / rMag) * pull * u.dt;
-        vz -= (rz / rMag) * pull * u.dt * R;
+
+    if (u.sphereMode == 1) {
+        float rx = px, ry = py, rz = pz / R;
+        float rMag = sqrt(rx * rx + ry * ry + rz * rz);
+        if (rMag > 0.001f) {
+            float pull = (rMag - 0.35f) * retractPull;
+            vx -= (rx / rMag) * pull * u.dt;
+            vy -= (ry / rMag) * pull * u.dt;
+            vz -= (rz / rMag) * pull * u.dt * R;
+        }
+    } else {
+        // Flat mode: only pull X/Y to the ring of 0.35 so particles don't get trapped at origin
+        float rx = px, ry = py;
+        float rMag = sqrt(rx * rx + ry * ry);
+        if (rMag > 0.001f) {
+            float pull = (rMag - 0.35f) * retractPull;
+            vx -= (rx / rMag) * pull * u.dt;
+            vy -= (ry / rMag) * pull * u.dt;
+        }
+        // Gently flatten the plate during silence
+        vz -= (pz / R) * retractPull * u.dt * R * 0.5f;
     }
 
     // Friction

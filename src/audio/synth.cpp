@@ -13,7 +13,7 @@ void Voice::init(float sampleRate) {
   filter.reset();
 }
 
-float Voice::tick(float sampleRate) {
+float Voice::tick(float sampleRate, float synthJitter) {
   float amp = envelope.amplitude;
   if (amp < 0.0001f)
     return 0.0f;
@@ -47,7 +47,17 @@ float Voice::tick(float sampleRate) {
     break;
   }
 
-  phase += TWO_PI * frequency / sampleRate;
+  // 1. Heisenberg Phase Drift (Juno Instability)
+  // Analog oscillators drift slightly in pitch. By tying this to the
+  // physics engine's jitter (scaling with momentary wave amplitude),
+  // we map Heisenberg momentum noise directly to oscillator instability.
+  float driftCents = ((rand() % 1000) / 1000.0f - 0.5f) * 10.0f *
+                     (synthJitter * amp); // ±5 cents base drift
+  float driftRatio = std::pow(2.0f, driftCents / 1200.0f);
+  float driftedFrequency = frequency * driftRatio;
+
+  // Advance phase with the drifty frequency
+  phase += TWO_PI * driftedFrequency / sampleRate;
   if (phase >= TWO_PI)
     phase -= TWO_PI;
 
@@ -71,7 +81,8 @@ float Synth::tick(float sampleRate) {
   std::lock_guard<std::mutex> lock(mutex_);
   float mixed = 0.0f;
   for (auto &[midi, voice] : voices_) {
-    mixed += voice.tick(sampleRate);
+    // Inject the global physics jitter into the voice tick for Phase Drift
+    mixed += voice.tick(sampleRate, jitter_);
   }
   // Apply soft clipper (tanh limiter) before output
   float limited = std::tanh(mixed * 0.4f); // 0.4f gain staging

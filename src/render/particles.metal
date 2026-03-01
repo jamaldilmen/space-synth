@@ -154,8 +154,8 @@ kernel void compute_physics(
             float dth_dx = -py * r_inv * r_inv;
             float dth_dy = px * r_inv * r_inv;
 
-            float gx = (dP_dr * dr_dx + dP_dth * dth_dx);
-            float gy = (dP_dr * dr_dy + dP_dth * dth_dy);
+            float gx = (dP_dr * dr_dx + dP_dth * dth_dx) * 3.0f;
+            float gy = (dP_dr * dr_dy + dP_dth * dth_dy) * 3.0f;
 
             fxTotal -= gx * w;
             fyTotal -= gy * w;
@@ -164,7 +164,8 @@ kernel void compute_physics(
             if (voices[vi].m == 0 && abs(pz) < 2.0f) {
                 gz += noise(id + 1000, u.frameCounter) * jm * jm * k;
             }
-            fzTotal -= gz * w * 200.0f;
+            // Amplified Z-force to match HTML visual intensity
+            fzTotal -= gz * w * 800.0f;
 
             jitterTotal += abs(h3d) * amp;
         }

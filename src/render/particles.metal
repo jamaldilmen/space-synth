@@ -265,7 +265,7 @@ kernel void compute_physics(
         }
     }
 
-    // 3D Spherical Retraction Pull
+    // Retraction — match HTML: pull = (rMag - 0.35) * retractPull
     float R = 400.0f;
     float rx = px;
     float ry = py;
@@ -274,9 +274,7 @@ kernel void compute_physics(
 
     float retractPull = (1.0f - min(u.totalAmplitude, 1.0f)) * 15.0f * u.retractionPull;
     if (rMag > 0.001f) {
-        float targetR = (u.sphereMode == 1) ? 0.75f : 0.35f;
-        float pullMultiplier = (u.sphereMode == 1) ? 2.0f : 1.0f;
-        float pull = (rMag - targetR) * retractPull * pullMultiplier;
+        float pull = (rMag - 0.35f) * retractPull;
         vx -= (rx / rMag) * pull * u.dt;
         vy -= (ry / rMag) * pull * u.dt;
         vz -= (rz / rMag) * pull * u.dt * R;

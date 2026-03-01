@@ -117,6 +117,7 @@ kernel void compute_physics(
     float PE = 0.0f;
 
     if (u.voiceCount > 0) {
+        float polyNorm = 1.0f / sqrt(float(u.voiceCount));
         float fxTotal = 0.0f, fyTotal = 0.0f, fzTotal = 0.0f;
         float jitterTotal = 0.0f;
 
@@ -125,7 +126,8 @@ kernel void compute_physics(
             float alpha = voices[vi].alpha;
             float amp = voices[vi].amplitude;
 
-            float w = amp * 20.0f; // Additive blending — no polyNorm squash
+            // Match HTML: w = min(amp, 1) * 0.45 * polyNormalizer
+            float w = min(amp, 1.0f) * 0.45f * polyNorm;
 
             float alpha_r = alpha * r;
             float jm = besselJ(voices[vi].m, alpha_r);
@@ -172,17 +174,16 @@ kernel void compute_physics(
             jitterTotal += abs(h3d) * amp;
         }
 
-        // Apply Bessel forces (F = ma, a = F/m)
-        float invMass = 1.0f / mass;
-        vx += fxTotal * u.dt * invMass;
-        vy += fyTotal * u.dt * invMass;
-        vz += fzTotal * u.dt * invMass;
+        // Match HTML: apply forces DIRECTLY (no * dt, no / mass)
+        // HTML line 791: p.vx += fxTotal;
+        vx += fxTotal;
+        vy += fyTotal;
+        vz += fzTotal;
 
-        // Uncertainty-motivated jitter
+        // Match HTML jitter: simpler formula
+        // HTML line 804: p.vx += (Math.random() - 0.5) * jitterTotal * 6 * dt;
         if (jitterTotal > 0.01f) {
-            float distToNode = jitterTotal / u.totalAmplitude;
-            float uncertainty = max(0.0f, 1.0f - distToNode * 3.0f);
-            float n_strength = (jitterTotal * 6.0f + uncertainty * 3.0f) * u.dt * u.jitterFactor;
+            float n_strength = jitterTotal * 6.0f * u.dt;
             vx += noise(id, u.frameCounter) * n_strength;
             vy += noise(id + 1, u.frameCounter) * n_strength;
             vz += noise(id + 2, u.frameCounter) * n_strength * (u.maxWaveDepth / 400.0f);

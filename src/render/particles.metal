@@ -201,7 +201,7 @@ kernel void compute_physics(
         vy += sin(angle) * strength;
     }
 
-    // ── Particle-Particle Collisions (spatial hash neighbor scan) ────────
+    // Particle-Particle Collisions (spatial hash neighbor scan)
     // Only when voices are active — at rest, dense packing causes constant push-apart drift
     if (u.collisionsOn > 0 && su.gridSize > 0 && u.voiceCount > 0) {
         int cellX = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
@@ -215,6 +215,13 @@ kernel void compute_physics(
         int startCellY = max(0, cellY - 1);
         int endCellY = min(su.gridSize - 1, cellY + 1);
 
+        float orig_px = px;
+        float orig_py = py;
+        float shiftX = 0.0f;
+        float shiftY = 0.0f;
+        float shiftVx = 0.0f;
+        float shiftVy = 0.0f;
+
         // Iterate over neighbor cells (3x3 grid)
         for (int y = startCellY; y <= endCellY; y++) {
             for (int x = startCellX; x <= endCellX; x++) {
@@ -226,8 +233,8 @@ kernel void compute_physics(
                 for (uint i = 0; i < count; i++) {
                     Particle np = sortedParticles[startIdx + i];
 
-                    float ddx = px - np.posW.x;
-                    float ddy = py - np.posW.y;
+                    float ddx = orig_px - np.posW.x;
+                    float ddy = orig_py - np.posW.y;
                     float dist2 = ddx * ddx + ddy * ddy;
 
                     if (dist2 > colRad2 || dist2 < 1e-12f) continue;
@@ -236,15 +243,15 @@ kernel void compute_physics(
                     float nx_dir = ddx / dist;
                     float ny_dir = ddy / dist;
 
-                    // Push APART by half overlap
+                    // Push APART by half overlap (accumulate)
                     float overlap = colRad - dist;
                     float omass = np.posW.w;
                     float totalMass = mass + omass;
                     float pushRatio = omass / totalMass;
-                    px += nx_dir * overlap * pushRatio * 0.5f;
-                    py += ny_dir * overlap * pushRatio * 0.5f;
+                    shiftX += nx_dir * overlap * pushRatio * 0.5f;
+                    shiftY += ny_dir * overlap * pushRatio * 0.5f;
 
-                    // Elastic collision impulse along normal
+                    // Elastic collision impulse along normal (accumulate)
                     float dvx = vx - np.velW.x;
                     float dvy = vy - np.velW.y;
                     float dvDotN = dvx * nx_dir + dvy * ny_dir;
@@ -252,12 +259,17 @@ kernel void compute_physics(
                     // Only resolve if approaching
                     if (dvDotN < 0.0f) {
                         float impulse = (1.0f + COLLISION_RESTITUTION) * dvDotN * omass / totalMass;
-                        vx -= impulse * nx_dir;
-                        vy -= impulse * ny_dir;
+                        shiftVx -= impulse * nx_dir;
+                        shiftVy -= impulse * ny_dir;
                     }
                 }
             }
         }
+        
+        px += shiftX;
+        py += shiftY;
+        vx += shiftVx;
+        vy += shiftVy;
     }
 
     // Retraction — match HTML but fix the Z-axis collapse bug

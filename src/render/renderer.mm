@@ -18,7 +18,42 @@ struct Renderer::Impl {
   id<MTLRenderPipelineState> particlePipeline = nil;
   id<MTLRenderPipelineState> postPipeline = nil;
 
+  // Spatial hash pipelines
+  id<MTLComputePipelineState> assignCellsPipeline = nil;
+  id<MTLComputePipelineState> countCellsPipeline = nil;
+  id<MTLComputePipelineState> prefixSumPipeline = nil;
+  id<MTLComputePipelineState> scatterPipeline = nil;
+
+  // Conservation law reduction
+  id<MTLComputePipelineState> reduceStatsPipeline = nil;
+
   id<MTLBuffer> particleBuffer = nil;
+  id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
+
+  // Spatial hash buffers
+  static const int kGridSize = 256;
+  static const int kTotalCells = kGridSize * kGridSize; // 65536
+  id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
+  id<MTLBuffer> particleIndicesBuffer = nil; // identity map (unsorted)
+  id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
+  id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
+  id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
+  id<MTLBuffer> sortedIndicesBuffer = nil;   // particle IDs in cell order
+  id<MTLBuffer> spatialHashUniformBuffer = nil;
+
+  // Stats readback (partial sums from GPU reduction)
+  id<MTLBuffer> partialSumsBuffer = nil;
+  int numThreadgroups = 0;
+  PhysicsStats latestStats = {};
+  bool collisionsEnabled = false;
+
+  // Noether symmetry breaking
+  uint32_t prevVoiceHash = 0;
+  float symmetryBreakImpulse = 0.0f;
+
+  // Density heatmap
+  id<MTLComputePipelineState> densityPipeline = nil;
+  id<MTLTexture> densityTexture = nil;
 
   static const int kMaxInFlightFrames = 3;
   dispatch_semaphore_t inFlightSemaphore;
@@ -38,6 +73,7 @@ struct Renderer::Impl {
   int particleCount = 0;
   int width = 0;
   int height = 0;
+  uint32_t frameCount = 0;
 
   // Pending compute data (set before render)
   bool hasCompute = false;
@@ -89,6 +125,47 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Compute pipeline error: %@", error);
   }
 
+  // ── Spatial hash compute pipelines ──────────────────────────────────
+  const char *spatialKernels[] = {"assign_cells", "count_cells",
+                                  "prefix_sum_cells", "scatter_particles"};
+  id<MTLComputePipelineState> *spatialPipelines[] = {
+      &impl_->assignCellsPipeline, &impl_->countCellsPipeline,
+      &impl_->prefixSumPipeline, &impl_->scatterPipeline};
+  for (int i = 0; i < 4; i++) {
+    id<MTLFunction> fn = [impl_->library
+        newFunctionWithName:[NSString stringWithUTF8String:spatialKernels[i]]];
+    if (fn) {
+      *spatialPipelines[i] =
+          [impl_->device newComputePipelineStateWithFunction:fn error:&error];
+      if (error)
+        NSLog(@"Spatial hash pipeline error (%s): %@", spatialKernels[i], error);
+    } else {
+      NSLog(@"Missing spatial hash kernel: %s", spatialKernels[i]);
+    }
+  }
+
+  // ── Density heatmap pipeline ────────────────────────────────────────
+  id<MTLFunction> densityFunc =
+      [impl_->library newFunctionWithName:@"density_heatmap"];
+  if (densityFunc) {
+    impl_->densityPipeline =
+        [impl_->device newComputePipelineStateWithFunction:densityFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Density pipeline error: %@", error);
+  }
+
+  // ── Stats reduction pipeline ────────────────────────────────────────
+  id<MTLFunction> reduceFunc =
+      [impl_->library newFunctionWithName:@"reduce_stats"];
+  if (reduceFunc) {
+    impl_->reduceStatsPipeline =
+        [impl_->device newComputePipelineStateWithFunction:reduceFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Reduce stats pipeline error: %@", error);
+  }
+
   // ── Render pipeline ─────────────────────────────────────────────────
   id<MTLFunction> vertexFunc =
       [impl_->library newFunctionWithName:@"particle_vertex"];
@@ -100,7 +177,7 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
         [[MTLRenderPipelineDescriptor alloc] init];
     desc.vertexFunction = vertexFunc;
     desc.fragmentFunction = fragmentFunc;
-    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
     desc.colorAttachments[0].blendingEnabled = YES;
     desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
     desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
@@ -175,6 +252,46 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
                                    options:MTLResourceStorageModeShared];
   }
   memcpy(impl_->particleBuffer.contents, data, size);
+
+  // Allocate spatial hash buffers (sized to particle count)
+  size_t uintSize = count * sizeof(uint32_t);
+  size_t cellSize = Impl::kTotalCells * sizeof(uint32_t);
+
+  auto allocIfNeeded = [&](id<MTLBuffer> &buf, size_t sz) {
+    if (!buf || (size_t)buf.length < sz) {
+      buf = [impl_->device newBufferWithLength:sz
+                                       options:MTLResourceStorageModeShared];
+    }
+  };
+
+  allocIfNeeded(impl_->particleBufferRead, size);
+  allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
+  allocIfNeeded(impl_->particleIndicesBuffer, uintSize);
+  allocIfNeeded(impl_->cellCountsBuffer, cellSize);
+  allocIfNeeded(impl_->cellStartsBuffer, cellSize);
+  allocIfNeeded(impl_->cellOffsetsBuffer, cellSize);
+  allocIfNeeded(impl_->sortedIndicesBuffer, uintSize);
+  allocIfNeeded(impl_->spatialHashUniformBuffer,
+                sizeof(SpatialHashUniforms));
+
+  // Density heatmap texture (256x256 R/W)
+  if (!impl_->densityTexture) {
+    MTLTextureDescriptor *densDesc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                     width:Impl::kGridSize
+                                    height:Impl::kGridSize
+                                 mipmapped:NO];
+    densDesc.storageMode = MTLStorageModePrivate;
+    densDesc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+    impl_->densityTexture =
+        [impl_->device newTextureWithDescriptor:densDesc];
+  }
+
+  // Partial sums buffer for reduction: 1 per threadgroup (800k/256 = 3125)
+  impl_->numThreadgroups = (count + 255) / 256;
+  // Each partial sum: 4 floats (KE, MX, MY, pad) = 16 bytes
+  allocIfNeeded(impl_->partialSumsBuffer,
+                impl_->numThreadgroups * 16);
 }
 
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
@@ -216,6 +333,28 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.modeP = modeP;
   impl_->physicsUniforms.simMode = simMode;
   impl_->physicsUniforms.sphereMode = sphereMode;
+  impl_->physicsUniforms.frameCounter = impl_->frameCount++;
+
+  // Noether symmetry breaking: detect voice config changes
+  uint32_t voiceHash = 0;
+  for (int i = 0; i < voiceCount; i++) {
+    voiceHash ^= (uint32_t)(voices[i].m * 1000 + voices[i].n * 100);
+    voiceHash = (voiceHash << 7) | (voiceHash >> 25); // rotate
+  }
+  if (voiceHash != impl_->prevVoiceHash && impl_->prevVoiceHash != 0) {
+    impl_->symmetryBreakImpulse = 0.15f; // Trigger impulse
+  } else {
+    // Decay the impulse over time
+    impl_->symmetryBreakImpulse *= 0.9f;
+    if (impl_->symmetryBreakImpulse < 0.001f)
+      impl_->symmetryBreakImpulse = 0.0f;
+  }
+  impl_->prevVoiceHash = voiceHash;
+
+  impl_->physicsUniforms.symmetryBreakImpulse = impl_->symmetryBreakImpulse;
+  impl_->physicsUniforms.collisionRadius = 0.008f;
+  impl_->physicsUniforms.collisionsOn = impl_->collisionsEnabled ? 1 : 0;
+  impl_->physicsUniforms.uncertaintyStrength = 1.0f;
   impl_->hasCompute = true;
 }
 
@@ -256,6 +395,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = R;
+  cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
@@ -293,6 +433,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
+  cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
@@ -305,17 +446,174 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     memcpy(uniformBuffer[frameIdx].contents, &physicsUniforms,
            sizeof(PhysicsUniforms));
 
-    id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
-    [comp setComputePipelineState:physicsPipeline];
-    [comp setBuffer:particleBuffer offset:0 atIndex:0];
-    [comp setBuffer:voiceBuffer[frameIdx] offset:0 atIndex:1];
-    [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
+    NSUInteger tgSize = 256;
 
-    NSUInteger tgSize = std::min((NSUInteger)256,
-                                 physicsPipeline.maxTotalThreadsPerThreadgroup);
-    [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
-    [comp endEncoding];
+    // ── Double-buffer: copy particles for collision reads ──────────
+    if (collisionsEnabled && particleBufferRead) {
+      id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+      [blit copyFromBuffer:particleBuffer
+                sourceOffset:0
+                    toBuffer:particleBufferRead
+           destinationOffset:0
+                        size:particleCount * sizeof(GPUParticle)];
+      [blit endEncoding];
+    }
+
+    // ── Spatial hash build (4 phases) ──────────────────────────────
+    if (collisionsEnabled && assignCellsPipeline && countCellsPipeline &&
+        prefixSumPipeline && scatterPipeline) {
+      // Upload spatial hash uniforms
+      SpatialHashUniforms su = {};
+      su.gridSize = kGridSize;
+      su.particleCount = particleCount;
+      su.cellSize = 2.0f / (float)kGridSize;
+      su.invCellSize = (float)kGridSize / 2.0f;
+      memcpy(spatialHashUniformBuffer.contents, &su,
+             sizeof(SpatialHashUniforms));
+
+      // Clear cell counts and offsets
+      id<MTLBlitCommandEncoder> clearBlit = [cmdBuf blitCommandEncoder];
+      [clearBlit fillBuffer:cellCountsBuffer
+                      range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
+                      value:0];
+      [clearBlit fillBuffer:cellOffsetsBuffer
+                      range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
+                      value:0];
+      [clearBlit endEncoding];
+
+      // Phase 1: assign_cells
+      {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:assignCellsPipeline];
+        [comp setBuffer:particleBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellIndicesBuffer offset:0 atIndex:1];
+        [comp setBuffer:particleIndicesBuffer offset:0 atIndex:2];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+        NSUInteger tg =
+            std::min(tgSize, assignCellsPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 2: count_cells (atomic)
+      {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:countCellsPipeline];
+        [comp setBuffer:cellIndicesBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        NSUInteger tg =
+            std::min(tgSize, countCellsPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 3: prefix sum (single thread serial scan)
+      {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:prefixSumPipeline];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        [comp dispatchThreads:MTLSizeMake(1, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 4: scatter to sorted order
+      {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:scatterPipeline];
+        [comp setBuffer:cellIndicesBuffer offset:0 atIndex:0];
+        [comp setBuffer:particleIndicesBuffer offset:0 atIndex:1];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:2];
+        [comp setBuffer:cellOffsetsBuffer offset:0 atIndex:3];
+        [comp setBuffer:sortedIndicesBuffer offset:0 atIndex:4];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:5];
+        NSUInteger tg =
+            std::min(tgSize, scatterPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+        [comp endEncoding];
+      }
+    }
+
+    // ── Density heatmap (compute from cell counts) ─────────────────
+    if (collisionsEnabled && densityPipeline && densityTexture) {
+      id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+      [comp setComputePipelineState:densityPipeline];
+      [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
+      [comp setTexture:densityTexture atIndex:0];
+      [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
+      NSUInteger tg = std::min(
+          (NSUInteger)16, densityPipeline.maxTotalThreadsPerThreadgroup);
+      [comp dispatchThreads:MTLSizeMake(kGridSize, kGridSize, 1)
+          threadsPerThreadgroup:MTLSizeMake(tg, tg, 1)];
+      [comp endEncoding];
+    }
+
+    // ── Physics kernel ─────────────────────────────────────────────
+    {
+      id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+      [comp setComputePipelineState:physicsPipeline];
+      [comp setBuffer:particleBuffer offset:0 atIndex:0];
+      [comp setBuffer:voiceBuffer[frameIdx] offset:0 atIndex:1];
+      [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
+
+      // Always bind collision buffers (shader checks u.collisionsOn)
+      if (particleBufferRead && sortedIndicesBuffer && cellStartsBuffer &&
+          cellCountsBuffer && spatialHashUniformBuffer) {
+        [comp setBuffer:particleBufferRead offset:0 atIndex:3];
+        [comp setBuffer:sortedIndicesBuffer offset:0 atIndex:4];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:5];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:6];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];
+      }
+
+      NSUInteger tg =
+          std::min(tgSize, physicsPipeline.maxTotalThreadsPerThreadgroup);
+      [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      [comp endEncoding];
+    }
+
+    // ── Stats reduction ────────────────────────────────────────────
+    if (reduceStatsPipeline && partialSumsBuffer) {
+      id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+      [comp setComputePipelineState:reduceStatsPipeline];
+      [comp setBuffer:particleBuffer offset:0 atIndex:0];
+      [comp setBuffer:partialSumsBuffer offset:0 atIndex:1];
+      [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
+
+      NSUInteger tg = std::min(
+          (NSUInteger)256, reduceStatsPipeline.maxTotalThreadsPerThreadgroup);
+      [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      [comp endEncoding];
+
+      // CPU-side final sum (from partial sums) — 1-frame latency is fine
+      // Schedule readback after commit completes
+      // For now, read previous frame's data synchronously
+      if (numThreadgroups > 0) {
+        struct PartialStats {
+          float ke, mx, my, pad;
+        };
+        const PartialStats *sums =
+            (const PartialStats *)partialSumsBuffer.contents;
+        float totalKE = 0, totalMX = 0, totalMY = 0;
+        for (int i = 0; i < numThreadgroups; i++) {
+          totalKE += sums[i].ke;
+          totalMX += sums[i].mx;
+          totalMY += sums[i].my;
+        }
+        latestStats.kineticEnergy = totalKE;
+        latestStats.momentumX = totalMX;
+        latestStats.momentumY = totalMY;
+        latestStats.collisionCount = 0;
+      }
+    }
 
     hasCompute = false;
   }
@@ -439,7 +737,17 @@ void Renderer::resize(int width, int height) {
   depthDesc.usage = MTLTextureUsageRenderTarget;
   impl_->depthTexture = [impl_->device newTextureWithDescriptor:depthDesc];
 
-  // ── Offscreen & Feedack textures for Post-FX ───────────────────────
+  // ── Offscreen texture: HDR (RGBA16Float) for physics-accurate lighting ──
+  MTLTextureDescriptor *hdrDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:width
+                                  height:height
+                               mipmapped:NO];
+  hdrDesc.storageMode = MTLStorageModePrivate;
+  hdrDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
+
+  // Feedback texture stays BGRA8 (post-tonemapped)
   MTLTextureDescriptor *colorDesc = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                    width:width
@@ -447,10 +755,16 @@ void Renderer::resize(int width, int height) {
                                mipmapped:NO];
   colorDesc.storageMode = MTLStorageModePrivate;
   colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-
-  impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:colorDesc];
   impl_->prevFrameTexture = [impl_->device newTextureWithDescriptor:colorDesc];
 }
+
+void Renderer::setCollisionsEnabled(bool enabled) {
+  impl_->collisionsEnabled = enabled;
+}
+
+bool Renderer::collisionsEnabled() const { return impl_->collisionsEnabled; }
+
+PhysicsStats Renderer::getPhysicsStats() const { return impl_->latestStats; }
 
 void Renderer::readbackParticles(GPUParticle *out, int count) {
   if (!impl_->particleBuffer)

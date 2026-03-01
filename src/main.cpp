@@ -155,6 +155,8 @@ int main() {
   static bool uiOrthoMode = true;  // Use Orthographic projection
   static float uiAttack = 20.0f;   // ms
   static float uiRelease = 400.0f; // ms
+  static bool uiCollisions = false; // Particle-particle collisions
+  static bool uiPhaseViz = false;   // Feynman phase arrow coloring
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -351,6 +353,14 @@ int main() {
         }
         ImGui::SetItemTooltip("Project particles onto a 3D spherical shell");
 
+        if (ImGui::Checkbox("Collisions", &uiCollisions)) {
+          renderer.setCollisionsEnabled(uiCollisions);
+        }
+        ImGui::SetItemTooltip("Enable particle-particle elastic collisions");
+
+        ImGui::Checkbox("Phase Viz", &uiPhaseViz);
+        ImGui::SetItemTooltip("Color particles by Feynman phase (action integral)");
+
         ImGui::Checkbox("Ortho Camera", &uiOrthoMode);
         ImGui::SetItemTooltip(
             "Toggle between Orthographic (HTML vibe) and Perspective");
@@ -473,17 +483,30 @@ int main() {
         ImGui::Unindent();
       }
 
+      if (ImGui::CollapsingHeader("PHYSICS STATS")) {
+        ImGui::Indent();
+        auto stats = renderer.getPhysicsStats();
+        ImGui::Text("Kinetic Energy: %.4f", stats.kineticEnergy);
+        ImGui::Text("Momentum: (%.4f, %.4f)", stats.momentumX, stats.momentumY);
+        float momentumMag = sqrtf(stats.momentumX * stats.momentumX +
+                                  stats.momentumY * stats.momentumY);
+        ImGui::Text("  |p| = %.6f", momentumMag);
+        ImGui::Unindent();
+      }
+
       ImGui::Spacing();
       ImGui::Separator();
-      ImGui::TextDisabled("FPS: %.1f | Particles: %dk",
+      ImGui::TextDisabled("FPS: %.1f | Particles: %dk%s",
                           ImGui::GetIO().Framerate,
-                          renderer.particleCount() / 1000);
+                          renderer.particleCount() / 1000,
+                          uiCollisions ? " | COLL" : "");
       ImGui::End();
     }
 
     config.particleSize = uiParticleSize;
     config.cameraRho = camera.getRho();
     config.orthoMode = uiOrthoMode;
+    config.phaseViz = uiPhaseViz;
 
     // ── Update ADSR ────────────────────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;

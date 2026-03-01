@@ -20,6 +20,7 @@ struct RenderConfig {
   float modeP = 1.0f; // Depth Mode multiplier
   float cameraRho = 800.0f;
   bool orthoMode = true;
+  bool phaseViz = false;
 };
 
 // Matches postfx.metal struct
@@ -38,7 +39,8 @@ struct CameraUniforms {
   float cameraPad; // Explicit padding for 16-byte alignment (Metal float3)
   float particleSize;
   float plateRadius;
-  float padding[2]; // Reduced padding to keep total size consistent if needed
+  float phaseViz;    // 1.0 = phase coloring, 0.0 = default
+  float padding[1];
 };
 
 // Voice data for GPU compute
@@ -64,7 +66,27 @@ struct PhysicsUniforms {
   float modeP; // Depth Mode multiplier
   int simMode;
   int sphereMode;
-  float padding[1];
+  uint32_t frameCounter;       // For temporal noise
+  float symmetryBreakImpulse;  // >0 on mode change (Noether)
+  float collisionRadius;       // Interaction radius for collisions
+  int collisionsOn;             // 1 = collisions enabled
+  float uncertaintyStrength;    // Heisenberg noise scale
+};
+
+// Spatial hash uniforms for collision grid
+struct SpatialHashUniforms {
+  int gridSize;       // 256
+  int particleCount;
+  float cellSize;     // 2.0 / gridSize
+  float invCellSize;  // gridSize / 2.0
+};
+
+// Stats readback from GPU (conservation laws)
+struct PhysicsStats {
+  float kineticEnergy;
+  float momentumX;
+  float momentumY;
+  int collisionCount;
 };
 
 class Renderer {
@@ -94,6 +116,13 @@ public:
 
   // Read back particle positions from GPU buffer (for CPU-side access)
   void readbackParticles(GPUParticle *out, int count);
+
+  // Collision system
+  void setCollisionsEnabled(bool enabled);
+  bool collisionsEnabled() const;
+
+  // Physics stats (1-frame latency)
+  PhysicsStats getPhysicsStats() const;
 
   // Camera helpers
   static void orthoMatrix(float *out, float left, float right, float bottom,

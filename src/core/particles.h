@@ -32,9 +32,10 @@ private:
 };
 
 // Packed struct for GPU upload — position + velocity as float4 pairs
+// posW.w = mass, velW.w = phase (Feynman action accumulator)
 struct alignas(16) GPUParticle {
-    float x, y, z, pad0;
-    float vx, vy, vz, pad1;
+    float x, y, z, mass;
+    float vx, vy, vz, phase;
 };
 
 // Convert CPU particles to GPU buffer format

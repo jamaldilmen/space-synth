@@ -1,8 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// ── Post-processing: bloom, chromatic aberration, trails ────────────────────
-// Ported from SOUND ARCHITECT.html GLSL post-processing
+// ── Post-processing: HDR tonemap, bloom, chromatic aberration, trails ───────
 
 struct PostFXUniforms {
     float2 resolution;
@@ -17,8 +16,17 @@ struct PostVertexOut {
     float2 uv;
 };
 
+// ACES filmic tonemapping (approximation by Krzysztof Narkowicz)
+static float3 acesTonemap(float3 x) {
+    float a = 2.51f;
+    float b = 0.03f;
+    float c = 2.43f;
+    float d = 0.59f;
+    float e = 0.14f;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
 vertex PostVertexOut postfx_vertex(uint vertexId [[vertex_id]]) {
-    // Full-screen triangle
     PostVertexOut out;
     float2 pos;
     pos.x = (vertexId == 1) ? 3.0 : -1.0;
@@ -73,6 +81,9 @@ fragment float4 postfx_fragment(
         bloom /= 13.0;
         color.rgb += bloom.rgb * u.bloomIntensity * 2.0;
     }
+
+    // ── ACES Tonemapping (HDR → SDR) ────────────────────────────────────
+    color.rgb = acesTonemap(color.rgb);
 
     // ── Motion blur / trails: blend with previous frame ─────────────────
     if (u.trailDecay > 0.0) {

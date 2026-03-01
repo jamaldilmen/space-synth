@@ -18,11 +18,16 @@ float Voice::tick(float sampleRate) {
   if (amp < 0.0001f)
     return 0.0f;
 
-  // Filter Modulation: Cutoff sweeps based on envelope
-  // Base cutoff 200Hz, sweeps up to 6000Hz based on envelope amplitude
-  float cutoff = 200.0f + (amp * 5800.0f);
-  // Optional: add velocity tracking here later
-  filter.set(cutoff, 0.3f); // 0.3 resonance (mild peak)
+  // Filter Modulation: Keytracking and Envelope Sweep
+  // Base cutoff tracks the fundamental pitch (Moog/Diva style)
+  float baseCutoff = std::max(50.0f, frequency * 0.8f);
+
+  // Envelope sweep amount scales with pitch as well
+  float sweepAmount = 3000.0f + (frequency * 2.5f);
+  float cutoff = baseCutoff + (amp * sweepAmount);
+
+  // Set filter with slightly higher resonance for that "brassiness"
+  filter.set(cutoff, 0.45f);
 
   float sample = 0.0f;
   switch (waveform) {
@@ -46,12 +51,16 @@ float Voice::tick(float sampleRate) {
   if (phase >= TWO_PI)
     phase -= TWO_PI;
 
-  // Breathy Noise Layer: only during attack/decay (when envelope is high)
-  // Adds analog instability
-  float noise = ((rand() % 1000) / 1000.0f - 0.5f) * 0.1f * amp;
+  // Breathy Noise Layer: Scales with frequency (higher notes = more 'air')
+  float noiseAmount = 0.05f * amp * (1.0f + frequency / 500.0f);
+  float noise = ((rand() % 1000) / 1000.0f - 0.5f) * noiseAmount;
+
+  // Diva Vibes: Pre-filter analog saturation (drive)
+  // Hit the filter "hot" to get that thick brassy tone
+  float saturatedSample = std::tanh(sample * 1.5f);
 
   // Pass through Resonant Lowpass Filter
-  float filtered = filter.process(sample + noise);
+  float filtered = filter.process(saturatedSample + noise);
 
   return filtered * amp;
 }

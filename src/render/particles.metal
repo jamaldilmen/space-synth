@@ -117,7 +117,6 @@ kernel void compute_physics(
     float PE = 0.0f;
 
     if (u.voiceCount > 0) {
-        float polyNorm = 1.0f / sqrt(float(u.voiceCount));
         float fxTotal = 0.0f, fyTotal = 0.0f, fzTotal = 0.0f;
         float jitterTotal = 0.0f;
 
@@ -126,7 +125,7 @@ kernel void compute_physics(
             float alpha = voices[vi].alpha;
             float amp = voices[vi].amplitude;
 
-            float w = min(amp, 1.0f) * 27.0f * polyNorm;
+            float w = amp * 20.0f; // Additive blending — no polyNorm squash
 
             float alpha_r = alpha * r;
             float jm = besselJ(voices[vi].m, alpha_r);
@@ -145,9 +144,9 @@ kernel void compute_physics(
 
             float dP_dr = 2.0f * jm * jm_prime * alpha * cos_p * cos_p;
 
-            if (r > 0.85f) {
+            if (r > 0.85f && u.totalAmplitude > 0.1f) {
                 float t = (r - 0.85f) / 0.13f;
-                dP_dr += (0.5f * 3.0f / 0.13f) * t * t;
+                dP_dr += (0.5f * 3.0f / 0.13f) * t * t * min(u.totalAmplitude, 1.0f);
             }
 
             float dP_dth = -m_f * jm * jm * sin(2.0f * phaseAngle);
@@ -265,17 +264,21 @@ kernel void compute_physics(
         }
     }
 
-    // 3D Spherical Retraction Pull
+    // 3D Spherical Retraction Pull — collapses to center when silent
     float R = 400.0f;
     float rx = px;
     float ry = py;
     float rz = pz / R;
     float rMag = sqrt(rx * rx + ry * ry + rz * rz);
 
-    float retractPull = (1.0f - u.totalAmplitude) * 15.0f * u.retractionPull;
+    float fadeAmplitude = min(u.totalAmplitude, 1.0f);
+    float retractPull = (1.0f - fadeAmplitude) * 15.0f * u.retractionPull;
     if (rMag > 0.001f) {
-        float targetR = (u.sphereMode == 1) ? 0.75f : 0.35f;
+        // Blend target: shell when playing, center when silent
+        float shellR = (u.sphereMode == 1) ? 0.75f : 0.35f;
+        float targetR = shellR * fadeAmplitude; // → 0 as sound dies
         float pullMultiplier = (u.sphereMode == 1) ? 2.0f : 1.0f;
+        pullMultiplier *= (1.0f + (1.0f - fadeAmplitude) * 3.0f); // Up to 4x toward center
         float pull = (rMag - targetR) * retractPull * pullMultiplier;
         vx -= (rx / rMag) * pull * u.dt;
         vy -= (ry / rMag) * pull * u.dt;

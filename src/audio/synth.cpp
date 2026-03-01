@@ -99,7 +99,7 @@ float Synth::totalAmplitude() const {
   for (const auto &[_, voice] : voices_) {
     total += voice.envelope.amplitude;
   }
-  return std::min(1.5f, total);
+  return std::min(4.0f, total); // Allow full polyphonic amplitude through
 }
 
 int Synth::activeVoiceCount() const {

@@ -503,6 +503,160 @@ int main() {
       ImGui::Unindent();
     }
 
+    // ── AUTOMATED TEST SEQUENCER ─────────────────────────────────
+    if (ImGui::CollapsingHeader("TEST SEQUENCER")) {
+      ImGui::Indent();
+
+      // Sequencer state
+      struct SeqNote {
+        int midi;
+        float startTime;
+        float duration;
+      };
+      struct SeqPreset {
+        const char *name;
+        std::vector<SeqNote> notes;
+      };
+
+      static bool seqRunning = false;
+      static float seqTime = 0.0f;
+      static int seqPresetIdx = -1;
+      static std::vector<SeqNote> seqNotes;
+      static std::vector<bool> seqNoteOn;
+      static float seqFpsAccum = 0.0f;
+      static int seqFpsCount = 0;
+      static float seqMaxVel = 0.0f;
+      static float seqLogTimer = 0.0f;
+
+      // Define preset chord sequences (MIDI notes, base octave 4)
+      // C4=60, E4=64, G4=67, Bb4=70, C5=72
+      auto firePreset = [&](const char *name, std::vector<SeqNote> notes) {
+        // Stop any current sequence
+        for (size_t i = 0; seqRunning && i < seqNotes.size(); i++) {
+          if (seqNoteOn[i])
+            synth.noteOff(seqNotes[i].midi);
+        }
+        seqNotes = notes;
+        seqNoteOn.assign(notes.size(), false);
+        seqTime = 0.0f;
+        seqRunning = true;
+        seqFpsAccum = 0.0f;
+        seqFpsCount = 0;
+        seqMaxVel = 0.0f;
+        seqLogTimer = 0.0f;
+        printf("[SEQ] Start: %s (%d notes)\n", name, (int)notes.size());
+      };
+
+      if (ImGui::Button("C Major", ImVec2(75, 0))) {
+        firePreset("C Major", {
+                                  {60, 0.0f, 2.0f}, // C4
+                                  {64, 0.0f, 2.0f}, // E4
+                                  {67, 0.0f, 2.0f}, // G4
+                              });
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cm7", ImVec2(55, 0))) {
+        firePreset("Cm7", {
+                              {60, 0.0f, 2.0f}, // C4
+                              {63, 0.0f, 2.0f}, // Eb4
+                              {67, 0.0f, 2.0f}, // G4
+                              {70, 0.0f, 2.0f}, // Bb4
+                          });
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("5th", ImVec2(45, 0))) {
+        firePreset("Power 5th", {
+                                    {48, 0.0f, 2.0f}, // C3
+                                    {55, 0.0f, 2.0f}, // G3
+                                });
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Run", ImVec2(45, 0))) {
+        firePreset("Chromatic Run", {
+                                        {60, 0.0f, 0.4f},
+                                        {61, 0.3f, 0.4f},
+                                        {62, 0.6f, 0.4f},
+                                        {63, 0.9f, 0.4f},
+                                        {64, 1.2f, 0.4f},
+                                        {65, 1.5f, 0.4f},
+                                        {66, 1.8f, 0.4f},
+                                        {67, 2.1f, 0.4f},
+                                    });
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Stop", ImVec2(45, 0)) && seqRunning) {
+        for (size_t i = 0; i < seqNotes.size(); i++) {
+          if (seqNoteOn[i])
+            synth.noteOff(seqNotes[i].midi);
+        }
+        seqRunning = false;
+        printf("[SEQ] Stopped\n");
+      }
+
+      // Run sequencer logic
+      if (seqRunning) {
+        seqTime += dt;
+        float maxEndTime = 0.0f;
+
+        for (size_t i = 0; i < seqNotes.size(); i++) {
+          auto &n = seqNotes[i];
+          float endTime = n.startTime + n.duration;
+          maxEndTime = std::max(maxEndTime, endTime);
+
+          if (!seqNoteOn[i] && seqTime >= n.startTime) {
+            synth.noteOn(n.midi);
+            seqNoteOn[i] = true;
+            printf("[SEQ] noteOn midi=%d t=%.2f\n", n.midi, seqTime);
+          }
+          if (seqNoteOn[i] && seqTime >= endTime) {
+            synth.noteOff(n.midi);
+            seqNoteOn[i] = false;
+            printf("[SEQ] noteOff midi=%d t=%.2f\n", n.midi, seqTime);
+          }
+        }
+
+        // Data collection
+        seqFpsAccum += 1.0f / std::max(0.001f, dt);
+        seqFpsCount++;
+        seqLogTimer += dt;
+
+        // Log stats every 0.5 seconds
+        if (seqLogTimer >= 0.5f) {
+          float avgFps = seqFpsAccum / std::max(1, seqFpsCount);
+          auto stats = renderer.getPhysicsStats();
+          printf("[SEQ-DATA] t=%.1f fps=%.0f voices=%d amp=%.2f "
+                 "KE=%.4f |p|=%.4f\n",
+                 seqTime, avgFps, synth.activeVoiceCount(),
+                 synth.totalAmplitude(), stats.kineticEnergy,
+                 sqrtf(stats.momentumX * stats.momentumX +
+                       stats.momentumY * stats.momentumY));
+          seqFpsAccum = 0;
+          seqFpsCount = 0;
+          seqLogTimer = 0;
+        }
+
+        // Auto-stop after all notes finished + 3s settle time
+        if (seqTime > maxEndTime + 3.0f) {
+          seqRunning = false;
+          printf("[SEQ] Finished (%.1fs total)\n", seqTime);
+        }
+      }
+
+      // Status display
+      if (seqRunning) {
+        int activeNotes = 0;
+        for (auto on : seqNoteOn)
+          if (on)
+            activeNotes++;
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                           "RUNNING t=%.1fs notes=%d", seqTime, activeNotes);
+      } else {
+        ImGui::TextDisabled("Idle — pick a chord");
+      }
+
+      ImGui::Unindent();
+    }
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextDisabled(

@@ -1,6 +1,6 @@
-#pragma once
 #include "../core/envelope.h"
 #include "../core/modes.h"
+#include "svf.h"
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -17,9 +17,13 @@ struct Voice {
   float frequency = 0.0f;
   Waveform waveform = Waveform::Sine;
   Envelope envelope;
+  SVF filter;
   const Mode *mode = nullptr; // Points into ModeTable
 
   float phase = 0.0f; // Oscillator phase [0, 2π)
+
+  // Initialize filter state
+  void init(float sampleRate);
 
   // Generate one sample and advance phase
   float tick(float sampleRate);

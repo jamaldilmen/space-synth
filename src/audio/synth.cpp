@@ -8,10 +8,21 @@ namespace space {
 
 static constexpr float TWO_PI = 2.0f * M_PI;
 
+void Voice::init(float sampleRate) {
+  filter.setSampleRate(sampleRate);
+  filter.reset();
+}
+
 float Voice::tick(float sampleRate) {
   float amp = envelope.amplitude;
   if (amp < 0.0001f)
     return 0.0f;
+
+  // Filter Modulation: Cutoff sweeps based on envelope
+  // Base cutoff 200Hz, sweeps up to 6000Hz based on envelope amplitude
+  float cutoff = 200.0f + (amp * 5800.0f);
+  // Optional: add velocity tracking here later
+  filter.set(cutoff, 0.3f); // 0.3 resonance (mild peak)
 
   float sample = 0.0f;
   switch (waveform) {
@@ -35,7 +46,14 @@ float Voice::tick(float sampleRate) {
   if (phase >= TWO_PI)
     phase -= TWO_PI;
 
-  return sample * amp;
+  // Breathy Noise Layer: only during attack/decay (when envelope is high)
+  // Adds analog instability
+  float noise = ((rand() % 1000) / 1000.0f - 0.5f) * 0.1f * amp;
+
+  // Pass through Resonant Lowpass Filter
+  float filtered = filter.process(sample + noise);
+
+  return filtered * amp;
 }
 
 Synth::Synth() {}
@@ -46,7 +64,9 @@ float Synth::tick(float sampleRate) {
   for (auto &[midi, voice] : voices_) {
     mixed += voice.tick(sampleRate);
   }
-  return mixed * 0.3f; // MATCH HTML MASTER GAIN
+  // Apply soft clipper (tanh limiter) before output
+  float limited = std::tanh(mixed * 0.4f); // 0.4f gain staging
+  return limited * 0.8f;                   // Headroom buffer
 }
 
 void Synth::noteOn(int midi, float velocity) {
@@ -64,6 +84,7 @@ void Synth::noteOn(int midi, float velocity) {
   v.waveform = waveform_;
   v.envelope.noteOn(velocity);
   v.mode = &modeTable_.modeForMidi(midi, keyboardMode_, keyboardStart());
+  v.init(48000.0f); // hardcoded for now, should match audio engine
 
   voices_[midi] = v;
 }

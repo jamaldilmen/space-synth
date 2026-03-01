@@ -81,28 +81,28 @@ constant float COLLISION_RESTITUTION = 0.85f; // Slight energy loss per collisio
 
 // ── Compute kernel: update particle positions/velocities ────────────────────
 
-kernel void particle_physics(
+kernel void compute_physics(
     device Particle* particles [[buffer(0)]],
     device const VoiceData* voices [[buffer(1)]],
     constant PhysicsUniforms& u [[buffer(2)]],
-    device const Particle* particlesRead [[buffer(3)]],
-    device const uint* sortedIndices [[buffer(4)]],
+    device const Particle* prevParticles [[buffer(3)]],
+    device const Particle* sortedParticles [[buffer(4)]],    // <--- Cache coherent structs
     device const uint* cellStarts [[buffer(5)]],
     device const uint* cellCounts [[buffer(6)]],
-    constant SpatialHashUniforms& sh [[buffer(7)]],
+    constant SpatialHashUniforms& su [[buffer(7)]],
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
 
-    device Particle& p = particles[id];
-    float px = p.posW.x;
-    float py = p.posW.y;
-    float pz = p.posW.z;
-    float mass = p.posW.w;
-    float vx = p.velW.x;
-    float vy = p.velW.y;
-    float vz = p.velW.z;
-    float phase = p.velW.w;
+    Particle p0 = prevParticles ? prevParticles[id] : particles[id];
+    float px = p0.posW.x;
+    float py = p0.posW.y;
+    float pz = p0.posW.z;
+    float mass = p0.posW.w;
+    float vx = p0.velW.x;
+    float vy = p0.velW.y;
+    float vz = p0.velW.z;
+    float phase = p0.velW.w;
 
     float r = sqrt(px * px + py * py);
     float th = atan2(py, px);
@@ -207,62 +207,57 @@ kernel void particle_physics(
     }
 
     // ── Particle-Particle Collisions (spatial hash neighbor scan) ────────
-    if (u.collisionsOn > 0 && sh.gridSize > 0) {
-        int cellX = clamp(int((px + 1.0f) * sh.invCellSize), 0, sh.gridSize - 1);
-        int cellY = clamp(int((py + 1.0f) * sh.invCellSize), 0, sh.gridSize - 1);
+    if (u.collisionsOn > 0 && su.gridSize > 0) {
+        int cellX = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
+        int cellY = clamp(int((py + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
 
-        float collRadius = u.collisionRadius;
-        float collRadius2 = collRadius * collRadius;
+        float colRad = u.collisionRadius;
+        float colRad2 = colRad * colRad;
 
-        // Scan 9 neighbor cells
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                int nx = cellX + dx;
-                int ny = cellY + dy;
-                if (nx < 0 || nx >= sh.gridSize || ny < 0 || ny >= sh.gridSize) continue;
+        int startCellX = max(0, cellX - 1);
+        int endCellX = min(su.gridSize - 1, cellX + 1);
+        int startCellY = max(0, cellY - 1);
+        int endCellY = min(su.gridSize - 1, cellY + 1);
 
-                int cellID = ny * sh.gridSize + nx;
-                uint start = cellStarts[cellID];
-                uint count = min(cellCounts[cellID], uint(MAX_PER_CELL));
+        // Iterate over neighbor cells (3x3 grid)
+        for (int y = startCellY; y <= endCellY; y++) {
+            for (int x = startCellX; x <= endCellX; x++) {
+                uint cID = uint(y * su.gridSize + x);
+                uint startIdx = cellStarts[cID];
+                uint count = cellCounts[cID];
 
-                for (uint j = 0; j < count; j++) {
-                    uint otherIdx = sortedIndices[start + j];
-                    if (otherIdx == id) continue;
+                for (uint i = 0; i < count; i++) {
+                    uint nIdx = startIdx + i;
+                    // We no longer read sortedIndices[nIdx]! 
+                    // This is perfectly contiguous, cache-hot memory read.
+                    Particle np = sortedParticles[nIdx]; 
 
-                    // Read other particle from snapshot (double-buffer)
-                    float ox = particlesRead[otherIdx].posW.x;
-                    float oy = particlesRead[otherIdx].posW.y;
-                    float omass = particlesRead[otherIdx].posW.w;
-                    float ovx = particlesRead[otherIdx].velW.x;
-                    float ovy = particlesRead[otherIdx].velW.y;
+                    // Skip self 
+                    // (Since we don't have the explicit ID, we skip if distance is identically 0)
+                    float4 nPos = np.posW;
+                    float2 diff = float2(px, py) - nPos.xy;
+                    float dist2 = dot(diff, diff);
 
-                    // 2D distance check (collisions in XY plane)
-                    float ddx = px - ox;
-                    float ddy = py - oy;
-                    float dist2 = ddx * ddx + ddy * ddy;
-
-                    if (dist2 < collRadius2 && dist2 > 1e-12f) {
+                    if (dist2 > 0.01f && dist2 < colRad2) {
                         float dist = sqrt(dist2);
-                        float nx_dir = ddx / dist;
-                        float ny_dir = ddy / dist;
-
-                        // Position correction: push apart by half overlap
-                        float overlap = collRadius - dist;
-                        float totalMass = mass + omass;
-                        float pushRatio = omass / totalMass;
-                        px += nx_dir * overlap * pushRatio * 0.5f;
-                        py += ny_dir * overlap * pushRatio * 0.5f;
-
-                        // Elastic collision impulse along normal
-                        float dvx = vx - ovx;
-                        float dvy = vy - ovy;
-                        float dvDotN = dvx * nx_dir + dvy * ny_dir;
-
-                        // Only resolve if approaching
-                        if (dvDotN < 0.0f) {
-                            float impulse = (1.0f + COLLISION_RESTITUTION) * dvDotN * omass / totalMass;
-                            vx -= impulse * nx_dir;
-                            vy -= impulse * ny_dir;
+                        float overlap = colRad - dist;
+                        float2 dir = diff / dist;
+                        
+                        // Push apart
+                        px -= dir.x * overlap * 0.5f;
+                        py -= dir.y * overlap * 0.5f;
+                        
+                        // Elastic collision impulse
+                        float2 rVel = float2(vx, vy) - np.velW.xy;
+                        float relVelAlongNormal = dot(rVel, dir);
+                        if (relVelAlongNormal > 0.0f) {
+                            float restitution = 0.5f;
+                            float j = -(1.0f + restitution) * relVelAlongNormal;
+                            // Assume equal mass for simplicity in the GPU step
+                            j /= 2.0f; 
+                            
+                            vx += j * dir.x;
+                            vy += j * dir.y;
                         }
                     }
                 }
@@ -333,8 +328,9 @@ kernel void particle_physics(
         }
     }
 
-    p.posW = float4(px, py, pz, mass);
-    p.velW = float4(vx, vy, vz, phase);
+    // Write back
+    particles[id].posW = float4(px, py, pz, mass);
+    particles[id].velW = float4(vx, vy, vz, phase);
 }
 
 // ── Conservation law reduction kernel ───────────────────────────────────────

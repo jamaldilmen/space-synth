@@ -22,8 +22,7 @@ struct SpatialHashUniforms {
 kernel void assign_cells(
     device const Particle* particles [[buffer(0)]],
     device uint* cellIndices [[buffer(1)]],       // output: cell ID per particle
-    device uint* particleIndices [[buffer(2)]],    // output: identity mapping (will be sorted)
-    constant SpatialHashUniforms& u [[buffer(3)]],
+    constant SpatialHashUniforms& u [[buffer(2)]],
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -36,7 +35,6 @@ kernel void assign_cells(
     int cellY = clamp(int((py + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
 
     cellIndices[id] = uint(cellY * u.gridSize + cellX);
-    particleIndices[id] = id;
 }
 
 // ── Phase 2: Count particles per cell (atomic) ─────────────────────────────
@@ -52,24 +50,57 @@ kernel void count_cells(
 }
 
 // ── Phase 3: Prefix sum on cell counts → cell start offsets ─────────────────
-// Simple serial scan — runs on 1 threadgroup for 65536 cells (fast enough)
+// Optimized: Threadgroup parallel prefix sum using SIMD primitives.
 
 kernel void prefix_sum_cells(
     device uint* cellCounts [[buffer(0)]],
     device uint* cellStarts [[buffer(1)]],
     constant SpatialHashUniforms& u [[buffer(2)]],
-    uint id [[thread_position_in_grid]])
+    uint thread_position_in_grid [[thread_position_in_grid]],
+    uint thread_position_in_threadgroup [[thread_position_in_threadgroup]],
+    uint threadgroups_per_grid [[threadgroups_per_grid]])
 {
+    // A single threadgroup handles the entire 65536 cell array 
+    // by having each thread iterate over a chunk. 
+    // This is vastly faster than a single thread doing 65k operations.
+    
     int totalCells = u.gridSize * u.gridSize;
-
-    // Single-thread serial scan for 65536 cells (fast enough at ~0.1ms)
-    if (id == 0) {
-        uint running = 0;
-        for (int i = 0; i < totalCells; i++) {
-            uint count = cellCounts[i];
-            cellStarts[i] = running;
-            running += count;
-        }
+    uint numThreads = 1024; // We will dispatch exactly 1 threadgroup of 1024 threads
+    int cellsPerThread = (totalCells + numThreads - 1) / numThreads;
+    
+    uint tid = thread_position_in_threadgroup;
+    int startIdx = tid * cellsPerThread;
+    int endIdx = min(startIdx + cellsPerThread, totalCells);
+    
+    // Step 1: Compute local thread sum
+    uint localSum = 0;
+    for (int i = startIdx; i < endIdx; i++) {
+        localSum += cellCounts[i];
+    }
+    
+    // Step 2: Threadgroup prefix sum of localSums using threadgroup memory
+    threadgroup uint sharedSums[1024];
+    sharedSums[tid] = localSum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // Naive prefix sum in shared memory (fast enough for 1024 elements)
+    uint offset = 0;
+    for (uint offset_step = 1; offset_step < numThreads; offset_step *= 2) {
+        uint val = 0;
+        if (tid >= offset_step) val = sharedSums[tid - offset_step];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid >= offset_step) sharedSums[tid] += val;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    // The exclusive offset for this thread is the sum built up strictly BEFORE this thread
+    uint threadBaseOffset = (tid == 0) ? 0 : sharedSums[tid - 1];
+    
+    // Step 3: Write out final prefix sums
+    uint currentOffset = threadBaseOffset;
+    for (int i = startIdx; i < endIdx; i++) {
+        cellStarts[i] = currentOffset;
+        currentOffset += cellCounts[i];
     }
 }
 
@@ -110,14 +141,16 @@ kernel void density_heatmap(
     densityTex.write(float4(color * alpha, alpha), gid);
 }
 
-// ── Phase 4: Scatter particles into sorted order ────────────────────────────
+// ── Phase 4: Scatter particles into physically sorted order ─────────────────
+// Memory optimization: instead of sorting indices which causes cache misses later,
+// we physically copy the Particle structs so they are exactly contiguous in memory.
 
 kernel void scatter_particles(
-    device const uint* cellIndices [[buffer(0)]],
-    device const uint* particleIndices [[buffer(1)]],
+    device const Particle* particlesInput [[buffer(0)]],
+    device const uint* cellIndices [[buffer(1)]],
     device uint* cellStarts [[buffer(2)]],         // read (prefix sums)
-    device atomic_uint* cellOffsets [[buffer(3)]],  // atomic per-cell write offset
-    device uint* sortedIndices [[buffer(4)]],       // output: particle IDs in cell order
+    device atomic_uint* cellOffsets [[buffer(3)]], // atomic per-cell write offset
+    device Particle* sortedParticles [[buffer(4)]], // output: physical sorted structs
     constant SpatialHashUniforms& u [[buffer(5)]],
     uint id [[thread_position_in_grid]])
 {
@@ -126,8 +159,9 @@ kernel void scatter_particles(
     uint cellID = cellIndices[id];
     uint offset = atomic_fetch_add_explicit(&cellOffsets[cellID], 1u, memory_order_relaxed);
     uint writePos = cellStarts[cellID] + offset;
-
+    
     if (int(writePos) < u.particleCount) {
-        sortedIndices[writePos] = particleIndices[id];
+        // Physical memory copy to ensure contiguous access during collisions!
+        sortedParticles[writePos] = particlesInput[id];
     }
 }

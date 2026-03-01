@@ -10,8 +10,12 @@
 namespace space {
 
 struct Renderer::Impl {
-  id<MTLDevice> device = nil;
-  id<MTLCommandQueue> commandQueue = nil;
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;        // For rendering
+  id<MTLCommandQueue> computeCommandQueue; // For async physics
+  id<MTLEvent> frameEvent;                 // Synchronization fence
+  uint64_t frameEventValue;                // Fence ticket
+
   id<MTLLibrary> library = nil;
 
   id<MTLComputePipelineState> physicsPipeline = nil;
@@ -33,12 +37,11 @@ struct Renderer::Impl {
   // Spatial hash buffers
   static const int kGridSize = 256;
   static const int kTotalCells = kGridSize * kGridSize; // 65536
-  id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
-  id<MTLBuffer> particleIndicesBuffer = nil; // identity map (unsorted)
-  id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
-  id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
+  id<MTLBuffer> cellIndicesBuffer = nil;                // cell ID per particle
+  id<MTLBuffer> cellCountsBuffer = nil;                 // count per cell
+  id<MTLBuffer> cellStartsBuffer = nil;                 // prefix sum offsets
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
-  id<MTLBuffer> sortedIndicesBuffer = nil;   // particle IDs in cell order
+  id<MTLBuffer> sortedParticlesBuffer = nil; // particle data in cell order
   id<MTLBuffer> spatialHashUniformBuffer = nil;
 
   // Stats readback (partial sums from GPU reduction)
@@ -97,6 +100,10 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   impl_->metalLayer.displaySyncEnabled = YES;
 
   impl_->commandQueue = [impl_->device newCommandQueue];
+  impl_->computeCommandQueue = [impl_->device newCommandQueue];
+  impl_->frameEvent = [impl_->device newEvent];
+  impl_->frameEventValue = 0;
+
   impl_->inFlightSemaphore =
       dispatch_semaphore_create(Impl::kMaxInFlightFrames);
   impl_->currentFrame = 0;
@@ -116,7 +123,7 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
 
   // ── Compute pipeline ────────────────────────────────────────────────
   id<MTLFunction> physicsFunc =
-      [impl_->library newFunctionWithName:@"particle_physics"];
+      [impl_->library newFunctionWithName:@"compute_physics"];
   if (physicsFunc) {
     impl_->physicsPipeline =
         [impl_->device newComputePipelineStateWithFunction:physicsFunc
@@ -138,7 +145,8 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       *spatialPipelines[i] =
           [impl_->device newComputePipelineStateWithFunction:fn error:&error];
       if (error)
-        NSLog(@"Spatial hash pipeline error (%s): %@", spatialKernels[i], error);
+        NSLog(@"Spatial hash pipeline error (%s): %@", spatialKernels[i],
+              error);
     } else {
       NSLog(@"Missing spatial hash kernel: %s", spatialKernels[i]);
     }
@@ -266,13 +274,11 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
 
   allocIfNeeded(impl_->particleBufferRead, size);
   allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
-  allocIfNeeded(impl_->particleIndicesBuffer, uintSize);
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   allocIfNeeded(impl_->cellOffsetsBuffer, cellSize);
-  allocIfNeeded(impl_->sortedIndicesBuffer, uintSize);
-  allocIfNeeded(impl_->spatialHashUniformBuffer,
-                sizeof(SpatialHashUniforms));
+  allocIfNeeded(impl_->sortedParticlesBuffer, size);
+  allocIfNeeded(impl_->spatialHashUniformBuffer, sizeof(SpatialHashUniforms));
 
   // Density heatmap texture (256x256 R/W)
   if (!impl_->densityTexture) {
@@ -283,15 +289,13 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
                                  mipmapped:NO];
     densDesc.storageMode = MTLStorageModePrivate;
     densDesc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
-    impl_->densityTexture =
-        [impl_->device newTextureWithDescriptor:densDesc];
+    impl_->densityTexture = [impl_->device newTextureWithDescriptor:densDesc];
   }
 
   // Partial sums buffer for reduction: 1 per threadgroup (800k/256 = 3125)
   impl_->numThreadgroups = (count + 255) / 256;
   // Each partial sum: 4 floats (KE, MX, MY, pad) = 16 bytes
-  allocIfNeeded(impl_->partialSumsBuffer,
-                impl_->numThreadgroups * 16);
+  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 16);
 }
 
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
@@ -371,15 +375,29 @@ void Renderer::render(const RenderConfig &config) {
     return;
   }
 
-  id<MTLCommandBuffer> cmdBuf = [impl_->commandQueue commandBuffer];
+  // 1. Create a dedicated Async Compute Command Buffer
+  id<MTLCommandBuffer> computeCmdBuf =
+      [impl_->computeCommandQueue commandBuffer];
+  impl_->runComputePass(computeCmdBuf, frameIdx);
+
+  // Signal an event when compute for this frame finishes
+  impl_->frameEventValue++;
+  uint64_t computeFinishedTicket = impl_->frameEventValue;
+  [computeCmdBuf encodeSignalEvent:impl_->frameEvent
+                             value:computeFinishedTicket];
+  [computeCmdBuf commit];
+
+  // 2. Create the standard Render Command Buffer
+  id<MTLCommandBuffer> renderCmdBuf = [impl_->commandQueue commandBuffer];
 
   __block dispatch_semaphore_t block_sema = impl_->inFlightSemaphore;
-  [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+  [renderCmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
     dispatch_semaphore_signal(block_sema);
   }];
 
-  // ── Compute pass (if physics update was staged) ─────────────────────
-  impl_->runComputePass(cmdBuf, frameIdx);
+  // Wait for compute to finish BEFORE we rasterize those exact particles
+  [renderCmdBuf encodeWaitForEvent:impl_->frameEvent
+                             value:computeFinishedTicket];
 
   // ── Camera ──────────────────────────────────────────────────────────
   float R = config.plateRadius;
@@ -399,7 +417,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
-  impl_->renderWithCamera(drawable, cmdBuf, frameIdx, config);
+  impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
 }
 
 void Renderer::render(const RenderConfig &config, const float *viewProj) {
@@ -415,21 +433,32 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     return;
   }
 
-  id<MTLCommandBuffer> cmdBuf = [impl_->commandQueue commandBuffer];
+  // 1. Async Compute Pass
+  id<MTLCommandBuffer> computeCmdBuf =
+      [impl_->computeCommandQueue commandBuffer];
+  impl_->runComputePass(computeCmdBuf, frameIdx);
+
+  impl_->frameEventValue++;
+  uint64_t computeFinishedTicket = impl_->frameEventValue;
+  [computeCmdBuf encodeSignalEvent:impl_->frameEvent
+                             value:computeFinishedTicket];
+  [computeCmdBuf commit];
+
+  // 2. Render Pass
+  id<MTLCommandBuffer> renderCmdBuf = [impl_->commandQueue commandBuffer];
 
   __block dispatch_semaphore_t block_sema = impl_->inFlightSemaphore;
-  [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+  [renderCmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
     dispatch_semaphore_signal(block_sema);
   }];
 
-  // ── Compute pass (if physics update was staged) ─────────────────────
-  impl_->runComputePass(cmdBuf, frameIdx);
+  // Wait for compute
+  [renderCmdBuf encodeWaitForEvent:impl_->frameEvent
+                             value:computeFinishedTicket];
 
   // ── Camera ──────────────────────────────────────────────────────────
   CameraUniforms cam = {};
   memcpy(cam.viewProj, viewProj, 16 * sizeof(float));
-  // We don't have cameraPos here easily, but vertex shader mostly uses
-  // viewProj
   cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
@@ -437,7 +466,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
-  impl_->renderWithCamera(drawable, cmdBuf, frameIdx, config);
+  impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
 }
 
 // Internal helper for compute
@@ -452,10 +481,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     if (collisionsEnabled && particleBufferRead) {
       id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
       [blit copyFromBuffer:particleBuffer
-                sourceOffset:0
-                    toBuffer:particleBufferRead
-           destinationOffset:0
-                        size:particleCount * sizeof(GPUParticle)];
+               sourceOffset:0
+                   toBuffer:particleBufferRead
+          destinationOffset:0
+                       size:particleCount * sizeof(GPUParticle)];
       [blit endEncoding];
     }
 
@@ -485,10 +514,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:assignCellsPipeline];
-        [comp setBuffer:particleBuffer offset:0 atIndex:0];
+        [comp setBuffer:particleBufferRead offset:0 atIndex:0];
         [comp setBuffer:cellIndicesBuffer offset:0 atIndex:1];
-        [comp setBuffer:particleIndicesBuffer offset:0 atIndex:2];
-        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
         NSUInteger tg =
             std::min(tgSize, assignCellsPipeline.maxTotalThreadsPerThreadgroup);
         [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
@@ -510,15 +538,19 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
-      // Phase 3: prefix sum (single thread serial scan)
+      // Phase 3: prefix sum (1024-thread parallel SIMD scan)
       {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:prefixSumPipeline];
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
         [comp setBuffer:cellStartsBuffer offset:0 atIndex:1];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
-        [comp dispatchThreads:MTLSizeMake(1, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+
+        // Dispatch exactly 1 threadgroup of 1024 threads
+        NSUInteger tg = std::min(
+            (NSUInteger)1024, prefixSumPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
         [comp endEncoding];
       }
 
@@ -526,11 +558,15 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:scatterPipeline];
-        [comp setBuffer:cellIndicesBuffer offset:0 atIndex:0];
-        [comp setBuffer:particleIndicesBuffer offset:0 atIndex:1];
+        [comp setBuffer:particleBufferRead
+                 offset:0
+                atIndex:0]; // input snapshot
+        [comp setBuffer:cellIndicesBuffer offset:0 atIndex:1];
         [comp setBuffer:cellStartsBuffer offset:0 atIndex:2];
         [comp setBuffer:cellOffsetsBuffer offset:0 atIndex:3];
-        [comp setBuffer:sortedIndicesBuffer offset:0 atIndex:4];
+        [comp setBuffer:sortedParticlesBuffer
+                 offset:0
+                atIndex:4]; // output physically sorted
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:5];
         NSUInteger tg =
             std::min(tgSize, scatterPipeline.maxTotalThreadsPerThreadgroup);
@@ -547,8 +583,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
       [comp setTexture:densityTexture atIndex:0];
       [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
-      NSUInteger tg = std::min(
-          (NSUInteger)16, densityPipeline.maxTotalThreadsPerThreadgroup);
+      NSUInteger tg = std::min((NSUInteger)16,
+                               densityPipeline.maxTotalThreadsPerThreadgroup);
       [comp dispatchThreads:MTLSizeMake(kGridSize, kGridSize, 1)
           threadsPerThreadgroup:MTLSizeMake(tg, tg, 1)];
       [comp endEncoding];
@@ -563,10 +599,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
 
       // Always bind collision buffers (shader checks u.collisionsOn)
-      if (particleBufferRead && sortedIndicesBuffer && cellStartsBuffer &&
+      if (particleBufferRead && sortedParticlesBuffer && cellStartsBuffer &&
           cellCountsBuffer && spatialHashUniformBuffer) {
-        [comp setBuffer:particleBufferRead offset:0 atIndex:3];
-        [comp setBuffer:sortedIndicesBuffer offset:0 atIndex:4];
+        [comp
+            setBuffer:(collisionsEnabled ? particleBufferRead : particleBuffer)
+               offset:0
+              atIndex:3];
+        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:4];
         [comp setBuffer:cellStartsBuffer offset:0 atIndex:5];
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:6];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];

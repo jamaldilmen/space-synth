@@ -162,7 +162,7 @@ int main() {
   static float uiRetraction = 1.0f;
   static float uiWaveDepth = 140.0f; // matches plate scale correctly
 
-  static float uiSpeedCap = 1.2f;
+  // uiSpeedCap removed: driven by synth.drive() instead
   static float uiModeP = 1.0f;
   static int uiSimMode = 0;         // 0=Classic, 1=Vortex
   static int uiSphereMode = 1;      // 1=Sphere, 0=Flat
@@ -286,7 +286,7 @@ int main() {
             uiParticleSize = currentPreset.particleSize;
             uiJitter = currentPreset.jitterScale;
             uiDamping = currentPreset.damping;
-            uiSpeedCap = currentPreset.speedCap;
+            synth.setDrive(currentPreset.speedCap);
           }
           break;
         }
@@ -334,7 +334,7 @@ int main() {
                 uiParticleSize = currentPreset.particleSize;
                 uiJitter = currentPreset.jitterScale;
                 uiDamping = currentPreset.damping;
-                uiSpeedCap = currentPreset.speedCap;
+                synth.setDrive(currentPreset.speedCap);
               }
             }
             if (is_selected)
@@ -347,7 +347,7 @@ int main() {
           currentPreset.particleSize = uiParticleSize;
           currentPreset.jitterScale = uiJitter;
           currentPreset.damping = uiDamping;
-          currentPreset.speedCap = uiSpeedCap;
+          currentPreset.speedCap = synth.drive();
           PresetManager::savePreset(
               "../presets/" + presetFiles[selectedPresetIdx], currentPreset);
         }
@@ -396,10 +396,7 @@ int main() {
           uiParticleCount = 800000;
         ImGui::SetItemTooltip("Active number of particles");
 
-        ImGui::SliderFloat("Limit", &uiSpeedCap, 0.1f, 5.0f, "%.2f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiSpeedCap = 1.2f;
-        ImGui::SetItemTooltip("Maximum particle velocity cap");
+        // Limit / SpeedCap moved to Audio Synth (Analog Drive)
 
         ImGui::SliderFloat("ModeP", &uiModeP, 1.0f, 4.0f, "%.0f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -420,21 +417,32 @@ int main() {
         }
         ImGui::SetItemTooltip("Oscillator waveform type");
 
+        float drive = synth.drive();
+        if (ImGui::SliderFloat("Analog Drive", &drive, 1.0f, 5.0f, "%.2f")) {
+          synth.setDrive(drive);
+        }
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          synth.setDrive(1.6f);
+        ImGui::SetItemTooltip(
+            "Filter saturation and particle speed cap (1:1 Physics)");
+
+        ImGui::SliderFloat("Attack", &uiAttack, 5.0f, 500.0f, "%.0f ms");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiAttack = 20.0f;
+        ImGui::SetItemTooltip("Envelope attack duration");
+        synth.envelopeParams().attack = uiAttack / 1000.0f;
+
+        if (ImGui::SliderFloat("Release", &uiRelease, 50.0f, 2000.0f,
+                               "%.0f ms")) {
+          // Handled in main loop
+        }
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiRelease = 400.0f;
+        ImGui::SetItemTooltip("Envelope release duration");
+        synth.envelopeParams().release = uiRelease / 1000.0f;
+
         ImGui::Unindent();
       }
-
-      ImGui::SliderFloat("Attack", &uiAttack, 5.0f, 500.0f, "%.0f ms");
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        uiAttack = 20.0f;
-      ImGui::SetItemTooltip("Envelope attack duration");
-
-      if (ImGui::SliderFloat("Release", &uiRelease, 50.0f, 2000.0f,
-                             "%.0f ms")) {
-        // Handled in main loop
-      }
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        uiRelease = 400.0f;
-      ImGui::SetItemTooltip("Envelope release duration");
 
       bool kbMode = synth.keyboardMode();
       if (ImGui::Checkbox("Keyboard Mode", &kbMode)) {
@@ -717,7 +725,7 @@ int main() {
 
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
                          synth.totalAmplitude(), uiWaveDepth, uiJitter,
-                         uiRetraction, uiDamping, uiSpeedCap, uiModeP,
+                         uiRetraction, uiDamping, synth.drive(), uiModeP,
                          uiSimMode, uiSphereMode);
 
     renderer.render(config, viewProj);

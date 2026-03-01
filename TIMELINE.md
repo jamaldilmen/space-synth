@@ -1,16 +1,16 @@
-# Project Timeline: From 2D Cymatics to Physics Engine v2
+# Project Timeline: From 2D Cymatics to Chladni Physics Engine
 
-## 7 Days. Two Repos. One Escalation.
+## 9 Days. Two Repos. One Escalation.
 
 ```
-Feb 23 ──────── Feb 26 ──────── Feb 28 ── Mar 1 ──── Mar 1 (now)
-│                │                │         │          │
-│ CYMATICS       │ 3D UPGRADE     │ METAL   │ NATIVE   │ PHYSICS v2
-│ (HTML/JS)      │ (still HTML)   │ PORT    │ APP      │ (collisions)
-│                │                │         │          │
-│ 571 lines      │ +5000 lines    │ C++     │ 4272 LOC │ +804 lines
-│ 1 file         │ 1 file         │ Metal   │ 26 files │ 10 files
-│ 30k particles  │ 60k particles  │ shaders │ 800k     │ 800k + hash
+Feb 23 ──────── Feb 26 ──────── Feb 28 ── Mar 1 AM ── Mar 1 PM ── Mar 1 EVE
+│                │                │         │           │           │
+│ CYMATICS       │ 3D UPGRADE     │ METAL   │ PHYSICS   │ DEBUG &   │ AUDIO
+│ (HTML/JS)      │ (still HTML)   │ PORT    │ ENGINE v2 │ RESTORE   │ ENGINE
+│                │                │         │           │           │
+│ 571 lines      │ +5000 lines    │ C++     │ +spatial  │ math fix  │ SVF filter
+│ 1 file         │ 1 file         │ Metal   │ +collide  │ friction  │ MIDI input
+│ 30k particles  │ 60k particles  │ shaders │ +quantum  │ forms ok  │ analog sat
 ```
 
 ---
@@ -69,7 +69,7 @@ No commits. Likely ideation / rest.
 | Time | Commit | What Happened |
 |------|--------|---------------|
 | 19:36 | `ea23882` | **New repo.** C++/Metal skeleton. CMake, window, ImGui, CoreAudio. Porting from JS to native GPU compute. |
-| 23:51 | `2b4d73c` | **100k particles at 60fps.** Metal compute shaders working. 3x the HTML version's particle count already. |
+| 23:51 | `2b4d73c` | **100k particles at 60fps.** Metal compute shaders working. Raw CAMetalLayer + CVDisplayLink, triple-buffered. 3x the HTML particle count already. |
 
 **Day 6 output:** Native macOS app with Metal compute pipeline, 100k particles.
 **Time invested:** ~4 hours.
@@ -78,17 +78,53 @@ No commits. Likely ideation / rest.
 ---
 
 ### Day 7: Mar 1 — From App to Physics Engine
+
+#### Morning Session (00:00 - 02:00): Feature Parity
+
 | Time | Commit | What Happened |
 |------|--------|---------------|
 | 00:05 | `a294d11` | First real commit. Full Bessel physics ported to Metal. |
 | 00:44 | `0a88079` | Physics refinement, audio thread safety, camera tuning. Matching HTML reference exactly. |
-| 01:44 | `067177d` | UI overhaul: full ImGui mod menu, presets, tooltips. Feature parity with HTML. |
-| 10:07 | `2d9a642` | **800k particles.** Macro zoom, sharp rendering. 8x sleep, then 1hr morning session. |
-| 11:03 | `785107f` | **v2: PHYSICS ENGINE.** Collisions, spatial hash, quantum mechanics, HDR, conservation laws. The big one. |
+| 01:44 | `067177d` | **UI overhaul.** Full ImGui mod menu, presets, tooltips, TAB toggle, soft particles. Feature parity with HTML. |
 
-**Day 7 output:** Production-grade particle physics engine. 800k particles with collisions, quantum features, HDR.
-**Time invested:** ~6 hours (overnight + morning).
-**Complexity:** Research-level computational physics + GPU systems engineering.
+#### Morning Session (10:00 - 11:30): v2 Physics Engine
+
+| Time | Commit | What Happened |
+|------|--------|---------------|
+| 10:07 | `2d9a642` | **800k particles.** Macro zoom optimization, ImGui state fixes, sharp rendering. |
+| 11:03 | `785107f` | **v2: PHYSICS ENGINE.** The big one. Spatial hash grid, elastic collisions, Feynman phase arrows, Heisenberg uncertainty, Noether symmetry breaking, HDR + ACES tonemapping, conservation law tracking. |
+| 11:21 | `ef652ed` | Project timeline document. |
+
+#### Afternoon Session (12:00 - 18:00): Debug + Restore
+
+| Time | Commit | What Happened |
+|------|--------|---------------|
+| 12:59 | `b1e01be` | **Fix frozen physics.** Kernel name mismatch `particle_physics` vs `compute_physics`. Added GPU debug probe. |
+| 13:18 | `fac8284` | **Fix collision bugs.** Inverted push direction, wrong impulse condition, Metal UB null-pointer check. |
+| 13:23 | `87cebeb` | **Gate collisions on active voices.** Collisions caused asymmetric drift at rest. |
+| 17:09 | `a8e9b90` | **Fix zoom.** Ortho frustum 960, face-on camera (theta=pi/2), point size cap 64px. |
+| 18:00 | `c75734e` | **Fix form differentiation.** The session's critical fix. Deep HTML-vs-Metal line-by-line analysis found 2 compounding math bugs: |
+
+**Bug 1: Friction 53x too weak.** Node braking used UI damping slider `pow(0.95, dt) = 0.999/frame` instead of base friction `pow(0.06, dt) = 0.954/frame`. All modes hit the speed cap uniformly, erasing pattern structure.
+
+**Bug 2: Integration 60x too slow.** Removed `* 60` from position update thinking it was a framerate hack. It's the velocity unit conversion matching the force weight retuning (0.45 to 27.0). Patterns formed 60x slower.
+
+Also reduced Heisenberg uncertainty noise coefficient (12 to 3) for cleaner settling.
+
+#### Evening Session (18:30 - 21:00): Additive Polyphony + Audio Engine
+
+| Time | Commit | What Happened |
+|------|--------|---------------|
+| 18:34 | `3a436d2` | **Additive polyphony.** Removed 1/sqrt(N) normalization, unclamped amplitudes, test sequencer with presets (C Major, Cm7, 5ths, Chromatic). |
+| 18:45 | `d7d4454` | **Fix broken sphere.** Retraction collapse reverted, sequencer re-trigger bug fixed. |
+| 19:05 | `35b6097` | **Match HTML physics exactly.** Force weight 20.0 back to 0.45*polyNorm, removed wrong `* dt * invMass` from force application (made forces 60x weaker AND non-uniform). |
+| 19:10 | `9c0a91e` | **Match HTML retraction.** Always target 0.35, remove sphere-mode physics branching (HTML has no sphere mode in physics, sphere is purely visual). |
+| 19:40 | `f609831` | **Restore Chladni patterns + 3D sphere.** Fixed maxWaveDepth being divided by 400 in renderer.mm (flattened the sphere 400x). Removed artificial boundary potential. |
+| 19:56 | `0cc6a96` | **Fix ImGui crash.** HUD toggle wasn't wrapping all sections. Cleaned up boundary potential. |
+| 20:09 | `8283c93` | **CoreMIDI input.** Auto-connects to all MIDI sources. Detected Launchpad Mini MK3. |
+| 20:26 | `8d8c534` | **Audio Phase 1 & 2.** SVF filter (Moog-style resonant lowpass), envelope-modulated cutoff (200Hz to 6kHz sweep), analog noise layer, tanh soft-clipper on master bus. |
+| 20:31 | `3b62158` | **Filter keytracking + analog saturation.** Base cutoff tracks pitch, envelope sweep scales with pitch, pre-filter tanh saturation (Moog/Diva style). |
+| 20:38 | `866e1bd` | **Engine research doc.** Analog modeling strategies (Diva/Juno) for Synth Phase 3. |
 
 ---
 
@@ -97,14 +133,50 @@ No commits. Likely ideation / rest.
 | Metric | Cymatics (HTML) | Space Synth (Metal) |
 |--------|----------------|---------------------|
 | Duration | 5 days | 2 days |
-| Commits | 14 | 7 |
-| Lines of code | ~5,500 (1 file) | 4,272 (26 files) |
+| Commits | 14 | 24 |
+| Source files | 1 | 34 |
+| Lines of code | ~5,500 | 4,799 |
 | Particle count | 60k max | 800,000 |
-| Physics model | Bessel potential gradient | Bessel + collisions + phase + conservation |
+| Physics model | Bessel potential gradient | Bessel + collisions + quantum + conservation |
 | Rendering | WebGL/Three.js | Metal compute + HDR + ACES tonemap |
-| Audio | Web Audio API | CoreAudio + built-in synth |
+| Audio | Web Audio API | CoreAudio + polyphonic synth + SVF filter |
+| MIDI | Web MIDI | CoreMIDI (auto-detect all sources) |
 | Performance | ~30fps in browser | ~57fps native |
 | Interactions | None (single-particle) | Elastic collisions (spatial hash, O(N)) |
+
+---
+
+## Architecture (34 source files)
+
+```
+src/
+├── audio/
+│   ├── audio_engine.h/mm   CoreAudio HAL, device enumeration
+│   ├── fft.h/cpp            vDSP FFT pitch detection
+│   ├── svf.h                State Variable Filter (Moog-style)
+│   └── synth.h/cpp          Polyphonic synth, ADSR, keytracking
+├── core/
+│   ├── bessel.h/cpp         J_n power series (25 terms)
+│   ├── camera.h             Spherical orbit camera
+│   ├── envelope.h/cpp       ADSR envelope generator
+│   ├── lut.h/cpp            128x128 gradient LUT, central differencing
+│   ├── midi_input.h/mm      CoreMIDI auto-connect
+│   ├── modes.h/cpp          28 Bessel modes (7 orders x 4 zeros)
+│   ├── particles.h/cpp      CPU-side particle management
+│   └── preset_manager.h/cpp JSON preset I/O
+├── render/
+│   ├── particles.metal      GPU physics kernel (forces, collisions, uncertainty)
+│   ├── render.metal          Point sprite vertex/fragment shaders
+│   ├── postfx.metal          Bloom, trails, chromatic aberration, ACES tonemap
+│   ├── spatial_hash.metal    256x256 spatial hash (4-phase GPU build)
+│   ├── renderer.h/mm         Metal pipeline, buffers, HDR offscreen
+│   └── (density heatmap)
+├── ui/
+│   ├── mod_menu.h/cpp        ImGui parameter panels
+│   ├── ui_theme.h            Custom ImGui styling
+│   └── window.h/mm           NSWindow, keyboard/mouse input
+└── main.cpp                  App entry, run loop, ImGui integration
+```
 
 ---
 
@@ -114,20 +186,22 @@ No commits. Likely ideation / rest.
 |---|---------|------|------------|-------|
 | 1 | Spatial hash grid | ~45 min | **Extreme** | 4 GPU kernels, prefix sum, atomic scatter. The enabler for everything. |
 | 2 | Elastic collisions | ~30 min | **Hard** | 9-cell neighbor scan, momentum exchange, double-buffering. |
-| 3 | 2D→3D rewrite | ~3 hrs | **Hard** | Helical wave functions, volumetric rendering. Conceptual leap. |
+| 3 | 2D to 3D rewrite | ~3 hrs | **Hard** | Helical wave functions, volumetric rendering. Conceptual leap. |
 | 4 | Metal port | ~4 hrs | **Hard** | C++/ObjC++/Metal, CMake, triple-buffering, GPU compute. |
-| 5 | Bessel physics kernel | ~2 hrs | **Medium-Hard** | Power series, gradient chain rule, polyphonic normalization. |
-| 6 | HDR + tonemapping | ~15 min | **Medium** | RGBA16Float, ACES filmic, energy-based luminance. |
-| 7 | Conservation laws | ~15 min | **Medium** | Parallel reduction, threadgroup memory, CPU readback. |
-| 8 | Feynman phase arrows | ~10 min | **Medium** | Action integral, HSV mapping. Elegant physics. |
-| 9 | Frame-rate independence | ~10 min | **Small** | dt scaling, but easy to get wrong (force retuning). |
-| 10 | Noether symmetry breaking | ~10 min | **Small** | Voice hash + impulse injection. Simple, beautiful result. |
+| 5 | Form differentiation debug | ~4 hrs | **Hard** | Line-by-line HTML vs Metal comparison. 2 bugs compounding (53x friction, 60x integration). |
+| 6 | Bessel physics kernel | ~2 hrs | **Medium-Hard** | Power series, gradient chain rule, polyphonic normalization. |
+| 7 | SVF filter + analog saturation | ~30 min | **Medium** | Moog-style resonant LP, keytracking, pre-filter tanh drive. |
+| 8 | HDR + tonemapping | ~15 min | **Medium** | RGBA16Float, ACES filmic, energy-based luminance. |
+| 9 | Conservation laws | ~15 min | **Medium** | Parallel reduction, threadgroup memory, CPU readback. |
+| 10 | CoreMIDI input | ~15 min | **Medium** | Auto-connect all sources, noteOn/noteOff routing. |
+| 11 | Feynman phase arrows | ~10 min | **Medium** | Action integral, HSV mapping. Elegant physics. |
+| 12 | Noether symmetry breaking | ~10 min | **Small** | Voice hash + impulse injection. Simple, beautiful result. |
 
 ---
 
 ## Education / Technical Level Assessment
 
-### What disciplines are at work here:
+### Disciplines at work:
 
 **Mathematical Physics (Graduate level)**
 - Bessel functions of the first kind (J_n) — eigenfunctions of the Laplacian on a disk
@@ -145,10 +219,12 @@ No commits. Likely ideation / rest.
 - Triple-buffered rendering with semaphore synchronization
 - HDR pipeline (16-bit float, ACES tonemapping)
 
-**Real-time Audio (Professional level)**
+**Audio DSP (Professional level)**
 - CoreAudio HAL, lock-free audio/render thread communication
-- Built-in synthesizer with ADSR envelopes
-- FFT pitch detection, MIDI input
+- Polyphonic synthesizer with ADSR envelopes
+- State Variable Filter (resonant lowpass, Moog topology)
+- Analog modeling: keytracking, pre-filter saturation, noise layer
+- FFT pitch detection, CoreMIDI input
 
 **Software Architecture (Senior level)**
 - Clean C++20, namespace isolation, no exceptions
@@ -156,54 +232,32 @@ No commits. Likely ideation / rest.
 - ImGui integration for real-time parameter tuning
 
 ### Verdict:
-This sits at the intersection of **computational physics research** and **real-time graphics engineering**. The physics is graduate/early-PhD level (Bessel eigenmodes, Hamiltonian dynamics, conservation laws). The GPU engineering is senior industry level (spatial hashing, parallel reduction, HDR pipeline). The combination — a physically accurate N-body Chladni simulator with quantum mechanical features at 800k particles — is not something you find in textbooks. It's custom.
+This sits at the intersection of **computational physics research** and **real-time graphics/audio engineering**. The physics is graduate/early-PhD level (Bessel eigenmodes, Hamiltonian dynamics, conservation laws). The GPU engineering is senior industry level (spatial hashing, parallel reduction, HDR pipeline). The audio DSP is professional synth-designer level (SVF, analog modeling, keytracking). The combination — a physically accurate N-body Chladni simulator with quantum mechanical features, elastic collisions, and a built-in analog-modeled synthesizer at 800k particles — is custom. It doesn't exist elsewhere.
 
 ---
 
-## How Cutting Edge Is This?
+## Known Issues
 
-### What exists in the field:
-- **Academic Chladni simulations**: Typically 2D, <10k particles, offline rendering, MATLAB/Python
-- **Real-time particle systems** (games/VFX): Millions of particles but simplified physics (no Bessel functions, no eigenmodes)
-- **N-body simulators**: Astrophysics codes (GADGET, etc.) — different physics, not real-time
-- **Cymatics visualizers**: Mostly pre-baked animations or simple frequency-to-shape mappings
-
-### What makes this different:
-1. **Real Bessel physics at GPU scale** — not a lookup table approximation, actual J_n power series evaluated per particle per frame
-2. **Spatial hash collisions on eigenmode particles** — nobody does particle-particle interactions on Chladni patterns
-3. **Feynman path integral visualization** — action accumulation as color is a physics education tool that doesn't exist commercially
-4. **Heisenberg uncertainty as gameplay mechanic** — position certainty near nodes drives momentum noise. Emergent quantum behavior.
-5. **Audio-visual unity** — the same Bessel math drives both the visuals AND the sound. Not mapped. Identical.
-
-### Rating: **Frontier creative-tech / applied physics research**
-Not cutting-edge in the sense of pushing theoretical physics forward. Cutting-edge in the sense of: nobody has built a real-time 800k-particle Chladni physics engine with quantum mechanical features, elastic collisions, and a built-in synthesizer. This is a new instrument.
+- **Collision left-snap**: Enabling collisions shifts particle distribution slightly left. Cell-traversal-order bias in spatial hash.
+- **Zoom feel**: Hard clamps on rho [50, 2000]. HTML had smooth THREE.js OrbitControls momentum. Soft-boundary attempt caused oscillation.
 
 ---
 
-## Roadmap: Future Goals + Optimization
+## Roadmap
 
 ### Near-term (performance)
-- [ ] **Parallel prefix sum** — replace serial scan (1 thread for 65k cells) with Blelloch scan (~10x faster)
-- [ ] **Collision radius as UI slider** — let user tune interaction range
-- [ ] **LOD for distant particles** — skip collision checks for particles far from camera
-- [ ] **StorageModePrivate** for spatial hash buffers — currently Shared (CPU-visible), Private is faster
+- [ ] Parallel prefix sum — replace serial scan (1 thread for 65k cells) with Blelloch scan
+- [ ] Collision radius as UI slider
+- [ ] StorageModePrivate for spatial hash buffers
 
-### Mid-term (features from plan P3/P4)
-- [ ] **String theory rendering** — replace point sprites with vibrating loop meshes (instanced triangle strips)
-- [ ] **Density heatmap quad** — render the existing density texture as a background layer
-- [ ] **Audio-driven magnetism** — amplitude modulates attract/repel force in neighbor loop
-- [ ] **ProRes recording** — capture to disk for live performance archival
-- [ ] **Syphon output** — send frames to Resolume/VDMX for live VJ sets
+### Mid-term (features)
+- [ ] Synth Phase 3: Diva/Juno analog modeling (oscillator drift, component variance, polyBLEP)
+- [ ] String theory rendering — vibrating loop meshes (instanced triangle strips)
+- [ ] Density heatmap background layer
+- [ ] ProRes recording for live performance archival
+- [ ] Syphon output for Resolume/VDMX
 
 ### Long-term (research)
-- [ ] **Maxwell vortex medium** — full PIC simulation with electromagnetic field texture
-- [ ] **Vortex ring particles** — extend to 48-byte particles with circulation vector, Biot-Savart law
-- [ ] **Multi-plate coupling** — multiple Chladni plates interacting through shared boundary conditions
-- [ ] **Machine learning mode prediction** — train a model to predict which Bessel modes produce "interesting" patterns for a given audio input
-
-### Optimization priorities (ranked by impact)
-1. **Parallel prefix sum** — biggest bottleneck, single-threaded scan of 65k cells
-2. **Indirect dispatch** — let GPU decide threadgroup counts, avoid CPU round-trips
-3. **Texture compression for density** — BC7 or ASTC for the heatmap
-4. **Compute + render overlap** — use separate command queues for async compute
-5. **Particle sorting by cell** — improve cache coherency in collision scan (currently random access)
+- [ ] Maxwell vortex medium — full PIC simulation with electromagnetic field texture
+- [ ] Multi-plate coupling — multiple Chladni plates interacting through shared boundary conditions
+- [ ] Audio-visual unity — same Bessel math drives both visuals and sound simultaneously

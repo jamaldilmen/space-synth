@@ -207,7 +207,8 @@ kernel void compute_physics(
     }
 
     // ── Particle-Particle Collisions (spatial hash neighbor scan) ────────
-    if (u.collisionsOn > 0 && su.gridSize > 0) {
+    // Only when voices are active — at rest, dense packing causes constant push-apart drift
+    if (u.collisionsOn > 0 && su.gridSize > 0 && u.voiceCount > 0) {
         int cellX = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
         int cellY = clamp(int((py + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
 

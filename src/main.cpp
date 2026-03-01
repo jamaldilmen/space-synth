@@ -231,7 +231,8 @@ int main() {
 
     if (uiOrthoMode) {
       float aspect = (float)window.width() / (float)window.height();
-      float frustum = camera.getRho() * 1.2f; // Dynamic orthographic zoom
+      // Fixed frustum so sphere always visible — zoom via point size scaling
+      float frustum = 960.0f;
       Renderer::orthoMatrix(proj, -frustum * aspect, frustum * aspect, -frustum,
                             frustum, -5000.0f, 5000.0f);
     } else {

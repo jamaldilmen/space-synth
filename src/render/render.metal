@@ -57,7 +57,7 @@ vertex VertexOut particle_vertex(
     float isOrtho = cam.padding[0];
     float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
     out.dist = dist;
-    out.pointSize = max(0.2f, cam.particleSize * (800.0f / max(0.0001f, dist)));
+    out.pointSize = clamp(cam.particleSize * (800.0f / max(0.0001f, dist)), 0.2f, 64.0f);
 
     // HDR luminance from kinetic energy
     float speed = length(p.velW.xyz);

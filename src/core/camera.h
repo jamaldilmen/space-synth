@@ -14,8 +14,8 @@ public:
 
   void reset() {
     rho = 800.0f;
-    theta = 0.5f; // Elevation
-    phi = 0.0f;   // Azimuth
+    theta = M_PI_F / 2.0f; // Elevation — face-on horizontal view
+    phi = 0.0f;            // Azimuth
     velRho = velTheta = velPhi = 0.0f;
   }
 

@@ -69,10 +69,11 @@ static OSStatus audioOutputCallback(void *inRefCon,
   const float sampleRate = 48000.0f;
 
   for (UInt32 i = 0; i < inNumberFrames; i++) {
-    float sample = impl->synth->tick(sampleRate);
-    outL[i] = sample;
+    float sL = 0.0f, sR = 0.0f;
+    impl->synth->tick(sampleRate, sL, sR);
+    outL[i] = sL;
     if (outR)
-      outR[i] = sample;
+      outR[i] = sR;
   }
 
   return noErr;

@@ -1,5 +1,6 @@
 #include "../core/envelope.h"
 #include "../core/modes.h"
+#include "chorus.h"
 #include "svf.h"
 #include <cstdint>
 #include <mutex>
@@ -38,8 +39,8 @@ public:
   void noteOn(int midi, float velocity = 1.0f);
   void noteOff(int midi);
 
-  // Generate one sample across all voices
-  float tick(float sampleRate);
+  // Generate one sample across all voices (stereo)
+  void tick(float sampleRate, float &outL, float &outR);
 
   // Update all envelopes (call once per render frame)
   void updateEnvelopes(float dt);
@@ -83,11 +84,15 @@ public:
 
   ModeTable &modeTable() { return modeTable_; }
 
+  Chorus &chorus() { return chorus_; }
+  const Chorus &chorus() const { return chorus_; }
+
 private:
   mutable std::mutex mutex_;
   std::unordered_map<int, Voice> voices_;
   ModeTable modeTable_;
   EnvelopeParams envParams_;
+  Chorus chorus_;
   Waveform waveform_ = Waveform::Sine;
   bool keyboardMode_ = false;
   int octaveShift_ = 0;

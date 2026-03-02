@@ -75,9 +75,9 @@ float Voice::tick(float sampleRate, float synthJitter) {
   return filtered * amp;
 }
 
-Synth::Synth() {}
+Synth::Synth() { chorus_.init(48000.0f); }
 
-float Synth::tick(float sampleRate) {
+void Synth::tick(float sampleRate, float &outL, float &outR) {
   std::lock_guard<std::mutex> lock(mutex_);
   float mixed = 0.0f;
   for (auto &[midi, voice] : voices_) {
@@ -85,8 +85,10 @@ float Synth::tick(float sampleRate) {
     mixed += voice.tick(sampleRate, jitter_);
   }
   // Apply soft clipper (tanh limiter) before output
-  float limited = std::tanh(mixed * 0.4f); // 0.4f gain staging
-  return limited * 0.8f;                   // Headroom buffer
+  float limited = std::tanh(mixed * 0.4f) * 0.8f; // Headroom buffer
+
+  // Stereo spatialization via Chorus
+  chorus_.process(limited, limited, outL, outR);
 }
 
 void Synth::noteOn(int midi, float velocity) {

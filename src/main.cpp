@@ -161,9 +161,11 @@ int main() {
   static float uiDamping = 0.95f;
   static float uiRetraction = 1.0f;
   static float uiWaveDepth = 140.0f; // matches plate scale correctly
+  static float uiSupernova = 0.0f;   // 0.0 to 1.0 (Macro slider)
 
   // uiSpeedCap removed: driven by synth.drive() instead
   static float uiModeP = 1.0f;
+  static bool uiChorus = true;
   static int uiSimMode = 0;         // 0=Classic, 1=Vortex
   static int uiSphereMode = 1;      // 1=Sphere, 0=Flat
   static bool uiOrthoMode = true;   // Use Orthographic projection
@@ -319,6 +321,17 @@ int main() {
       ImGui::Separator();
       ImGui::Spacing();
 
+      if (ImGui::CollapsingHeader("MACROS", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::PushStyleColor(ImGuiCol_SliderGrab,
+                              ImVec4(1.0f, 0.3f, 0.0f, 1.0f));
+        ImGui::SliderFloat("Supernova", &uiSupernova, 0.0f, 1.0f, "%.2f");
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Global A/V Macro: Overdrives Chorus, Jitter, "
+                              "Drive, Bloom, and Particle Size simultaneously");
+        ImGui::Unindent();
+      }
+
       if (ImGui::CollapsingHeader("PRESETS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         const char *comboLabel = (selectedPresetIdx < 0)
@@ -425,6 +438,11 @@ int main() {
           synth.setDrive(1.6f);
         ImGui::SetItemTooltip(
             "Filter saturation and particle speed cap (1:1 Physics)");
+
+        if (ImGui::Checkbox("BBD Chorus", &uiChorus)) {
+          synth.chorus().setEnabled(uiChorus);
+        }
+        ImGui::SetItemTooltip("Lush stereo bucket-brigade dual delay");
 
         ImGui::SliderFloat("Attack", &uiAttack, 5.0f, 500.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -711,10 +729,36 @@ int main() {
       ImGui::End();
     } // if (showHUD)
 
-    config.particleSize = uiParticleSize;
+    // Add Supernova slider at the very top of the UI menu
+    if (showHUD) {
+      ImGui::Begin("SPACE Synth");
+      ImGui::SliderFloat("Supernova", &uiSupernova, 0.0f, 1.0f, "%.3f");
+      ImGui::Separator();
+      ImGui::End();
+    }
+
+    // ── Apply Audio-Visual Macros ─────────────────────────────────────
+    // Calculate effective values interpolated by Supernova Macro
+    float effectiveSize =
+        uiParticleSize + (uiSupernova * 8.0f); // Grow up to +8px
+    float effectiveDrive =
+        synth.drive() + (uiSupernova * 3.4f); // Push into Moog clipping
+    float effectiveJitterMultiplier =
+        1.0f + (uiSupernova * 9.0f); // 10x Phase Drift
+
+    // Push volatile settings back into synth
+    synth.setJitter(uiJitter * effectiveJitterMultiplier);
+    synth.setDrive(effectiveDrive);
+
+    config.particleSize = effectiveSize;
     config.cameraRho = camera.getRho();
     config.orthoMode = uiOrthoMode;
     config.phaseViz = uiPhaseViz;
+    config.bloomIntensity =
+        0.5f + (uiSupernova * 1.5f);                  // Supernova burns bright
+    config.trailDecay = 0.88f - (uiSupernova * 0.1f); // Sweeping trails
+    config.chromaticAmount =
+        0.005f + (uiSupernova * 0.015f); // Glitchy color trailing
 
     // ── Update ADSR ────────────────────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;
@@ -723,10 +767,10 @@ int main() {
     // ── Update Physics ──────────────────────────────────────────────
     renderer.setActiveParticleCount(uiParticleCount);
 
-    renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
-                         synth.totalAmplitude(), uiWaveDepth, uiJitter,
-                         uiRetraction, uiDamping, synth.drive(), uiModeP,
-                         uiSimMode, uiSphereMode);
+    renderer.computeStep(
+        dt, voiceData.data(), (int)voiceData.size(), synth.totalAmplitude(),
+        uiWaveDepth, uiJitter * effectiveJitterMultiplier, uiRetraction,
+        uiDamping, effectiveDrive, uiModeP, uiSimMode, uiSphereMode);
 
     renderer.render(config, viewProj);
 

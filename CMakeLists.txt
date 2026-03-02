@@ -22,6 +22,7 @@ set(SOURCES
     src/audio/audio_engine.mm
     src/audio/fft.cpp
     src/audio/synth.cpp
+    src/audio/chorus.cpp
     src/render/renderer.mm
     src/ui/mod_menu.cpp
     src/ui/window.mm
@@ -37,6 +38,7 @@ set(HEADERS
     src/audio/audio_engine.h
     src/audio/fft.h
     src/audio/synth.h
+    src/audio/chorus.h
     src/render/renderer.h
     src/ui/mod_menu.h
     src/ui/window.h

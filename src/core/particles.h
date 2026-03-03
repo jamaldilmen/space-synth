@@ -31,12 +31,14 @@ private:
     float maxWaveDepth_ = 100.0f;
 };
 
-// Packed struct for GPU upload — position + velocity as float4 pairs
+// Packed struct for GPU upload — position + velocity + previous position
 // posW.w = mass, velW.w = phase (Feynman action accumulator)
+// prevW stores previous frame position for Störmer-Verlet integration
 struct alignas(16) GPUParticle {
-    float x, y, z, mass;
-    float vx, vy, vz, phase;
-};
+    float x, y, z, mass;           // 16 bytes — posW
+    float vx, vy, vz, phase;       // 16 bytes — velW
+    float prevX, prevY, prevZ, pad2; // 16 bytes — prevW (Verlet)
+};  // Total: 48 bytes
 
 // Convert CPU particles to GPU buffer format
 std::vector<GPUParticle> packForGPU(const ParticleSystem& system);

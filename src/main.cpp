@@ -1,6 +1,7 @@
 #include "audio/audio_engine.h"
 #include "audio/synth.h"
 #include "core/camera.h"
+#include "core/emitter.h"
 #include "core/midi_input.h"
 #include "core/modes.h"
 #include "core/particles.h"
@@ -153,6 +154,9 @@ int main() {
     return -1;
   };
 
+  // ── Emitters ────────────────────────────────────────────────────────
+  EmitterArray emitters;
+
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
@@ -160,7 +164,7 @@ int main() {
   static float uiJitter = 1.0f;
   static float uiDamping = 0.95f;
   static float uiRetraction = 1.0f;
-  static float uiWaveDepth = 140.0f; // matches plate scale correctly
+  static float uiWaveDepth = 20.0f;
   static float uiSupernova = 0.0f;   // 0.0 to 1.0 (Macro slider)
 
   // uiSpeedCap removed: driven by synth.drive() instead
@@ -173,6 +177,9 @@ int main() {
   static float uiRelease = 400.0f;  // ms
   static bool uiCollisions = false; // Particle-particle collisions
   static bool uiPhaseViz = false;   // Feynman phase arrow coloring
+  static float uiBloom = 0.0f;
+  static float uiTrailDecay = 0.0f;
+  static float uiChromatic = 0.0f;
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -233,12 +240,16 @@ int main() {
     // Update envelopes
     synth.updateEnvelopes(dt);
 
-    // Build voice data for GPU
+    // Build voice data for GPU (with emitter positions)
     auto activeVoices = synth.getActiveVoices();
     std::vector<VoiceGPUData> voiceData;
-    for (const auto &v : activeVoices) {
-      voiceData.push_back(
-          {v.mode->m, v.mode->n, (float)v.mode->alpha, v.amplitude});
+    for (int i = 0; i < (int)activeVoices.size(); i++) {
+      const auto &v = activeVoices[i];
+      int emIdx = i % MAX_EMITTERS;
+      voiceData.push_back({
+          v.mode->m, v.mode->n, (float)v.mode->alpha, v.amplitude,
+          emitters[emIdx].x, emitters[emIdx].y, emitters[emIdx].z, 0.0f
+      });
     }
 
     camera.update(dt);
@@ -419,6 +430,35 @@ int main() {
         ImGui::Unindent();
       }
 
+      if (ImGui::CollapsingHeader("EMITTERS")) {
+        ImGui::Indent();
+        int numVoices = std::max(1, (int)activeVoices.size());
+        for (int i = 0; i < numVoices && i < MAX_EMITTERS; i++) {
+          ImGui::PushID(i);
+          char label[32];
+          snprintf(label, sizeof(label), "E%d XY", i);
+          float pos[2] = {emitters[i].x, emitters[i].y};
+          if (ImGui::SliderFloat2(label, pos, -0.9f, 0.9f, "%.2f")) {
+            emitters[i].x = pos[0];
+            emitters[i].y = pos[1];
+          }
+          if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            emitters[i].x = 0.0f;
+            emitters[i].y = 0.0f;
+          }
+          ImGui::PopID();
+        }
+        if (ImGui::Button("Reset All")) {
+          emitters.reset();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Circle")) {
+          emitters.arrangeCircle(numVoices, 0.3f);
+        }
+        ImGui::SetItemTooltip("Arrange emitters in a circle (r=0.3)");
+        ImGui::Unindent();
+      }
+
       if (ImGui::CollapsingHeader("AUDIO SYNTH",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
@@ -514,20 +554,20 @@ int main() {
 
       if (ImGui::CollapsingHeader("POST-FX", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::SliderFloat("Bloom", &config.bloomIntensity, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Bloom", &uiBloom, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          config.bloomIntensity = 0.0f;
+          uiBloom = 0.0f;
         ImGui::SetItemTooltip("Cross-shaped bright-pass glow");
 
-        ImGui::SliderFloat("Fluidity", &config.trailDecay, 0.0f, 0.99f, "%.2f");
+        ImGui::SliderFloat("Fluidity", &uiTrailDecay, 0.0f, 0.99f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          config.trailDecay = 0.0f;
+          uiTrailDecay = 0.0f;
         ImGui::SetItemTooltip("Motion trails (Feedback factor)");
 
-        ImGui::SliderFloat("Chromatic", &config.chromaticAmount, 0.0f, 0.02f,
+        ImGui::SliderFloat("Chromatic", &uiChromatic, 0.0f, 0.02f,
                            "%.3f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          config.chromaticAmount = 0.0f;
+          uiChromatic = 0.0f;
         ImGui::SetItemTooltip("RGB split lens effect");
         ImGui::Unindent();
       }
@@ -754,11 +794,10 @@ int main() {
     config.cameraRho = camera.getRho();
     config.orthoMode = uiOrthoMode;
     config.phaseViz = uiPhaseViz;
-    config.bloomIntensity =
-        0.5f + (uiSupernova * 1.5f);                  // Supernova burns bright
-    config.trailDecay = 0.88f - (uiSupernova * 0.1f); // Sweeping trails
-    config.chromaticAmount =
-        0.005f + (uiSupernova * 0.015f); // Glitchy color trailing
+    // Supernova adds on top of user slider values
+    config.bloomIntensity = uiBloom + uiSupernova * 1.5f;
+    config.trailDecay = uiTrailDecay + uiSupernova * 0.1f;
+    config.chromaticAmount = uiChromatic + uiSupernova * 0.015f;
 
     // ── Update ADSR ────────────────────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;

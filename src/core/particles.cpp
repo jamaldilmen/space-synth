@@ -33,7 +33,11 @@ std::vector<GPUParticle> packForGPU(const ParticleSystem& system) {
     std::vector<GPUParticle> gpu(system.count());
     for (int i = 0; i < system.count(); i++) {
         const auto& p = system.data()[i];
-        gpu[i] = {p.x, p.y, p.z, 1.0f, p.vx, p.vy, p.vz, 0.0f}; // mass=1.0, phase=0.0
+        gpu[i] = {
+            p.x, p.y, p.z, 1.0f,       // pos + mass
+            p.vx, p.vy, p.vz, 0.0f,     // vel + phase
+            p.x, p.y, p.z, 0.0f         // prevPos = pos (zero initial velocity for Verlet)
+        };
     }
     return gpu;
 }

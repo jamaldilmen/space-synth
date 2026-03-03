@@ -43,12 +43,16 @@ struct CameraUniforms {
   float padding[1];
 };
 
-// Voice data for GPU compute
+// Voice data for GPU compute (matches VoiceData in particles.metal)
 struct VoiceGPUData {
   int m;
   int n;
   float alpha;
   float amplitude;
+  float emitterX;   // Point source position X
+  float emitterY;   // Point source position Y
+  float emitterZ;   // Point source position Z
+  float pad;        // Alignment to 32 bytes
 };
 
 // Physics uniforms for compute shader

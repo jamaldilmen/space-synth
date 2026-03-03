@@ -8,6 +8,7 @@ using namespace metal;
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
+    float4 prevW;  // prevX, prevY, prevZ, pad (Störmer-Verlet)
 };
 
 struct SpatialHashUniforms {

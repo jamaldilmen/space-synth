@@ -1,10 +1,11 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// GPU particle state — matches GPUParticle struct in C++
+// GPU particle state — matches GPUParticle struct in C++ (48 bytes)
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
+    float4 prevW;  // prevX, prevY, prevZ, pad (Störmer-Verlet)
 };
 
 struct VoiceData {
@@ -12,6 +13,10 @@ struct VoiceData {
     int n;
     float alpha;
     float amplitude;
+    float emitterX;
+    float emitterY;
+    float emitterZ;
+    float pad;
 };
 
 struct PhysicsUniforms {
@@ -79,14 +84,14 @@ static float noise(uint id, uint frame) {
 constant int MAX_PER_CELL = 16;            // Safety valve for dense clusters
 constant float COLLISION_RESTITUTION = 0.85f; // Slight energy loss per collision
 
-// ── Compute kernel: update particle positions/velocities ────────────────────
+// ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
 kernel void compute_physics(
     device Particle* particles [[buffer(0)]],
     device const VoiceData* voices [[buffer(1)]],
     constant PhysicsUniforms& u [[buffer(2)]],
     device const Particle* prevParticles [[buffer(3)]],
-    device const Particle* sortedParticles [[buffer(4)]],    // <--- Cache coherent structs
+    device const Particle* sortedParticles [[buffer(4)]],
     device const uint* cellStarts [[buffer(5)]],
     device const uint* cellCounts [[buffer(6)]],
     constant SpatialHashUniforms& su [[buffer(7)]],
@@ -99,36 +104,50 @@ kernel void compute_physics(
     float py = p.posW.y;
     float pz = p.posW.z;
     float mass = p.posW.w;
-    float vx = p.velW.x;
-    float vy = p.velW.y;
-    float vz = p.velW.z;
     float phase = p.velW.w;
 
-    float r = sqrt(px * px + py * py);
-    float th = atan2(py, px);
+    // ── Störmer-Verlet: derive velocity from position history ────────
+    float prevX = p.prevW.x;
+    float prevY = p.prevW.y;
+    float prevZ = p.prevW.z;
+
+    // Velocity proxy: displacement from previous frame
+    // This IS the velocity in frame-time units (removes * 60 hack)
+    float vpx = px - prevX;
+    float vpy = py - prevY;
+    float vpz = pz - prevZ;
 
     float baseFric = pow(0.06f, u.dt);
     float k = u.modeP * M_PI_F / u.maxWaveDepth;
-    float kz = k * pz;
 
     float dynamicFric = baseFric;
 
     // Track potential energy for phase accumulation
     float PE = 0.0f;
 
+    // Accumulate forces as position deltas (acceleration * dt²)
+    float ax = 0.0f, ay = 0.0f, az = 0.0f;
+
     if (u.voiceCount > 0) {
         float polyNorm = 1.0f / sqrt(float(u.voiceCount));
-        float fxTotal = 0.0f, fyTotal = 0.0f, fzTotal = 0.0f;
         float jitterTotal = 0.0f;
 
         for (int vi = 0; vi < u.voiceCount; vi++) {
             float m_f = float(voices[vi].m);
-            float alpha = voices[vi].alpha;
             float amp = voices[vi].amplitude;
+
+            // Compute r and theta relative to emitter position
+            float dx = px - voices[vi].emitterX;
+            float dy = py - voices[vi].emitterY;
+            float dz = pz - voices[vi].emitterZ;
+            float r = sqrt(dx * dx + dy * dy);
+            float th = atan2(dy, dx);
+            float kz = k * dz;
 
             // Match HTML: w = min(amp, 1) * 0.45 * polyNormalizer
             float w = min(amp, 1.0f) * 0.45f * polyNorm;
 
+            float alpha = voices[vi].alpha;
             float alpha_r = alpha * r;
             float jm = besselJ(voices[vi].m, alpha_r);
             float phaseAngle = m_f * th - kz;
@@ -149,40 +168,32 @@ kernel void compute_physics(
             float dP_dth = -m_f * jm * jm * sin(2.0f * phaseAngle);
 
             float r_inv = 1.0f / (r + 1e-6f);
-            float dr_dx = px * r_inv;
-            float dr_dy = py * r_inv;
-            float dth_dx = -py * r_inv * r_inv;
-            float dth_dy = px * r_inv * r_inv;
+            float dr_dx = dx * r_inv;
+            float dr_dy = dy * r_inv;
+            float dth_dx = -dy * r_inv * r_inv;
+            float dth_dy = dx * r_inv * r_inv;
 
             float gx = (dP_dr * dr_dx + dP_dth * dth_dx) * 3.0f;
             float gy = (dP_dr * dr_dy + dP_dth * dth_dy) * 3.0f;
 
-            fxTotal -= gx * w;
-            fyTotal -= gy * w;
+            ax -= gx * w;
+            ay -= gy * w;
 
             float gz = k * jm * jm * sin(2.0f * phaseAngle);
-            if (voices[vi].m == 0 && abs(pz) < 2.0f) {
+            if (voices[vi].m == 0 && abs(dz) < 2.0f) {
                 gz += noise(id + 1000, u.frameCounter) * jm * jm * k;
             }
-            // Amplified Z-force to match HTML visual intensity
-            fzTotal -= gz * w * 800.0f;
+            az -= gz * w * 800.0f;
 
             jitterTotal += abs(h3d) * amp;
         }
 
-        // Match HTML: apply forces DIRECTLY (no * dt, no / mass)
-        // HTML line 791: p.vx += fxTotal;
-        vx += fxTotal;
-        vy += fyTotal;
-        vz += fzTotal;
-
         // Match HTML jitter: simpler formula
-        // HTML line 804: p.vx += (Math.random() - 0.5) * jitterTotal * 6 * dt;
         if (jitterTotal > 0.01f) {
             float n_strength = jitterTotal * 6.0f * u.dt;
-            vx += noise(id, u.frameCounter) * n_strength;
-            vy += noise(id + 1, u.frameCounter) * n_strength;
-            vz += noise(id + 2, u.frameCounter) * n_strength * (u.maxWaveDepth / 400.0f);
+            ax += noise(id, u.frameCounter) * n_strength;
+            ay += noise(id + 1, u.frameCounter) * n_strength;
+            az += noise(id + 2, u.frameCounter) * n_strength * (u.maxWaveDepth / 400.0f);
         }
 
         // Node braking
@@ -194,16 +205,14 @@ kernel void compute_physics(
     }
 
     // ── Noether Symmetry Breaking ─────────────────────────────────────
-    // On mode change, inject random impulse (energy release)
     if (u.symmetryBreakImpulse > 0.0f) {
         float angle = noise(id * 3u, u.frameCounter) * M_PI_F;
         float strength = u.symmetryBreakImpulse * (0.5f + noise(id * 7u, u.frameCounter) * 0.5f);
-        vx += cos(angle) * strength;
-        vy += sin(angle) * strength;
+        ax += cos(angle) * strength;
+        ay += sin(angle) * strength;
     }
 
-    // Particle-Particle Collisions (spatial hash neighbor scan)
-    // Only when voices are active — at rest, dense packing causes constant push-apart drift
+    // ── Particle-Particle Collisions (spatial hash neighbor scan) ─────
     if (u.collisionsOn > 0 && su.gridSize > 0 && u.voiceCount > 0) {
         int cellX = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
         int cellY = clamp(int((py + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
@@ -223,12 +232,11 @@ kernel void compute_physics(
         float shiftVx = 0.0f;
         float shiftVy = 0.0f;
 
-        // Iterate over neighbor cells (3x3 grid)
         for (int y = startCellY; y <= endCellY; y++) {
             for (int x = startCellX; x <= endCellX; x++) {
                 uint cID = uint(y * su.gridSize + x);
-                uint count = min(cellCounts[cID], uint(MAX_PER_CELL)); // Cap to prevent O(n²) in dense cells
-                if (count == 0) continue; // Skip empty cells
+                uint count = min(cellCounts[cID], uint(MAX_PER_CELL));
+                if (count == 0) continue;
                 uint startIdx = cellStarts[cID];
 
                 for (uint i = 0; i < count; i++) {
@@ -244,7 +252,7 @@ kernel void compute_physics(
                     float nx_dir = ddx / dist;
                     float ny_dir = ddy / dist;
 
-                    // Push APART by half overlap (accumulate)
+                    // Push APART by half overlap
                     float overlap = colRad - dist;
                     float omass = np.posW.w;
                     float totalMass = mass + omass;
@@ -252,12 +260,13 @@ kernel void compute_physics(
                     shiftX += nx_dir * overlap * pushRatio * 0.5f;
                     shiftY += ny_dir * overlap * pushRatio * 0.5f;
 
-                    // Elastic collision impulse along normal (accumulate)
-                    float dvx = vx - np.velW.x;
-                    float dvy = vy - np.velW.y;
+                    // Elastic collision impulse using derived velocities
+                    float np_vpx = np.posW.x - np.prevW.x;
+                    float np_vpy = np.posW.y - np.prevW.y;
+                    float dvx = vpx - np_vpx;
+                    float dvy = vpy - np_vpy;
                     float dvDotN = dvx * nx_dir + dvy * ny_dir;
 
-                    // Only resolve if approaching
                     if (dvDotN < 0.0f) {
                         float impulse = (1.0f + COLLISION_RESTITUTION) * dvDotN * omass / totalMass;
                         shiftVx -= impulse * nx_dir;
@@ -266,14 +275,16 @@ kernel void compute_physics(
                 }
             }
         }
-        
+
+        // Position correction applied directly
         px += shiftX;
         py += shiftY;
-        vx += shiftVx;
-        vy += shiftVy;
+        // Velocity impulse → adjust velocity proxy
+        vpx += shiftVx;
+        vpy += shiftVy;
     }
 
-    // Retraction — match HTML but fix the Z-axis collapse bug
+    // ── Retraction ────────────────────────────────────────────────────
     float R = 400.0f;
     float retractPull = (1.0f - min(u.totalAmplitude, 1.0f)) * 15.0f * u.retractionPull;
 
@@ -282,76 +293,81 @@ kernel void compute_physics(
         float rMag = sqrt(rx * rx + ry * ry + rz * rz);
         if (rMag > 0.001f) {
             float pull = (rMag - 0.35f) * retractPull;
-            vx -= (rx / rMag) * pull * u.dt;
-            vy -= (ry / rMag) * pull * u.dt;
-            vz -= (rz / rMag) * pull * u.dt * R;
+            ax -= (rx / rMag) * pull * u.dt;
+            ay -= (ry / rMag) * pull * u.dt;
+            az -= (rz / rMag) * pull * u.dt * R;
         }
     } else {
-        // Flat mode: only pull X/Y to the ring of 0.35 so particles don't get trapped at origin
         float rx = px, ry = py;
         float rMag = sqrt(rx * rx + ry * ry);
         if (rMag > 0.001f) {
             float pull = (rMag - 0.35f) * retractPull;
-            vx -= (rx / rMag) * pull * u.dt;
-            vy -= (ry / rMag) * pull * u.dt;
+            ax -= (rx / rMag) * pull * u.dt;
+            ay -= (ry / rMag) * pull * u.dt;
         }
-        // Gently flatten the plate during silence
-        vz -= (pz / R) * retractPull * u.dt * R * 0.5f;
+        az -= (pz / R) * retractPull * u.dt * R * 0.5f;
     }
 
-    // Friction
-    vx *= dynamicFric;
-    vy *= dynamicFric;
-    vz *= dynamicFric;
+    // ── Störmer-Verlet integration (damped) ──────────────────────────
+    // vpx/vpy/vpz = velocity proxy (displacement per frame)
+    // ax/ay/az = force accumulated as position delta
+    // dynamicFric = damping factor on velocity proxy
 
-    // Speed cap
-    float speedU = sqrt(vx * vx + vy * vy + (vz / R) * (vz / R));
+    vpx = vpx * dynamicFric + ax;
+    vpy = vpy * dynamicFric + ay;
+    vpz = vpz * dynamicFric + az;
+
+    // Speed cap on velocity proxy
+    float speedU = sqrt(vpx * vpx + vpy * vpy + (vpz / R) * (vpz / R));
     if (speedU > u.speedCap) {
         float s = u.speedCap / speedU;
-        vx *= s; vy *= s; vz *= s;
+        vpx *= s; vpy *= s; vpz *= s;
     }
 
     // Feynman phase accumulation: phase += (KE - PE) * dt
-    float KE = 0.5f * mass * (vx * vx + vy * vy + (vz / R) * (vz / R));
+    float KE = 0.5f * mass * speedU * speedU;
     phase += (KE - PE) * u.dt;
     phase = fmod(phase + M_PI_F, 2.0f * M_PI_F) - M_PI_F;
 
-    // Integrate position (frame-rate independent, * 60 normalizes velocity units)
-    px += vx * u.dt * 60.0f;
-    py += vy * u.dt * 60.0f;
-    pz += vz * u.dt * 60.0f;
+    // New position = current + damped velocity proxy + acceleration
+    float newX = px + vpx;
+    float newY = py + vpy;
+    float newZ = pz + vpz;
 
-    // Boundary clamp
+    // ── Boundary clamp ───────────────────────────────────────────────
     float R2 = 400.0f;
     if (u.sphereMode == 1) {
-        float r3d = sqrt(px * px + py * py + (pz / R2) * (pz / R2));
+        float r3d = sqrt(newX * newX + newY * newY + (newZ / R2) * (newZ / R2));
         if (r3d > 0.96f) {
             float s = 0.95f / r3d;
-            px *= s;
-            py *= s;
-            pz *= s;
-            vx *= -0.3f; vy *= -0.3f; vz *= -0.3f;
+            newX *= s;
+            newY *= s;
+            newZ *= s;
+            // Bounce: invert velocity proxy
+            vpx *= -0.3f; vpy *= -0.3f; vpz *= -0.3f;
         }
     } else {
-        float rr = sqrt(px * px + py * py);
+        float rr = sqrt(newX * newX + newY * newY);
         if (rr > 0.96f) {
-            px = px / rr * 0.95f;
-            py = py / rr * 0.95f;
-            vx *= -0.3f; vy *= -0.3f;
+            newX = newX / rr * 0.95f;
+            newY = newY / rr * 0.95f;
+            vpx *= -0.3f; vpy *= -0.3f;
         }
-        if (abs(pz) > u.maxWaveDepth) {
-            pz = sign(pz) * u.maxWaveDepth * 0.95f;
-            vz *= -0.3f;
+        if (abs(newZ) > u.maxWaveDepth) {
+            newZ = sign(newZ) * u.maxWaveDepth * 0.95f;
+            vpz *= -0.3f;
         }
     }
 
-    p.posW = float4(px, py, pz, mass);
-    p.velW = float4(vx, vy, vz, phase);
+    // ── Write back ───────────────────────────────────────────────────
+    // Store previous position for next frame's Verlet step
+    p.prevW = float4(px, py, pz, 0.0f);
+    p.posW = float4(newX, newY, newZ, mass);
+    // Store velocity proxy (for collision response and stats readback)
+    p.velW = float4(vpx, vpy, vpz, phase);
 }
 
 // ── Conservation law reduction kernel ───────────────────────────────────────
-// Per-threadgroup partial sums written to buffer, CPU does final sum.
-// With 800k/256 = 3125 threadgroups, CPU sum is trivial.
 
 struct PartialStats {
     float kineticEnergy;
@@ -391,7 +407,6 @@ kernel void reduce_stats(
     sharedMY[tid] = my;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Tree reduction within threadgroup
     for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
         if (tid < stride) {
             sharedKE[tid] += sharedKE[tid + stride];
@@ -401,7 +416,6 @@ kernel void reduce_stats(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // First thread writes this threadgroup's partial sum
     if (tid == 0) {
         partialSums[tgId].kineticEnergy = sharedKE[0];
         partialSums[tgId].momentumX = sharedMX[0];

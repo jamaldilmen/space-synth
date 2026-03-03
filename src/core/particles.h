@@ -1,46 +1,48 @@
 #pragma once
-#include <vector>
 #include <cstdint>
+#include <vector>
 
 namespace space {
 
 // CPU-side particle state
 // Position in normalized plate coords: x,y in [-1,1], z = wave depth
 struct Particle {
-    float x, y, z;
-    float vx, vy, vz;
+  float x, y, z;
+  float vx, vy, vz;
 };
 
 // Manages the particle buffer on CPU side
 // GPU-side state is a mirror of this (uploaded each frame or computed on GPU)
 class ParticleSystem {
 public:
-    void init(int count, float maxWaveDepth);
-    void clear();
+  void init(int count, float maxWaveDepth);
+  void clear();
 
-    int count() const { return static_cast<int>(particles_.size()); }
-    Particle* data() { return particles_.data(); }
-    const Particle* data() const { return particles_.data(); }
-    Particle& operator[](int i) { return particles_[i]; }
+  int count() const { return static_cast<int>(particles_.size()); }
+  Particle *data() { return particles_.data(); }
+  const Particle *data() const { return particles_.data(); }
+  Particle &operator[](int i) { return particles_[i]; }
 
-    float maxWaveDepth() const { return maxWaveDepth_; }
-    void setMaxWaveDepth(float d) { maxWaveDepth_ = d; }
+  float maxWaveDepth() const { return maxWaveDepth_; }
+  void setMaxWaveDepth(float d) { maxWaveDepth_ = d; }
 
 private:
-    std::vector<Particle> particles_;
-    float maxWaveDepth_ = 100.0f;
+  std::vector<Particle> particles_;
+  float maxWaveDepth_ = 100.0f;
 };
 
 // Packed struct for GPU upload — position + velocity + previous position
 // posW.w = mass, velW.w = phase (Feynman action accumulator)
 // prevW stores previous frame position for Störmer-Verlet integration
 struct alignas(16) GPUParticle {
-    float x, y, z, mass;           // 16 bytes — posW
-    float vx, vy, vz, phase;       // 16 bytes — velW
-    float prevX, prevY, prevZ, pad2; // 16 bytes — prevW (Verlet)
-};  // Total: 48 bytes
+  float x, y, z, mass;             // 16 bytes — posW
+  float vx, vy, vz, phase;         // 16 bytes — velW
+  float prevX, prevY, prevZ, pad2; // 16 bytes — prevW (Verlet)
+  float spinX, spinY, spinZ,
+      charge; // 16 bytes — spinW (Circulation + polarity)
+}; // Total: 64 bytes
 
 // Convert CPU particles to GPU buffer format
-std::vector<GPUParticle> packForGPU(const ParticleSystem& system);
+std::vector<GPUParticle> packForGPU(const ParticleSystem &system);
 
 } // namespace space

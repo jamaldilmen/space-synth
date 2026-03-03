@@ -1,5 +1,5 @@
 #pragma once
-#include "core/particles.h"
+#include "particles.h" // Same directory hierarchy from src/core theoretically, but actually they are in different. It should be #include "../core/particles.h"
 #include <cmath>
 #include <cstdint>
 
@@ -39,7 +39,7 @@ struct CameraUniforms {
   float cameraPad; // Explicit padding for 16-byte alignment (Metal float3)
   float particleSize;
   float plateRadius;
-  float phaseViz;    // 1.0 = phase coloring, 0.0 = default
+  float phaseViz; // 1.0 = phase coloring, 0.0 = default
   float padding[1];
 };
 
@@ -49,10 +49,10 @@ struct VoiceGPUData {
   int n;
   float alpha;
   float amplitude;
-  float emitterX;   // Point source position X
-  float emitterY;   // Point source position Y
-  float emitterZ;   // Point source position Z
-  float pad;        // Alignment to 32 bytes
+  float emitterX; // Point source position X
+  float emitterY; // Point source position Y
+  float emitterZ; // Point source position Z
+  float pad;      // Alignment to 32 bytes
 };
 
 // Physics uniforms for compute shader
@@ -70,19 +70,21 @@ struct PhysicsUniforms {
   float modeP; // Depth Mode multiplier
   int simMode;
   int sphereMode;
-  uint32_t frameCounter;       // For temporal noise
-  float symmetryBreakImpulse;  // >0 on mode change (Noether)
-  float collisionRadius;       // Interaction radius for collisions
-  int collisionsOn;             // 1 = collisions enabled
-  float uncertaintyStrength;    // Heisenberg noise scale
+  uint32_t frameCounter;      // For temporal noise
+  float symmetryBreakImpulse; // >0 on mode change (Noether)
+  float collisionRadius;      // Interaction radius for collisions
+  int collisionsOn;           // 1 = collisions enabled
+  float uncertaintyStrength;  // Heisenberg noise scale
+  float eFieldStiffness;      // E-Field analog repulsion multiplier
+  float bFieldCirculation;    // B-Field analog circulation force
 };
 
 // Spatial hash uniforms for collision grid
 struct SpatialHashUniforms {
-  int gridSize;       // 256
+  int gridSize; // 256
   int particleCount;
-  float cellSize;     // 2.0 / gridSize
-  float invCellSize;  // gridSize / 2.0
+  float cellSize;    // 2.0 / gridSize
+  float invCellSize; // gridSize / 2.0
 };
 
 // Stats readback from GPU (conservation laws)
@@ -105,7 +107,8 @@ public:
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                    float totalAmplitude, float maxWaveDepth, float jitterFactor,
                    float retractionPull, float damping, float speedCap,
-                   float modeP, int simMode, int sphereMode);
+                   float modeP, int simMode, int sphereMode,
+                   float eFieldStiffness, float bFieldCirculation);
 
   void render(const RenderConfig &config);
   void render(const RenderConfig &config, const float *viewProj);

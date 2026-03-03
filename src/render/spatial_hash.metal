@@ -50,59 +50,139 @@ kernel void count_cells(
     atomic_fetch_add_explicit(&cellCounts[cellIndices[id]], 1u, memory_order_relaxed);
 }
 
-// ── Phase 3: Prefix sum on cell counts → cell start offsets ─────────────────
-// Optimized: Threadgroup parallel prefix sum using SIMD primitives.
-
-kernel void prefix_sum_cells(
+// ── Phase 3: Multi-pass Blelloch Prefix Sum ──────────────────────────────────
+// Pass 1: Local prefix sum within each threadgroup, outputs into 'cellStarts'.
+// It also records the total sum of this block into 'blockSums'.
+kernel void prefix_sum_local(
     device uint* cellCounts [[buffer(0)]],
     device uint* cellStarts [[buffer(1)]],
-    constant SpatialHashUniforms& u [[buffer(2)]],
-    uint thread_position_in_grid [[thread_position_in_grid]],
+    device uint* blockSums [[buffer(2)]],
+    constant SpatialHashUniforms& u [[buffer(3)]],
     uint thread_position_in_threadgroup [[thread_position_in_threadgroup]],
-    uint threadgroups_per_grid [[threadgroups_per_grid]])
+    uint threadgroup_position_in_grid [[threadgroup_position_in_grid]],
+    uint threads_per_threadgroup [[threads_per_threadgroup]])
 {
-    // A single threadgroup handles the entire 65536 cell array 
-    // by having each thread iterate over a chunk. 
-    // This is vastly faster than a single thread doing 65k operations.
-    
-    int totalCells = u.gridSize * u.gridSize;
-    uint numThreads = 1024; // We will dispatch exactly 1 threadgroup of 1024 threads
-    int cellsPerThread = (totalCells + numThreads - 1) / numThreads;
-    
     uint tid = thread_position_in_threadgroup;
-    int startIdx = tid * cellsPerThread;
-    int endIdx = min(startIdx + cellsPerThread, totalCells);
+    uint blockIdx = threadgroup_position_in_grid;
     
-    // Step 1: Compute local thread sum
-    uint localSum = 0;
-    for (int i = startIdx; i < endIdx; i++) {
-        localSum += cellCounts[i];
+    // Each thread processes 2 elements for the Blelloch scan
+    uint globalIdx0 = blockIdx * (threads_per_threadgroup * 2) + (tid * 2);
+    uint globalIdx1 = globalIdx0 + 1;
+    
+    threadgroup uint sharedData[2048]; // Max threads per threadgroup = 1024 -> 2048 elements
+    
+    uint totalCells = u.gridSize * u.gridSize;
+    
+    // Load into shared memory
+    sharedData[tid * 2]     = (globalIdx0 < totalCells) ? cellCounts[globalIdx0] : 0;
+    sharedData[tid * 2 + 1] = (globalIdx1 < totalCells) ? cellCounts[globalIdx1] : 0;
+    
+    // Up-sweep (reduce) phase
+    uint offset = 1;
+    for (uint d = threads_per_threadgroup; d > 0; d >>= 1) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < d) {
+            uint ai = offset * (2 * tid + 1) - 1;
+            uint bi = offset * (2 * tid + 2) - 1;
+            sharedData[bi] += sharedData[ai];
+        }
+        offset *= 2;
     }
     
-    // Step 2: Threadgroup prefix sum of localSums using threadgroup memory
-    threadgroup uint sharedSums[1024];
-    sharedSums[tid] = localSum;
+    // Clear the last element and save it to blockSums
+    if (tid == 0) {
+        if (blockIdx < (totalCells + threads_per_threadgroup * 2 - 1) / (threads_per_threadgroup * 2)) {
+            blockSums[blockIdx] = sharedData[threads_per_threadgroup * 2 - 1];
+        }
+        sharedData[threads_per_threadgroup * 2 - 1] = 0;
+    }
+    
+    // Down-sweep phase
+    for (uint d = 1; d < threads_per_threadgroup * 2; d *= 2) {
+        offset >>= 1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < d) {
+            uint ai = offset * (2 * tid + 1) - 1;
+            uint bi = offset * (2 * tid + 2) - 1;
+            uint t = sharedData[ai];
+            sharedData[ai] = sharedData[bi];
+            sharedData[bi] += t;
+        }
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    // Naive prefix sum in shared memory (fast enough for 1024 elements)
-    uint offset = 0;
-    for (uint offset_step = 1; offset_step < numThreads; offset_step *= 2) {
-        uint val = 0;
-        if (tid >= offset_step) val = sharedSums[tid - offset_step];
+    // Write out results (exclusive prefix sum)
+    if (globalIdx0 < totalCells) cellStarts[globalIdx0] = sharedData[tid * 2];
+    if (globalIdx1 < totalCells) cellStarts[globalIdx1] = sharedData[tid * 2 + 1];
+}
+
+// Pass 2: Prefix sum of the block sums.
+// Assuming the number of blocks is small enough to fit within ONE threadgroup (<2048).
+// For 65536 cells and 1024 threads, we have 32 blocks (32 < 2048), so one pass is sufficient.
+kernel void prefix_sum_blocks(
+    device uint* blockSums [[buffer(0)]],
+    constant SpatialHashUniforms& u [[buffer(1)]],
+    uint thread_position_in_threadgroup [[thread_position_in_threadgroup]],
+    uint threads_per_threadgroup [[threads_per_threadgroup]])
+{
+    uint tid = thread_position_in_threadgroup;
+    uint totalCells = u.gridSize * u.gridSize;
+    uint numBlocks = (totalCells + 2047) / 2048; // Max threads = 1024 -> 2048 elements/block
+    
+    // We only need one threadgroup to scan the block sums
+    uint globalIdx0 = tid * 2;
+    uint globalIdx1 = globalIdx0 + 1;
+    
+    threadgroup uint sharedData[2048];
+    
+    sharedData[tid * 2]     = (globalIdx0 < numBlocks) ? blockSums[globalIdx0] : 0;
+    sharedData[tid * 2 + 1] = (globalIdx1 < numBlocks) ? blockSums[globalIdx1] : 0;
+    
+    uint offset = 1;
+    for (uint d = threads_per_threadgroup; d > 0; d >>= 1) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tid >= offset_step) sharedSums[tid] += val;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < d) {
+            uint ai = offset * (2 * tid + 1) - 1;
+            uint bi = offset * (2 * tid + 2) - 1;
+            sharedData[bi] += sharedData[ai];
+        }
+        offset *= 2;
     }
     
-    // The exclusive offset for this thread is the sum built up strictly BEFORE this thread
-    uint threadBaseOffset = (tid == 0) ? 0 : sharedSums[tid - 1];
-    
-    // Step 3: Write out final prefix sums
-    uint currentOffset = threadBaseOffset;
-    for (int i = startIdx; i < endIdx; i++) {
-        cellStarts[i] = currentOffset;
-        currentOffset += cellCounts[i];
+    if (tid == 0) {
+        sharedData[threads_per_threadgroup * 2 - 1] = 0;
     }
+    
+    for (uint d = 1; d < threads_per_threadgroup * 2; d *= 2) {
+        offset >>= 1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < d) {
+            uint ai = offset * (2 * tid + 1) - 1;
+            uint bi = offset * (2 * tid + 2) - 1;
+            uint t = sharedData[ai];
+            sharedData[ai] = sharedData[bi];
+            sharedData[bi] += t;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    if (globalIdx0 < numBlocks) blockSums[globalIdx0] = sharedData[tid * 2];
+    if (globalIdx1 < numBlocks) blockSums[globalIdx1] = sharedData[tid * 2 + 1];
+}
+
+// Pass 3: Add the scanned block sums back to the local prefix sums to get global offsets.
+kernel void prefix_sum_add(
+    device uint* cellStarts [[buffer(0)]],
+    device const uint* blockSums [[buffer(1)]],
+    constant SpatialHashUniforms& u [[buffer(2)]],
+    uint id [[thread_position_in_grid]],
+    uint threadgroup_position_in_grid [[threadgroup_position_in_grid]])
+{
+    uint totalCells = u.gridSize * u.gridSize;
+    if (id >= totalCells) return;
+    
+    // Add the sum of all preceding blocks to this element's local prefix sum
+    cellStarts[id] += blockSums[threadgroup_position_in_grid];
 }
 
 // ── Density heatmap: write cell counts to a texture ─────────────────

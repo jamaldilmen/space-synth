@@ -165,7 +165,7 @@ int main() {
   static float uiDamping = 0.95f;
   static float uiRetraction = 1.0f;
   static float uiWaveDepth = 20.0f;
-  static float uiSupernova = 0.0f;   // 0.0 to 1.0 (Macro slider)
+  static float uiSupernova = 0.0f; // 0.0 to 1.0 (Macro slider)
 
   // uiSpeedCap removed: driven by synth.drive() instead
   static float uiModeP = 1.0f;
@@ -177,6 +177,8 @@ int main() {
   static float uiRelease = 400.0f;  // ms
   static bool uiCollisions = false; // Particle-particle collisions
   static bool uiPhaseViz = false;   // Feynman phase arrow coloring
+  static float uiEField = 0.01f;    // Stiffness multiplier
+  static float uiBField = 0.05f;    // Circulation multiplier
   static float uiBloom = 0.0f;
   static float uiTrailDecay = 0.0f;
   static float uiChromatic = 0.0f;
@@ -246,10 +248,9 @@ int main() {
     for (int i = 0; i < (int)activeVoices.size(); i++) {
       const auto &v = activeVoices[i];
       int emIdx = i % MAX_EMITTERS;
-      voiceData.push_back({
-          v.mode->m, v.mode->n, (float)v.mode->alpha, v.amplitude,
-          emitters[emIdx].x, emitters[emIdx].y, emitters[emIdx].z, 0.0f
-      });
+      voiceData.push_back({v.mode->m, v.mode->n, (float)v.mode->alpha,
+                           v.amplitude, emitters[emIdx].x, emitters[emIdx].y,
+                           emitters[emIdx].z, 0.0f});
     }
 
     camera.update(dt);
@@ -427,6 +428,18 @@ int main() {
           uiModeP = 1.0f;
         ImGui::SetItemTooltip("Depth Mode multiplier (Wave complexity)");
 
+        ImGui::SliderFloat("E-Field Core", &uiEField, 0.0f, 0.2f, "%.4f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiEField = 0.01f;
+        ImGui::SetItemTooltip(
+            "Stiffness of the particle medium (repulsion factor)");
+
+        ImGui::SliderFloat("B-Field Spin", &uiBField, 0.0f, 0.3f, "%.4f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiBField = 0.05f;
+        ImGui::SetItemTooltip(
+            "Vortex induction strength (Biot-Savart velocity transfer)");
+
         ImGui::Unindent();
       }
 
@@ -564,8 +577,7 @@ int main() {
           uiTrailDecay = 0.0f;
         ImGui::SetItemTooltip("Motion trails (Feedback factor)");
 
-        ImGui::SliderFloat("Chromatic", &uiChromatic, 0.0f, 0.02f,
-                           "%.3f");
+        ImGui::SliderFloat("Chromatic", &uiChromatic, 0.0f, 0.02f, "%.3f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiChromatic = 0.0f;
         ImGui::SetItemTooltip("RGB split lens effect");
@@ -806,10 +818,11 @@ int main() {
     // ── Update Physics ──────────────────────────────────────────────
     renderer.setActiveParticleCount(uiParticleCount);
 
-    renderer.computeStep(
-        dt, voiceData.data(), (int)voiceData.size(), synth.totalAmplitude(),
-        uiWaveDepth, uiJitter * effectiveJitterMultiplier, uiRetraction,
-        uiDamping, effectiveDrive, uiModeP, uiSimMode, uiSphereMode);
+    renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
+                         synth.totalAmplitude(), uiWaveDepth,
+                         uiJitter * effectiveJitterMultiplier, uiRetraction,
+                         uiDamping, effectiveDrive, uiModeP, uiSimMode,
+                         uiSphereMode, uiEField, uiBField);
 
     renderer.render(config, viewProj);
 

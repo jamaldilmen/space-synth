@@ -25,7 +25,9 @@ struct Renderer::Impl {
   // Spatial hash pipelines
   id<MTLComputePipelineState> assignCellsPipeline = nil;
   id<MTLComputePipelineState> countCellsPipeline = nil;
-  id<MTLComputePipelineState> prefixSumPipeline = nil;
+  id<MTLComputePipelineState> prefixSumLocalPipeline = nil;
+  id<MTLComputePipelineState> prefixSumBlocksPipeline = nil;
+  id<MTLComputePipelineState> prefixSumAddPipeline = nil;
   id<MTLComputePipelineState> scatterPipeline = nil;
 
   // Conservation law reduction
@@ -40,6 +42,7 @@ struct Renderer::Impl {
   id<MTLBuffer> cellIndicesBuffer = nil;                // cell ID per particle
   id<MTLBuffer> cellCountsBuffer = nil;                 // count per cell
   id<MTLBuffer> cellStartsBuffer = nil;                 // prefix sum offsets
+  id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
   id<MTLBuffer> sortedParticlesBuffer = nil; // particle data in cell order
   id<MTLBuffer> spatialHashUniformBuffer = nil;
@@ -133,12 +136,14 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   }
 
   // ── Spatial hash compute pipelines ──────────────────────────────────
-  const char *spatialKernels[] = {"assign_cells", "count_cells",
-                                  "prefix_sum_cells", "scatter_particles"};
+  const char *spatialKernels[] = {"assign_cells",     "count_cells",
+                                  "prefix_sum_local", "prefix_sum_blocks",
+                                  "prefix_sum_add",   "scatter_particles"};
   id<MTLComputePipelineState> *spatialPipelines[] = {
-      &impl_->assignCellsPipeline, &impl_->countCellsPipeline,
-      &impl_->prefixSumPipeline, &impl_->scatterPipeline};
-  for (int i = 0; i < 4; i++) {
+      &impl_->assignCellsPipeline,    &impl_->countCellsPipeline,
+      &impl_->prefixSumLocalPipeline, &impl_->prefixSumBlocksPipeline,
+      &impl_->prefixSumAddPipeline,   &impl_->scatterPipeline};
+  for (int i = 0; i < 6; i++) {
     id<MTLFunction> fn = [impl_->library
         newFunctionWithName:[NSString stringWithUTF8String:spatialKernels[i]]];
     if (fn) {
@@ -276,6 +281,8 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
+  size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
+  allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
   allocIfNeeded(impl_->cellOffsetsBuffer, cellSize);
   allocIfNeeded(impl_->sortedParticlesBuffer, size);
   allocIfNeeded(impl_->spatialHashUniformBuffer, sizeof(SpatialHashUniforms));
@@ -490,7 +497,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
 
     // ── Spatial hash build (4 phases) ──────────────────────────────
     if (collisionsEnabled && assignCellsPipeline && countCellsPipeline &&
-        prefixSumPipeline && scatterPipeline) {
+        prefixSumLocalPipeline && prefixSumBlocksPipeline &&
+        prefixSumAddPipeline && scatterPipeline) {
       // Upload spatial hash uniforms
       SpatialHashUniforms su = {};
       su.gridSize = kGridSize;
@@ -538,20 +546,55 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
-      // Phase 3: prefix sum (1024-thread parallel SIMD scan)
+      // Phase 3: Multi-pass Blelloch Prefix Sum (O(N) parallel scan)
       {
-        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
-        [comp setComputePipelineState:prefixSumPipeline];
-        [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
-        [comp setBuffer:cellStartsBuffer offset:0 atIndex:1];
-        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        // Pass 3a: Local block scan
+        id<MTLComputeCommandEncoder> compLocal = [cmdBuf computeCommandEncoder];
+        [compLocal setComputePipelineState:prefixSumLocalPipeline];
+        [compLocal setBuffer:cellCountsBuffer offset:0 atIndex:0];
+        [compLocal setBuffer:cellStartsBuffer offset:0 atIndex:1];
+        [compLocal setBuffer:blockSumsBuffer offset:0 atIndex:2];
+        [compLocal setBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
 
-        // Dispatch exactly 1 threadgroup of 1024 threads
-        NSUInteger tg = std::min(
-            (NSUInteger)1024, prefixSumPipeline.maxTotalThreadsPerThreadgroup);
-        [comp dispatchThreadgroups:MTLSizeMake(1, 1, 1)
-             threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
-        [comp endEncoding];
+        NSUInteger tgLocal =
+            std::min((NSUInteger)1024,
+                     prefixSumLocalPipeline.maxTotalThreadsPerThreadgroup);
+        // Dispatch enough threadgroups to cover 65536 cells, 2048 cells per
+        // threadgroup
+        NSUInteger numBlocks =
+            (Impl::kTotalCells + (tgLocal * 2) - 1) / (tgLocal * 2);
+        [compLocal dispatchThreadgroups:MTLSizeMake(numBlocks, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(tgLocal, 1, 1)];
+        [compLocal endEncoding];
+
+        // Pass 3b: Scan block sums (single threadgroup for 32 blocks)
+        id<MTLComputeCommandEncoder> compBlocks =
+            [cmdBuf computeCommandEncoder];
+        [compBlocks setComputePipelineState:prefixSumBlocksPipeline];
+        [compBlocks setBuffer:blockSumsBuffer offset:0 atIndex:0];
+        [compBlocks setBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
+
+        NSUInteger tgBlocks =
+            std::min((NSUInteger)1024,
+                     prefixSumBlocksPipeline.maxTotalThreadsPerThreadgroup);
+        [compBlocks dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                   threadsPerThreadgroup:MTLSizeMake(tgBlocks, 1, 1)];
+        [compBlocks endEncoding];
+
+        // Pass 3c: Add block sums back to local scans
+        id<MTLComputeCommandEncoder> compAdd = [cmdBuf computeCommandEncoder];
+        [compAdd setComputePipelineState:prefixSumAddPipeline];
+        [compAdd setBuffer:cellStartsBuffer offset:0 atIndex:0];
+        [compAdd setBuffer:blockSumsBuffer offset:0 atIndex:1];
+        [compAdd setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+
+        // 1 thread per cell, grouped naturally
+        NSUInteger tgAdd =
+            std::min((NSUInteger)256,
+                     prefixSumAddPipeline.maxTotalThreadsPerThreadgroup);
+        [compAdd dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgAdd, 1, 1)];
+        [compAdd endEncoding];
       }
 
       // Phase 4: scatter to sorted order

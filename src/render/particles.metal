@@ -1,11 +1,12 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// GPU particle state — matches GPUParticle struct in C++ (48 bytes)
+// GPU particle state — matches GPUParticle struct in C++ (64 bytes)
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
     float4 prevW;  // prevX, prevY, prevZ, pad (Störmer-Verlet)
+    float4 spinW;  // spinX, spinY, spinZ, charge
 };
 
 struct VoiceData {
@@ -38,6 +39,8 @@ struct PhysicsUniforms {
     float collisionRadius;
     int collisionsOn;
     float uncertaintyStrength;
+    float eFieldStiffness;
+    float bFieldCirculation;
 };
 
 struct SpatialHashUniforms {
@@ -47,29 +50,7 @@ struct SpatialHashUniforms {
     float invCellSize;
 };
 
-// ── Bessel J_n(x) — power series, 15 terms sufficient for GPU ───────────────
-
-static float besselJ(int n, float x) {
-    if (abs(x) < 1e-6f) return n == 0 ? 1.0f : 0.0f;
-
-    float sum = 0.0f;
-    float hx = x * 0.5f;
-    float term = 1.0f;
-
-    for (int i = 1; i <= n; i++) {
-        term *= hx / float(i);
-    }
-    sum = term;
-
-    float hx2 = -hx * hx;
-    for (int k = 1; k < 15; k++) {
-        term *= hx2 / (float(k) * float(k + n));
-        sum += term;
-        if (abs(term) < 1e-10f) break;
-    }
-
-    return sum;
-}
+// (Removed Bessel functions - no longer used)
 
 // Temporal noise — hash uses frame counter for proper Brownian motion
 static float noise(uint id, uint frame) {
@@ -128,79 +109,55 @@ kernel void compute_physics(
     // Accumulate forces as position deltas (acceleration * dt²)
     float ax = 0.0f, ay = 0.0f, az = 0.0f;
 
+    // Emitter Interactions (Macro forces)
     if (u.voiceCount > 0) {
-        float polyNorm = 1.0f / sqrt(float(u.voiceCount));
         float jitterTotal = 0.0f;
 
         for (int vi = 0; vi < u.voiceCount; vi++) {
-            float m_f = float(voices[vi].m);
             float amp = voices[vi].amplitude;
 
-            // Compute r and theta relative to emitter position
+            // Global attractive/repulsive forces from the emitter
             float dx = px - voices[vi].emitterX;
             float dy = py - voices[vi].emitterY;
             float dz = pz - voices[vi].emitterZ;
-            float r = sqrt(dx * dx + dy * dy);
+            float r2 = dx * dx + dy * dy + dz * dz + 1e-4f;
+            float r = sqrt(r2);
             float th = atan2(dy, dx);
-            float kz = k * dz;
+            
+            float m_f = float(voices[vi].m);
+            float n_f = float(voices[vi].n);
 
-            // Match HTML: w = min(amp, 1) * 0.45 * polyNormalizer
-            float w = min(amp, 1.0f) * 0.45f * polyNorm;
+            // Emitters induce a strong coherent spin field (B-field)
+            // The spin magnitude and axis are modulated by the harmonic parameters m and n
+            float spinMag = amp * 50.0f * (m_f == 0.0f ? 1.0f : sign(m_f));
+            float3 emitterSpin = float3(
+                sin(n_f * th) * spinMag * 0.5f, 
+                cos(n_f * th) * spinMag * 0.5f, 
+                spinMag * cos(m_f * r * 0.1f)
+            );
+            float3 rVec = float3(dx, dy, dz);
+            
+            // Biot-Savart induced velocity from the emitter's virtual vortex
+            float3 inducedV = cross(emitterSpin, rVec) / (r2 * r);
+            ax += inducedV.x * 0.15f;
+            ay += inducedV.y * 0.15f;
+            az += inducedV.z * 0.1f;
 
-            float alpha = voices[vi].alpha;
-            float alpha_r = alpha * r;
-            float jm = besselJ(voices[vi].m, alpha_r);
-            float phaseAngle = m_f * th - kz;
-            float cos_p = cos(phaseAngle);
-            float h3d = jm * cos_p;
+            // Simple radial pressure waves, layered with m and n spatial variations
+            float wavePhase = k * r - m_f * th - n_f * phase;
+            float pressure = cos(wavePhase) * amp * (5.0f + n_f);
+            ax += (dx / r) * pressure;
+            ay += (dy / r) * pressure;
+            az += (dz / r) * pressure;
 
-            PE += h3d * h3d * w;
-
-            float jm_prime;
-            if (voices[vi].m == 0) {
-                jm_prime = -besselJ(1, alpha_r);
-            } else {
-                jm_prime = 0.5f * (besselJ(voices[vi].m - 1, alpha_r) - besselJ(voices[vi].m + 1, alpha_r));
-            }
-
-            float dP_dr = 2.0f * jm * jm_prime * alpha * cos_p * cos_p;
-
-            float dP_dth = -m_f * jm * jm * sin(2.0f * phaseAngle);
-
-            float r_inv = 1.0f / (r + 1e-6f);
-            float dr_dx = dx * r_inv;
-            float dr_dy = dy * r_inv;
-            float dth_dx = -dy * r_inv * r_inv;
-            float dth_dy = dx * r_inv * r_inv;
-
-            float gx = (dP_dr * dr_dx + dP_dth * dth_dx) * 3.0f;
-            float gy = (dP_dr * dr_dy + dP_dth * dth_dy) * 3.0f;
-
-            ax -= gx * w;
-            ay -= gy * w;
-
-            float gz = k * jm * jm * sin(2.0f * phaseAngle);
-            if (voices[vi].m == 0 && abs(dz) < 2.0f) {
-                gz += noise(id + 1000, u.frameCounter) * jm * jm * k;
-            }
-            az -= gz * w * 800.0f;
-
-            jitterTotal += abs(h3d) * amp;
+            jitterTotal += amp * abs(cos(m_f * th));
         }
 
-        // Match HTML jitter: simpler formula
         if (jitterTotal > 0.01f) {
             float n_strength = jitterTotal * 6.0f * u.dt;
             ax += noise(id, u.frameCounter) * n_strength;
             ay += noise(id + 1, u.frameCounter) * n_strength;
             az += noise(id + 2, u.frameCounter) * n_strength * (u.maxWaveDepth / 400.0f);
-        }
-
-        // Node braking
-        if (u.totalAmplitude > 0.01f) {
-            float distToNode = jitterTotal / u.totalAmplitude;
-            float nodeBrake = min(1.0f, distToNode * 3.5f + 0.15f);
-            dynamicFric = baseFric * nodeBrake;
         }
     }
 
@@ -232,6 +189,8 @@ kernel void compute_physics(
         float shiftVx = 0.0f;
         float shiftVy = 0.0f;
 
+        float selfCharge = p.spinW.w;
+
         for (int y = startCellY; y <= endCellY; y++) {
             for (int x = startCellX; x <= endCellX; x++) {
                 uint cID = uint(y * su.gridSize + x);
@@ -251,8 +210,26 @@ kernel void compute_physics(
                     float dist = sqrt(dist2);
                     float nx_dir = ddx / dist;
                     float ny_dir = ddy / dist;
+                    
+                    // 1. E-Field Analog (Stiffness / Repulsion)
+                    // Inverse-square repulsion to maintain spacing in the medium
+                    float q1q2 = selfCharge * np.spinW.w;
+                    float eForce = (u.eFieldStiffness * q1q2) / (dist2 + 1e-4f);
+                    shiftVx += nx_dir * eForce * u.dt;
+                    shiftVy += ny_dir * eForce * u.dt;
 
-                    // Push APART by half overlap
+                    // 2. B-Field Analog (Circulation / Lorentz Force)
+                    // Neighbor's spin induces a Biot-Savart velocity field on us
+                    float3 neighborSpin = float3(np.spinW.x, np.spinW.y, np.spinW.z);
+                    float3 rVec = float3(ddx, ddy, 0.0f); // 2D projection for now
+                    float3 inducedV = cross(neighborSpin, rVec) / ((dist2 + 1e-4f) * dist);
+                    
+                    // The Lorentz force F = q(E + v x B)
+                    // Here we simply add the induced velocity to our velocity proxy
+                    shiftVx -= inducedV.x * u.bFieldCirculation * u.dt;
+                    shiftVy -= inducedV.y * u.bFieldCirculation * u.dt;
+
+                    // 3. Simple Elastic Physical Collision (for overlap resolution)
                     float overlap = colRad - dist;
                     float omass = np.posW.w;
                     float totalMass = mass + omass;
@@ -260,7 +237,6 @@ kernel void compute_physics(
                     shiftX += nx_dir * overlap * pushRatio * 0.5f;
                     shiftY += ny_dir * overlap * pushRatio * 0.5f;
 
-                    // Elastic collision impulse using derived velocities
                     float np_vpx = np.posW.x - np.prevW.x;
                     float np_vpy = np.posW.y - np.prevW.y;
                     float dvx = vpx - np_vpx;

@@ -195,6 +195,7 @@ int main() {
   static bool uiSoloStrings = true;
   static bool uiSoloJitter = true;
   static bool uiSoloCollisions = true;
+  static bool uiAutoMode = true; // Auto-Self-Healing (Phase 8)
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -497,10 +498,19 @@ int main() {
           ImGui::Text(stats.errorState == 1 ? "Error: NaN Detected"
                                             : "Error: Energy Explosion");
           ImGui::PopStyleColor();
+
+          if (uiAutoMode) {
+            ImGui::TextColored(ImVec4(1, 0.5, 0, 1),
+                               "Auto-Mitigation Active...");
+          }
         } else {
           ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f),
                              "Physics Core: OK");
         }
+
+        ImGui::Checkbox("Auto-Mode (Self-Healing)", &uiAutoMode);
+        ImGui::SetItemTooltip("Automatically dial down parameters and reset on "
+                              "stability failure");
 
         ImGui::Unindent();
       }
@@ -886,6 +896,23 @@ int main() {
       debugFlags |= DEBUG_COLLISIONS;
     if (uiFixedTimestep)
       debugFlags |= DEBUG_FIXED_DT;
+
+    // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
+    auto stats = renderer.getPhysicsStats();
+    if (uiAutoMode && stats.errorState > 0) {
+      // Step 1: Immediate parameter mitigation (dial down stress)
+      uiEField *= 0.5f;
+      uiBField *= 0.5f;
+      uiGravity *= 0.8f;
+
+      // Step 2: If we have NaNs, we MUST reset the hardware state
+      if (stats.errorState == 1) {
+        renderer.resetParticles();
+      }
+
+      // Step 3: Log to console (silent unless debugging)
+      // printf("[AUTO-MODE] Instability detected. Mitigating...\n");
+    }
 
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
                          synth.totalAmplitude(), uiWaveDepth,

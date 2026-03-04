@@ -306,6 +306,35 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 16);
 }
 
+void Renderer::resetParticles() {
+  if (!impl_->particleBuffer || impl_->particleCount == 0)
+    return;
+
+  GPUParticle *gpuData = (GPUParticle *)impl_->particleBuffer.contents;
+  for (int i = 0; i < impl_->particleCount; i++) {
+    // Normal resting distribution: a small random shell inside the sphere
+    float theta = (float)rand() / RAND_MAX * 2.0f * M_PI;
+    float phi = acos(2.0f * (float)rand() / RAND_MAX - 1.0f);
+    float r =
+        0.2f + (0.1f * (float)rand() / RAND_MAX); // Rest at 0.2-0.3 radius
+
+    gpuData[i].x = r * sin(phi) * cos(theta);
+    gpuData[i].y = r * sin(phi) * sin(theta);
+    gpuData[i].z = r * cos(phi);
+    gpuData[i].mass = 1.0f;
+
+    gpuData[i].vx = gpuData[i].vy = gpuData[i].vz = 0.0f;
+    gpuData[i].phase = 0.0f;
+
+    gpuData[i].prevX = gpuData[i].x;
+    gpuData[i].prevY = gpuData[i].y;
+    gpuData[i].prevZ = gpuData[i].z;
+
+    gpuData[i].spinX = gpuData[i].spinY = gpuData[i].spinZ = 0.0f;
+    gpuData[i].charge = (i % 2 == 0) ? 1.0f : -1.0f;
+  }
+}
+
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                            float totalAmplitude, float maxWaveDepth,
                            float jitterFactor, float speedCap,

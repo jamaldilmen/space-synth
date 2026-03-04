@@ -123,6 +123,7 @@ public:
   bool init(void *metalDevice, void *metalLayer, int width, int height);
 
   void uploadParticles(const GPUParticle *data, int count);
+  void resetParticles();
   // Compute physics step (runs async)
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                    float totalAmplitude, float maxWaveDepth, float jitterFactor,

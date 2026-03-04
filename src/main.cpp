@@ -547,14 +547,14 @@ int main() {
           }
           ImGui::PopID();
         }
-        if (ImGui::Button("Reset All")) {
+        if (ImGui::Button("Reset Emitters")) {
           emitters.reset();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Circle")) {
-          emitters.arrangeCircle(numVoices, 0.3f);
+        if (ImGui::Button("Auto-Arrange")) {
+          emitters.arrangeSphere(numVoices, 0.4f);
         }
-        ImGui::SetItemTooltip("Arrange emitters in a circle (r=0.3)");
+        ImGui::SetItemTooltip("Arrange emitters in a 3D sphere (r=0.4)");
         ImGui::Unindent();
       }
 

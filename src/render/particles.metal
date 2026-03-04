@@ -164,16 +164,25 @@ kernel void compute_physics(
             shiftVy += inducedV.y * 0.15f;
             shiftVz += inducedV.z * 0.1f;
 
-            // Phase 4: Mechanical Point Source Impulse (Death of Bessel)
+            // Phase 4: Mechanical Point Source Impulse
             float pushRadius = 2.0f;
             if (r < pushRadius) {
                 float impulseForce = amp * (1.0f - r / pushRadius) * 20.0f;
+                // Full spherical expansion
                 shiftVx += (dx / r) * impulseForce;
                 shiftVy += (dy / r) * impulseForce;
                 shiftVz += (dz / r) * impulseForce;
             }
 
-            jitterTotal += amp * abs(cos(m_f * th));
+            // ── The Atom Model (3D Spherical Harmonics) ───────────────────
+            // Replace 2D polar mapping with 3D spherical angles
+            float phi = acos(clamp(dz / r, -1.0f, 1.0f)); // Polar angle [0, pi]
+            
+            // Modulate heat/energy strictly as an atomic orbital (Y_l^m) approximation
+            // m_f equates to azimuthal quantum number, n_f equates to principal
+            float sphericalLobe = abs(cos(m_f * th) * sin(n_f * phi));
+            
+            jitterTotal += amp * sphericalLobe;
         }
 
         // Apply dynamic relativistic mass

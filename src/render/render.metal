@@ -69,7 +69,7 @@ vertex VertexOut particle_vertex(
     out.pointSize = clamp(rawSize, 1.0f, 32.0f); // Hard cap at 32px to prevent overdraw
 
     // HDR luminance from thermal energy (ODS-03)
-    out.luminance = 1.0f + max(0.0f, temp) * 6.0f; // Stronger heat-driven plasma glow
+    out.luminance = 1.0f + max(0.0f, temp) * 2.0f; // Subtle warm glow, not blinding white
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
@@ -137,9 +137,8 @@ fragment float4 particle_fragment(
 
     float3 finalColor = mix(glowColor * glow, coreColor, core);
     
-    // VJ Sustain Alpha: Base alpha scales up with luminance so sustained shapes
-    // stay bold and visible. Cold/silent particles remain faint dust.
-    float baseAlpha = 0.08f + clamp(in.luminance - 1.0f, 0.0f, 3.0f) * 0.12f; // 0.08 → 0.44
+    // VJ Sustain Alpha: slight boost for active particles, faint for dust
+    float baseAlpha = 0.06f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.04f; // 0.06 → 0.14
     float alpha = (core * 0.5f + glow * 0.3f) * baseAlpha;
 
     // HDR emission: scale by luminance (energy-based brightness)

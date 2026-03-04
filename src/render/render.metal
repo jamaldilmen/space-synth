@@ -59,11 +59,15 @@ vertex VertexOut particle_vertex(
     float isOrtho = cam.padding[0];
     float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
     out.dist = dist;
-    out.pointSize = max(2.0f, cam.particleSize * (800.0f / max(0.0001f, dist)));
+    
+    // VJ Sustain: Particle size grows with thermal energy (audio activity)
+    // Hot particles at harmonic nodes become 2-3x larger during sustain
+    float temp = p.prevW.w;
+    float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 2.5f; // 1x → 3.5x
+    out.pointSize = max(2.0f, cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist)));
 
     // HDR luminance from thermal energy (ODS-03)
-    float temp = p.prevW.w;
-    out.luminance = 1.0f + max(0.0f, temp) * 4.0f; // Soft heat-driven plasma
+    out.luminance = 1.0f + max(0.0f, temp) * 6.0f; // Stronger heat-driven plasma glow
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
@@ -107,8 +111,10 @@ fragment float4 particle_fragment(
 
     float3 finalColor = mix(glowColor * glow, coreColor, core);
     
-    // Significantly reduced base alpha for 800k additive particle blending
-    float alpha = (core * 0.5f + glow * 0.3f) * 0.08f;
+    // VJ Sustain Alpha: Base alpha scales up with luminance so sustained shapes
+    // stay bold and visible. Cold/silent particles remain faint dust.
+    float baseAlpha = 0.08f + clamp(in.luminance - 1.0f, 0.0f, 3.0f) * 0.12f; // 0.08 → 0.44
+    float alpha = (core * 0.5f + glow * 0.3f) * baseAlpha;
 
     // HDR emission: scale by luminance (energy-based brightness)
     finalColor *= in.luminance;

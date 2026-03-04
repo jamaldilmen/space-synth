@@ -61,10 +61,11 @@ vertex VertexOut particle_vertex(
     out.dist = dist;
     
     // VJ Sustain: Particle size grows with thermal energy (audio activity)
-    // Hot particles at harmonic nodes become 2-3x larger during sustain
+    // Hot particles at harmonic nodes become slightly larger during sustain
     float temp = p.prevW.w;
-    float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 2.5f; // 1x → 3.5x
-    out.pointSize = max(2.0f, cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist)));
+    float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 1x → 2.5x
+    float rawSize = cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist));
+    out.pointSize = clamp(rawSize, 1.0f, 32.0f); // Hard cap at 32px to prevent overdraw
 
     // HDR luminance from thermal energy (ODS-03)
     out.luminance = 1.0f + max(0.0f, temp) * 6.0f; // Stronger heat-driven plasma glow

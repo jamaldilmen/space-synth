@@ -311,7 +311,7 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                            float jitterFactor, float speedCap,
                            float eFieldStiffness, float bFieldCirculation,
                            float gravityConstant, float stringStiffness,
-                           float restLength) {
+                           float restLength, uint32_t debugFlags) {
   if (!impl_->physicsPipeline || impl_->particleCount == 0)
     return;
 
@@ -369,6 +369,7 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.gravityConstant = gravityConstant;
   impl_->physicsUniforms.stringStiffness = stringStiffness;
   impl_->physicsUniforms.restLength = restLength;
+  impl_->physicsUniforms.debugFlags = debugFlags;
 
   static float accumulatedTime = 0.0f;
   accumulatedTime += dt;
@@ -702,6 +703,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         latestStats.momentumX = totalMX;
         latestStats.momentumY = totalMY;
         latestStats.collisionCount = 0;
+
+        // Physical Assert: Check for NaNs or Infinity (Energy Explosion)
+        if (std::isnan(totalKE) || std::isinf(totalKE) || totalKE > 1e12f) {
+          latestStats.errorState = (std::isnan(totalKE)) ? 1 : 2;
+        } else {
+          latestStats.errorState = 0;
+        }
       }
     }
 

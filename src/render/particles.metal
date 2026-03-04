@@ -40,6 +40,7 @@ struct PhysicsUniforms {
     float gravityConstant;      // 64
     float stringStiffness;      // 68
     float restLength;           // 72
+    uint debugFlags;            // 76
 };
 
 struct SpatialHashUniforms {
@@ -93,12 +94,15 @@ kernel void compute_physics(
     float prevZ = p.prevW.z;
 
     // Velocity proxy: displacement from previous frame
-    // This IS the velocity in frame-time units (removes * 60 hack)
     float vpx = px - prevX;
     float vpy = py - prevY;
     float vpz = pz - prevZ;
 
-    float baseFric = pow(0.06f, u.dt);
+    // ── Phase 7: Deterministic Debug Mode ──────────────────────────
+    float dt = (u.debugFlags & (1 << 6)) ? (1.0f / 60.0f) : u.dt;
+    
+    // Base friction (damps previous velocity)
+    float baseFric = pow(0.02f, dt); 
 
     float dynamicFric = baseFric;
 
@@ -111,7 +115,7 @@ kernel void compute_physics(
 
     // ── Global Harmonic Centering (The "Home" Force) ─────
     // F = -k * r. This ensures a crisp snapback to the center (0,0,0).
-    float k_center = 0.15f * u.dt; 
+    float k_center = 0.15f * dt; 
     shiftVx -= px * k_center;
     shiftVy -= py * k_center;
     shiftVz -= pz * k_center;
@@ -174,7 +178,7 @@ kernel void compute_physics(
         dynamicMass += massAdd;
 
         if (jitterTotal > 0.01f) {
-            float n_strength = jitterTotal * 6.0f * u.dt;
+            float n_strength = jitterTotal * 6.0f * dt;
             shiftVx += noise(id, u.time) * n_strength;
             shiftVy += noise(id + 1, u.time) * n_strength;
             shiftVz += noise(id + 2, u.time) * n_strength;
@@ -189,6 +193,16 @@ kernel void compute_physics(
         shiftVy += sin(angle) * strength;
     }
 
+    // Jitter (Heisenberg uncertainty)
+    if (u.debugFlags & (1 << 4)) {
+        float noisy = noise(id, u.time + 1.234f);
+        float noisx = noise(id, u.time + 5.678f);
+        float noisz = noise(id, u.time + 9.012f);
+        shiftVx += noisx * u.jitterFactor * 0.05f * dt;
+        shiftVy += noisy * u.jitterFactor * 0.05f * dt;
+        shiftVz += noisz * u.jitterFactor * 0.05f * dt;
+    }
+
     // ── Global Gravity Anchor (Potato Core) ───────────────────────────
     // Instead of forcing the medium flat onto the Z-plane, we use a 3D spherical 
     // harmonic trap. This balances the local E-Field repulsion to form a solid, 
@@ -196,7 +210,7 @@ kernel void compute_physics(
     // Heavy Walls (dynamicMass == 0) ignore global gravity.
     // ── Global Gravity Anchor (Potato Core) ───────────────────────────
     if (dynamicMass > 0.0f && u.voiceCount > 0) {
-        float globalPull = u.gravityConstant * 5.0f * u.dt; 
+        float globalPull = u.gravityConstant * 5.0f * dt; 
         shiftVx -= px * globalPull;
         shiftVy -= py * globalPull;
         shiftVz -= pz * globalPull;
@@ -248,69 +262,57 @@ kernel void compute_physics(
                         float nz_dir = ddz / dist;
 
                         // 1. The Inverse-Square Law (E-Field)
-                        float r2_clamped = max(dist2, 1e-7f);
+                        // float r2_clamped = max(dist2, 1e-7f); // This line is now part of the new block
                         float q1q2 = selfCharge * np.spinW.w;
-                        float eForce = (u.eFieldStiffness * q1q2) / r2_clamped;
-                        
-                        if (dynamicMass > 0.0f) {
-                            float eAcc = (eForce / dynamicMass) * u.dt;
-                            shiftVx += nx_dir * eAcc;
-                            shiftVy += ny_dir * eAcc;
-                            shiftVz += nz_dir * eAcc;
-                        }
+                        // float eForce = (u.eFieldStiffness * q1q2) / r2_clamped; // This line is now part of the new block
+                    
+                        float3 r_vec = float3(ddx, ddy, ddz);
+                        float r2 = dist2; // Use dist2 directly
+                        Particle p2 = np; // Alias for clarity in new code
 
-                        // 2. Strong Nuclear / Hooke's Law Tensegrity (String Theory Phase 5)
-                        float stringForce = u.stringStiffness * (dist - u.restLength);
-                        if (dynamicMass > 0.0f) {
-                            float sAcc = (stringForce / dynamicMass) * u.dt;
-                            shiftVx -= nx_dir * sAcc;
-                            shiftVy -= ny_dir * sAcc;
-                            shiftVz -= nz_dir * sAcc;
-                        }
+                        if (r2 > 0.00001f) {
+                            float r2_clamped = max(r2, 0.0001f);
+                            float r = sqrt(r2_clamped);
 
-                        // 3. The Potato Radius (Newtonian Self-Gravity Phase 5)
-                        float nMass = (np.posW.w == 0.0f) ? 1.0f : np.posW.w;
-                        float massProd = dynamicMass * nMass;
-                        float gravForce = u.gravityConstant * massProd / r2_clamped;
-                        if (dynamicMass > 0.0f) {
-                            float gAcc = (gravForce / dynamicMass) * u.dt;
-                            shiftVx -= nx_dir * gAcc;
-                            shiftVy -= ny_dir * gAcc;
-                            shiftVz -= nz_dir * gAcc;
-                        }
+                            // Coulomb-like electrostatic repulsion analog
+                            if (u.debugFlags & (1 << 0)) {
+                                float eForce = (u.eFieldStiffness * q1q2) / r2_clamped;
+                                float3 fE = normalize(r_vec) * eForce * dt;
+                                shiftVx += fE.x; shiftVy += fE.y; shiftVz += fE.z;
+                            }
 
-                        // 4. B-Field Analog (Circulation / Lorentz Force)
-                        float3 neighborSpin = float3(np.spinW.x, np.spinW.y, np.spinW.z);
-                        float3 rVec = float3(ddx, ddy, ddz);
-                        float3 inducedV = cross(neighborSpin, rVec) / (r2_clamped * dist);
-                        if (dynamicMass > 0.0f) {
-                            shiftVx -= inducedV.x * u.bFieldCirculation * u.dt;
-                            shiftVy -= inducedV.y * u.bFieldCirculation * u.dt;
-                            shiftVz -= inducedV.z * u.bFieldCirculation * u.dt;
-                        }
+                            // Biot-Savart circulation analog (B-Field)
+                            if (u.debugFlags & (1 << 1)) {
+                                float3 spin1 = float3(0, 0, p.velW.w); // Simplified spin (using phase)
+                                float3 spin2 = float3(0, 0, p2.velW.w); // Simplified spin (using phase)
+                                float3 bForceVec = cross(spin1, normalize(r_vec)) * u.bFieldCirculation * dt;
+                                shiftVx += bForceVec.x; shiftVy += bForceVec.y; shiftVz += bForceVec.z;
+                            }
 
-                        // 5. Simple Elastic Physical Collision (overlap resolution)
-                        float overlap = colRad - dist;
-                        float omass = np.posW.w;
-                        if (dynamicMass > 0.0f) {
-                            float pushRatio = (omass == 0.0f) ? 1.0f : (omass / (dynamicMass + omass));
-                            shiftX += nx_dir * overlap * pushRatio * 0.5f;
-                            shiftY += ny_dir * overlap * pushRatio * 0.5f;
-                            shiftZ += nz_dir * overlap * pushRatio * 0.5f;
+                            // Tensegrity Strings (Hooke's Law)
+                            if (u.debugFlags & (1 << 3)) {
+                                float strain = r - u.restLength;
+                                float3 stringF = normalize(r_vec) * strain * u.stringStiffness * dt;
+                                shiftVx += stringF.x; shiftVy += stringF.y; shiftVz += stringF.z;
+                            }
 
-                            float np_vpx = np.posW.x - np.prevW.x;
-                            float np_vpy = np.posW.y - np.prevW.y;
-                            float np_vpz = np.posW.z - np.prevW.z;
-                            float dvx = vpx - np_vpx;
-                            float dvy = vpy - np_vpy;
-                            float dvz = vpz - np_vpz;
-                            float dvDotN = dvx * nx_dir + dvy * ny_dir + dvz * nz_dir;
+                            // Newtonian Self-Gravity (1/r^2)
+                            if (u.debugFlags & (1 << 2)) {
+                                float massProd = dynamicMass * p2.posW.w; // Use actual masses
+                                if (massProd == 0.0f) massProd = 1.0f; // Avoid division by zero if one mass is 0
+                                float gravForce = u.gravityConstant * massProd / r2_clamped;
+                                float3 fG = normalize(-r_vec) * gravForce * dt;
+                                shiftVx += fG.x; shiftVy += fG.y; shiftVz += fG.z;
+                            }
 
-                            if (dvDotN < 0.0f) {
-                                float impulse = (1.0f + COLLISION_RESTITUTION) * dvDotN * pushRatio;
-                                shiftVx -= impulse * nx_dir;
-                                shiftVy -= impulse * ny_dir;
-                                shiftVz -= impulse * nz_dir;
+                            // Hard-sphere Elastic Collision
+                            if ((u.debugFlags & (1 << 5)) && (u.collisionsOn > 0)) {
+                                float minDist = u.collisionRadius * 2.0f;
+                                if (r < minDist) {
+                                    float overlap = minDist - r;
+                                    float3 resolve = normalize(r_vec) * (overlap * 0.5f);
+                                    shiftX += resolve.x; shiftY += resolve.y; shiftZ += resolve.z;
+                                }
                             }
                         }
                     }
@@ -333,36 +335,30 @@ kernel void compute_physics(
     // dynamicFric = damping factor on velocity proxy
 
     // Apply unified velocity shifts to damped proxy
-    vpx = vpx * dynamicFric + shiftVx;
-    vpy = vpy * dynamicFric + shiftVy;
-    vpz = vpz * dynamicFric + shiftVz;
+    vpx = vpx * dynamicFric;
+    vpy = vpy * dynamicFric;
+    vpz = vpz * dynamicFric;
 
-    // Speed cap on velocity proxy
-    float speedU = sqrt(vpx * vpx + vpy * vpy + vpz * vpz);
-    if (speedU > u.speedCap) {
-        float s = u.speedCap / speedU;
-        vpx *= s; vpy *= s; vpz *= s;
+    // Combine proxy with force pulses
+    float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
+    
+    // Speed cap
+    float speed = length(finalV);
+    if (speed > u.speedCap) {
+        finalV = (finalV / max(speed, 0.0001f)) * u.speedCap;
     }
+    
+    // Final position integration
+    float3 nextPos = float3(px, py, pz) + finalV + float3(shiftX, shiftY, shiftZ);
 
-    // Feynman phase accumulation: phase += (KE - PE) * dt
-    float KE = 0.5f * mass * speedU * speedU;
-    phase += (KE - PE) * u.dt;
-    phase = fmod(phase + M_PI_F, 2.0f * M_PI_F) - M_PI_F;
-
-    // New position = current + damped velocity proxy + acceleration
-    // New position = current + velocity proxy + position resolution (shiftX)
-    float newX = px + vpx + shiftX;
-    float newY = py + vpy + shiftY;
-    float newZ = pz + vpz + shiftZ;
+    // Phase accumulation
+    float newPhase = p.velW.w + speed * dt;
 
     // ── Write back ───────────────────────────────────────────────────
-    // Store previous position for next frame's Verlet step
-    // HEAVY WALLS (mass == 0) ARE IMMUTABLE
     if (mass > 0.0f) {
         p.prevW = float4(px, py, pz, 0.0f);
-        p.posW = float4(newX, newY, newZ, mass);
-        // Store velocity proxy (for collision response and stats readback)
-        p.velW = float4(vpx, vpy, vpz, phase);
+        p.posW = float4(nextPos, mass);
+        p.velW = float4(finalV, newPhase);
     }
 }
 

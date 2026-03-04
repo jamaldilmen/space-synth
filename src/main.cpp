@@ -187,6 +187,15 @@ int main() {
   static float uiTrailDecay = 0.0f;
   static float uiChromatic = 0.0f;
 
+  // Industry-Level Debugging (Phase 7)
+  static bool uiFixedTimestep = false;
+  static bool uiSoloEField = true;
+  static bool uiSoloBField = true;
+  static bool uiSoloGravity = true;
+  static bool uiSoloStrings = true;
+  static bool uiSoloJitter = true;
+  static bool uiSoloCollisions = true;
+
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
     if (e.isRepeat)
@@ -456,6 +465,42 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiRestLength = 0.01f;
         ImGui::SetItemTooltip("Ideal distance where string tension relaxes");
+
+        ImGui::Unindent();
+      }
+
+      if (ImGui::CollapsingHeader("INDUSTRY DEBUGGING (Phase 7)")) {
+        ImGui::Indent();
+
+        ImGui::Checkbox("Deterministic (Fixed dt)", &uiFixedTimestep);
+        ImGui::SetItemTooltip(
+            "Force dt = 1/60s for perfectly repeatable experiments");
+
+        ImGui::Separator();
+        ImGui::Text("Force Isolation (Solo/Mute):");
+        static const char *forceLabels[] = {"E-Field", "B-Field", "Gravity",
+                                            "Strings", "Jitter",  "Collisions"};
+        bool *solos[] = {&uiSoloEField,  &uiSoloBField, &uiSoloGravity,
+                         &uiSoloStrings, &uiSoloJitter, &uiSoloCollisions};
+
+        for (int i = 0; i < 6; i++) {
+          ImGui::Checkbox(forceLabels[i], solos[i]);
+          if (i % 2 == 0)
+            ImGui::SameLine(150);
+        }
+        ImGui::NewLine();
+
+        auto stats = renderer.getPhysicsStats();
+        if (stats.errorState > 0) {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.2f, 0.2f, 1.0f));
+          ImGui::Text("!!! PHYSICAL ASSERT FAILED !!!");
+          ImGui::Text(stats.errorState == 1 ? "Error: NaN Detected"
+                                            : "Error: Energy Explosion");
+          ImGui::PopStyleColor();
+        } else {
+          ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f),
+                             "Physics Core: OK");
+        }
 
         ImGui::Unindent();
       }
@@ -825,10 +870,28 @@ int main() {
     // ── Update Physics ──────────────────────────────────────────────
     renderer.setActiveParticleCount(uiParticleCount);
 
-    renderer.computeStep(
-        dt, voiceData.data(), (int)voiceData.size(), synth.totalAmplitude(),
-        uiWaveDepth, uiJitter * effectiveJitterMultiplier, effectiveDrive,
-        uiEField, uiBField, uiGravity, uiStringStiffness, uiRestLength);
+    // Build Debug Flags bitmask
+    uint32_t debugFlags = 0;
+    if (uiSoloEField)
+      debugFlags |= DEBUG_E_FIELD;
+    if (uiSoloBField)
+      debugFlags |= DEBUG_B_FIELD;
+    if (uiSoloGravity)
+      debugFlags |= DEBUG_GRAVITY;
+    if (uiSoloStrings)
+      debugFlags |= DEBUG_STRINGS;
+    if (uiSoloJitter)
+      debugFlags |= DEBUG_JITTER;
+    if (uiSoloCollisions)
+      debugFlags |= DEBUG_COLLISIONS;
+    if (uiFixedTimestep)
+      debugFlags |= DEBUG_FIXED_DT;
+
+    renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
+                         synth.totalAmplitude(), uiWaveDepth,
+                         uiJitter * effectiveJitterMultiplier, effectiveDrive,
+                         uiEField, uiBField, uiGravity, uiStringStiffness,
+                         uiRestLength, debugFlags);
 
     renderer.render(config, viewProj);
 

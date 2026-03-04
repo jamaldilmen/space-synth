@@ -21,6 +21,23 @@ struct RenderConfig {
   float cameraRho = 800.0f;
   bool orthoMode = true;
   bool phaseViz = false;
+
+  // Debugging Suite (Phase 7)
+  bool fixedTimestep = false;
+  uint32_t debugFlags = 0xFFFFFFFF; // All forces ON by default
+};
+
+// Debug bitmasks for PhysicsUniforms.debugFlags
+enum DebugFlag : uint32_t {
+  DEBUG_NONE = 0x0,
+  DEBUG_E_FIELD = 1 << 0,
+  DEBUG_B_FIELD = 1 << 1,
+  DEBUG_GRAVITY = 1 << 2,
+  DEBUG_STRINGS = 1 << 3,
+  DEBUG_JITTER = 1 << 4,
+  DEBUG_COLLISIONS = 1 << 5,
+  DEBUG_FIXED_DT = 1 << 6,
+  DEBUG_ALL = 0xFFFFFFFF
 };
 
 // Matches postfx.metal struct
@@ -77,6 +94,7 @@ struct PhysicsUniforms {
   float gravityConstant;      // G for Potato Radius
   float stringStiffness;      // Hooke's Law Tensegrity Constant
   float restLength;           // Ideal neighbor distance for Strings
+  uint32_t debugFlags;        // Solo/Mute force flags
 };
 
 // Spatial hash uniforms for collision grid
@@ -94,6 +112,7 @@ struct PhysicsStats {
   float momentumX;
   float momentumY;
   int collisionCount;
+  int errorState; // 0 = OK, 1 = NaN detected, 2 = Explosion detected
 };
 
 class Renderer {
@@ -109,7 +128,8 @@ public:
                    float totalAmplitude, float maxWaveDepth, float jitterFactor,
                    float speedCap, float eFieldStiffness,
                    float bFieldCirculation, float gravityConstant,
-                   float stringStiffness, float restLength);
+                   float stringStiffness, float restLength,
+                   uint32_t debugFlags);
 
   void render(const RenderConfig &config);
   void render(const RenderConfig &config, const float *viewProj);

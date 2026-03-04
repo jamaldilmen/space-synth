@@ -312,15 +312,11 @@ void Renderer::resetParticles() {
 
   GPUParticle *gpuData = (GPUParticle *)impl_->particleBuffer.contents;
   for (int i = 0; i < impl_->particleCount; i++) {
-    // Normal resting distribution: a small random shell inside the sphere
-    float theta = (float)rand() / RAND_MAX * 2.0f * M_PI;
-    float phi = acos(2.0f * (float)rand() / RAND_MAX - 1.0f);
-    float r =
-        0.2f + (0.1f * (float)rand() / RAND_MAX); // Rest at 0.2-0.3 radius
-
-    gpuData[i].x = r * sin(phi) * cos(theta);
-    gpuData[i].y = r * sin(phi) * sin(theta);
-    gpuData[i].z = r * cos(phi);
+    // True Universe Distribution: Particles spawn uniformly in the void.
+    // They are no longer forced into a pre-existing "planet" ball.
+    gpuData[i].x = 4.0f * (float)rand() / RAND_MAX - 2.0f;
+    gpuData[i].y = 4.0f * (float)rand() / RAND_MAX - 2.0f;
+    gpuData[i].z = 4.0f * (float)rand() / RAND_MAX - 2.0f;
     gpuData[i].mass = 1.0f;
 
     gpuData[i].vx = gpuData[i].vy = gpuData[i].vz = 0.0f;

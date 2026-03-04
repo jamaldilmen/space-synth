@@ -14,20 +14,14 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   std::uniform_real_distribution<float> depth(-1.0f, 1.0f);
 
   for (auto &p : particles_) {
-    // True Isotropic 3D spherical distribution
-    float u1 = radius(rng);
-    float v1 = radius(rng);
-    float w1 = radius(rng);
+    // True Universe Distribution: Particles exist uniformly in the void.
+    // They are no longer forced into a pre-existing "planet" ball.
+    // The physics engine (Gravity + Harmonic Waves) will collect them
+    // organically.
+    p.x = depth(rng) * 2.0f; // Scale to fill the visible universe bounds
+    p.y = depth(rng) * 2.0f;
+    p.z = depth(rng) * 2.0f;
 
-    float phi = 2.0f * M_PI * u1;
-    float cosTheta = 2.0f * v1 - 1.0f;
-    float sinTheta = std::sqrt(1.0f - cosTheta * cosTheta);
-    float r = std::pow(w1, 1.3333f / 4.0f) *
-              0.95f; // Slightly biased to surface for visibility
-
-    p.x = r * sinTheta * std::cos(phi);
-    p.y = r * sinTheta * std::sin(phi);
-    p.z = r * cosTheta;
     p.vx = 0.0f;
     p.vy = 0.0f;
     p.vz = 0.0f;

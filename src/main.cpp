@@ -638,6 +638,12 @@ int main() {
         }
         ImGui::SetItemTooltip("Restore camera to default position");
 
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Particles")) {
+          renderer.resetParticles();
+        }
+        ImGui::SetItemTooltip("Respawn all particles into the void");
+
         ImGui::Unindent();
       }
 

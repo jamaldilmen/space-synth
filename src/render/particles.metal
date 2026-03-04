@@ -174,26 +174,50 @@ kernel void compute_physics(
                 shiftVz += (dz / r) * impulseForce;
             }
 
-            // ── The Atom Model (3D Spherical Harmonics) ───────────────────
-            // Replace 2D polar mapping with 3D spherical angles
+            // ── The Atom Model (Gradient-Driven Harmonic Sculpting) ────────
+            // Compute the spherical harmonic field Y(θ, φ) and its angular gradient.
+            // Instead of pushing radially (always a ball), we push particles
+            // TOWARD the lobe maxima via the gradient in θ and φ.
             float phi = acos(clamp(dz / r, -1.0f, 1.0f)); // Polar angle [0, pi]
             
-            // Modulate heat/energy strictly as an atomic orbital (Y_l^m) approximation
-            // m_f equates to azimuthal quantum number, n_f equates to principal
-            float sphericalLobe = abs(cos(m_f * th) * sin(n_f * phi));
+            // The harmonic field and its finite-difference gradient
+            float Y_here  = cos(m_f * th) * sin(n_f * phi);
+            float Y_dth   = cos(m_f * (th + 0.02f)) * sin(n_f * phi);
+            float Y_dphi  = cos(m_f * th) * sin(n_f * (phi + 0.02f));
             
-            // True 3D Volumetric Expansion: Push particles outward proportionally
-            float expansionForce = amp * sphericalLobe * 15.0f;
+            float dYdth  = (Y_dth - Y_here) / 0.02f;
+            float dYdphi = (Y_dphi - Y_here) / 0.02f;
+            
+            // Convert angular gradients to Cartesian force directions
+            // θ-direction (azimuthal): perpendicular to radial in the XY plane
+            float3 thetaDir = float3(-sin(th), cos(th), 0.0f);
+            // φ-direction (polar): perpendicular to radial in the vertical plane
+            float sinPhi = sin(phi);
+            float3 phiDir = float3(
+                cos(th) * cos(phi),
+                sin(th) * cos(phi),
+                -sinPhi
+            );
+            
+            // The sculpting force: push toward lobe maxima
+            float sculptStrength = amp * 20.0f;
+            float3 harmonicForce = (thetaDir * dYdth + phiDir * dYdphi) * sculptStrength;
+            shiftVx += harmonicForce.x;
+            shiftVy += harmonicForce.y;
+            shiftVz += harmonicForce.z;
+            
+            // Radial breathing: expand/contract based on harmonic value (not just outward)
+            float radialForce = amp * Y_here * 8.0f;
             float3 centerVec = float3(px, py, pz);
             float cLen = length(centerVec);
             if (cLen > 0.0001f) {
                 float3 outDir = centerVec / cLen;
-                shiftVx += outDir.x * expansionForce;
-                shiftVy += outDir.y * expansionForce;
-                shiftVz += outDir.z * expansionForce;
+                shiftVx += outDir.x * radialForce;
+                shiftVy += outDir.y * radialForce;
+                shiftVz += outDir.z * radialForce;
             }
             
-            jitterTotal += amp * sphericalLobe;
+            jitterTotal += amp * abs(Y_here);
         }
 
         // Apply dynamic relativistic mass
@@ -384,17 +408,16 @@ kernel void compute_physics(
     }
 
     // ── Störmer-Verlet integration (damped) ──────────────────────────
-    // Phase 10: Cosmic Viscosity. Drastically increase damping so the universe
-    // forms majestically over seconds rather than microseconds.
-    float cosmicDrag = dynamicFric * 0.96f; // Heavier drag
+    // Restored natural damping without extra cosmic over-drag.
+    // Jitter and collision forces are now visible again.
 
     // Apply unified velocity shifts to damped proxy
-    vpx = vpx * cosmicDrag;
-    vpy = vpy * cosmicDrag;
-    vpz = vpz * cosmicDrag;
+    vpx = vpx * dynamicFric;
+    vpy = vpy * dynamicFric;
+    vpz = vpz * dynamicFric;
 
     // Combine proxy with force pulses
-    float3 finalV = float3(vpx, vpy, vpz) * cosmicDrag + float3(shiftVx, shiftVy, shiftVz);
+    float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
     
     // Speed cap
     float speed = length(finalV);

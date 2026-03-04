@@ -16,6 +16,15 @@ struct Preset {
   float waveDepth = 20.0f;
   float speedCap = 1.2f;
 
+  // Real Maxwell/String Physics parameters (Phase 5)
+  float eField = 0.05f;
+  float bField = 0.05f;
+  float gravity = 0.005f;
+  float stringStiffness = 0.01f;
+  float restLength = 0.01f;
+  int particleCount = 800000;
+  float supernova = 0.0f;
+
   // Render (Future-proofing for Post-FX)
   float bloomIntensity = 0.0f;
   float trailDecay = 0.0f;

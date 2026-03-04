@@ -1,5 +1,5 @@
 #pragma once
-#include "particles.h" // Same directory hierarchy from src/core theoretically, but actually they are in different. It should be #include "../core/particles.h"
+#include "core/particles.h"
 #include <cmath>
 #include <cstdint>
 
@@ -40,6 +40,7 @@ struct CameraUniforms {
   float particleSize;
   float plateRadius;
   float phaseViz; // 1.0 = phase coloring, 0.0 = default
+  float waveDepth;
   float padding[1];
 };
 
@@ -49,10 +50,10 @@ struct VoiceGPUData {
   int n;
   float alpha;
   float amplitude;
-  float emitterX; // Point source position X
-  float emitterY; // Point source position Y
-  float emitterZ; // Point source position Z
-  float pad;      // Alignment to 32 bytes
+  float emitterX;  // Point source position X
+  float emitterY;  // Point source position Y
+  float emitterZ;  // Point source position Z
+  float frequency; // Was pad, now explicitly carries frequency for E=mc2
 };
 
 // Physics uniforms for compute shader
@@ -64,12 +65,7 @@ struct PhysicsUniforms {
   float maxWaveDepth;
   float plateRadius;
   float jitterFactor;
-  float retractionPull;
-  float damping;
   float speedCap;
-  float modeP; // Depth Mode multiplier
-  int simMode;
-  int sphereMode;
   uint32_t frameCounter;      // For temporal noise
   float symmetryBreakImpulse; // >0 on mode change (Noether)
   float collisionRadius;      // Interaction radius for collisions
@@ -77,14 +73,19 @@ struct PhysicsUniforms {
   float uncertaintyStrength;  // Heisenberg noise scale
   float eFieldStiffness;      // E-Field analog repulsion multiplier
   float bFieldCirculation;    // B-Field analog circulation force
+  float time;                 // True continuous time for Brownian noise
+  float gravityConstant;      // G for Potato Radius
+  float stringStiffness;      // Hooke's Law Tensegrity Constant
+  float restLength;           // Ideal neighbor distance for Strings
 };
 
 // Spatial hash uniforms for collision grid
 struct SpatialHashUniforms {
-  int gridSize; // 256
+  int gridSize; // 32
   int particleCount;
   float cellSize;    // 2.0 / gridSize
   float invCellSize; // gridSize / 2.0
+  int gridSizeZ;     // 32
 };
 
 // Stats readback from GPU (conservation laws)
@@ -103,12 +104,12 @@ public:
   bool init(void *metalDevice, void *metalLayer, int width, int height);
 
   void uploadParticles(const GPUParticle *data, int count);
-
+  // Compute physics step (runs async)
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                    float totalAmplitude, float maxWaveDepth, float jitterFactor,
-                   float retractionPull, float damping, float speedCap,
-                   float modeP, int simMode, int sphereMode,
-                   float eFieldStiffness, float bFieldCirculation);
+                   float speedCap, float eFieldStiffness,
+                   float bFieldCirculation, float gravityConstant,
+                   float stringStiffness, float restLength);
 
   void render(const RenderConfig &config);
   void render(const RenderConfig &config, const float *viewProj);

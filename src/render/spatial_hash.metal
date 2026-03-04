@@ -16,6 +16,7 @@ struct SpatialHashUniforms {
     int particleCount;
     float cellSize;     // 2.0 / gridSize
     float invCellSize;  // gridSize / 2.0
+    int gridSizeZ;      // 32
 };
 
 // ── Phase 1: Assign each particle to a cell ID ─────────────────────────────
@@ -30,12 +31,14 @@ kernel void assign_cells(
 
     float px = particles[id].posW.x;
     float py = particles[id].posW.y;
+    float pz = particles[id].posW.z;
 
     // Map [-1,1] → [0, gridSize-1]
     int cellX = clamp(int((px + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
     int cellY = clamp(int((py + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
+    int cellZ = clamp(int((pz + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
 
-    cellIndices[id] = uint(cellY * u.gridSize + cellX);
+    cellIndices[id] = uint((cellZ * u.gridSize + cellY) * u.gridSize + cellX);
 }
 
 // ── Phase 2: Count particles per cell (atomic) ─────────────────────────────
@@ -71,7 +74,7 @@ kernel void prefix_sum_local(
     
     threadgroup uint sharedData[2048]; // Max threads per threadgroup = 1024 -> 2048 elements
     
-    uint totalCells = u.gridSize * u.gridSize;
+    uint totalCells = u.gridSize * u.gridSize * u.gridSize;
     
     // Load into shared memory
     sharedData[tid * 2]     = (globalIdx0 < totalCells) ? cellCounts[globalIdx0] : 0;
@@ -126,7 +129,7 @@ kernel void prefix_sum_blocks(
     uint threads_per_threadgroup [[threads_per_threadgroup]])
 {
     uint tid = thread_position_in_threadgroup;
-    uint totalCells = u.gridSize * u.gridSize;
+    uint totalCells = u.gridSize * u.gridSize * u.gridSize;
     uint numBlocks = (totalCells + 2047) / 2048; // Max threads = 1024 -> 2048 elements/block
     
     // We only need one threadgroup to scan the block sums
@@ -178,7 +181,7 @@ kernel void prefix_sum_add(
     uint id [[thread_position_in_grid]],
     uint threadgroup_position_in_grid [[threadgroup_position_in_grid]])
 {
-    uint totalCells = u.gridSize * u.gridSize;
+    uint totalCells = u.gridSize * u.gridSize * u.gridSize;
     if (id >= totalCells) return;
     
     // Add the sum of all preceding blocks to this element's local prefix sum
@@ -195,8 +198,14 @@ kernel void density_heatmap(
 {
     if (int(gid.x) >= u.gridSize || int(gid.y) >= u.gridSize) return;
 
-    int cellID = int(gid.y) * u.gridSize + int(gid.x);
-    float count = float(cellCounts[cellID]);
+    // For the 2D heatmap, we sum or take a slice. Let's take the middle Z slice for now,
+    // or sum them up. Summing provides a better "volumetric" look.
+    float totalCount = 0.0f;
+    for (int z = 0; z < u.gridSizeZ; z++) {
+        int cellID = (z * u.gridSize + int(gid.y)) * u.gridSize + int(gid.x);
+        totalCount += float(cellCounts[cellID]);
+    }
+    float count = totalCount / float(u.gridSizeZ); // Average density along Z
 
     // Normalize: typical max ~50 particles per cell for 800k in 256x256
     float density = clamp(count / 40.0f, 0.0f, 1.0f);

@@ -37,11 +37,12 @@ struct Renderer::Impl {
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
 
   // Spatial hash buffers
-  static const int kGridSize = 256;
-  static const int kTotalCells = kGridSize * kGridSize; // 65536
-  id<MTLBuffer> cellIndicesBuffer = nil;                // cell ID per particle
-  id<MTLBuffer> cellCountsBuffer = nil;                 // count per cell
-  id<MTLBuffer> cellStartsBuffer = nil;                 // prefix sum offsets
+  static constexpr int kGridSize = 32; // 32x32x32
+  static constexpr int kTotalCells =
+      kGridSize * kGridSize * kGridSize;     // 32,768
+  id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
+  id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
+  id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
   id<MTLBuffer> sortedParticlesBuffer = nil; // particle data in cell order
@@ -291,8 +292,8 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   if (!impl_->densityTexture) {
     MTLTextureDescriptor *densDesc = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                     width:Impl::kGridSize
-                                    height:Impl::kGridSize
+                                     width:256
+                                    height:256
                                  mipmapped:NO];
     densDesc.storageMode = MTLStorageModePrivate;
     densDesc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
@@ -307,9 +308,10 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
 
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                            float totalAmplitude, float maxWaveDepth,
-                           float jitterFactor, float retractionPull,
-                           float damping, float speedCap, float modeP,
-                           int simMode, int sphereMode) {
+                           float jitterFactor, float speedCap,
+                           float eFieldStiffness, float bFieldCirculation,
+                           float gravityConstant, float stringStiffness,
+                           float restLength) {
   if (!impl_->physicsPipeline || impl_->particleCount == 0)
     return;
 
@@ -332,18 +334,14 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   // Stage uniforms — will be dispatched in render()
   impl_->physicsUniforms = {};
   impl_->physicsUniforms.dt = dt;
-  impl_->physicsUniforms.totalAmplitude = totalAmplitude;
-  impl_->physicsUniforms.voiceCount = voiceCount;
+  impl_->physicsUniforms.totalAmplitude = 1.0f; // Baseline structural pressure
+  impl_->physicsUniforms.voiceCount =
+      std::max(voiceCount, 1); // Ensure structural forces active
   impl_->physicsUniforms.particleCount = impl_->particleCount;
   impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
   impl_->physicsUniforms.plateRadius = 1.0f; // Normalized
   impl_->physicsUniforms.jitterFactor = jitterFactor;
-  impl_->physicsUniforms.retractionPull = retractionPull;
-  impl_->physicsUniforms.damping = damping;
   impl_->physicsUniforms.speedCap = speedCap;
-  impl_->physicsUniforms.modeP = modeP;
-  impl_->physicsUniforms.simMode = simMode;
-  impl_->physicsUniforms.sphereMode = sphereMode;
   impl_->physicsUniforms.frameCounter = impl_->frameCount++;
 
   // Noether symmetry breaking: detect voice config changes
@@ -363,9 +361,19 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->prevVoiceHash = voiceHash;
 
   impl_->physicsUniforms.symmetryBreakImpulse = impl_->symmetryBreakImpulse;
-  impl_->physicsUniforms.collisionRadius = 0.008f;
+  impl_->physicsUniforms.collisionRadius = 0.02f;
   impl_->physicsUniforms.collisionsOn = impl_->collisionsEnabled ? 1 : 0;
   impl_->physicsUniforms.uncertaintyStrength = 1.0f;
+  impl_->physicsUniforms.eFieldStiffness = eFieldStiffness;
+  impl_->physicsUniforms.bFieldCirculation = bFieldCirculation;
+  impl_->physicsUniforms.gravityConstant = gravityConstant;
+  impl_->physicsUniforms.stringStiffness = stringStiffness;
+  impl_->physicsUniforms.restLength = restLength;
+
+  static float accumulatedTime = 0.0f;
+  accumulatedTime += dt;
+  impl_->physicsUniforms.time = accumulatedTime;
+
   impl_->hasCompute = true;
 }
 
@@ -421,6 +429,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.particleSize = config.particleSize;
   cam.plateRadius = R;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
+  cam.waveDepth = config.modeP * 20.0f; // Using modeP to scale depth
   cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
@@ -505,6 +514,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       su.particleCount = particleCount;
       su.cellSize = 2.0f / (float)kGridSize;
       su.invCellSize = (float)kGridSize / 2.0f;
+      su.gridSizeZ = kGridSize;
       memcpy(spatialHashUniformBuffer.contents, &su,
              sizeof(SpatialHashUniforms));
 
@@ -626,10 +636,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
       [comp setTexture:densityTexture atIndex:0];
       [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
-      NSUInteger tg = std::min((NSUInteger)16,
-                               densityPipeline.maxTotalThreadsPerThreadgroup);
       [comp dispatchThreads:MTLSizeMake(kGridSize, kGridSize, 1)
-          threadsPerThreadgroup:MTLSizeMake(tg, tg, 1)];
+          threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
       [comp endEncoding];
     }
 

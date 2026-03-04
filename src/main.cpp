@@ -161,24 +161,28 @@ int main() {
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
   static int uiParticleCount = 800000;
-  static float uiJitter = 1.0f;
-  static float uiDamping = 0.95f;
-  static float uiRetraction = 1.0f;
+  static float uiJitter = 0.1f;
   static float uiWaveDepth = 20.0f;
-  static float uiSupernova = 0.0f; // 0.0 to 1.0 (Macro slider)
+
+  // Real Maxwell/String Physics parameters (Phase 5)
+  static float uiEField = 0.1f;  // 1/r^2 Repulsion baseline (Snapback pressure)
+  static float uiBField = 0.05f; // 1/r^2 Circulation
+  static float uiGravity =
+      0.0f; // Neutral state (user can dial up Potato collapse)
+  static float uiStringStiffness =
+      0.0f; // Hooke's Law Tensegrity Tension (start at 0)
+  static float uiRestLength = 0.005f; // Ideal neighbor distance
+
+  static float uiSupernova = 0.0f; // Global FX burst 0.0 to 1.0 (Macro slider)
 
   // uiSpeedCap removed: driven by synth.drive() instead
-  static float uiModeP = 1.0f;
   static bool uiChorus = true;
-  static int uiSimMode = 0;         // 0=Classic, 1=Vortex
-  static int uiSphereMode = 1;      // 1=Sphere, 0=Flat
-  static bool uiOrthoMode = true;   // Use Orthographic projection
-  static float uiAttack = 20.0f;    // ms
-  static float uiRelease = 400.0f;  // ms
-  static bool uiCollisions = false; // Particle-particle collisions
-  static bool uiPhaseViz = false;   // Feynman phase arrow coloring
-  static float uiEField = 0.01f;    // Stiffness multiplier
-  static float uiBField = 0.05f;    // Circulation multiplier
+  static bool uiOrthoMode = true;  // Use Orthographic projection
+  static float uiAttack = 20.0f;   // ms
+  static float uiRelease = 400.0f; // ms
+  static bool uiCollisions =
+      true; // Particle-particle collisions (MUST be on for Phase 5)
+  static bool uiPhaseViz = false; // Feynman phase arrow coloring
   static float uiBloom = 0.0f;
   static float uiTrailDecay = 0.0f;
   static float uiChromatic = 0.0f;
@@ -299,7 +303,6 @@ int main() {
                                         currentPreset)) {
             uiParticleSize = currentPreset.particleSize;
             uiJitter = currentPreset.jitterScale;
-            uiDamping = currentPreset.damping;
             synth.setDrive(currentPreset.speedCap);
           }
           break;
@@ -358,8 +361,14 @@ int main() {
                                             currentPreset)) {
                 uiParticleSize = currentPreset.particleSize;
                 uiJitter = currentPreset.jitterScale;
-                uiDamping = currentPreset.damping;
                 synth.setDrive(currentPreset.speedCap);
+                uiEField = currentPreset.eField;
+                uiBField = currentPreset.bField;
+                uiGravity = currentPreset.gravity;
+                uiStringStiffness = currentPreset.stringStiffness;
+                uiRestLength = currentPreset.restLength;
+                uiParticleCount = currentPreset.particleCount;
+                uiSupernova = currentPreset.supernova;
               }
             }
             if (is_selected)
@@ -371,8 +380,14 @@ int main() {
         if (ImGui::Button("Save") && selectedPresetIdx >= 0) {
           currentPreset.particleSize = uiParticleSize;
           currentPreset.jitterScale = uiJitter;
-          currentPreset.damping = uiDamping;
           currentPreset.speedCap = synth.drive();
+          currentPreset.eField = uiEField;
+          currentPreset.bField = uiBField;
+          currentPreset.gravity = uiGravity;
+          currentPreset.stringStiffness = uiStringStiffness;
+          currentPreset.restLength = uiRestLength;
+          currentPreset.particleCount = uiParticleCount;
+          currentPreset.supernova = uiSupernova;
           PresetManager::savePreset(
               "../presets/" + presetFiles[selectedPresetIdx], currentPreset);
         }
@@ -383,20 +398,7 @@ int main() {
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
 
-        ImGui::Text("Sim Mode:");
-        ImGui::SameLine();
-        ImGui::RadioButton("Classic", &uiSimMode, 0);
-        ImGui::SameLine();
-        ImGui::RadioButton("Vortex", &uiSimMode, 1);
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip(
-              "Vortex Mode: Biblically Accurate Maxwellian Medium");
-
-        bool sphereOn = (uiSphereMode == 1);
-        if (ImGui::Checkbox("Sphere Mode", &sphereOn)) {
-          uiSphereMode = sphereOn ? 1 : 0;
-        }
-        ImGui::SetItemTooltip("Project particles onto a 3D spherical shell");
+        // Removed SimMode and SphereMode
 
         if (ImGui::Checkbox("Collisions", &uiCollisions)) {
           renderer.setCollisionsEnabled(uiCollisions);
@@ -423,22 +425,37 @@ int main() {
 
         // Limit / SpeedCap moved to Audio Synth (Analog Drive)
 
-        ImGui::SliderFloat("ModeP", &uiModeP, 1.0f, 4.0f, "%.0f");
+        ImGui::SliderFloat("E-Field Core", &uiEField, 0.0f, 0.5f, "%.4f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiModeP = 1.0f;
-        ImGui::SetItemTooltip("Depth Mode multiplier (Wave complexity)");
-
-        ImGui::SliderFloat("E-Field Core", &uiEField, 0.0f, 0.2f, "%.4f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiEField = 0.01f;
+          uiEField = 0.05f;
         ImGui::SetItemTooltip(
-            "Stiffness of the particle medium (repulsion factor)");
+            "Inverse-Square 1/r^2 Stiffness (Coulomb repulsion)");
 
-        ImGui::SliderFloat("B-Field Spin", &uiBField, 0.0f, 0.3f, "%.4f");
+        ImGui::SliderFloat("B-Field Spin", &uiBField, 0.0f, 0.5f, "%.4f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiBField = 0.05f;
         ImGui::SetItemTooltip(
             "Vortex induction strength (Biot-Savart velocity transfer)");
+
+        ImGui::Separator();
+
+        ImGui::SliderFloat("Gravity (G)", &uiGravity, 0.0f, 0.1f, "%.4f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiGravity = 0.005f;
+        ImGui::SetItemTooltip(
+            "Newtonian Self-Gravity (Inward collapse to Potato Radius)");
+
+        ImGui::SliderFloat("String Tension", &uiStringStiffness, 0.0f, 0.2f,
+                           "%.4f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiStringStiffness = 0.01f;
+        ImGui::SetItemTooltip(
+            "Hooke's Law spring tension between neighbor particles");
+
+        ImGui::SliderFloat("String Rest", &uiRestLength, 0.0f, 0.1f, "%.4f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiRestLength = 0.01f;
+        ImGui::SetItemTooltip("Ideal distance where string tension relaxes");
 
         ImGui::Unindent();
       }
@@ -530,11 +547,6 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiJitter = 1.0f;
         ImGui::SetItemTooltip("Random displacement factor");
-
-        ImGui::SliderFloat("Fluid", &uiDamping, 0.8f, 1.0f, "%.3f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiDamping = 0.95f;
-        ImGui::SetItemTooltip("Simulation damping (Air resistance)");
         ImGui::Unindent();
       }
 
@@ -545,11 +557,6 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           config.plateRadius = 400.0f;
         ImGui::SetItemTooltip("Radius of the vibrating plate");
-
-        ImGui::SliderFloat("Retract", &uiRetraction, 0.0f, 5.0f, "%.2f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiRetraction = 1.0f;
-        ImGui::SetItemTooltip("Magnetic pull towards center");
 
         ImGui::SliderFloat("Plate Depth", &uiWaveDepth, 5.0f, 100.0f, "%.1f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -818,11 +825,10 @@ int main() {
     // ── Update Physics ──────────────────────────────────────────────
     renderer.setActiveParticleCount(uiParticleCount);
 
-    renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
-                         synth.totalAmplitude(), uiWaveDepth,
-                         uiJitter * effectiveJitterMultiplier, uiRetraction,
-                         uiDamping, effectiveDrive, uiModeP, uiSimMode,
-                         uiSphereMode, uiEField, uiBField);
+    renderer.computeStep(
+        dt, voiceData.data(), (int)voiceData.size(), synth.totalAmplitude(),
+        uiWaveDepth, uiJitter * effectiveJitterMultiplier, effectiveDrive,
+        uiEField, uiBField, uiGravity, uiStringStiffness, uiRestLength);
 
     renderer.render(config, viewProj);
 

@@ -13,6 +13,7 @@ struct CameraUniforms {
     float particleSize;
     float plateRadius;
     float phaseViz;    // 1.0 = phase coloring, 0.0 = default
+    float waveDepth;
     float padding[1];
 };
 
@@ -49,8 +50,8 @@ vertex VertexOut particle_vertex(
     device const Particle& p = particles[vid];
     float R = cam.plateRadius;
 
-    // Map normalized plate coords to world: x*R, z (wave depth), y*R
-    float3 worldPos = float3(p.posW.x * R, p.posW.z, p.posW.y * R);
+    // Map normalized plate coords to world: scale all axes by R for isotropic 3D
+    float3 worldPos = p.posW.xyz * R;
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
 
@@ -58,12 +59,12 @@ vertex VertexOut particle_vertex(
     float isOrtho = cam.padding[0];
     float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
     out.dist = dist;
-    out.pointSize = max(0.2f, cam.particleSize * (800.0f / max(0.0001f, dist)));
+    out.pointSize = max(2.0f, cam.particleSize * (800.0f / max(0.0001f, dist)));
 
     // HDR luminance from kinetic energy
     float speed = length(p.velW.xyz);
     float ke = 0.5f * p.posW.w * speed * speed; // 0.5 * mass * v^2
-    out.luminance = 1.0f + ke * 8.0f; // Base luminance + energy glow
+    out.luminance = 2.0f + ke * 25.0f; // High-contrast luminance boost
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
@@ -74,9 +75,9 @@ vertex VertexOut particle_vertex(
         float value = 0.5f + clamp(speed * 3.0f, 0.0f, 0.5f);
         out.color = hsv2rgb(hue, saturation, value);
     } else {
-        // Default: warm sand tones based on wave height
-        float h = clamp(p.posW.z / 120.0f, -1.0f, 1.0f);
-        float base = 0.55f + h * 0.25f;
+        // Default: warm sand tones based on wave height (normalized Z)
+        float h = clamp(p.posW.z, -1.0f, 1.0f);
+        float base = 0.6f + h * 0.35f;
 
         out.color = float3(
             base * 1.6f,
@@ -86,8 +87,8 @@ vertex VertexOut particle_vertex(
 
         // Speed-based brightness boost
         float speed = length(p.velW.xyz);
-        float boost = clamp(speed * 4.0f, 0.0f, 0.6f);
-        out.color += float3(boost * 0.5f, boost * 0.3f, boost * 0.1f);
+        float boost = clamp(speed * 8.0f, 0.0f, 0.8f);
+        out.color += float3(boost * 0.6f, boost * 0.4f, boost * 0.2f);
     }
 
     return out;

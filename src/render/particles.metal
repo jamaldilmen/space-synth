@@ -214,9 +214,10 @@ kernel void compute_physics(
     }
 
     // ── Noether Symmetry Breaking ─────────────────────────────────────
-    if (u.symmetryBreakImpulse > 0.0f && u.voiceCount > 0) {
+    // Constantly adds a subtle ambient swirl to prevent perfect dead-center grid-lock if needed
+    if (u.symmetryBreakImpulse > 0.0f) {
         float angle = noise(id * 3u, u.time) * M_PI_F;
-        float strength = u.symmetryBreakImpulse * (0.5f + noise(id * 7u, u.time) * 0.5f);
+        float strength = u.symmetryBreakImpulse * (0.1f + noise(id * 7u, u.time) * 0.1f);
         shiftVx += cos(angle) * strength;
         shiftVy += sin(angle) * strength;
     }
@@ -232,11 +233,9 @@ kernel void compute_physics(
     }
 
     // ── Global Gravity Anchor (The Universe Simulator - Accretion Disk) ──
-    // Instead of forcing a straight-line collapse to the center, we introduce
-    // "Frame Dragging" (Coriolis Spin). As particles are pulled toward the origin, 
-    // they are simultaneously swept into a massive, slow-moving rotational vortex.
-    // Heavy Walls (dynamicMass == 0) ignore global gravity.
-    if (dynamicMass > 0.0f && u.voiceCount > 0) {
+    // Gravity should ALwAYS be active to pull the void dust into a central star/planet.
+    // Audio voices (key presses) then deform this star into harmonic atomic shapes.
+    if (dynamicMass > 0.0f) {
         // Slow Cosmic Clock: Gravity is significantly weaker and scales over time
         float globalPull = u.gravityConstant * 0.5f * dt; 
         
@@ -246,14 +245,13 @@ kernel void compute_physics(
         shiftVz -= pz * globalPull;
         
         // 2. Angular Momentum (The Accretion Spin)
-        // Cross product of the position vector and the arbitrary Galactic "Up" axis
         float3 rVec = float3(px, py, pz);
         float rLen = length(rVec);
         if (rLen > 0.01f) {
             float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f)); // Tilted rotation axis
             float3 spinForce = cross(galacticUp, normalize(rVec));
             
-            // The spin force is stronger closer to the center (conservation of angular momentum approximation)
+            // The spin force is stronger closer to the center 
             float spinMag = globalPull * (2.0f / (rLen + 0.5f)); 
             shiftVx += spinForce.x * spinMag;
             shiftVy += spinForce.y * spinMag;

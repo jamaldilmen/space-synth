@@ -262,6 +262,10 @@ kernel void compute_physics(
                         float ddz = pz - np.posW.z;
                         float dist2 = ddx * ddx + ddy * ddy + ddz * ddz;
 
+                        // ODS-06: Schwarzschild Singularity (Black Hole)
+                        // If local density hits critical mass, space collapses.
+                        bool isBlackHole = (count >= uint(MAX_PER_CELL) - 1);
+
                         if (dist2 > colRad2 || dist2 < 1e-12f) continue;
 
                         float dist = sqrt(dist2);
@@ -285,6 +289,13 @@ kernel void compute_physics(
                             // Coulomb-like electrostatic repulsion analog
                             if (u.debugFlags & (1 << 0)) {
                                 float eForce = (u.eFieldStiffness * q1q2) / r2_clamped;
+                                
+                                // ODS-06: Invert repulsion to infinite attraction at singularity
+                                if (isBlackHole) {
+                                    eForce = -15.0f / r2_clamped; // Intense collapse
+                                    currentTemp *= 0.5f; // Hawking radiation / freezing
+                                }
+                                
                                 float3 fE = normalize(r_vec) * eForce * dt;
                                 shiftVx += fE.x; shiftVy += fE.y; shiftVz += fE.z;
                             }

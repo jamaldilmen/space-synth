@@ -197,6 +197,7 @@ int main() {
   static bool uiSoloCollisions = true;
   static bool uiAutoMode = true;         // Auto-Self-Healing (Phase 8)
   static bool uiQuantumEntangle = false; // Masterplan ODS-01 (Telepathy)
+  static bool uiBlackHoles = false;      // Masterplan ODS-06 (Singularities)
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -468,6 +469,18 @@ int main() {
           uiRestLength = 0.01f;
         ImGui::SetItemTooltip("Ideal distance where string tension relaxes");
 
+        ImGui::Unindent();
+      }
+
+      if (ImGui::CollapsingHeader("NEW SCIENCE (Phase 9)",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::Checkbox("ODS-01 Quantum Entanglement", &uiQuantumEntangle);
+        ImGui::SetItemTooltip(
+            "Enable telepathic state transfer between paired particles");
+        ImGui::Checkbox("ODS-06 Black Holes", &uiBlackHoles);
+        ImGui::SetItemTooltip("Enable gravitational collapse (Schwarzschild "
+                              "radius) at high density");
         ImGui::Unindent();
       }
 
@@ -899,6 +912,8 @@ int main() {
       debugFlags |= DEBUG_FIXED_DT;
     if (uiQuantumEntangle)
       debugFlags |= DEBUG_ODS01;
+    if (uiBlackHoles)
+      debugFlags |= DEBUG_ODS06;
 
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
     auto stats = renderer.getPhysicsStats();

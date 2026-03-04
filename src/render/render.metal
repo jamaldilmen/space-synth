@@ -24,6 +24,7 @@ struct VertexOut {
     float dist;        // Camera distance for fade
     float luminance;   // HDR emission intensity
     float originDist;  // Distance from universe origin (0,0,0) for event horizon
+    float2 velDir2D;   // Phase 11: Screen-space velocity direction for string elongation
 };
 
 // HSV to RGB conversion
@@ -55,6 +56,13 @@ vertex VertexOut particle_vertex(
     float3 worldPos = p.posW.xyz * R;
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
+    
+    // Phase 11: Project velocity into screen-space for string elongation
+    float3 velWorld = p.velW.xyz * R;
+    float4 endClip = cam.viewProjection * float4(worldPos + velWorld * 0.5f, 1.0);
+    float2 screenDir = endClip.xy / endClip.w - out.position.xy / out.position.w;
+    float dirLen = length(screenDir);
+    out.velDir2D = (dirLen > 0.001f) ? screenDir / dirLen : float2(0.0f, 1.0f);
 
     // Dynamic Point Size Scaling
     float isOrtho = cam.padding[0];
@@ -127,7 +135,20 @@ fragment float4 particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
-    float d = length(pointCoord - 0.5f) * 2.0f;
+    // Phase 11: String Theory Rendering
+    // Stretch the circular point sprite into an ellipse along velocity direction
+    // This replaces 0D point particles with 1D vibrating "strings"
+    float2 pc = pointCoord - 0.5f;
+    
+    // Rotate pointCoord into velocity-aligned frame
+    float2 vd = in.velDir2D;
+    float2 perp = float2(-vd.y, vd.x);
+    float along = dot(pc, vd);  // Component along string axis
+    float across = dot(pc, perp); // Component across string
+    
+    // Elongate: compress the "across" dimension to create a thin string shape
+    float stringWidth = 0.3f; // How thin the string is (0.1 = very thin, 1.0 = circle)
+    float d = length(float2(along, across / stringWidth)) * 2.0f;
 
     float core = pow(max(0.0f, 1.0f - d), 3.0f);
     float glow = exp(-d * d * 3.5f);

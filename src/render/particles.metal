@@ -64,8 +64,12 @@ static float noise(uint id, uint frame) {
 }
 
 // Collision constants
-constant int MAX_PER_CELL = 16;            // Safety valve for dense clusters
-constant float COLLISION_RESTITUTION = 0.85f; // Slight energy loss per collision
+constant int MAX_PER_CELL = 16;
+constant float COLLISION_RESTITUTION = 0.85f;
+
+// Phase 11.3: Planck-length softening (regularizes point-particle infinities)
+constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
+constant float SCHWARZSCHILD_RS = 0.02f;    // Event horizon radius
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
@@ -137,7 +141,7 @@ kernel void compute_physics(
             float dx = px - voices[vi].emitterX;
             float dy = py - voices[vi].emitterY;
             float dz = pz - voices[vi].emitterZ;
-            float r2 = dx * dx + dy * dy + dz * dz + 1e-4f;
+            float r2 = dx * dx + dy * dy + dz * dz + PLANCK_LENGTH_SQ;
             float r = sqrt(r2);
             float th = atan2(dy, dx);
             
@@ -256,30 +260,45 @@ kernel void compute_physics(
         shiftVz += noisz * u.jitterFactor * 0.05f * dt;
     }
 
-    // ── Global Gravity Anchor (The Universe Simulator - Accretion Disk) ──
-    // Gravity should ALwAYS be active to pull the void dust into a central star/planet.
-    // Audio voices (key presses) then deform this star into harmonic atomic shapes.
+    // ── Phase 11: Schwarzschild Metric Gravity ──────────────────────────
+    // The Lorentz gamma² factor makes gravity diverge exponentially
+    // at the event horizon, while reducing to Newtonian far from the center.
+    
     if (dynamicMass > 0.0f) {
-        // Slow Cosmic Clock: Gravity is significantly weaker and scales over time
-        float globalPull = u.gravityConstant * 0.5f * dt; 
-        
-        // 1. Direct radial pull towards the singularity (0,0,0)
-        shiftVx -= px * globalPull;
-        shiftVy -= py * globalPull;
-        shiftVz -= pz * globalPull;
-        
-        // 2. Angular Momentum (The Accretion Spin)
         float3 rVec = float3(px, py, pz);
         float rLen = length(rVec);
-        if (rLen > 0.01f) {
-            float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f)); // Tilted rotation axis
-            float3 spinForce = cross(galacticUp, normalize(rVec));
+        
+        if (rLen > SCHWARZSCHILD_RS) {
+            // Schwarzschild metric: gamma² = 1 / (1 - rs/r)
+            float gamma2 = 1.0f / max(0.01f, 1.0f - SCHWARZSCHILD_RS / rLen);
+            float grPull = u.gravityConstant * 0.5f * dt * gamma2;
             
-            // The spin force is stronger closer to the center 
-            float spinMag = globalPull * (2.0f / (rLen + 0.5f)); 
+            // Radial pull toward singularity (curved spacetime)
+            float3 dir = rVec / rLen;
+            shiftVx -= dir.x * grPull;
+            shiftVy -= dir.y * grPull;
+            shiftVz -= dir.z * grPull;
+            
+            // Kerr metric frame-dragging (angular momentum / accretion spin)
+            float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f));
+            float3 spinForce = cross(galacticUp, dir);
+            float spinMag = grPull * (2.0f / (rLen + 0.5f));
             shiftVx += spinForce.x * spinMag;
             shiftVy += spinForce.y * spinMag;
             shiftVz += spinForce.z * spinMag;
+            
+            // Phase 11.2: Noether Energy Dissipation (cosmological redshift)
+            // Particles far from center lose energy as spacetime stretches
+            float redshift = 1.0f / (1.0f + rLen * 0.3f);
+            vpx *= redshift;
+            vpy *= redshift;
+            vpz *= redshift;
+        } else {
+            // Inside the event horizon: particle is swallowed
+            // All energy is lost — frozen at the singularity
+            vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+            shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
+            currentTemp = 0.0f;
         }
     }
 

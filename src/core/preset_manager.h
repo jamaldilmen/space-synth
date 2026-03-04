@@ -22,7 +22,7 @@ struct Preset {
   float gravity = 0.005f;
   float stringStiffness = 0.01f;
   float restLength = 0.01f;
-  int particleCount = 800000;
+  int particleCount = 1000000;
   float supernova = 0.0f;
 
   // Render (Future-proofing for Post-FX)

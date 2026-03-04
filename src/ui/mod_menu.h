@@ -22,7 +22,7 @@ public:
   // Returns true if any parameter changed
   struct Params {
     // Particles
-    int particleCount = 800000;
+    int particleCount = 1000000;
     float particleSize = 0.8f;
     float mass = 1.0f;
     float friction = 0.06f;

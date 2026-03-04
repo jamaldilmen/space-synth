@@ -75,7 +75,7 @@ int main() {
   }
 
   // ── Particles ───────────────────────────────────────────────────────
-  const int PARTICLE_COUNT = 800000;
+  const int PARTICLE_COUNT = 1000000;
   const float MAX_WAVE_DEPTH = 100.0f;
   const float PLATE_RADIUS = 400.0f;
 
@@ -160,7 +160,7 @@ int main() {
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
-  static int uiParticleCount = 800000;
+  static int uiParticleCount = 1000000;
   static float uiJitter = 0.1f;
   static float uiWaveDepth = 20.0f;
 
@@ -430,9 +430,10 @@ int main() {
           uiParticleSize = 4.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
 
-        ImGui::SliderInt("Amount", &uiParticleCount, 10000, 800000);
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiParticleCount = 800000;
+        ImGui::SliderInt("Amount", &uiParticleCount, 10000, 1000000);
+        if (ImGui::Button("Reset to Default")) {
+          uiParticleCount = 1000000;
+        }
         ImGui::SetItemTooltip("Active number of particles");
 
         // Limit / SpeedCap moved to Audio Synth (Analog Drive)

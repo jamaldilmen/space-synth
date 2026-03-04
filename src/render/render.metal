@@ -63,7 +63,7 @@ vertex VertexOut particle_vertex(
 
     // HDR luminance from thermal energy (ODS-03)
     float temp = p.prevW.w;
-    out.luminance = 1.8f + temp * 35.0f; // Heat-driven plasma emission
+    out.luminance = 1.0f + max(0.0f, temp) * 4.0f; // Soft heat-driven plasma
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
@@ -106,7 +106,9 @@ fragment float4 particle_fragment(
     float3 glowColor = in.color;
 
     float3 finalColor = mix(glowColor * glow, coreColor, core);
-    float alpha = core + glow * 0.4f;
+    
+    // Significantly reduced base alpha for 800k additive particle blending
+    float alpha = (core * 0.5f + glow * 0.3f) * 0.08f;
 
     // HDR emission: scale by luminance (energy-based brightness)
     finalColor *= in.luminance;

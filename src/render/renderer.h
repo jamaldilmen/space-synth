@@ -39,6 +39,7 @@ enum DebugFlag : uint32_t {
   DEBUG_FIXED_DT = 1 << 6,
   DEBUG_ODS01 = 1 << 7, // Telepathy (Phase 9)
   DEBUG_ODS06 = 1 << 8, // Black Holes (Phase 9)
+  DEBUG_ODS04 = 1 << 9, // Stealth/ANC (Phase 9)
   DEBUG_ALL = 0xFFFFFFFF
 };
 

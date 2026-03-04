@@ -373,6 +373,21 @@ kernel void compute_physics(
     // Phase accumulation
     float newPhase = p.velW.w + speed * dt;
 
+    // ── ODS-04: Dimming My Light (Stealth / ANC) ───────────────────────────
+    if (u.debugFlags & (1 << 9)) {
+        // Define the "User" cluster (~5% of particles)
+        if ((id % 20) == 0) {
+            // Active Noise Cancelling: Destructive interference by phase inversion
+            newPhase = fmod(p.velW.w + M_PI_F, 2.0f * M_PI_F);
+            
+            // Absolute Energy Damping: Absorb incoming force without moving
+            finalV = float3(0.0f);
+            
+            // Optical Stealth: Negative temperature kills HDR emission, rendering them black
+            currentTemp = -5.0f;
+        }
+    }
+
     // ── ODS-01: Quantum Entanglement (Telepathy) ──────────────────────────────────
     if (u.debugFlags & (1 << 7)) { // Reserved bit 7 for ODS-01
         uint partnerID = p.entanglement.x;

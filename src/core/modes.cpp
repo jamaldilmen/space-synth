@@ -5,33 +5,48 @@
 namespace space {
 
 ModeTable::ModeTable() {
-    int idx = 0;
-    for (int m = 0; m < MAX_ORDER; m++) {
-        for (int n = 0; n < MAX_ZEROS; n++) {
-            ordered_[idx++] = Mode{m, n + 1, ZEROS[m][n]};
-        }
-    }
+  for (int midi = 0; midi < 128; midi++) {
+    // Musical Pitch Class (0 = C, 1 = C#, ..., 11 = B)
+    int pitchClass = midi % 12;
 
-    // Sort by alpha (ascending) — simple patterns first, complex last
-    std::sort(ordered_.begin(), ordered_.end(),
-        [](const Mode& a, const Mode& b) { return a.alpha < b.alpha; });
+    // Octave. MIDI note 24 (C1) is octave 1.
+    int octave = (midi / 12) - 1;
+
+    // The Atom Model:
+    // Azimuthal lobes (m) = Pitch Class. (C = 0 lobes = symmetrical tube)
+    int m = pitchClass;
+
+    // Polar rings (n) = Octave. (Higher octaves add radial complexity)
+    int n = std::max(1, octave);
+
+    // Alpha (frequency coefficient) is mostly vestigial in Phase 9, but map it
+    // to Hz for safety.
+    double alpha = 440.0 * std::pow(2.0, (midi - 69) / 12.0);
+
+    ordered_[midi] = Mode{m, n, alpha};
+  }
 }
 
 int ModeTable::midiToModeIndex(int midi) const {
-    int note = std::clamp(midi, 21, 108);
-    float normalized = static_cast<float>(note - 21) / 87.0f;
-    return std::clamp(static_cast<int>(normalized * 27.99f), 0, NUM_MODES - 1);
+  return std::clamp(midi, 0, 127);
 }
 
 int ModeTable::keyboardToModeIndex(int midi, int kbStart) const {
-    float normalized = std::clamp(
-        static_cast<float>(midi - kbStart) / 16.0f, 0.0f, 1.0f);
-    return std::clamp(static_cast<int>(normalized * 27.99f), 0, NUM_MODES - 1);
+  // Determine the relative note within the current keyboard block
+  int relativeNote = std::clamp(midi - kbStart, 0, 15);
+
+  // Map the 16 drum pads / white keys directly to a diatonic scale or
+  // continuous run For simplicity, we just map it back to an absolute MIDI note
+  // in the C3 range
+  int absoluteMidi = 48 + relativeNote; // C3 (48) upwards
+  return std::clamp(absoluteMidi, 0, 127);
 }
 
-const Mode& ModeTable::modeForMidi(int midi, bool keyboardMode, int kbStart) const {
-    int idx = keyboardMode ? keyboardToModeIndex(midi, kbStart) : midiToModeIndex(midi);
-    return ordered_[idx];
+const Mode &ModeTable::modeForMidi(int midi, bool keyboardMode,
+                                   int kbStart) const {
+  int idx =
+      keyboardMode ? keyboardToModeIndex(midi, kbStart) : midiToModeIndex(midi);
+  return ordered_[idx];
 }
 
 } // namespace space

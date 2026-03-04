@@ -56,6 +56,7 @@ public:
   struct ActiveVoice {
     float amplitude;
     float frequency;
+    float phase;
     const Mode *mode;
   };
   std::vector<ActiveVoice> getActiveVoices() const;

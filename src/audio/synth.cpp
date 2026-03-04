@@ -162,7 +162,8 @@ std::vector<Synth::ActiveVoice> Synth::getActiveVoices() const {
   std::vector<ActiveVoice> active;
   for (const auto &[_, voice] : voices_) {
     if (voice.envelope.amplitude > 0.001f && voice.mode) {
-      active.push_back({voice.envelope.amplitude, voice.frequency, voice.mode});
+      active.push_back(
+          {voice.envelope.amplitude, voice.frequency, voice.phase, voice.mode});
     }
   }
   return active;

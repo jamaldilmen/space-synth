@@ -261,13 +261,34 @@ int main() {
     // Build voice data for GPU (with emitter positions)
     auto activeVoices = synth.getActiveVoices();
     std::vector<VoiceGPUData> voiceData;
+    static std::unordered_map<int, float> lastAmps;
+
     for (int i = 0; i < (int)activeVoices.size(); i++) {
       const auto &v = activeVoices[i];
       int emIdx = i % MAX_EMITTERS;
-      voiceData.push_back({v.mode->m, v.mode->n, (float)v.mode->alpha,
-                           v.amplitude, emitters[emIdx].x, emitters[emIdx].y,
-                           emitters[emIdx].z, 0.0f});
+
+      // Compute transient delta (Phase 12 shockwaves)
+      float lastA = lastAmps.count(v.mode->m + v.mode->n * 100)
+                        ? lastAmps[v.mode->m + v.mode->n * 100]
+                        : 0.0f;
+      float dAmp = std::max(0.0f, v.amplitude - lastA);
+      lastAmps[v.mode->m + v.mode->n * 100] = v.amplitude;
+
+      voiceData.push_back({v.mode->m,
+                           v.mode->n,
+                           (float)v.mode->alpha,
+                           v.amplitude,
+                           emitters[emIdx].x,
+                           emitters[emIdx].y,
+                           emitters[emIdx].z,
+                           v.frequency,
+                           dAmp,
+                           v.phase,
+                           {0.0f, 0.0f}});
     }
+    // Cleanup old voices from lastAmps if they aren't active
+    if (activeVoices.empty())
+      lastAmps.clear();
 
     camera.update(dt);
     float view[16], proj[16], viewProj[16];

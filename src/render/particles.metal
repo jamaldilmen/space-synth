@@ -18,7 +18,10 @@ struct VoiceData {
     float emitterX;
     float emitterY;
     float emitterZ;
-    float frequency; // explicitly carries frequency for E=mc2
+    float frequency;
+    float deltaAmp;
+    float phase;
+    float padding[2];
 };
 
 struct PhysicsUniforms {
@@ -168,14 +171,25 @@ kernel void compute_physics(
             shiftVy += inducedV.y * 0.15f;
             shiftVz += inducedV.z * 0.1f;
 
-            // Phase 4: Mechanical Point Source Impulse
+            // Phase 4 & 12: Mechanical Point Source Impulse + Shockwaves
             float pushRadius = 2.0f;
             if (r < pushRadius) {
+                // Base impulse from amplitude
                 float impulseForce = amp * (1.0f - r / pushRadius) * 20.0f;
+                
+                // Phase 12: Transient Shockwave Trigger
+                // If deltaAmp is high (sharp attack), add a massive spike for one frame
+                float shockwave = voices[vi].deltaAmp * 300.0f * (1.0f - r / pushRadius);
+                impulseForce += shockwave;
+                
                 // Full spherical expansion
-                shiftVx += (dx / r) * impulseForce;
-                shiftVy += (dy / r) * impulseForce;
-                shiftVz += (dz / r) * impulseForce;
+                float3 radialDir = float3(dx / r, dy / r, dz / r);
+                shiftVx += radialDir.x * impulseForce;
+                shiftVy += radialDir.y * impulseForce;
+                shiftVz += radialDir.z * impulseForce;
+                
+                // Transient heat peak
+                currentTemp += voices[vi].deltaAmp * 2.0f;
             }
 
             // ── The Atom Model (Gradient-Driven Harmonic Sculpting) ────────
@@ -204,11 +218,15 @@ kernel void compute_physics(
             );
             
             // The sculpting force: push toward lobe maxima
-            float sculptStrength = amp * 20.0f;
-            float3 harmonicForce = (thetaDir * dYdth + phiDir * dYdphi) * sculptStrength;
-            shiftVx += harmonicForce.x;
-            shiftVy += harmonicForce.y;
-            shiftVz += harmonicForce.z;
+            // Phase 12: Audio-Rate LFO (Moog Shimmer)
+            // Modulate sculpting strength with the actual note frequency
+            // This makes the harmonic shapes vibrate/shimmer at the pitch rate.
+            float acMod = 1.0f + 0.3f * sin(voices[vi].frequency * u.time * 0.1f + voices[vi].phase);
+            float sculptStrength = amp * voices[vi].alpha * 20.0f * acMod;
+            
+            shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
+            shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
+            shiftVz += (dYdth * thetaDir.z + dYdphi * phiDir.z) * sculptStrength;
             
             // Radial breathing: expand/contract based on harmonic value (not just outward)
             float radialForce = amp * Y_here * 8.0f;
@@ -347,10 +365,10 @@ kernel void compute_physics(
                         if (dist2 > colRad2 || dist2 < 1e-12f) continue;
 
                         float dist = sqrt(dist2);
-                        float nx_dir = ddx / dist;
-                        float ny_dir = ddy / dist;
-                        float nz_dir = ddz / dist;
-
+                        // Phase 12: High-Energy Spark Heat
+                        // Particles heat up significantly on collision
+                        currentTemp += 0.05f; 
+                        
                         // 1. The Inverse-Square Law (E-Field)
                         // float r2_clamped = max(dist2, 1e-7f); // This line is now part of the new block
                         float q1q2 = selfCharge * np.spinW.w;

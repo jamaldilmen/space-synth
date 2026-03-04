@@ -70,10 +70,13 @@ struct VoiceGPUData {
   int n;
   float alpha;
   float amplitude;
-  float emitterX;  // Point source position X
-  float emitterY;  // Point source position Y
-  float emitterZ;  // Point source position Z
-  float frequency; // Was pad, now explicitly carries frequency for E=mc2
+  float emitterX;
+  float emitterY;
+  float emitterZ;
+  float frequency;
+  float deltaAmp;   // Transient spike detection
+  float phase;      // Audio-rate oscillator phase
+  float padding[2]; // Alignment to 48 bytes (16x3)
 };
 
 // Physics uniforms for compute shader

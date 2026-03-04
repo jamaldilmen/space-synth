@@ -21,31 +21,25 @@ struct VoiceData {
 };
 
 struct PhysicsUniforms {
-    float dt;
-    float totalAmplitude;
-    int voiceCount;
-    int particleCount;
-    float maxWaveDepth;
-    float plateRadius;
-    float jitterFactor;
-    float retractionPull;
-    float damping;
-    float speedCap;
-    float modeP;
-    int simMode;
-    int sphereMode;
-    uint frameCounter;
-    float symmetryBreakImpulse;
-    float collisionRadius;      // Interaction radius for collisions
-    int collisionsOn;           // 1 = collisions enabled
-    float uncertaintyStrength;
-    float eFieldStiffness;      // E-Field repulsion multiplier
-    float bFieldCirculation;    // B-Field circulation force
-    float time;                 // Continuous time
-    float gravityConstant;      // G for Newtonian Self-Gravity
-    float stringStiffness;      // Hooke's Law Tensegrity Constant
-    float restLength;           // Ideal neighbor distance for Strings
-    int gridSizeZ;              // Height of 3D grid
+    float dt;                   // 0
+    float totalAmplitude;       // 4
+    int voiceCount;             // 8
+    int particleCount;          // 12
+    float maxWaveDepth;         // 16
+    float plateRadius;          // 20
+    float jitterFactor;         // 24
+    float speedCap;             // 28
+    uint frameCounter;          // 32
+    float symmetryBreakImpulse; // 36
+    float collisionRadius;      // 40
+    int collisionsOn;           // 44
+    float uncertaintyStrength;  // 48
+    float eFieldStiffness;      // 52
+    float bFieldCirculation;    // 56
+    float time;                 // 60
+    float gravityConstant;      // 64
+    float stringStiffness;      // 68
+    float restLength;           // 72
 };
 
 struct SpatialHashUniforms {
@@ -53,6 +47,7 @@ struct SpatialHashUniforms {
     int particleCount;
     float cellSize;
     float invCellSize;
+    int gridSizeZ;
 };
 
 // (Removed Bessel functions - no longer used)

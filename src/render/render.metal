@@ -21,8 +21,9 @@ struct VertexOut {
     float4 position [[position]];
     float pointSize [[point_size]];
     float3 color;
-    float dist;      // Pass distance to fragment
-    float luminance;  // HDR emission intensity
+    float dist;        // Camera distance for fade
+    float luminance;   // HDR emission intensity
+    float originDist;  // Distance from universe origin (0,0,0) for event horizon
 };
 
 // HSV to RGB conversion
@@ -72,8 +73,8 @@ vertex VertexOut particle_vertex(
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
-        float phase = p.velW.w; // phase in [-pi, pi]
-        float hue = (phase + M_PI_F) / (2.0f * M_PI_F); // [0, 1]
+        float phase = p.velW.w;
+        float hue = (phase + M_PI_F) / (2.0f * M_PI_F);
         float speed = length(p.velW.xyz);
         float saturation = 0.85f;
         float value = 0.5f + clamp(speed * 3.0f, 0.0f, 0.5f);
@@ -82,17 +83,41 @@ vertex VertexOut particle_vertex(
         // Default: warm sand tones based on wave height (normalized Z)
         float h = clamp(p.posW.z, -1.0f, 1.0f);
         float base = 0.6f + h * 0.35f;
-
-        out.color = float3(
-            base * 1.6f,
-            base * 1.3f,
-            base * 0.9f
-        );
+        out.color = float3(base * 1.6f, base * 1.3f, base * 0.9f);
 
         // Speed-based brightness boost
         float speed = length(p.velW.xyz);
         float boost = clamp(speed * 8.0f, 0.0f, 0.8f);
         out.color += float3(boost * 0.6f, boost * 0.4f, boost * 0.2f);
+    }
+
+    // ── Black Hole Event Horizon ──────────────────────────────────
+    // Distance from universe origin in normalized coords
+    float originR = length(p.posW.xyz);
+    out.originDist = originR;
+    
+    // Schwarzschild radius: particles inside the event horizon are invisible
+    float schwarzschild = 0.015f; // Tiny dark core
+    float coronaRadius  = 0.08f;  // Accretion disk sweet-spot
+    
+    if (originR < schwarzschild) {
+        // Inside the event horizon: swallowed by the singularity
+        out.pointSize = 0.0f;
+        out.color = float3(0.0f);
+        out.luminance = 0.0f;
+    } else if (originR < coronaRadius) {
+        // Accretion corona: superhot ring glowing orange-white
+        float coronaHeat = 1.0f - (originR - schwarzschild) / (coronaRadius - schwarzschild);
+        coronaHeat = coronaHeat * coronaHeat; // Quadratic falloff
+        
+        // Shift color toward hot plasma (orange → white)
+        float3 coronaColor = mix(
+            float3(1.0f, 0.6f, 0.15f),  // Deep orange
+            float3(1.0f, 0.95f, 0.85f), // Near-white
+            coronaHeat
+        );
+        out.color = coronaColor;
+        out.luminance += coronaHeat * 3.0f; // Extra HDR glow
     }
 
     return out;

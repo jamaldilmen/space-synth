@@ -182,6 +182,17 @@ kernel void compute_physics(
             // m_f equates to azimuthal quantum number, n_f equates to principal
             float sphericalLobe = abs(cos(m_f * th) * sin(n_f * phi));
             
+            // True 3D Volumetric Expansion: Push particles outward proportionally
+            float expansionForce = amp * sphericalLobe * 15.0f;
+            float3 centerVec = float3(px, py, pz);
+            float cLen = length(centerVec);
+            if (cLen > 0.0001f) {
+                float3 outDir = centerVec / cLen;
+                shiftVx += outDir.x * expansionForce;
+                shiftVy += outDir.y * expansionForce;
+                shiftVz += outDir.z * expansionForce;
+            }
+            
             jitterTotal += amp * sphericalLobe;
         }
 

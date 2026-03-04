@@ -5,7 +5,7 @@ using namespace metal;
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
-    float4 prevW;  // prevX, prevY, prevZ, pad (Störmer-Verlet)
+    float4 prevW;  // prevX, prevY, prevZ, temperature
     float4 spinW;  // spinX, spinY, spinZ, charge
 };
 
@@ -108,6 +108,7 @@ kernel void compute_physics(
 
     // Track potential energy for phase accumulation
     float PE = 0.0f;
+    float currentTemp = p.prevW.w; // ODS-03: Thermal state
 
     // Accumulate velocity pulses and position corrections globally
     float shiftX = 0.0f, shiftY = 0.0f, shiftZ = 0.0f;
@@ -177,12 +178,18 @@ kernel void compute_physics(
         // Apply dynamic relativistic mass
         dynamicMass += massAdd;
 
-        if (jitterTotal > 0.01f) {
-            float n_strength = jitterTotal * 6.0f * dt;
-            shiftVx += noise(id, u.time) * n_strength;
-            shiftVy += noise(id + 1, u.time) * n_strength;
-            shiftVz += noise(id + 2, u.time) * n_strength;
-        }
+        // ODS-03: Thermal Energy Evolution
+        // Target temp is driven by auditory excitation (jitterTotal)
+        float targetTemp = clamp(jitterTotal * 0.5f, 0.0f, 1.0f);
+        currentTemp = mix(currentTemp, targetTemp, 0.05f); // Thermal inertia
+    }
+
+    // ODS-03: Dynamic Brownian Jitter
+    if ((u.debugFlags & (1 << 4)) && currentTemp > 0.001f) {
+        float n_strength = currentTemp * u.jitterFactor * 5.0f * dt;
+        shiftVx += noise(id, u.time) * n_strength;
+        shiftVy += noise(id + 1, u.time) * n_strength;
+        shiftVz += noise(id + 2, u.time) * n_strength;
     }
 
     // ── Noether Symmetry Breaking ─────────────────────────────────────
@@ -356,7 +363,7 @@ kernel void compute_physics(
 
     // ── Write back ───────────────────────────────────────────────────
     if (mass > 0.0f) {
-        p.prevW = float4(px, py, pz, 0.0f);
+        p.prevW = float4(px, py, pz, currentTemp);
         p.posW = float4(nextPos, mass);
         p.velW = float4(finalV, newPhase);
     }

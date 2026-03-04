@@ -4,7 +4,7 @@ using namespace metal;
 struct Particle {
     float4 posW;   // x, y, z, mass  (normalized plate coords)
     float4 velW;   // vx, vy, vz, phase
-    float4 prevW;  // prevX, prevY, prevZ, pad (Störmer-Verlet)
+    float4 prevW;  // prevX, prevY, prevZ, temperature
 };
 
 struct CameraUniforms {
@@ -61,10 +61,9 @@ vertex VertexOut particle_vertex(
     out.dist = dist;
     out.pointSize = max(2.0f, cam.particleSize * (800.0f / max(0.0001f, dist)));
 
-    // HDR luminance from kinetic energy
-    float speed = length(p.velW.xyz);
-    float ke = 0.5f * p.posW.w * speed * speed; // 0.5 * mass * v^2
-    out.luminance = 2.0f + ke * 25.0f; // High-contrast luminance boost
+    // HDR luminance from thermal energy (ODS-03)
+    float temp = p.prevW.w;
+    out.luminance = 1.8f + temp * 35.0f; // Heat-driven plasma emission
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue

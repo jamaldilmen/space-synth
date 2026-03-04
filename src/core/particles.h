@@ -35,9 +35,9 @@ private:
 // posW.w = mass, velW.w = phase (Feynman action accumulator)
 // prevW stores previous frame position for Störmer-Verlet integration
 struct alignas(16) GPUParticle {
-  float x, y, z, mass;             // 16 bytes — posW
-  float vx, vy, vz, phase;         // 16 bytes — velW
-  float prevX, prevY, prevZ, pad2; // 16 bytes — prevW (Verlet)
+  float x, y, z, mass;                    // 16 bytes — posW
+  float vx, vy, vz, phase;                // 16 bytes — velW
+  float prevX, prevY, prevZ, temperature; // 16 bytes — prevW (Verlet + Heat)
   float spinX, spinY, spinZ,
       charge; // 16 bytes — spinW (Circulation + polarity)
 }; // Total: 64 bytes

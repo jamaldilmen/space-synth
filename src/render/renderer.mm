@@ -325,6 +325,7 @@ void Renderer::resetParticles() {
 
     gpuData[i].vx = gpuData[i].vy = gpuData[i].vz = 0.0f;
     gpuData[i].phase = 0.0f;
+    gpuData[i].temperature = 0.0f;
 
     gpuData[i].prevX = gpuData[i].x;
     gpuData[i].prevY = gpuData[i].y;

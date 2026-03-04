@@ -312,11 +312,24 @@ void Renderer::resetParticles() {
 
   GPUParticle *gpuData = (GPUParticle *)impl_->particleBuffer.contents;
   for (int i = 0; i < impl_->particleCount; i++) {
-    // True Universe Distribution: Particles spawn uniformly in the void.
-    // They are no longer forced into a pre-existing "planet" ball.
-    gpuData[i].x = 4.0f * (float)rand() / RAND_MAX - 2.0f;
-    gpuData[i].y = 4.0f * (float)rand() / RAND_MAX - 2.0f;
-    gpuData[i].z = 4.0f * (float)rand() / RAND_MAX - 2.0f;
+    // Phase 10: Gaussian Universe Spawn via Box-Muller transform
+    // This eradicates the visual "quadrat" and creates a soft void.
+    float u1 = (float)rand() / RAND_MAX;
+    float u2 = (float)rand() / RAND_MAX;
+    float u3 = (float)rand() / RAND_MAX;
+    float u4 = (float)rand() / RAND_MAX;
+
+    // Generate two independent standard normal variables
+    float z0 =
+        sqrt(-2.0f * log(u1 > 0.0001f ? u1 : 0.0001f)) * cos(2.0f * M_PI * u2);
+    float z1 =
+        sqrt(-2.0f * log(u1 > 0.0001f ? u1 : 0.0001f)) * sin(2.0f * M_PI * u2);
+    float z2 =
+        sqrt(-2.0f * log(u3 > 0.0001f ? u3 : 0.0001f)) * cos(2.0f * M_PI * u4);
+
+    gpuData[i].x = z0 * 1.2f; // StdDev 1.2
+    gpuData[i].y = z1 * 1.2f;
+    gpuData[i].z = z2 * 1.2f;
     gpuData[i].mass = 1.0f;
 
     gpuData[i].vx = gpuData[i].vy = gpuData[i].vz = 0.0f;

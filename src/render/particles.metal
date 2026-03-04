@@ -231,17 +231,34 @@ kernel void compute_physics(
         shiftVz += noisz * u.jitterFactor * 0.05f * dt;
     }
 
-    // ── Global Gravity Anchor (Potato Core) ───────────────────────────
-    // Instead of forcing the medium flat onto the Z-plane, we use a 3D spherical 
-    // harmonic trap. This balances the local E-Field repulsion to form a solid, 
-    // uniform spherical volume (a true "Potato") rather than a hollow shell.
+    // ── Global Gravity Anchor (The Universe Simulator - Accretion Disk) ──
+    // Instead of forcing a straight-line collapse to the center, we introduce
+    // "Frame Dragging" (Coriolis Spin). As particles are pulled toward the origin, 
+    // they are simultaneously swept into a massive, slow-moving rotational vortex.
     // Heavy Walls (dynamicMass == 0) ignore global gravity.
-    // ── Global Gravity Anchor (Potato Core) ───────────────────────────
     if (dynamicMass > 0.0f && u.voiceCount > 0) {
-        float globalPull = u.gravityConstant * 5.0f * dt; 
+        // Slow Cosmic Clock: Gravity is significantly weaker and scales over time
+        float globalPull = u.gravityConstant * 0.5f * dt; 
+        
+        // 1. Direct radial pull towards the singularity (0,0,0)
         shiftVx -= px * globalPull;
         shiftVy -= py * globalPull;
         shiftVz -= pz * globalPull;
+        
+        // 2. Angular Momentum (The Accretion Spin)
+        // Cross product of the position vector and the arbitrary Galactic "Up" axis
+        float3 rVec = float3(px, py, pz);
+        float rLen = length(rVec);
+        if (rLen > 0.01f) {
+            float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f)); // Tilted rotation axis
+            float3 spinForce = cross(galacticUp, normalize(rVec));
+            
+            // The spin force is stronger closer to the center (conservation of angular momentum approximation)
+            float spinMag = globalPull * (2.0f / (rLen + 0.5f)); 
+            shiftVx += spinForce.x * spinMag;
+            shiftVy += spinForce.y * spinMag;
+            shiftVz += spinForce.z * spinMag;
+        }
     }
 
     // ── Particle-Particle Collisions (spatial hash neighbor scan) ─────
@@ -369,17 +386,17 @@ kernel void compute_physics(
     }
 
     // ── Störmer-Verlet integration (damped) ──────────────────────────
-    // vpx/vpy/vpz = velocity proxy (displacement per frame)
-    // ax/ay/az = force accumulated as position delta
-    // dynamicFric = damping factor on velocity proxy
+    // Phase 10: Cosmic Viscosity. Drastically increase damping so the universe
+    // forms majestically over seconds rather than microseconds.
+    float cosmicDrag = dynamicFric * 0.96f; // Heavier drag
 
     // Apply unified velocity shifts to damped proxy
-    vpx = vpx * dynamicFric;
-    vpy = vpy * dynamicFric;
-    vpz = vpz * dynamicFric;
+    vpx = vpx * cosmicDrag;
+    vpy = vpy * cosmicDrag;
+    vpz = vpz * cosmicDrag;
 
     // Combine proxy with force pulses
-    float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
+    float3 finalV = float3(vpx, vpy, vpz) * cosmicDrag + float3(shiftVx, shiftVy, shiftVz);
     
     // Speed cap
     float speed = length(finalV);

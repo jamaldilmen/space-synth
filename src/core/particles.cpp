@@ -9,18 +9,20 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   particles_.resize(count);
 
   std::mt19937 rng(42);
-  std::uniform_real_distribution<float> angle(0.0f, 2.0f * M_PI);
-  std::uniform_real_distribution<float> radius(0.0f, 1.0f);
-  std::uniform_real_distribution<float> depth(-1.0f, 1.0f);
+  // Phase 10: Gaussian Universe Spawn
+  // Replacing a hard uniform box [-2.0, 2.0] with a soft Gaussian cloud
+  // centered on 0. This eradicates the visual "quadrat" and creates a true
+  // majestic void.
+  std::normal_distribution<float> gaussian(0.0f, 1.2f); // Mean 0.0, StdDev 1.2
 
   for (auto &p : particles_) {
     // True Universe Distribution: Particles exist uniformly in the void.
     // They are no longer forced into a pre-existing "planet" ball.
     // The physics engine (Gravity + Harmonic Waves) will collect them
     // organically.
-    p.x = depth(rng) * 2.0f; // Scale to fill the visible universe bounds
-    p.y = depth(rng) * 2.0f;
-    p.z = depth(rng) * 2.0f;
+    p.x = gaussian(rng);
+    p.y = gaussian(rng);
+    p.z = gaussian(rng);
 
     p.vx = 0.0f;
     p.vy = 0.0f;

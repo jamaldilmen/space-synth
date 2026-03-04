@@ -7,6 +7,7 @@ struct Particle {
     float4 velW;   // vx, vy, vz, phase
     float4 prevW;  // prevX, prevY, prevZ, temperature
     float4 spinW;  // spinX, spinY, spinZ, charge
+    uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
 struct VoiceData {
@@ -360,6 +361,19 @@ kernel void compute_physics(
 
     // Phase accumulation
     float newPhase = p.velW.w + speed * dt;
+
+    // ── ODS-01: Quantum Entanglement (Telepathy) ──────────────────────────────────
+    if (u.debugFlags & (1 << 7)) { // Reserved bit 7 for ODS-01
+        uint partnerID = p.entanglement.x;
+        if (partnerID < (uint)u.particleCount) {
+            float partnerTemp = prevParticles[partnerID].prevW.w;
+            // Telepathic state transfer (instant action at a distance)
+            if (partnerTemp > currentTemp) {
+                currentTemp = mix(currentTemp, partnerTemp, 0.2f * dt); // Absorb heat
+                newPhase = mix(newPhase, prevParticles[partnerID].velW.w, 0.1f * dt); // Phase sync
+            }
+        }
+    }
 
     // ── Write back ───────────────────────────────────────────────────
     if (mass > 0.0f) {

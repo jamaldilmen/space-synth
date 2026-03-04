@@ -48,14 +48,26 @@ std::vector<GPUParticle> packForGPU(const ParticleSystem &system) {
     float invMass = (r3D > 0.93f) ? 0.0f : 1.0f;
 
     gpu[i] = {
-        p.x,  p.y,
-        p.z,  invMass, // posW.w = invMass (0.0 = static wall)
-        p.vx, p.vy,
-        p.vz, 0.0f, // vel + phase
-        p.x,  p.y,
-        p.z,  0.0f, // prevPos = pos (zero initial velocity for Verlet)
-        0.0f, 0.0f,
-        1.0f, 1.0f // spinZ = 1.0, charge = 1.0
+        p.x,
+        p.y,
+        p.z,
+        invMass, // posW.w = invMass (0.0 = static wall)
+        p.vx,
+        p.vy,
+        p.vz,
+        0.0f, // vel + phase
+        p.x,
+        p.y,
+        p.z,
+        0.0f, // prevPos + temperature
+        0.0f,
+        0.0f,
+        1.0f,
+        1.0f,                                // spinZ = 1.0, charge = 1.0
+        (uint32_t)(rand() % system.count()), // entanglementID
+        0,
+        0,
+        0 // padding
     };
   }
   return gpu;

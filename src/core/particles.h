@@ -39,8 +39,10 @@ struct alignas(16) GPUParticle {
   float vx, vy, vz, phase;                // 16 bytes — velW
   float prevX, prevY, prevZ, temperature; // 16 bytes — prevW (Verlet + Heat)
   float spinX, spinY, spinZ,
-      charge; // 16 bytes — spinW (Circulation + polarity)
-}; // Total: 64 bytes
+      charge;                // 16 bytes — spinW (Circulation + polarity)
+  uint32_t entanglementID;   // 4 bytes — telepathic partner ID (ODS-01)
+  uint32_t pad1, pad2, pad3; // 12 bytes — 16-byte alignment
+}; // Total: 80 bytes
 
 // Convert CPU particles to GPU buffer format
 std::vector<GPUParticle> packForGPU(const ParticleSystem &system);

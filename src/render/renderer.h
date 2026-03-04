@@ -37,6 +37,7 @@ enum DebugFlag : uint32_t {
   DEBUG_JITTER = 1 << 4,
   DEBUG_COLLISIONS = 1 << 5,
   DEBUG_FIXED_DT = 1 << 6,
+  DEBUG_ODS01 = 1 << 7, // Telepathy (Phase 9)
   DEBUG_ALL = 0xFFFFFFFF
 };
 

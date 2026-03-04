@@ -333,6 +333,8 @@ void Renderer::resetParticles() {
 
     gpuData[i].spinX = gpuData[i].spinY = gpuData[i].spinZ = 0.0f;
     gpuData[i].charge = (i % 2 == 0) ? 1.0f : -1.0f;
+    gpuData[i].entanglementID = (uint32_t)rand() % impl_->particleCount;
+    gpuData[i].pad1 = gpuData[i].pad2 = gpuData[i].pad3 = 0;
   }
 }
 

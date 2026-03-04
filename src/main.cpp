@@ -195,7 +195,8 @@ int main() {
   static bool uiSoloStrings = true;
   static bool uiSoloJitter = true;
   static bool uiSoloCollisions = true;
-  static bool uiAutoMode = true; // Auto-Self-Healing (Phase 8)
+  static bool uiAutoMode = true;         // Auto-Self-Healing (Phase 8)
+  static bool uiQuantumEntangle = false; // Masterplan ODS-01 (Telepathy)
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -896,6 +897,8 @@ int main() {
       debugFlags |= DEBUG_COLLISIONS;
     if (uiFixedTimestep)
       debugFlags |= DEBUG_FIXED_DT;
+    if (uiQuantumEntangle)
+      debugFlags |= DEBUG_ODS01;
 
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
     auto stats = renderer.getPhysicsStats();

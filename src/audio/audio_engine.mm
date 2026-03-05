@@ -57,6 +57,12 @@ static OSStatus audioOutputCallback(void *inRefCon,
                                     const AudioTimeStamp *inTimeStamp,
                                     UInt32 inBusNumber, UInt32 inNumberFrames,
                                     AudioBufferList *ioData) {
+  static int callbackCount = 0;
+  if (++callbackCount % 100 == 1) {
+    fprintf(stderr, "[AUDIO] Callback pulse (%d) | frames=%u\n", callbackCount,
+            (unsigned int)inNumberFrames);
+  }
+
   auto *impl = static_cast<AudioEngine::Impl *>(inRefCon);
   if (!impl->synth)
     return noErr;
@@ -68,12 +74,14 @@ static OSStatus audioOutputCallback(void *inRefCon,
 
   const float sampleRate = 48000.0f;
 
-  for (UInt32 i = 0; i < inNumberFrames; i++) {
-    float sL = 0.0f, sR = 0.0f;
-    impl->synth->tick(sampleRate, sL, sR);
-    outL[i] = sL;
-    if (outR)
-      outR[i] = sR;
+  if (outR) {
+    impl->synth->processBlock(sampleRate, outL, outR, inNumberFrames);
+  } else {
+    for (UInt32 i = 0; i < inNumberFrames; i++) {
+      float sL = 0.0f, sR = 0.0f;
+      impl->synth->tick(sampleRate, sL, sR);
+      outL[i] = sL;
+    }
   }
 
   return noErr;
@@ -88,9 +96,7 @@ AudioEngine::~AudioEngine() {
 
 void AudioEngine::setSynth(Synth *s) { impl_->synth = s; }
 
-std::vector<AudioDevice> AudioEngine::enumerateDevices() {
-  return {}; // Simplified for output focus
-}
+std::vector<AudioDevice> AudioEngine::enumerateDevices() { return {}; }
 
 bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   if (running_)
@@ -102,20 +108,31 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
                                     kAudioUnitManufacturer_Apple, 0, 0};
 
   AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
-  if (!comp)
+  if (!comp) {
+    fprintf(stderr, "[AUDIO ERROR] Could not find default output component\n");
     return false;
+  }
 
-  if (AudioComponentInstanceNew(comp, &impl_->audioUnit) != noErr)
+  OSStatus err = AudioComponentInstanceNew(comp, &impl_->audioUnit);
+  if (err != noErr) {
+    fprintf(stderr,
+            "[AUDIO ERROR] Could not create audio unit instance (err=%d)\n",
+            (int)err);
     return false;
+  }
 
   AURenderCallbackStruct callback;
   callback.inputProc = audioOutputCallback;
   callback.inputProcRefCon = impl_;
 
-  if (AudioUnitSetProperty(
-          impl_->audioUnit, kAudioUnitProperty_SetRenderCallback,
-          kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr)
+  err = AudioUnitSetProperty(
+      impl_->audioUnit, kAudioUnitProperty_SetRenderCallback,
+      kAudioUnitScope_Input, 0, &callback, sizeof(callback));
+  if (err != noErr) {
+    fprintf(stderr, "[AUDIO ERROR] Could not set render callback (err=%d)\n",
+            (int)err);
     return false;
+  }
 
   AudioStreamBasicDescription stream;
   stream.mSampleRate = sampleRate;
@@ -128,16 +145,29 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   stream.mChannelsPerFrame = 2;
   stream.mBitsPerChannel = 32;
 
-  if (AudioUnitSetProperty(impl_->audioUnit, kAudioUnitProperty_StreamFormat,
-                           kAudioUnitScope_Input, 0, &stream,
-                           sizeof(stream)) != noErr)
+  err = AudioUnitSetProperty(impl_->audioUnit, kAudioUnitProperty_StreamFormat,
+                             kAudioUnitScope_Input, 0, &stream, sizeof(stream));
+  if (err != noErr) {
+    fprintf(stderr, "[AUDIO ERROR] Could not set stream format (err=%d)\n",
+            (int)err);
     return false;
+  }
 
-  if (AudioUnitInitialize(impl_->audioUnit) != noErr)
+  err = AudioUnitInitialize(impl_->audioUnit);
+  if (err != noErr) {
+    fprintf(stderr, "[AUDIO ERROR] Could not initialize audio unit (err=%d)\n",
+            (int)err);
     return false;
-  if (AudioOutputUnitStart(impl_->audioUnit) != noErr)
-    return false;
+  }
 
+  OSStatus startErr = AudioOutputUnitStart(impl_->audioUnit);
+  if (startErr != noErr) {
+    fprintf(stderr, "[AUDIO ERROR] Could not start audio output (err=%d)\n",
+            (int)startErr);
+    return false;
+  }
+
+  printf("[AUDIO] Engine started successfully at %d Hz\n", sampleRate);
   running_ = true;
   return true;
 }

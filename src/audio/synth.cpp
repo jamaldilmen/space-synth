@@ -11,6 +11,15 @@ static constexpr float TWO_PI = 2.0f * M_PI;
 void Voice::init(float sampleRate) {
   filter.setSampleRate(sampleRate);
   filter.reset();
+  static uint32_t globalSeed = 42;
+  rngState = (globalSeed++ * 1103515245u + 12345u);
+}
+
+static uint32_t xorshift32(uint32_t &state) {
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
 }
 
 float Voice::tick(float sampleRate, float synthJitter) {
@@ -18,15 +27,10 @@ float Voice::tick(float sampleRate, float synthJitter) {
   if (amp < 0.0001f)
     return 0.0f;
 
-  // Filter Modulation: Keytracking and Envelope Sweep
-  // Base cutoff tracks the fundamental pitch (Moog/Diva style)
   float baseCutoff = std::max(50.0f, frequency * 0.8f);
-
-  // Envelope sweep amount scales with pitch as well
   float sweepAmount = 3000.0f + (frequency * 2.5f);
   float cutoff = baseCutoff + (amp * sweepAmount);
 
-  // Set filter with slightly higher resonance for that "brassiness"
   filter.set(cutoff, 0.45f);
 
   float sample = 0.0f;
@@ -47,29 +51,20 @@ float Voice::tick(float sampleRate, float synthJitter) {
     break;
   }
 
-  // 1. Heisenberg Phase Drift (Juno Instability)
-  // Analog oscillators drift slightly in pitch. By tying this to the
-  // physics engine's jitter (scaling with momentary wave amplitude),
-  // we map Heisenberg momentum noise directly to oscillator instability.
-  float driftCents = ((rand() % 1000) / 1000.0f - 0.5f) * 10.0f *
-                     (synthJitter * amp); // ±5 cents base drift
+  // Phase Drift: Jitter scales with amplitude (instability)
+  float driftCents = ((float)(xorshift32(rngState) % 1000) / 1000.0f - 0.5f) *
+                     10.0f * (synthJitter * amp);
   float driftRatio = std::pow(2.0f, driftCents / 1200.0f);
-  float driftedFrequency = frequency * driftRatio;
 
-  // Advance phase with the drifty frequency
-  phase += TWO_PI * driftedFrequency / sampleRate;
+  phase += TWO_PI * (frequency * driftRatio) / sampleRate;
   if (phase >= TWO_PI)
     phase -= TWO_PI;
 
-  // Breathy Noise Layer: Scales with frequency (higher notes = more 'air')
+  float noiseVal = (float)(xorshift32(rngState) % 1000) / 1000.0f - 0.5f;
   float noiseAmount = 0.05f * amp * (1.0f + frequency / 500.0f);
-  float noise = ((rand() % 1000) / 1000.0f - 0.5f) * noiseAmount;
+  float noise = noiseVal * noiseAmount;
 
-  // Diva Vibes: Pre-filter analog saturation (drive)
-  // Hit the filter "hot" to get that thick brassy tone
   float saturatedSample = std::tanh(sample * 1.5f);
-
-  // Pass through Resonant Lowpass Filter
   float filtered = filter.process(saturatedSample + noise);
 
   return filtered * amp;
@@ -78,26 +73,109 @@ float Voice::tick(float sampleRate, float synthJitter) {
 Synth::Synth() { chorus_.init(48000.0f); }
 
 void Synth::tick(float sampleRate, float &outL, float &outR) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  float mixed = 0.0f;
-  for (auto &[midi, voice] : voices_) {
-    // Inject the global physics jitter into the voice tick for Phase Drift
-    mixed += voice.tick(sampleRate, jitter_);
-  }
-  // Apply soft clipper (tanh limiter) before output
-  float limited = std::tanh(mixed * 0.4f) * 0.8f; // Headroom buffer
-
-  // Stereo spatialization via Chorus
-  chorus_.process(limited, limited, outL, outR);
+  processBlock(sampleRate, &outL, &outR, 1);
 }
 
-void Synth::noteOn(int midi, float velocity) {
-  std::lock_guard<std::mutex> lock(mutex_);
+void Synth::processBlock(float sampleRate, float *outL, float *outR,
+                         int numFrames) {
+  std::vector<MidiCommand> commands;
+  {
+    std::lock_guard<std::mutex> lock(queueMutex_);
+    commands.swap(commandQueue_);
+  }
 
-  // Kill existing voice on same note
+  // Interleave commands and synthesis for sample-accurate timing
+  int cmdIdx = 0;
+  std::lock_guard<std::mutex> lock(mutex_); // Move lock OUTSIDE core loop
+
+  for (int i = 0; i < numFrames; i++) {
+    // Fire all commands scheduled for this specific sample
+    while (cmdIdx < (int)commands.size() &&
+           commands[cmdIdx].sampleOffset <= i) {
+      const auto &cmd = commands[cmdIdx];
+      if (cmd.type == MidiCommand::NoteOn) {
+        handleNoteOnInternal(cmd.midi, cmd.velocity);
+      } else {
+        handleNoteOffInternal(cmd.midi);
+      }
+      cmdIdx++;
+    }
+
+    float mixed = 0.0f;
+    for (auto it = voices_.begin(); it != voices_.end();) {
+      mixed += it->second.tick(sampleRate, jitter_);
+      // Update envelope and clean up finished voices
+      it->second.envelope.update(1.0f / sampleRate, envParams_);
+      if (!it->second.envelope.isActive()) {
+        it = voices_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    float limited = std::tanh(mixed * 0.45f) * 0.9f;
+    chorus_.process(limited, limited, outL[i], outR[i]);
+  }
+}
+
+void Synth::processCommands() {
+  std::vector<MidiCommand> commands;
+  {
+    std::lock_guard<std::mutex> lock(queueMutex_);
+    commands.swap(commandQueue_);
+  }
+
+  for (const auto &cmd : commands) {
+    if (cmd.type == MidiCommand::NoteOn) {
+      handleNoteOn(cmd.midi, cmd.velocity);
+    } else {
+      handleNoteOff(cmd.midi);
+    }
+  }
+}
+
+void Synth::noteOn(int midi, float velocity, int sampleOffset) {
+  std::lock_guard<std::mutex> lock(queueMutex_);
+  commandQueue_.push_back({MidiCommand::NoteOn, midi, velocity, sampleOffset});
+  // Keep queue sorted by sample offset
+  std::sort(commandQueue_.begin(), commandQueue_.end(),
+            [](const MidiCommand &a, const MidiCommand &b) {
+              return a.sampleOffset < b.sampleOffset;
+            });
+}
+
+void Synth::noteOff(int midi, int sampleOffset) {
+  std::lock_guard<std::mutex> lock(queueMutex_);
+  commandQueue_.push_back({MidiCommand::NoteOff, midi, 0.0f, sampleOffset});
+  std::sort(commandQueue_.begin(), commandQueue_.end(),
+            [](const MidiCommand &a, const MidiCommand &b) {
+              return a.sampleOffset < b.sampleOffset;
+            });
+}
+
+void Synth::handleNoteOn(int midi, float velocity) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  handleNoteOnInternal(midi, velocity);
+}
+
+void Synth::handleNoteOnInternal(int midi, float velocity) {
   auto it = voices_.find(midi);
   if (it != voices_.end()) {
     voices_.erase(it);
+  }
+
+  if (voices_.size() >= MAX_VOICES) {
+    int quietestMidi = -1;
+    float minAmp = 2.0f;
+    for (const auto &[m, voice] : voices_) {
+      if (voice.envelope.amplitude < minAmp) {
+        minAmp = voice.envelope.amplitude;
+        quietestMidi = m;
+      }
+    }
+    if (quietestMidi != -1) {
+      voices_.erase(quietestMidi);
+    }
   }
 
   Voice v;
@@ -106,72 +184,55 @@ void Synth::noteOn(int midi, float velocity) {
   v.waveform = waveform_;
   v.envelope.noteOn(velocity);
   v.mode = &modeTable_.modeForMidi(midi, keyboardMode_, keyboardStart());
-  v.init(48000.0f); // hardcoded for now, should match audio engine
+  v.init(48000.0f);
 
   voices_[midi] = v;
 }
 
-void Synth::noteOff(int midi) {
+void Synth::handleNoteOff(int midi) {
   std::lock_guard<std::mutex> lock(mutex_);
-
-  auto it = voices_.find(midi);
-  if (it == voices_.end())
-    return;
-  it->second.envelope.noteOff();
+  handleNoteOffInternal(midi);
 }
 
-void Synth::updateEnvelopes(float dt) {
-  std::lock_guard<std::mutex> lock(mutex_);
+void Synth::handleNoteOffInternal(int midi) {
+  auto it = voices_.find(midi);
+  if (it != voices_.end()) {
+    it->second.envelope.noteOff();
+  }
+}
 
-  std::vector<int> dead;
-  for (auto &[midi, voice] : voices_) {
-    voice.envelope.update(dt, envParams_);
-    if (!voice.envelope.isActive()) {
-      dead.push_back(midi);
-    }
-  }
-  for (int midi : dead) {
-    voices_.erase(midi);
-  }
+void Synth::updateEnvelopes(float /*dt*/) {
+  // Logic moved to audio thread processBlock for sample-accuracy
 }
 
 float Synth::totalAmplitude() const {
-  std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(mutex_));
-
+  std::lock_guard<std::mutex> lock(mutex_);
   float total = 0.0f;
-  for (const auto &[_, voice] : voices_) {
+  for (const auto &[midi, voice] : voices_) {
     total += voice.envelope.amplitude;
   }
-  return std::min(4.0f, total); // Allow full polyphonic amplitude through
+  return total;
 }
 
 int Synth::activeVoiceCount() const {
-  std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(mutex_));
-
-  int count = 0;
-  for (const auto &[_, voice] : voices_) {
-    if (voice.envelope.amplitude > 0.001f)
-      count++;
-  }
-  return count;
+  // Process any pending commands so the count is immediate
+  const_cast<Synth *>(this)->processCommands();
+  std::lock_guard<std::mutex> lock(mutex_);
+  return (int)voices_.size();
 }
 
 std::vector<Synth::ActiveVoice> Synth::getActiveVoices() const {
-  std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(mutex_));
-
+  std::lock_guard<std::mutex> lock(mutex_);
   std::vector<ActiveVoice> active;
-  for (const auto &[_, voice] : voices_) {
-    if (voice.envelope.amplitude > 0.001f && voice.mode) {
-      active.push_back(
-          {voice.envelope.amplitude, voice.frequency, voice.phase, voice.mode});
-    }
+  for (const auto &[midi, voice] : voices_) {
+    active.push_back(
+        {voice.envelope.amplitude, voice.frequency, voice.phase, voice.mode});
   }
   return active;
 }
 
 void Synth::cycleWaveform() {
-  int idx = (static_cast<int>(waveform_) + 1) % 4;
-  waveform_ = static_cast<Waveform>(idx);
+  waveform_ = (Waveform)(((int)waveform_ + 1) % 4);
 }
 
 } // namespace space

@@ -21,7 +21,8 @@ struct Voice {
   SVF filter;
   const Mode *mode = nullptr; // Points into ModeTable
 
-  float phase = 0.0f; // Oscillator phase [0, 2π)
+  float phase = 0.0f;    // Oscillator phase [0, 2π)
+  uint32_t rngState = 0; // Per-voice Xorshift state (Phase 12 stability)
 
   // Initialize filter state
   void init(float sampleRate);
@@ -36,11 +37,14 @@ class Synth {
 public:
   Synth();
 
-  void noteOn(int midi, float velocity = 1.0f);
-  void noteOff(int midi);
+  void noteOn(int midi, float velocity = 1.0f, int sampleOffset = 0);
+  void noteOff(int midi, int sampleOffset = 0);
 
   // Generate one sample across all voices (stereo)
   void tick(float sampleRate, float &outL, float &outR);
+
+  // High-performance block processing (Phase 12 stability)
+  void processBlock(float sampleRate, float *outL, float *outR, int numFrames);
 
   // Update all envelopes (call once per render frame)
   void updateEnvelopes(float dt);
@@ -88,7 +92,23 @@ public:
   Chorus &chorus() { return chorus_; }
   const Chorus &chorus() const { return chorus_; }
 
-private:
+  struct MidiCommand {
+    enum Type { NoteOn, NoteOff } type;
+    int midi;
+    float velocity;
+    int sampleOffset;
+  };
+  std::vector<MidiCommand> commandQueue_;
+  mutable std::mutex queueMutex_;
+
+  void processCommands();
+  void handleNoteOn(int midi, float velocity);
+  void handleNoteOff(int midi);
+
+  // Lock-free internal versions for sample-accurate block processing
+  void handleNoteOnInternal(int midi, float velocity);
+  void handleNoteOffInternal(int midi);
+
   mutable std::mutex mutex_;
   std::unordered_map<int, Voice> voices_;
   ModeTable modeTable_;
@@ -100,6 +120,7 @@ private:
   float drive_ = 1.6f;  // Default analog drive (Moog overdriven)
   float jitter_ = 1.0f; // Heisenberg physics jitter
 
+  static constexpr int MAX_VOICES = 64; // Polyphonic safety limit
   static constexpr int BASE_OCTAVE = 3;
   int keyboardStart() const { return (BASE_OCTAVE + octaveShift_) * 12 + 12; }
 

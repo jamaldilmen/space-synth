@@ -59,7 +59,7 @@ fragment float4 postfx_fragment(
     // ── Bloom: cross-shaped bright-pass blur ────────────────────────────
     if (u.bloomIntensity > 0.0) {
         float4 bloom = float4(0.0);
-        float2 px = u.bloomIntensity * 3.0 / u.resolution;
+        float2 px = u.bloomIntensity * 1.5 / u.resolution;
 
         // Horizontal samples
         bloom += currentFrame.sample(s, uv + float2(-3.0, 0.0) * px);

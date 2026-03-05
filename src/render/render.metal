@@ -17,6 +17,12 @@ struct CameraUniforms {
     float padding[1];
 };
 
+// Safe normalization to prevent NaNs at rest (Phase 12 bug fix)
+static float2 safe_normalize(float2 v) {
+    float l = length(v);
+    return (l > 1e-9f) ? v / l : float2(0.0f, 0.0f);
+}
+
 struct VertexOut {
     float4 position [[position]];
     float pointSize [[point_size]];
@@ -60,9 +66,10 @@ vertex VertexOut particle_vertex(
     // Phase 11: Project velocity into screen-space for string elongation
     float3 velWorld = p.velW.xyz * R;
     float4 endClip = cam.viewProjection * float4(worldPos + velWorld * 0.5f, 1.0);
-    float2 screenDir = endClip.xy / endClip.w - out.position.xy / out.position.w;
-    float dirLen = length(screenDir);
-    out.velDir2D = (dirLen > 0.001f) ? screenDir / dirLen : float2(0.0f, 1.0f);
+    float2 v1_screen = out.position.xy / out.position.w;
+    float2 v2_screen = endClip.xy / endClip.w;
+    
+    out.velDir2D = (v2_screen - v1_screen) * 5.0f; // Pass raw screen-space velocity for dynamic elongation
 
     // Dynamic Point Size Scaling
     float isOrtho = cam.padding[0];
@@ -142,27 +149,31 @@ fragment float4 particle_fragment(
     
     // Rotate pointCoord into velocity-aligned frame
     float2 vd = in.velDir2D;
-    float2 perp = float2(-vd.y, vd.x);
-    float along = dot(pc, vd);  // Component along string axis
-    float across = dot(pc, perp); // Component across string
+    float speedSq = dot(vd, vd);
+    float speed = sqrt(speedSq);
+    float2 dir = (speed > 1e-4f) ? vd / speed : float2(1, 0);
+    float2 perp = float2(-dir.y, dir.x);
+    float along = dot(pc, dir);  
+    float across = dot(pc, perp); 
     
-    // Elongate: compress the "across" dimension to create a thin string shape
-    float stringWidth = 0.3f; // How thin the string is (0.1 = very thin, 1.0 = circle)
-    float d = length(float2(along, across / stringWidth)) * 2.0f;
+    // Dynamic elongation: 1.0 = circle at rest, 0.1 = thin string at high speed
+    float elongation = clamp(speed, 0.0f, 1.0f);
+    float stringWidth = mix(1.0f, 0.25f, elongation);
+    float d = length(float2(along, across / stringWidth)) * 2.1f;
 
-    float core = pow(max(0.0f, 1.0f - d), 3.0f);
-    float glow = exp(-d * d * 3.5f);
+    // Sharper core falloff
+    float core = pow(max(0.0f, 1.0f - d), 2.5f);
+    float glow = exp(-d * d * 5.0f);
 
-    float3 coreColor = float3(1.0f, 0.95f, 0.9f);
+    float3 coreColor = float3(1.0f, 0.98f, 0.95f);
     float3 glowColor = in.color;
 
     float3 finalColor = mix(glowColor * glow, coreColor, core);
     
-    // VJ Sustain Alpha: slight boost for active particles, faint for dust
-    float baseAlpha = 0.06f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.04f; // 0.06 → 0.14
-    float alpha = (core * 0.5f + glow * 0.3f) * baseAlpha;
+    // High-contrast Alpha: 0.15 base + energy boost
+    float baseAlpha = 0.15f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.05f;
+    float alpha = (core * 0.6f + glow * 0.25f) * baseAlpha;
 
-    // HDR emission: scale by luminance (energy-based brightness)
     finalColor *= in.luminance;
 
     float fadeDistance = 6.0f;

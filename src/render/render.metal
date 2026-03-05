@@ -57,6 +57,19 @@ vertex VertexOut particle_vertex(
     VertexOut out;
     device const Particle& p = particles[vid];
     float R = cam.plateRadius;
+    float mass = p.posW.w;
+
+    // Wall particles (mass=0) are invisible — they're structural, not visual
+    if (mass < 0.001f) {
+        out.position = float4(0, 0, -2, 1); // Behind clip plane
+        out.pointSize = 0.0f;
+        out.color = float3(0);
+        out.luminance = 0.0f;
+        out.originDist = 0.0f;
+        out.dist = 1.0f;
+        out.velDir2D = float2(0);
+        return out;
+    }
 
     // Map normalized plate coords to world: scale all axes by R for isotropic 3D
     float3 worldPos = p.posW.xyz * R;
@@ -119,33 +132,29 @@ vertex VertexOut particle_vertex(
     
     // Schwarzschild radius: particles inside the event horizon are invisible
     float schwarzschild = 0.1f;  // Phase 16: Supermassive dark core
-    float coronaRadius  = 0.15f; // Enhanced accretion disk
+    float coronaRadius  = 0.55f; // Widened accretion disk to match physics
     
     if (originR < schwarzschild) {
         // Inside the event horizon: swallowed by the singularity
         out.pointSize = 0.0f;
         out.color = float3(0.0f);
         out.luminance = 0.0f;
-    } else if (originR < 0.11f) {
-        // ── Phase 16: The Photon Ring (Ultra-thin, bright horizon edge)
-        out.color = float3(1.0f, 0.98f, 0.9f); // White-hot
-        out.luminance = 15.0f; // Blinding HDR
-        out.pointSize *= 1.5f; 
     } else if (originR < coronaRadius) {
         // Accretion disk: superhot plasma spiraling in
         float coronaHeat = 1.0f - (originR - schwarzschild) / (coronaRadius - schwarzschild);
-        coronaHeat = pow(coronaHeat, 3.0f); // Fast decay for sharp inner edge
+        coronaHeat = pow(coronaHeat, 2.0f); // Smooth falloff
         
         float3 coronaColor = mix(
-            float3(1.0f, 0.4f, 0.05f),  // Cinematic Orange
-            float3(1.0f, 0.95f, 0.7f),  // Warm White
+            float3(1.0f, 0.3f, 0.02f),  // Deep orange at edge
+            float3(1.0f, 0.95f, 0.7f),  // White-hot near core
             coronaHeat
         );
         out.color = coronaColor;
-        out.luminance += coronaHeat * 5.0f;
+        out.luminance = 1.0f + coronaHeat * 8.0f;
+        out.pointSize *= (1.0f + coronaHeat * 1.5f);
         
         if (isBehind) {
-            out.color *= 0.2f; // Obscured by the gravity well
+            out.color *= 0.2f;
             out.luminance *= 0.1f;
         }
     }

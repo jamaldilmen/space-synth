@@ -153,15 +153,50 @@ kernel void compute_physics(
     float r_curr = length(pvec);
     float t = u.envelopeProgress; // Progress within current phase [0→1]
     float lcI = max(u.lifecycleIntensity, 0.001f); // Prevent division by zero
+    bool collapsed = false; // Tracks if particle has been force-collapsed into singularity
+    bool isSilence = (u.envelopePhase < 0.5f); // Gate for force immunity
 
     // ─── PHASE 0: SILENCE → BLACK HOLE SINGULARITY ───────────────────────
     if (u.envelopePhase < 0.5f) {
-        // Direct position collapse — bypasses all velocity forces
-        float collapseRate = 0.08f;
-        float keep = 1.0f - collapseRate;
-        px *= keep; py *= keep; pz *= keep;
-        prevX = px; prevY = py; prevZ = pz;
-        vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+        // ~10% of particles orbit at the accretion disk
+        // The rest collapse into the void (invisible past RS)
+        bool isAccretionParticle = (id % 10u) == 0u;
+
+        if (isAccretionParticle) {
+            // Target: stable orbit at accretion disk radius
+            // Use particle ID to create layered rings at different radii
+            float ringLayer = float(id % 50u) / 50.0f; // 0.0 to 1.0
+            float accretionR = 0.15f + ringLayer * 0.35f; // r = 0.15 to 0.50
+            float3 dir = pvec / max(r_curr, 0.001f);
+
+            // Spring toward target orbit radius
+            float displacement = r_curr - accretionR;
+            float springF = displacement * 20.0f * dt;
+            shiftVx -= dir.x * springF;
+            shiftVy -= dir.y * springF;
+            shiftVz -= dir.z * springF;
+
+            // Kerr frame-dragging: tangential orbit
+            float3 galacticUp = normalize(float3(0.1f, 1.0f, 0.15f));
+            float3 tangent = cross(galacticUp, dir);
+            float orbitSpeed = (2.0f + 3.0f / (accretionR + 0.1f)) * dt; // Faster near center
+            shiftVx += tangent.x * orbitSpeed;
+            shiftVy += tangent.y * orbitSpeed;
+            shiftVz += tangent.z * orbitSpeed;
+
+            // Hot accretion glow — hotter closer to center
+            float heatTarget = 1.0f + 3.0f * (1.0f - ringLayer);
+            currentTemp = mix(currentTemp, heatTarget, 0.1f * dt);
+        } else {
+            // Direct position collapse — bypasses all velocity forces
+            float collapseRate = 0.08f;
+            float keep = 1.0f - collapseRate;
+            px *= keep; py *= keep; pz *= keep;
+            prevX = px; prevY = py; prevZ = pz;
+            vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+            currentTemp *= 0.95f; // Cool toward absolute zero
+            collapsed = true; // Mark: immune to all subsequent forces
+        }
 
         // Hawking radiation flicker near event horizon
         if (r_curr < SCHWARZSCHILD_RS * 2.5f && r_curr > SCHWARZSCHILD_RS) {
@@ -171,7 +206,6 @@ kernel void compute_physics(
             shiftVy += dir.y * flicker;
             shiftVz += dir.z * flicker;
         }
-        currentTemp *= 0.95f; // Cool toward absolute zero
     }
     // ─── PHASE 1: ATTACK → BIG BANG EXPLOSION ────────────────────────────
     else if (u.envelopePhase < 1.5f) {
@@ -266,6 +300,10 @@ kernel void compute_physics(
     }
     pvec = float3(px, py, pz);
     r_curr = length(pvec);
+
+    // Save lifecycle-only shifts before the force pipeline contaminates them
+    float3 lifecycleShiftV = float3(shiftVx, shiftVy, shiftVz);
+    float3 lifecycleShiftP = float3(shiftX, shiftY, shiftZ);
 
     // Emitter Interactions (Macro forces)
     float baseMass = (mass > 1000.0f) ? mass : 1.0f;
@@ -556,6 +594,16 @@ kernel void compute_physics(
     vpx = vpx * dynamicFric;
     vpy = vpy * dynamicFric;
     vpz = vpz * dynamicFric;
+
+    // ── Silence force immunity: restore lifecycle-only shifts ──────────────
+    if (isSilence) {
+        shiftVx = lifecycleShiftV.x; shiftVy = lifecycleShiftV.y; shiftVz = lifecycleShiftV.z;
+        shiftX = lifecycleShiftP.x; shiftY = lifecycleShiftP.y; shiftZ = lifecycleShiftP.z;
+        if (collapsed) {
+            shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
+            vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+        }
+    }
 
     // Combine proxy with force pulses
     float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);

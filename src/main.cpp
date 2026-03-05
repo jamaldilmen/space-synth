@@ -909,6 +909,11 @@ int main() {
       // printf("[AUTO-MODE] Instability detected. Mitigating...\n");
     }
 
+    // Phase 17: Wire ADSR lifecycle to black hole dynamics
+    auto envState = synth.getDominantEnvelope();
+    renderer.setEnvelopeState(envState.phase, envState.progress,
+                              envState.intensity);
+
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
                          synth.totalAmplitude(), uiWaveDepth,
                          uiJitter * effectiveJitterMultiplier, effectiveDrive,

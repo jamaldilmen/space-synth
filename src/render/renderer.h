@@ -101,6 +101,12 @@ struct PhysicsUniforms {
   float stringStiffness;      // Hooke's Law Tensegrity Constant
   float restLength;           // Ideal neighbor distance for Strings
   uint32_t debugFlags;        // Solo/Mute force flags
+
+  // ═══ BLACK HOLE LIFECYCLE (Phase 17) ═══
+  float envelopePhase;    // 0=silence, 1=attack, 2=decay, 3=sustain, 4=release
+  float envelopeProgress; // 0.0→1.0 within current phase
+  float lifecycleIntensity; // Combined amplitude measure
+  float lifecyclePad;       // Alignment padding
 };
 
 // Spatial hash uniforms for collision grid
@@ -152,9 +158,13 @@ public:
   // Read back particle positions from GPU buffer (for CPU-side access)
   void readbackParticles(GPUParticle *out, int count);
 
-  // Collision system
+  void setScale(float s);
+  void triggerReset(); // Phase 12 stability: Force GPU re-seed
   void setCollisionsEnabled(bool enabled);
   bool collisionsEnabled() const;
+
+  // Phase 17: Set ADSR lifecycle state for black hole dynamics
+  void setEnvelopeState(float phase, float progress, float intensity);
 
   // Physics stats (1-frame latency)
   PhysicsStats getPhysicsStats() const;

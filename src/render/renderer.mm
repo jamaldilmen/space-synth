@@ -37,7 +37,7 @@ struct Renderer::Impl {
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
 
   // Spatial hash buffers
-  static constexpr int kGridSize = 32; // 32x32x32
+  static constexpr int kGridSize = 32; // 32x32x32 (64^3 too expensive for 1M)
   static constexpr int kTotalCells =
       kGridSize * kGridSize * kGridSize;     // 32,768
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
@@ -84,7 +84,13 @@ struct Renderer::Impl {
 
   // Pending compute data (set before render)
   bool hasCompute = false;
+  bool resetPending = false; // Phase 12 stability: Pulse trigger
   PhysicsUniforms physicsUniforms;
+
+  // Phase 17: Envelope lifecycle state (set from main.cpp each frame)
+  float envPhase = 0.0f;
+  float envProgress = 0.0f;
+  float envIntensity = 0.0f;
 
   void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
   void renderWithCamera(id<CAMetalDrawable> drawable,
@@ -375,9 +381,9 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   // Stage uniforms — will be dispatched in render()
   impl_->physicsUniforms = {};
   impl_->physicsUniforms.dt = dt;
-  impl_->physicsUniforms.totalAmplitude = 1.0f; // Baseline structural pressure
-  impl_->physicsUniforms.voiceCount =
-      std::max(voiceCount, 1); // Ensure structural forces active
+  impl_->physicsUniforms.totalAmplitude =
+      totalAmplitude; // Phase 17: Pass real synth amplitude for ADSR dynamics
+  impl_->physicsUniforms.voiceCount = voiceCount; // Bug fix: Don't force 1 if 0
   impl_->physicsUniforms.particleCount = impl_->particleCount;
   impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
   impl_->physicsUniforms.plateRadius = 1.0f; // Normalized
@@ -411,6 +417,11 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.stringStiffness = stringStiffness;
   impl_->physicsUniforms.restLength = restLength;
   impl_->physicsUniforms.debugFlags = debugFlags;
+
+  // Phase 17: Black Hole Lifecycle
+  impl_->physicsUniforms.envelopePhase = impl_->envPhase;
+  impl_->physicsUniforms.envelopeProgress = impl_->envProgress;
+  impl_->physicsUniforms.lifecycleIntensity = impl_->envIntensity;
 
   static float accumulatedTime = 0.0f;
   accumulatedTime += dt;
@@ -527,11 +538,21 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
 }
 
+void Renderer::setScale(float s) { impl_->physicsUniforms.plateRadius = s; }
+
 // Internal helper for compute
+void Renderer::triggerReset() { impl_->resetPending = true; }
+
 void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
   if (hasCompute && physicsPipeline) {
+    // Preserve debugFlags set by computeStep(); only add reset bit if needed
+    if (resetPending) {
+      physicsUniforms.debugFlags |= (1 << 8); // Reset bit
+      resetPending = false;
+    }
+
     memcpy(uniformBuffer[frameIdx].contents, &physicsUniforms,
-           sizeof(PhysicsUniforms));
+           sizeof(physicsUniforms));
 
     NSUInteger tgSize = 256;
 
@@ -902,6 +923,12 @@ void Renderer::setCollisionsEnabled(bool enabled) {
 }
 
 bool Renderer::collisionsEnabled() const { return impl_->collisionsEnabled; }
+
+void Renderer::setEnvelopeState(float phase, float progress, float intensity) {
+  impl_->envPhase = phase;
+  impl_->envProgress = progress;
+  impl_->envIntensity = intensity;
+}
 
 PhysicsStats Renderer::getPhysicsStats() const { return impl_->latestStats; }
 

@@ -235,4 +235,79 @@ void Synth::cycleWaveform() {
   waveform_ = (Waveform)(((int)waveform_ + 1) % 4);
 }
 
+Synth::EnvelopeState Synth::getDominantEnvelope() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (voices_.empty()) {
+    return {0.0f, 0.0f, 0.0f}; // Silence → Black hole
+  }
+
+  // Find the loudest voice to determine lifecycle phase
+  float maxAmp = 0.0f;
+  const Voice *dominant = nullptr;
+
+  for (const auto &[note, voice] : voices_) {
+    if (voice.envelope.amplitude > maxAmp) {
+      maxAmp = voice.envelope.amplitude;
+      dominant = &voice;
+    }
+  }
+
+  if (!dominant || maxAmp < 0.001f) {
+    return {0.0f, 0.0f, 0.0f};
+  }
+
+  EnvelopeState state;
+  // Compute total amplitude without re-locking (we already hold mutex_)
+  float total = 0.0f;
+  for (const auto &[midi, voice] : voices_) {
+    total += voice.envelope.amplitude;
+  }
+  state.intensity = total;
+
+  // Map EnvPhase enum to float codes
+  switch (dominant->envelope.phase) {
+  case EnvPhase::Attack: {
+    state.phase = 1.0f;
+    float attackTime = envParams_.attack;
+    state.progress =
+        (attackTime > 0.0f)
+            ? std::min(1.0f, dominant->envelope.envTime / attackTime)
+            : 1.0f;
+    break;
+  }
+  case EnvPhase::Decay: {
+    state.phase = 2.0f;
+    float decayTime = envParams_.decay;
+    state.progress =
+        (decayTime > 0.0f)
+            ? std::min(1.0f, dominant->envelope.envTime / decayTime)
+            : 1.0f;
+    break;
+  }
+  case EnvPhase::Sustain: {
+    state.phase = 3.0f;
+    state.progress = 0.5f; // Sustain has no time progression
+    break;
+  }
+  case EnvPhase::Release: {
+    state.phase = 4.0f;
+    float releaseTime = envParams_.release;
+    state.progress =
+        (releaseTime > 0.0f)
+            ? std::min(1.0f, dominant->envelope.envTime / releaseTime)
+            : 1.0f;
+    break;
+  }
+  case EnvPhase::Off:
+  default: {
+    state.phase = 0.0f;
+    state.progress = 0.0f;
+    break;
+  }
+  }
+
+  return state;
+}
+
 } // namespace space

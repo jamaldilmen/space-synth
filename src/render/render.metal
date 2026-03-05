@@ -106,33 +106,48 @@ vertex VertexOut particle_vertex(
         out.color += float3(boost * 0.6f, boost * 0.4f, boost * 0.2f);
     }
 
-    // ── Black Hole Event Horizon ──────────────────────────────────
-    // Distance from universe origin in normalized coords
+    // ── Phase 16: Gargantua Cosmics ──────────────────────────────
     float originR = length(p.posW.xyz);
     out.originDist = originR;
     
+    // Volumetric Obscuration Approximation:
+    // Particles behind the black hole from the camera's perspective should be dimmed/reddened
+    float3 camToPart = normalize(worldPos - cam.cameraPos.xyz);
+    float3 camToHole = normalize(-cam.cameraPos.xyz);
+    float alignment = dot(camToPart, camToHole);
+    bool isBehind = (alignment > 0.999f && length(cam.cameraPos.xyz) > originR * R);
+    
     // Schwarzschild radius: particles inside the event horizon are invisible
-    float schwarzschild = 0.015f; // Tiny dark core
-    float coronaRadius  = 0.08f;  // Accretion disk sweet-spot
+    float schwarzschild = 0.1f;  // Phase 16: Supermassive dark core
+    float coronaRadius  = 0.15f; // Enhanced accretion disk
     
     if (originR < schwarzschild) {
         // Inside the event horizon: swallowed by the singularity
         out.pointSize = 0.0f;
         out.color = float3(0.0f);
         out.luminance = 0.0f;
+    } else if (originR < 0.11f) {
+        // ── Phase 16: The Photon Ring (Ultra-thin, bright horizon edge)
+        out.color = float3(1.0f, 0.98f, 0.9f); // White-hot
+        out.luminance = 15.0f; // Blinding HDR
+        out.pointSize *= 1.5f; 
     } else if (originR < coronaRadius) {
-        // Accretion corona: superhot ring glowing orange-white
+        // Accretion disk: superhot plasma spiraling in
         float coronaHeat = 1.0f - (originR - schwarzschild) / (coronaRadius - schwarzschild);
-        coronaHeat = coronaHeat * coronaHeat; // Quadratic falloff
+        coronaHeat = pow(coronaHeat, 3.0f); // Fast decay for sharp inner edge
         
-        // Shift color toward hot plasma (orange → white)
         float3 coronaColor = mix(
-            float3(1.0f, 0.6f, 0.15f),  // Deep orange
-            float3(1.0f, 0.95f, 0.85f), // Near-white
+            float3(1.0f, 0.4f, 0.05f),  // Cinematic Orange
+            float3(1.0f, 0.95f, 0.7f),  // Warm White
             coronaHeat
         );
         out.color = coronaColor;
-        out.luminance += coronaHeat * 3.0f; // Extra HDR glow
+        out.luminance += coronaHeat * 5.0f;
+        
+        if (isBehind) {
+            out.color *= 0.2f; // Obscured by the gravity well
+            out.luminance *= 0.1f;
+        }
     }
 
     return out;

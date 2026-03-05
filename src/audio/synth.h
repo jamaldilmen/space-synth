@@ -65,6 +65,14 @@ public:
   };
   std::vector<ActiveVoice> getActiveVoices() const;
 
+  // Get dominant envelope state for black hole lifecycle (Phase 17)
+  struct EnvelopeState {
+    float phase;     // 0=silence, 1=attack, 2=decay, 3=sustain, 4=release
+    float progress;  // 0.0 to 1.0 within current phase
+    float intensity; // Combined amplitude measure
+  };
+  EnvelopeState getDominantEnvelope() const;
+
   // Settings
   void setDrive(float d) { drive_ = std::max(1.0f, d); }
   float drive() const { return drive_; }

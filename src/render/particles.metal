@@ -45,6 +45,12 @@ struct PhysicsUniforms {
     float stringStiffness;      // 68
     float restLength;           // 72
     uint debugFlags;            // 76
+
+    // ═══ BLACK HOLE LIFECYCLE (Phase 17) ═══
+    float envelopePhase;         // 80: 0=silence, 1=attack, 2=decay, 3=sustain, 4=release
+    float envelopeProgress;      // 84: 0.0→1.0 within current phase
+    float lifecycleIntensity;    // 88: master intensity multiplier
+    float lifecyclePad;          // 92: alignment
 };
 
 struct SpatialHashUniforms {
@@ -57,6 +63,11 @@ struct SpatialHashUniforms {
 
 // (Removed Bessel functions - no longer used)
 
+// Physical Constants
+#ifndef TWO_PI
+#define TWO_PI 6.283185307f
+#endif
+
 // Temporal noise — hash uses frame counter for proper Brownian motion
 static float noise(uint id, uint frame) {
     uint x = (id * 1103515245u + 12345u) ^ (frame * 2654435761u);
@@ -67,12 +78,12 @@ static float noise(uint id, uint frame) {
 }
 
 // Collision constants
-constant int MAX_PER_CELL = 16;
+constant int MAX_PER_CELL = 32; // Optimized for 1M particle neighbor scans
 constant float COLLISION_RESTITUTION = 0.85f;
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
-constant float SCHWARZSCHILD_RS = 0.02f;    // Event horizon radius
+constant float SCHWARZSCHILD_RS = 0.1f;    // Phase 16: Supermassive Event Horizon
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
@@ -118,22 +129,152 @@ kernel void compute_physics(
     float PE = 0.0f;
     float currentTemp = p.prevW.w; // ODS-03: Thermal state
 
+    // ── Snap Back: Pulse re-seed/Reset logic ──
+    if (u.debugFlags & (1 << 8)) {
+        uint seed = (uint)id + u.frameCounter;
+        float r_new = sqrt(-2.0 * log(max(1e-7f, noise(id, seed)))) * 0.5f;
+        float th_new = noise(id, seed + 1) * TWO_PI;
+        float ph_new = noise(id, seed + 2) * M_PI_F;
+        
+        px = r_new * sin(ph_new) * cos(th_new);
+        py = r_new * sin(ph_new) * sin(th_new);
+        pz = r_new * cos(ph_new);
+        vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+    }
+
     // Accumulate velocity pulses and position corrections globally
     float shiftX = 0.0f, shiftY = 0.0f, shiftZ = 0.0f;
     float shiftVx = 0.0f, shiftVy = 0.0f, shiftVz = 0.0f;
 
-    // ── Global Harmonic Centering (The "Home" Force) ─────
-    // F = -k * r. This ensures a crisp snapback to the center (0,0,0).
-    float k_center = 0.15f * dt; 
-    shiftVx -= px * k_center;
-    shiftVy -= py * k_center;
-    shiftVz -= pz * k_center;
+    // ══════════════════════════════════════════════════════════════════════
+    // ═══ BLACK HOLE LIFECYCLE (ADSR-Synced Cosmic Evolution) ═══
+    // ══════════════════════════════════════════════════════════════════════
+    float3 pvec = float3(px, py, pz);
+    float r_curr = length(pvec);
+    float t = u.envelopeProgress; // Progress within current phase [0→1]
+    float lcI = max(u.lifecycleIntensity, 0.001f); // Prevent division by zero
+
+    // ─── PHASE 0: SILENCE → BLACK HOLE SINGULARITY ───────────────────────
+    if (u.envelopePhase < 0.5f) {
+        // Direct position collapse — bypasses all velocity forces
+        float collapseRate = 0.08f;
+        float keep = 1.0f - collapseRate;
+        px *= keep; py *= keep; pz *= keep;
+        prevX = px; prevY = py; prevZ = pz;
+        vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+
+        // Hawking radiation flicker near event horizon
+        if (r_curr < SCHWARZSCHILD_RS * 2.5f && r_curr > SCHWARZSCHILD_RS) {
+            float flicker = noise(id, u.frameCounter) * 0.015f;
+            float3 dir = pvec / max(r_curr, 0.001f);
+            shiftVx += dir.x * flicker;
+            shiftVy += dir.y * flicker;
+            shiftVz += dir.z * flicker;
+        }
+        currentTemp *= 0.95f; // Cool toward absolute zero
+    }
+    // ─── PHASE 1: ATTACK → BIG BANG EXPLOSION ────────────────────────────
+    else if (u.envelopePhase < 1.5f) {
+        float explosionPower = (1.0f - t) * 80.0f * lcI;
+
+        if (r_curr < 0.001f) {
+            // Particle at singularity: initialize random direction
+            float theta = noise(id * 3u, u.frameCounter) * M_PI_F * 2.0f;
+            float phi = noise(id * 5u, u.frameCounter) * M_PI_F;
+            pvec = float3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
+            r_curr = 1.0f;
+        }
+        float3 dir = pvec / max(r_curr, 0.001f);
+        shiftVx += dir.x * explosionPower * dt;
+        shiftVy += dir.y * explosionPower * dt;
+        shiftVz += dir.z * explosionPower * dt;
+
+        // Blast wave temperature spike
+        currentTemp = mix(8.0f, 2.0f, t);
+
+        // Shockwave ripples
+        float waveFront = abs(r_curr - t * 2.0f);
+        if (waveFront < 0.3f) {
+            float ripple = (0.3f - waveFront) * 20.0f * sin(r_curr * 20.0f - t * 50.0f);
+            shiftVx += dir.x * ripple * dt;
+            shiftVy += dir.y * ripple * dt;
+            shiftVz += dir.z * ripple * dt;
+        }
+    }
+    // ─── PHASE 2/3: DECAY/SUSTAIN → SUN (Radiating Sphere) ──────────────
+    else if (u.envelopePhase < 3.5f) {
+        float targetRadius = 0.75f;
+        if (r_curr > 0.001f) {
+            float3 dir = pvec / r_curr;
+            // Hooke's law spring toward shell surface
+            float displacement = (r_curr - targetRadius);
+            float springForce = displacement * 25.0f * lcI;
+            shiftVx -= dir.x * springForce * dt;
+            shiftVy -= dir.y * springForce * dt;
+            shiftVz -= dir.z * springForce * dt;
+
+            // Solar wind: tangential circulation
+            float3 galacticUp = normalize(float3(0.3f, 1.0f, 0.2f));
+            float3 tangent = cross(galacticUp, dir);
+            float circulationSpeed = 8.0f * lcI / (abs(displacement) + 0.5f);
+            shiftVx += tangent.x * circulationSpeed * dt;
+            shiftVy += tangent.y * circulationSpeed * dt;
+            shiftVz += tangent.z * circulationSpeed * dt;
+
+            // Photosphere temperature
+            currentTemp = mix(currentTemp, 1.5f, 0.1f * dt);
+        }
+    }
+    // ─── PHASE 4: RELEASE → GRAVITATIONAL COLLAPSE ───────────────────────
+    else {
+        if (r_curr > 0.001f) {
+            float3 dir = pvec / r_curr;
+            // Collapse intensity grows with release progress
+            float collapseBase = 50.0f * lcI;
+            float progressFactor = 1.0f + t * t * 8.0f;
+            float gamma2 = 1.0f / max(0.01f, 1.0f - (SCHWARZSCHILD_RS * t) / r_curr);
+            float collapsePull = collapseBase * progressFactor * gamma2;
+
+            shiftVx -= dir.x * collapsePull * dt;
+            shiftVy -= dir.y * collapsePull * dt;
+            shiftVz -= dir.z * collapsePull * dt;
+
+            // Kerr frame-dragging (accretion disk spiral)
+            float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f));
+            float3 spinForce = cross(galacticUp, dir);
+            float dragStrength = collapsePull * t * (2.0f / (r_curr + 0.5f));
+            shiftVx += spinForce.x * dragStrength * dt;
+            shiftVy += spinForce.y * dragStrength * dt;
+            shiftVz += spinForce.z * dragStrength * dt;
+
+            // Cosmological redshift
+            float redshift = 1.0f / (1.0f + t * t * 2.0f);
+            vpx *= redshift; vpy *= redshift; vpz *= redshift;
+            currentTemp *= (1.0f - t * 0.02f);
+
+            // Event horizon capture at collapse completion
+            if (t > 0.9f && r_curr < SCHWARZSCHILD_RS * 2.0f) {
+                vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+                shiftVx *= 0.1f; shiftVy *= 0.1f; shiftVz *= 0.1f;
+            }
+        }
+    }
+
+    // Safety Snapback for runaway particles
+    if (r_curr > 1000.0f) {
+        px *= 0.5f; py *= 0.5f; pz *= 0.5f;
+    }
+    pvec = float3(px, py, pz);
+    r_curr = length(pvec);
 
     // Emitter Interactions (Macro forces)
     float baseMass = (mass > 1000.0f) ? mass : 1.0f;
     float dynamicMass = baseMass;
 
-    if (u.voiceCount > 0 && baseMass < 1000.0f) {
+    // Safety: Clamp voiceCount to prevent reading beyond buffer or into uninitialized memory
+    int numVoices = min((int)u.voiceCount, 16); 
+
+    if (numVoices > 0 && baseMass < 1000.0f) {
         float massAdd = 0.0f;
         float jitterTotal = 0.0f;
 
@@ -174,16 +315,15 @@ kernel void compute_physics(
             // Phase 4 & 12: Mechanical Point Source Impulse + Shockwaves
             float pushRadius = 2.0f;
             if (r < pushRadius) {
-                // Base impulse from amplitude
+                // Phase 14: Density-Aware Pulse (Proportional to plate scale)
+                float3 radialDir = float3(dx / r, dy / r, dz / r);
                 float impulseForce = amp * (1.0f - r / pushRadius) * 20.0f;
                 
-                // Phase 12: Transient Shockwave Trigger
-                // If deltaAmp is high (sharp attack), add a massive spike for one frame
-                float shockwave = voices[vi].deltaAmp * 300.0f * (1.0f - r / pushRadius);
+                // Shockwave scales inversely with zoom (smaller plate = more intense local pulse)
+                float densityScale = 1.0f / max(0.1f, u.plateRadius / 400.0f);
+                float shockwave = voices[vi].deltaAmp * 400.0f * (1.0f - r / pushRadius) * densityScale;
                 impulseForce += shockwave;
                 
-                // Full spherical expansion
-                float3 radialDir = float3(dx / r, dy / r, dz / r);
                 shiftVx += radialDir.x * impulseForce;
                 shiftVy += radialDir.y * impulseForce;
                 shiftVz += radialDir.z * impulseForce;
@@ -278,47 +418,7 @@ kernel void compute_physics(
         shiftVz += noisz * u.jitterFactor * 0.05f * dt;
     }
 
-    // ── Phase 11: Schwarzschild Metric Gravity ──────────────────────────
-    // The Lorentz gamma² factor makes gravity diverge exponentially
-    // at the event horizon, while reducing to Newtonian far from the center.
-    
-    if (dynamicMass > 0.0f) {
-        float3 rVec = float3(px, py, pz);
-        float rLen = length(rVec);
-        
-        if (rLen > SCHWARZSCHILD_RS) {
-            // Schwarzschild metric: gamma² = 1 / (1 - rs/r)
-            float gamma2 = 1.0f / max(0.01f, 1.0f - SCHWARZSCHILD_RS / rLen);
-            float grPull = u.gravityConstant * 0.5f * dt * gamma2;
-            
-            // Radial pull toward singularity (curved spacetime)
-            float3 dir = rVec / rLen;
-            shiftVx -= dir.x * grPull;
-            shiftVy -= dir.y * grPull;
-            shiftVz -= dir.z * grPull;
-            
-            // Kerr metric frame-dragging (angular momentum / accretion spin)
-            float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f));
-            float3 spinForce = cross(galacticUp, dir);
-            float spinMag = grPull * (2.0f / (rLen + 0.5f));
-            shiftVx += spinForce.x * spinMag;
-            shiftVy += spinForce.y * spinMag;
-            shiftVz += spinForce.z * spinMag;
-            
-            // Phase 11.2: Noether Energy Dissipation (cosmological redshift)
-            // Particles far from center lose energy as spacetime stretches
-            float redshift = 1.0f / (1.0f + rLen * 0.3f);
-            vpx *= redshift;
-            vpy *= redshift;
-            vpz *= redshift;
-        } else {
-            // Inside the event horizon: particle is swallowed
-            // All energy is lost — frozen at the singularity
-            vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
-            shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
-            currentTemp = 0.0f;
-        }
-    }
+    // (Schwarzschild gravity replaced by ADSR lifecycle above)
 
     // ── Particle-Particle Collisions (spatial hash neighbor scan) ─────
     if (u.collisionsOn > 0 && su.gridSize > 0) {
@@ -365,9 +465,13 @@ kernel void compute_physics(
                         if (dist2 > colRad2 || dist2 < 1e-12f) continue;
 
                         float dist = sqrt(dist2);
-                        // Phase 12: High-Energy Spark Heat
+                        
+                        // Phase 14: Collision Optimization
+                        // Early exit if we have too many interactions in this frame
+                        if (i > 24 && dist > colRad * 0.5f) continue;
+
                         // Particles heat up significantly on collision
-                        currentTemp += 0.05f; 
+                        currentTemp += 0.03f; 
                         
                         // 1. The Inverse-Square Law (E-Field)
                         // float r2_clamped = max(dist2, 1e-7f); // This line is now part of the new block
@@ -463,7 +567,8 @@ kernel void compute_physics(
     }
     
     // Final position integration
-    float3 nextPos = float3(px, py, pz) + finalV + float3(shiftX, shiftY, shiftZ);
+    // PHASE 14 BUG FIX: Do NOT add shiftX/Y/Z here, they were already added to px/py/pz
+    float3 nextPos = float3(px, py, pz) + finalV;
 
     // Phase accumulation
     float newPhase = p.velW.w + speed * dt;

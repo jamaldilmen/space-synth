@@ -25,12 +25,24 @@ public:
   // Process a single sample through the filter
   // Returns the Lowpass output (can be modified to return HP/BP)
   float process(float input) {
+    // Phase 12 stability: NaN guard for audio thread
+    if (std::isnan(input))
+      input = 0.0f;
+
     // 2x oversampling to improve stability at high frequencies
     for (int i = 0; i < 2; ++i) {
-      low_ = low_ + f_ * band_;
+      // Diva/Moog Style: Internal non-linear feedback saturation
+      low_ = std::tanh(low_ + f_ * band_);
       float high = input - low_ - q_ * band_;
-      band_ = band_ + f_ * high;
+      band_ = std::tanh(band_ + f_ * high);
     }
+
+    // Secondary stability clamp
+    if (std::abs(low_) > 2.0f)
+      low_ = 0.0f;
+    if (std::abs(band_) > 2.0f)
+      band_ = 0.0f;
+
     return low_;
   }
 

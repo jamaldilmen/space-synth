@@ -914,6 +914,10 @@ int main() {
     renderer.setEnvelopeState(envState.phase, envState.progress,
                               envState.intensity);
 
+    // Pass envelope state to config for shaders
+    config.envelopePhase = envState.phase;
+    config.envelopeProgress = envState.progress;
+
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
                          synth.totalAmplitude(), uiWaveDepth,
                          uiJitter * effectiveJitterMultiplier, effectiveDrive,

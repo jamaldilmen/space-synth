@@ -83,7 +83,7 @@ constant float COLLISION_RESTITUTION = 0.85f;
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
-constant float SCHWARZSCHILD_RS = 0.1f;    // Phase 16: Supermassive Event Horizon
+constant float SCHWARZSCHILD_RS = 0.40f;    // Matches blackhole.metal RS
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
@@ -156,55 +156,104 @@ kernel void compute_physics(
     bool collapsed = false; // Tracks if particle has been force-collapsed into singularity
     bool isSilence = (u.envelopePhase < 0.5f); // Gate for force immunity
 
-    // ─── PHASE 0: SILENCE → BLACK HOLE SINGULARITY ───────────────────────
+    // ─── PHASE 0: SILENCE → BLACK HOLE WITH ACCRETION DISK ───────────────
     if (u.envelopePhase < 0.5f) {
-        // ~10% of particles orbit at the accretion disk
-        // The rest collapse into the void (invisible past RS)
-        bool isAccretionParticle = (id % 10u) == 0u;
+        float rLen = r_curr;
+        if (rLen > 0.001f) {
+            float3 dir = pvec / rLen;
 
-        if (isAccretionParticle) {
-            // Target: stable orbit at accretion disk radius
-            // Use particle ID to create layered rings at different radii
-            float ringLayer = float(id % 50u) / 50.0f; // 0.0 to 1.0
-            float accretionR = 0.15f + ringLayer * 0.35f; // r = 0.15 to 0.50
-            float3 dir = pvec / max(r_curr, 0.001f);
+            // ═══ ACCRETION DISK GEOMETRY ═══
+            float diskRadius = 0.45f;      // Disk inner-to-outer span
+            float diskThickness = 0.15f;   // Vertical thickness
 
-            // Spring toward target orbit radius
-            float displacement = r_curr - accretionR;
-            float springF = displacement * 20.0f * dt;
-            shiftVx -= dir.x * springF;
-            shiftVy -= dir.y * springF;
-            shiftVz -= dir.z * springF;
+            // Project position onto disk plane
+            float rXY = sqrt(px * px + py * py);  // Radial in disk plane
+            float diskHeight = abs(pz);           // Height above/below disk
 
-            // Kerr frame-dragging: tangential orbit
-            float3 galacticUp = normalize(float3(0.1f, 1.0f, 0.15f));
-            float3 tangent = cross(galacticUp, dir);
-            float orbitSpeed = (2.0f + 3.0f / (accretionR + 0.1f)) * dt; // Faster near center
-            shiftVx += tangent.x * orbitSpeed;
-            shiftVy += tangent.y * orbitSpeed;
-            shiftVz += tangent.z * orbitSpeed;
+            // Distance from ideal disk torus
+            float diskRadialDist = abs(rXY - diskRadius);
+            float distFromDisk = sqrt(diskRadialDist * diskRadialDist + diskHeight * diskHeight);
 
-            // Hot accretion glow — hotter closer to center
-            float heatTarget = 1.0f + 3.0f * (1.0f - ringLayer);
-            currentTemp = mix(currentTemp, heatTarget, 0.1f * dt);
+            // ═══ MULTI-LAYER FORCES (fixed strength — no amplitude scaling) ═══
+
+            // 1. CENTRAL SINGULARITY PULL (inverse-cubic — weak at disk, strong near core)
+            float centralPull = 2.0f / (rLen * rLen * rLen + PLANCK_LENGTH_SQ);
+            shiftVx -= dir.x * centralPull * dt;
+            shiftVy -= dir.y * centralPull * dt;
+            shiftVz -= dir.z * centralPull * dt;
+
+            // 2. DISK CONFINEMENT (permanent Interstellar toroid)
+            // Even at silence, we want a majestic permanent accretion disk (Gargantua).
+            // Assign a permanent parking orbit to each particle.
+            float orbitalRadius = (SCHWARZSCHILD_RS * 1.05f) + fract(float(id) * 0.123456f) * 0.8f;
+            if (rLen > SCHWARZSCHILD_RS) { // only apply if it hasn't fallen in yet
+                float2 diskDir = normalize(float2(px, py) + float2(1e-6f));
+                
+                float3 diskTarget = float3(
+                    diskDir.x * orbitalRadius,
+                    diskDir.y * orbitalRadius,
+                    (fract(float(id) * 0.61803398875f) - 0.5f) * diskThickness // distribute z
+                );
+                
+                float3 toDisk = diskTarget - float3(px, py, pz);
+                float toDiskLen = length(toDisk);
+                if (toDiskLen > 0.001f) {
+                    // Strong restorative force to maintain the disk shape against gravity
+                    float3 diskForce = (toDisk / toDiskLen) * 80.0f * (1.0f / (toDiskLen + 0.1f));
+                    shiftVx += diskForce.x * dt;
+                    shiftVy += diskForce.y * dt;
+                    shiftVz += diskForce.z * dt;
+                }
+            }
+
+            // 3. KERR FRAME-DRAGGING (Keplerian differential rotation)
+            if (rXY > SCHWARZSCHILD_RS * 1.05f && diskHeight < diskThickness * 1.5f) {
+                float angularVel = 15.0f / sqrt(rXY + 0.1f);
+                float2 tangent = float2(-py, px) / (rXY + 0.001f);
+                shiftVx += tangent.x * angularVel * dt;
+                shiftVy += tangent.y * angularVel * dt;
+                float shearZ = pz * 0.5f * angularVel / (diskThickness + 0.1f);
+                shiftVz -= shearZ * dt;
+            }
+
+            // 4. GRAVITATIONAL LENSING (photon sphere bending)
+            float photonSphere = SCHWARZSCHILD_RS * 3.0f;
+            if (rLen > photonSphere * 0.8f && rLen < photonSphere * 1.5f) {
+                float3 perpDir = cross(dir, float3(0.0f, 0.0f, 1.0f));
+                float bendStrength = 8.0f / (abs(rLen - photonSphere) + 0.05f);
+                shiftVx += perpDir.x * bendStrength * dt;
+                shiftVy += perpDir.y * bendStrength * dt;
+            }
+
+            // 5. HAWKING RADIATION (quantum fluctuations near horizon)
+            if (rLen < SCHWARZSCHILD_RS * 4.0f) {
+                shiftVx += noise(id, u.frameCounter) * 0.8f * dt;
+                shiftVy += noise(id + 1000u, u.frameCounter) * 0.8f * dt;
+                shiftVz += noise(id + 2000u, u.frameCounter) * 0.4f * dt;
+                currentTemp = mix(currentTemp, 0.3f, 0.05f);
+            }
+
+            // 6. EVENT HORIZON FREEZE
+            if (rLen < SCHWARZSCHILD_RS) {
+                vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+                shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
+                currentTemp = 0.0f;
+                collapsed = true;
+            }
+
+            // ═══ OPTICAL EFFECTS ═══
+            if (distFromDisk < diskThickness) {
+                float diskTemp = 5.0f / (rXY + 0.2f);
+                currentTemp = mix(currentTemp, diskTemp, 0.1f * dt);
+            }
+            float approachingVel = -(vpx * py - vpy * px) / (rXY + 0.001f);
+            if (approachingVel > 0.0f) {
+                currentTemp *= (1.0f + approachingVel * 0.3f);
+            }
         } else {
-            // Direct position collapse — bypasses all velocity forces
-            float collapseRate = 0.08f;
-            float keep = 1.0f - collapseRate;
-            px *= keep; py *= keep; pz *= keep;
-            prevX = px; prevY = py; prevZ = pz;
+            // Particle at exact origin: freeze
             vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
-            currentTemp *= 0.95f; // Cool toward absolute zero
-            collapsed = true; // Mark: immune to all subsequent forces
-        }
-
-        // Hawking radiation flicker near event horizon
-        if (r_curr < SCHWARZSCHILD_RS * 2.5f && r_curr > SCHWARZSCHILD_RS) {
-            float flicker = noise(id, u.frameCounter) * 0.015f;
-            float3 dir = pvec / max(r_curr, 0.001f);
-            shiftVx += dir.x * flicker;
-            shiftVy += dir.y * flicker;
-            shiftVz += dir.z * flicker;
+            collapsed = true;
         }
     }
     // ─── PHASE 1: ATTACK → BIG BANG EXPLOSION ────────────────────────────

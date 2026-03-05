@@ -49,6 +49,7 @@ set(HEADERS
 set(METAL_SOURCES
     src/render/particles.metal
     src/render/render.metal
+    src/render/blackhole.metal
     src/render/postfx.metal
     src/render/spatial_hash.metal
 )

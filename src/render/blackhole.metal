@@ -302,8 +302,12 @@ fragment float4 fragment_black_hole(
     float4 accumulatedColor = float4(0.0);
     bool hitHorizon = false;
     float r_horizon = M + sqrt(M*M - a*a); 
+    float min_r = state.r; // Track closest approach to singularity
     
     for (int step = 0; step < MAX_STEPS; step++) {
+        // Track the closest approach to the singularity for photon-sphere glow
+        min_r = min(min_r, state.r);
+        
         if (state.r <= r_horizon * 1.01) {
             hitHorizon = true;
             break;
@@ -318,21 +322,16 @@ fragment float4 fragment_black_hole(
             float3 vel = partData.xyz;
             float speed = length(vel);
             
-            // Reconstruct ray direction in Cartesian roughly from p_mu
-            // A precise Cartesian vector isn't strictly necessary if we project the particle's velocity onto the initial camera view
-            // The camera observes blueshift if the particle moves TOWARDS the camera (dot(vel, cameraWo) < 0)
             float v_obs = dot(normalize(vel + float3(1e-6)), normalize(cameraWo)); 
             
-            float doppler = 1.0 - v_obs * 0.5; // Phenomenological scale
+            float doppler = 1.0 - v_obs * 0.5; 
             doppler = clamp(doppler, 0.2, 3.0);
             
             float3 color;
             if (speed > 5.0) color = float3(1.0, 0.95, 0.9);
             else if (speed > 2.0) color = float3(1.0, 0.6, 0.2);
-            else color = float3(0.5, 0.1, 0.8);
+            else color = float3(1.0, 0.4, 0.1); // Warmer base color for the disk
             
-            // Liouville Brightness + Color shift
-            // We apply a tone-mapped version of nu^3 to avoid pure white blowouts
             float brightnessFactor = pow(doppler, 2.5);
             
             if (doppler > 1.0) {
@@ -343,25 +342,36 @@ fragment float4 fragment_black_hole(
                  color.b *= doppler;
             }
             
-            // Soften alpha accumulation
-            float alpha = partData.a * (1.0 - accumulatedColor.a) * 0.8;
+            // Soften alpha accumulation but boost base density visibility
+            float alpha = partData.a * (1.0 - accumulatedColor.a) * 0.95;
             accumulatedColor.rgb += color * alpha;
             accumulatedColor.a += alpha;
             if (accumulatedColor.a > 0.99) break;
         }
         
-        // Exited system bounds (the disk only goes up to ~1.2 physical distance)
-        if (state.r > 1.5) break;
+        if (state.r > 2.0) break; // Allow a slightly larger escape radius
     }
     
     if (hitHorizon) {
         return float4(0.0, 0.0, 0.0, 1.0 * opacity);
     }
     
-    // Photon sphere glow (optional)
+    // ── PHOTON SPHERE GLOW (Gargantua Aesthetics) ──
+    // If the ray grazed the photon sphere (~1.5 * r_horizon) without falling in, 
+    // it picks up immense brightness from trapped light.
     if (accumulatedColor.a < 0.99) {
-        if (state.r < 3.0) { // Indicates it got trapped somewhat before exiting
-            // Check minimum distance reached (approximated by how long it took)
+        float photon_sphere = r_horizon * 1.5;
+        if (min_r < photon_sphere * 1.2) {
+            // How close did it get to the exact photon orbit?
+            float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.2);
+            if (proximity > 0.0) {
+                float intensity = pow(proximity, 4.0) * 1.5; 
+                float3 glowColor = float3(1.0, 0.8, 0.5) * intensity; // White-hot plasma glow
+                
+                float alpha = intensity * (1.0 - accumulatedColor.a);
+                accumulatedColor.rgb += glowColor * alpha;
+                accumulatedColor.a += alpha;
+            }
         }
     }
     

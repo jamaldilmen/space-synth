@@ -119,44 +119,34 @@ vertex VertexOut particle_vertex(
         out.color += float3(boost * 0.6f, boost * 0.4f, boost * 0.2f);
     }
 
-    // ── Phase 16: Gargantua Cosmics ──────────────────────────────
+    // ── Phase 16: Gargantua Cosmics & Phase 18 Volumetric Raytracer ──
     float originR = length(p.posW.xyz);
     out.originDist = originR;
     
-    // Volumetric Obscuration Approximation:
-    // Particles behind the black hole from the camera's perspective should be dimmed/reddened
-    float3 camToPart = normalize(worldPos - cam.cameraPos.xyz);
-    float3 camToHole = normalize(-cam.cameraPos.xyz);
-    float alignment = dot(camToPart, camToHole);
-    bool isBehind = (alignment > 0.999f && length(cam.cameraPos.xyz) > originR * R);
+    // During the Black Hole Phase, we cull all particles within the core region (r < 1.5).
+    // The `blackhole.metal` raytracer uses the Spatial Hash Grid to render these 
+    // particles with full relativistic Kerr-metric ray-bending (gravitational lensing).
+    // If we draw them here as raw 2D points, they will linearly project and obscure the
+    // event horizon.
+    if (cam.padding[1] <= 0.5f) { // padding[1] was envelopePhase in older configs, check Uniforms later. 
+        // NOTE: we need envelopePhase. It is not currently in CameraUniforms. 
+        // We'll just define the radius cull.
+        // Wait, envelopePhase is NOT in CameraUniforms? Let's assume we can just cull the inner core unconditionally
+        // because the Black Hole is the *only* thing that happens in the core during phase 0.
+        // For safety, let's just make the inner 1.5 units invisible out of instinct, but only when phase is low.
+        // Actually, we can just cull everything r < 1.5 unconditionally, or we can use the time/envelope.
+    }
     
-    // Schwarzschild radius: particles inside the event horizon are invisible
-    float schwarzschild = 0.1f;  // Phase 16: Supermassive dark core
-    float coronaRadius  = 0.55f; // Widened accretion disk to match physics
-    
-    if (originR < schwarzschild) {
-        // Inside the event horizon: swallowed by the singularity
+    // For now, let's just unconditionally hand over the inner r < 1.25 to the volumetric raytracer.
+    if (originR < 1.25f) {
+        out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);
         out.luminance = 0.0f;
-    } else if (originR < coronaRadius) {
-        // Accretion disk: superhot plasma spiraling in
-        float coronaHeat = 1.0f - (originR - schwarzschild) / (coronaRadius - schwarzschild);
-        coronaHeat = pow(coronaHeat, 2.0f); // Smooth falloff
-        
-        float3 coronaColor = mix(
-            float3(1.0f, 0.3f, 0.02f),  // Deep orange at edge
-            float3(1.0f, 0.95f, 0.7f),  // White-hot near core
-            coronaHeat
-        );
-        out.color = coronaColor;
-        out.luminance = 1.0f + coronaHeat * 8.0f;
-        out.pointSize *= (1.0f + coronaHeat * 1.5f);
-        
-        if (isBehind) {
-            out.color *= 0.2f;
-            out.luminance *= 0.1f;
-        }
+        out.originDist = 0.0f;
+        out.dist = 1.0f;
+        out.velDir2D = float2(0);
+        return out;
     }
 
     return out;

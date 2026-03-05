@@ -25,6 +25,10 @@ struct RenderConfig {
   // Debugging Suite (Phase 7)
   bool fixedTimestep = false;
   uint32_t debugFlags = 0xFFFFFFFF; // All forces ON by default
+
+  // Phase 17: Black Hole Rendering Gate
+  float envelopePhase = 0.0f;
+  float envelopeProgress = 0.0f;
 };
 
 // Debug bitmasks for PhysicsUniforms.debugFlags

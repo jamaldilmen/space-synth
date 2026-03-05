@@ -21,6 +21,7 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> physicsPipeline = nil;
   id<MTLRenderPipelineState> particlePipeline = nil;
   id<MTLRenderPipelineState> postPipeline = nil;
+  id<MTLRenderPipelineState> blackHolePipeline = nil;
 
   // Spatial hash pipelines
   id<MTLComputePipelineState> assignCellsPipeline = nil;
@@ -72,6 +73,7 @@ struct Renderer::Impl {
   id<MTLBuffer> postUniformBuffer[kMaxInFlightFrames];
 
   id<MTLDepthStencilState> depthState = nil;
+  id<MTLDepthStencilState> bgDepthState = nil;
   id<MTLTexture> depthTexture = nil;
   id<MTLTexture> offscreenTexture = nil;
   id<MTLTexture> prevFrameTexture = nil;
@@ -233,14 +235,54 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Post-FX pipeline error: %@", error);
   }
 
-  // ── Depth state ─────────────────────────────────────────────────────
+  // ── Black Hole Pipeline ─────────────────────────────────────────────
+  id<MTLFunction> bhVertexFunc =
+      [impl_->library newFunctionWithName:@"vertex_black_hole"];
+  id<MTLFunction> bhFragmentFunc =
+      [impl_->library newFunctionWithName:@"fragment_black_hole"];
+  if (bhVertexFunc && bhFragmentFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = bhVertexFunc;
+    desc.fragmentFunction = bhFragmentFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+    // We want the black hole to "over" the clear color, but we also want to
+    // fade it out. Standard premultiplied alpha blending:
+    desc.colorAttachments[0].blendingEnabled = YES;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationRGBBlendFactor =
+        MTLBlendFactorOneMinusSourceAlpha;
+    desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationAlphaBlendFactor =
+        MTLBlendFactorOneMinusSourceAlpha;
+    desc.colorAttachments[0].destinationAlphaBlendFactor =
+        MTLBlendFactorOneMinusSourceAlpha;
+    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    impl_->blackHolePipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Black Hole pipeline error: %@", error);
+  }
+
+  // ── Depth state for Particles ───────────────────────────────────────
   MTLDepthStencilDescriptor *depthDesc =
       [[MTLDepthStencilDescriptor alloc] init];
   depthDesc.depthCompareFunction = MTLCompareFunctionLess;
-  depthDesc.depthWriteEnabled = NO; // Fixes Z-fighting for additive particles
+  // VERY IMPORTANT: Turn off depth write for particles so they additively
+  // blend!
+  depthDesc.depthWriteEnabled = NO;
 
   impl_->depthState =
       [impl_->device newDepthStencilStateWithDescriptor:depthDesc];
+
+  // ── Depth state for Background (Black Hole) ─────────────────────────
+  MTLDepthStencilDescriptor *bgDepthDesc =
+      [[MTLDepthStencilDescriptor alloc] init];
+  bgDepthDesc.depthCompareFunction = MTLCompareFunctionAlways; // Always draw
+  bgDepthDesc.depthWriteEnabled = NO; // Don't write to depth buffer
+
+  impl_->bgDepthState =
+      [impl_->device newDepthStencilStateWithDescriptor:bgDepthDesc];
 
   for (int i = 0; i < Impl::kMaxInFlightFrames; i++) {
     impl_->cameraBuffer[i] =
@@ -799,6 +841,46 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
 
   id<MTLRenderCommandEncoder> enc =
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
+
+  // 1. Draw Black Hole Background (raymarching)
+  if (blackHolePipeline && config.envelopePhase <= 0.5f) {
+    struct BlackHoleUniforms {
+      float resolution[2]; // 8 bytes
+      float cameraPos[3];  // 12 bytes
+      float time;          // 4 bytes
+      float envelopePhase; // 4 bytes
+    }; // 28 bytes total
+
+    PhysicsUniforms *phys = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
+    BlackHoleUniforms bhUniforms;
+    bhUniforms.resolution[0] = (float)width;
+    bhUniforms.resolution[1] = (float)height;
+
+    // Note: cameraPos comes from the CameraUniforms bound to cameraBuffer
+    CameraUniforms *camStruct =
+        (CameraUniforms *)cameraBuffer[frameIdx].contents;
+    bhUniforms.cameraPos[0] = camStruct->cameraPos[0];
+    bhUniforms.cameraPos[1] = camStruct->cameraPos[1];
+    bhUniforms.cameraPos[2] = camStruct->cameraPos[2];
+
+    bhUniforms.time = phys->time;
+    bhUniforms.envelopePhase = config.envelopePhase;
+
+    [enc setRenderPipelineState:blackHolePipeline];
+    [enc setFragmentBytes:&bhUniforms
+                   length:sizeof(BlackHoleUniforms)
+                  atIndex:0];
+
+    // Bind Spatial Hash Buffers for volumetric particle sampling
+    [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
+    [enc setFragmentBuffer:cellStartsBuffer offset:0 atIndex:2];
+    [enc setFragmentBuffer:sortedParticlesBuffer offset:0 atIndex:3];
+
+    [enc setDepthStencilState:bgDepthState];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
+
+  // 2. Draw Particles
   [enc setRenderPipelineState:particlePipeline];
   [enc setDepthStencilState:depthState];
   [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];

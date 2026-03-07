@@ -50,6 +50,7 @@ int AudioRingBuffer::available() const {
 struct AudioEngine::Impl {
   AudioComponentInstance audioUnit = nullptr;
   Synth *synth = nullptr;
+  float sampleRate = 48000.0f;
 };
 
 static OSStatus audioOutputCallback(void *inRefCon,
@@ -72,7 +73,7 @@ static OSStatus audioOutputCallback(void *inRefCon,
                     ? static_cast<float *>(ioData->mBuffers[1].mData)
                     : nullptr;
 
-  const float sampleRate = 48000.0f;
+  const float sampleRate = impl->sampleRate;
 
   if (outR) {
     impl->synth->processBlock(sampleRate, outL, outR, inNumberFrames);
@@ -102,6 +103,7 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   if (running_)
     stop();
   sampleRate_ = sampleRate;
+  impl_->sampleRate = static_cast<float>(sampleRate);
 
   AudioComponentDescription desc = {kAudioUnitType_Output,
                                     kAudioUnitSubType_DefaultOutput,

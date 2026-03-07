@@ -125,8 +125,6 @@ kernel void compute_physics(
 
     float dynamicFric = baseFric;
 
-    // Track potential energy for phase accumulation
-    float PE = 0.0f;
     float currentTemp = p.prevW.w; // ODS-03: Thermal state
 
     // ── Snap Back: Pulse re-seed/Reset logic ──
@@ -495,15 +493,7 @@ kernel void compute_physics(
         shiftVy += sin(angle) * strength;
     }
 
-    // Jitter (Heisenberg uncertainty)
-    if (u.debugFlags & (1 << 4)) {
-        float noisy = noise(id, u.time + 1.234f);
-        float noisx = noise(id, u.time + 5.678f);
-        float noisz = noise(id, u.time + 9.012f);
-        shiftVx += noisx * u.jitterFactor * 0.05f * dt;
-        shiftVy += noisy * u.jitterFactor * 0.05f * dt;
-        shiftVz += noisz * u.jitterFactor * 0.05f * dt;
-    }
+    // (Second jitter block removed — temperature-driven jitter above is sufficient)
 
     // (Schwarzschild gravity replaced by ADSR lifecycle above)
 
@@ -589,26 +579,29 @@ kernel void compute_physics(
 
                             // Biot-Savart circulation analog (B-Field)
                             if (u.debugFlags & (1 << 1)) {
-                                float3 spin1 = float3(0, 0, p.velW.w); // Simplified spin (using phase)
-                                float3 spin2 = float3(0, 0, p2.velW.w); // Simplified spin (using phase)
-                                float3 bForceVec = cross(spin1, normalize(r_vec)) * u.bFieldCirculation * dt;
+                                float3 spin1 = p.spinW.xyz;
+                                float3 spin2 = p2.spinW.xyz;
+                                float r3 = r2_clamped * r;
+                                float3 bForceVec = cross(spin1 + spin2, normalize(r_vec)) * u.bFieldCirculation / r3 * dt;
                                 shiftVx += bForceVec.x; shiftVy += bForceVec.y; shiftVz += bForceVec.z;
                             }
 
                             // Tensegrity Strings (Hooke's Law)
                             if (u.debugFlags & (1 << 3)) {
                                 float strain = r - u.restLength;
-                                float3 stringF = normalize(r_vec) * strain * u.stringStiffness * dt;
+                                // Negate r_vec: stretched → pull inward, compressed → push outward
+                                float3 stringF = normalize(-r_vec) * strain * u.stringStiffness * dt;
                                 shiftVx += stringF.x; shiftVy += stringF.y; shiftVz += stringF.z;
                             }
 
                             // Newtonian Self-Gravity (1/r^2)
                             if (u.debugFlags & (1 << 2)) {
-                                float massProd = dynamicMass * p2.posW.w; // Use actual masses
-                                if (massProd == 0.0f) massProd = 1.0f; // Avoid division by zero if one mass is 0
-                                float gravForce = u.gravityConstant * massProd / r2_clamped;
-                                float3 fG = normalize(-r_vec) * gravForce * dt;
-                                shiftVx += fG.x; shiftVy += fG.y; shiftVz += fG.z;
+                                float massProd = dynamicMass * p2.posW.w;
+                                if (massProd != 0.0f) { // Skip gravity for zero-mass particles (walls)
+                                    float gravForce = u.gravityConstant * massProd / r2_clamped;
+                                    float3 fG = normalize(-r_vec) * gravForce * dt;
+                                    shiftVx += fG.x; shiftVy += fG.y; shiftVz += fG.z;
+                                }
                             }
 
                             // Hard-sphere Elastic Collision
@@ -638,11 +631,6 @@ kernel void compute_physics(
     // ── Störmer-Verlet integration (damped) ──────────────────────────
     // Restored natural damping without extra cosmic over-drag.
     // Jitter and collision forces are now visible again.
-
-    // Apply unified velocity shifts to damped proxy
-    vpx = vpx * dynamicFric;
-    vpy = vpy * dynamicFric;
-    vpz = vpz * dynamicFric;
 
     // ── Silence force immunity: restore lifecycle-only shifts ──────────────
     if (isSilence) {

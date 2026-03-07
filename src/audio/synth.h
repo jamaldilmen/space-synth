@@ -107,6 +107,7 @@ public:
     int sampleOffset;
   };
   std::vector<MidiCommand> commandQueue_;
+  std::vector<MidiCommand> swapBuffer_; // Pre-allocated swap buffer (avoids RT heap alloc)
   mutable std::mutex queueMutex_;
 
   void processCommands();

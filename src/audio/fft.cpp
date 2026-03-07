@@ -91,7 +91,8 @@ void FFTAnalyzer::analyze() {
         float alpha = magnitudes_[maxBin - 1];
         float beta  = magnitudes_[maxBin];
         float gamma = magnitudes_[maxBin + 1];
-        float p = 0.5f * (alpha - gamma) / (alpha - 2.0f * beta + gamma);
+        float denom = alpha - 2.0f * beta + gamma;
+        float p = (std::abs(denom) > 1e-12f) ? 0.5f * (alpha - gamma) / denom : 0.0f;
         float binFreq = static_cast<float>(sampleRate_) / fftSize_;
         fundamental_ = (maxBin + p) * binFreq;
     } else {

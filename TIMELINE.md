@@ -246,8 +246,8 @@ This sits at the intersection of **computational physics research** and **real-t
 ## Roadmap
 
 ### Near-term (performance)
-- [ ] Parallel prefix sum — replace serial scan (1 thread for 65k cells) with Blelloch scan
-- [ ] Collision radius as UI slider
+- [x] Parallel prefix sum — replace serial scan (1 thread for 65k cells) with Blelloch scan
+- [x] Collision radius as UI slider
 - [ ] StorageModePrivate for spatial hash buffers
 
 ### Mid-term (features)

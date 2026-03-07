@@ -25,6 +25,7 @@ float Chorus::getDelayedSample(const std::vector<float> &buffer,
   if (size == 0)
     return 0.0f;
 
+  delaySamples = std::min(delaySamples, static_cast<float>(size - 1));
   float rp = static_cast<float>(writePos_) - delaySamples;
   while (rp < 0)
     rp += size;

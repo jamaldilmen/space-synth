@@ -1,5 +1,6 @@
 #include "audio/synth.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <vector>
@@ -11,8 +12,8 @@ static constexpr float TWO_PI = 2.0f * M_PI;
 void Voice::init(float sampleRate) {
   filter.setSampleRate(sampleRate);
   filter.reset();
-  static uint32_t globalSeed = 42;
-  rngState = (globalSeed++ * 1103515245u + 12345u);
+  static std::atomic<uint32_t> globalSeed(42);
+  rngState = (globalSeed.fetch_add(1, std::memory_order_relaxed) * 1103515245u + 12345u);
 }
 
 static uint32_t xorshift32(uint32_t &state) {
@@ -78,21 +79,26 @@ void Synth::tick(float sampleRate, float &outL, float &outR) {
 
 void Synth::processBlock(float sampleRate, float *outL, float *outR,
                          int numFrames) {
-  std::vector<MidiCommand> commands;
+#if defined(__arm64__) || defined(__aarch64__)
+  // Flush denormals to zero on ARM (prevents denormal performance penalty)
+  uint64_t fpcr;
+  __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+  __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr | (1 << 24))); // FZ bit
+#endif
+
   {
     std::lock_guard<std::mutex> lock(queueMutex_);
-    commands.swap(commandQueue_);
+    swapBuffer_.swap(commandQueue_);
   }
 
   // Interleave commands and synthesis for sample-accurate timing
   int cmdIdx = 0;
-  std::lock_guard<std::mutex> lock(mutex_); // Move lock OUTSIDE core loop
 
   for (int i = 0; i < numFrames; i++) {
     // Fire all commands scheduled for this specific sample
-    while (cmdIdx < (int)commands.size() &&
-           commands[cmdIdx].sampleOffset <= i) {
-      const auto &cmd = commands[cmdIdx];
+    while (cmdIdx < (int)swapBuffer_.size() &&
+           swapBuffer_[cmdIdx].sampleOffset <= i) {
+      const auto &cmd = swapBuffer_[cmdIdx];
       if (cmd.type == MidiCommand::NoteOn) {
         handleNoteOnInternal(cmd.midi, cmd.velocity);
       } else {
@@ -136,21 +142,25 @@ void Synth::processCommands() {
 
 void Synth::noteOn(int midi, float velocity, int sampleOffset) {
   std::lock_guard<std::mutex> lock(queueMutex_);
-  commandQueue_.push_back({MidiCommand::NoteOn, midi, velocity, sampleOffset});
-  // Keep queue sorted by sample offset
-  std::sort(commandQueue_.begin(), commandQueue_.end(),
-            [](const MidiCommand &a, const MidiCommand &b) {
-              return a.sampleOffset < b.sampleOffset;
-            });
+  if (commandQueue_.size() < 256) {
+    commandQueue_.push_back({MidiCommand::NoteOn, midi, velocity, sampleOffset});
+    // Keep queue sorted by sample offset
+    std::sort(commandQueue_.begin(), commandQueue_.end(),
+              [](const MidiCommand &a, const MidiCommand &b) {
+                return a.sampleOffset < b.sampleOffset;
+              });
+  }
 }
 
 void Synth::noteOff(int midi, int sampleOffset) {
   std::lock_guard<std::mutex> lock(queueMutex_);
-  commandQueue_.push_back({MidiCommand::NoteOff, midi, 0.0f, sampleOffset});
-  std::sort(commandQueue_.begin(), commandQueue_.end(),
-            [](const MidiCommand &a, const MidiCommand &b) {
-              return a.sampleOffset < b.sampleOffset;
-            });
+  if (commandQueue_.size() < 256) {
+    commandQueue_.push_back({MidiCommand::NoteOff, midi, 0.0f, sampleOffset});
+    std::sort(commandQueue_.begin(), commandQueue_.end(),
+              [](const MidiCommand &a, const MidiCommand &b) {
+                return a.sampleOffset < b.sampleOffset;
+              });
+  }
 }
 
 void Synth::handleNoteOn(int midi, float velocity) {
@@ -165,16 +175,25 @@ void Synth::handleNoteOnInternal(int midi, float velocity) {
   }
 
   if (voices_.size() >= MAX_VOICES) {
-    int quietestMidi = -1;
-    float minAmp = 2.0f;
+    // Prefer stealing voices in Release > Sustain > Decay. Never steal Attack.
+    int stealMidi = -1;
+    float bestScore = -1.0f;
     for (const auto &[m, voice] : voices_) {
-      if (voice.envelope.amplitude < minAmp) {
-        minAmp = voice.envelope.amplitude;
-        quietestMidi = m;
+      float score = -1.0f;
+      switch (voice.envelope.phase) {
+      case EnvPhase::Release: score = 3.0f + (1.0f - voice.envelope.amplitude); break;
+      case EnvPhase::Sustain: score = 2.0f + (1.0f - voice.envelope.amplitude); break;
+      case EnvPhase::Decay:   score = 1.0f + (1.0f - voice.envelope.amplitude); break;
+      case EnvPhase::Attack:  score = -1.0f; break; // Never steal Attack
+      default:                score = 4.0f; break;   // Off/silent = best candidate
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        stealMidi = m;
       }
     }
-    if (quietestMidi != -1) {
-      voices_.erase(quietestMidi);
+    if (stealMidi != -1) {
+      voices_.erase(stealMidi);
     }
   }
 

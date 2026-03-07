@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 
 namespace space {
@@ -17,8 +18,8 @@ public:
     // Prewarp the cutoff frequency
     f = 2.0f * std::sin(M_PI * std::fmin(0.49f, f));
 
-    // Calculate filter coefficients
-    q_ = 1.0f - resonance;
+    // Q factor: higher resonance = sharper peak
+    q_ = 0.1f + resonance * 1.9f;
     f_ = f;
   }
 
@@ -37,11 +38,9 @@ public:
       band_ = std::tanh(band_ + f_ * high);
     }
 
-    // Secondary stability clamp
-    if (std::abs(low_) > 2.0f)
-      low_ = 0.0f;
-    if (std::abs(band_) > 2.0f)
-      band_ = 0.0f;
+    // Stability clamp (clamp, not zero — avoids clicks)
+    low_ = std::fmin(2.0f, std::fmax(-2.0f, low_));
+    band_ = std::fmin(2.0f, std::fmax(-2.0f, band_));
 
     return low_;
   }

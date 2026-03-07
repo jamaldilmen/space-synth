@@ -8,7 +8,9 @@ using namespace metal;
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
-    float4 prevW;  // prevX, prevY, prevZ, pad (Störmer-Verlet)
+    float4 prevW;  // prevX, prevY, prevZ, temperature
+    float4 spinW;  // spinX, spinY, spinZ, charge
+    uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
 struct SpatialHashUniforms {

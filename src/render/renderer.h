@@ -54,6 +54,8 @@ struct PostFXUniforms {
   float trailDecay;
   float chromaticAmount;
   float padding[3];
+  float inverseViewProj[16];
+  float prevViewProj[16];
 };
 
 // Camera uniforms — matches the struct in render.metal
@@ -178,6 +180,7 @@ public:
                           float top, float near, float far);
   static void perspectiveMatrix(float *out, float fovY, float aspect,
                                 float near, float far);
+  static bool invertMatrix4x4(const float *m, float *invOut);
 
 private:
   struct Impl;

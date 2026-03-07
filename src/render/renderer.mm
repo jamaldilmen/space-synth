@@ -1,11 +1,13 @@
-#include "render/renderer.h"
+#include "renderer.h"
 #include "backends/imgui_impl_metal.h"
 #include "imgui.h"
+#include <Metal/Metal.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <algorithm>
 #include <cstring>
+#include <simd/simd.h>
 
 namespace space {
 
@@ -93,6 +95,8 @@ struct Renderer::Impl {
   float envPhase = 0.0f;
   float envProgress = 0.0f;
   float envIntensity = 0.0f;
+
+  float prevViewProj[16];
 
   void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
   void renderWithCamera(id<CAMetalDrawable> drawable,
@@ -906,7 +910,16 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.bloomIntensity = config.bloomIntensity;
   post.trailDecay = config.trailDecay;
   post.chromaticAmount = config.chromaticAmount;
+
+  // Analytic Motion Blur: Inverse current matrix
+  CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+  invertMatrix4x4(camStruct->viewProj, post.inverseViewProj);
+  memcpy(post.prevViewProj, prevViewProj, 16 * sizeof(float));
+
   memcpy(postUniformBuffer[frameIdx].contents, &post, sizeof(post));
+
+  // Store the current frame's matrix for next frame's Motion Blur calculation
+  memcpy(prevViewProj, camStruct->viewProj, 16 * sizeof(float));
 
   // Prepare ImGui for this pass
   ImGui_ImplMetal_NewFrame(finalPass);
@@ -1041,9 +1054,56 @@ void Renderer::perspectiveMatrix(float *m, float fovY, float aspect, float n,
   float w = h / aspect;
   m[0] = w;
   m[5] = h;
-  m[10] = f / (n - f);
-  m[11] = -1.0f;
-  m[14] = (n * f) / (n - f);
+  m[10] = f / (f - n);
+  m[11] = 1.0f;
+  m[14] = -n * f / (f - n);
+}
+
+bool Renderer::invertMatrix4x4(const float *m, float *invOut) {
+  float inv[16], det;
+
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
+           m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] -
+           m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] +
+           m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] -
+            m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] -
+           m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] +
+           m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] -
+           m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] +
+            m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] +
+           m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] -
+           m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] +
+            m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] -
+            m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] -
+           m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] +
+           m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] -
+            m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] +
+            m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+
+  det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if (det == 0)
+    return false;
+
+  det = 1.0f / det;
+  for (int i = 0; i < 16; i++) {
+    invOut[i] = inv[i] * det;
+  }
+  return true;
 }
 
 } // namespace space

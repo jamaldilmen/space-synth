@@ -362,9 +362,20 @@ kernel void compute_physics(
     if (numVoices > 0 && baseMass < 1000.0f) {
         float massAdd = 0.0f;
         float jitterTotal = 0.0f;
+        float Y_total = 0.0f;
+        float dynamicMass = baseMass;
 
-        for (int vi = 0; vi < u.voiceCount; vi++) {
+        // Accumulators for Phase 18 Chord Webbing
+        float sum_Y = 0.0f;
+        float sum_dYdth = 0.0f;
+        float sum_dYdphi = 0.0f;
+        float sum_Y2 = 0.0f;
+        float sum_YdYdth = 0.0f;
+        float sum_YdYdphi = 0.0f;
+
+        for (int vi = 0; vi < numVoices; vi++) {
             float amp = voices[vi].amplitude;
+            if (amp < 0.001f) continue;
 
             // Global attractive/repulsive forces from the emitter
             float dx = px - voices[vi].emitterX;
@@ -373,14 +384,14 @@ kernel void compute_physics(
             float r2 = dx * dx + dy * dy + dz * dz + PLANCK_LENGTH_SQ;
             float r = sqrt(r2);
             float th = atan2(dy, dx);
+            float phi = acos(clamp(dz / r, -1.0f, 1.0f)); // Polar angle [0, pi]
             
             float m_f = float(voices[vi].m);
             float n_f = float(voices[vi].n);
 
             // Phase 4: Dynamic Heaviness (E=mc^2)
-            // Energy = frequency * amplitude. Increase mass for the medium where the wave travels.
             float localEnergy = (voices[vi].frequency * amp) / (r2 * 0.5f + 1.0f);
-            massAdd += localEnergy * 0.005f; // scaling factor
+            massAdd += localEnergy * 0.005f; 
 
             // Emitters induce a strong coherent spin field (B-field)
             float spinMag = amp * 50.0f * (m_f == 0.0f ? 1.0f : sign(m_f));
@@ -391,7 +402,7 @@ kernel void compute_physics(
             );
             float3 rVec = float3(dx, dy, dz);
             
-            // Biot-Savart induced velocity from the emitter's virtual vortex
+            // Biot-Savart induced velocity
             float3 inducedV = cross(emitterSpin, rVec) / (r2 * r);
             shiftVx += inducedV.x * 0.15f;
             shiftVy += inducedV.y * 0.15f;
@@ -400,11 +411,9 @@ kernel void compute_physics(
             // Phase 4 & 12: Mechanical Point Source Impulse + Shockwaves
             float pushRadius = 2.0f;
             if (r < pushRadius) {
-                // Phase 14: Density-Aware Pulse (Proportional to plate scale)
                 float3 radialDir = float3(dx / r, dy / r, dz / r);
                 float impulseForce = amp * (1.0f - r / pushRadius) * 20.0f;
                 
-                // Shockwave scales inversely with zoom (smaller plate = more intense local pulse)
                 float densityScale = 1.0f / max(0.1f, u.plateRadius / 400.0f);
                 float shockwave = voices[vi].deltaAmp * 400.0f * (1.0f - r / pushRadius) * densityScale;
                 impulseForce += shockwave;
@@ -413,17 +422,10 @@ kernel void compute_physics(
                 shiftVy += radialDir.y * impulseForce;
                 shiftVz += radialDir.z * impulseForce;
                 
-                // Transient heat peak
                 currentTemp += voices[vi].deltaAmp * 2.0f;
             }
 
             // ── The Atom Model (Gradient-Driven Harmonic Sculpting) ────────
-            // Compute the spherical harmonic field Y(θ, φ) and its angular gradient.
-            // Instead of pushing radially (always a ball), we push particles
-            // TOWARD the lobe maxima via the gradient in θ and φ.
-            float phi = acos(clamp(dz / r, -1.0f, 1.0f)); // Polar angle [0, pi]
-            
-            // The harmonic field and its finite-difference gradient
             float Y_here  = cos(m_f * th) * sin(n_f * phi);
             float Y_dth   = cos(m_f * (th + 0.02f)) * sin(n_f * phi);
             float Y_dphi  = cos(m_f * th) * sin(n_f * (phi + 0.02f));
@@ -431,57 +433,64 @@ kernel void compute_physics(
             float dYdth  = (Y_dth - Y_here) / 0.02f;
             float dYdphi = (Y_dphi - Y_here) / 0.02f;
             
-            // Convert angular gradients to Cartesian force directions
-            // θ-direction (azimuthal): perpendicular to radial in the XY plane
             float3 thetaDir = float3(-sin(th), cos(th), 0.0f);
-            // φ-direction (polar): perpendicular to radial in the vertical plane
             float sinPhi = sin(phi);
-            float3 phiDir = float3(
-                cos(th) * cos(phi),
-                sin(th) * cos(phi),
-                -sinPhi
-            );
+            float3 phiDir = float3(cos(th)*cos(phi), sin(th)*cos(phi), -sinPhi);
             
-            // The sculpting force: push toward lobe maxima
-            // Phase 12: Audio-Rate LFO (Moog Shimmer)
-            // Modulate sculpting strength with the actual note frequency
-            // This makes the harmonic shapes vibrate/shimmer at the pitch rate.
             float acMod = 1.0f + 0.3f * sin(voices[vi].frequency * u.time * 0.1f + voices[vi].phase);
-            float sculptStrength = amp * voices[vi].alpha * 20.0f * acMod;
+            float visualAmp = pow(amp, 0.4f); 
+            float sculptStrength = visualAmp * voices[vi].alpha * 25.0f * acMod;
             
             shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
             shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
             shiftVz += (dYdth * thetaDir.z + dYdphi * phiDir.z) * sculptStrength;
             
-            // Radial breathing: expand/contract based on harmonic value (not just outward)
-            float radialForce = amp * Y_here * 8.0f;
+            // Radial breathing
+            float radialForce = visualAmp * Y_here * 12.0f;
             float3 centerVec = float3(px, py, pz);
             float cLen = length(centerVec);
             if (cLen > 0.0001f) {
-                float3 outDir = centerVec / cLen;
-                shiftVx += outDir.x * radialForce;
-                shiftVy += outDir.y * radialForce;
-                shiftVz += outDir.z * radialForce;
+                float3 cDir = centerVec / cLen;
+                shiftVx += cDir.x * radialForce;
+                shiftVy += cDir.y * radialForce;
+                shiftVz += cDir.z * radialForce;
             }
-            
-            jitterTotal += amp * abs(Y_here);
-        }
 
-        // Apply dynamic relativistic mass
+            Y_total += visualAmp * Y_here;
+            jitterTotal += visualAmp;
+            
+            // Phase 18: Accumulate for Chord Webbing
+            float Y_w = Y_here * visualAmp;
+            sum_Y += Y_w;
+            sum_dYdth += dYdth * visualAmp;
+            sum_dYdphi += dYdphi * visualAmp;
+            sum_Y2 += Y_w * Y_w;
+            sum_YdYdth += Y_w * dYdth * visualAmp;
+            sum_YdYdphi += Y_w * dYdphi * visualAmp;
+        } // end of voice loop
+
+        // Phase 11: String Theory
         dynamicMass += massAdd;
 
-        // ODS-03: Thermal Energy Evolution
-        // Target temp is driven by auditory excitation (jitterTotal)
-        float targetTemp = clamp(jitterTotal * 0.5f, 0.0f, 1.0f);
-        currentTemp = mix(currentTemp, targetTemp, 0.05f); // Thermal inertia
-    }
+        // ── Phase 18: Chord Webbing (Inter-Harmonic Connectivity) ────────
+        if (numVoices > 1) {
+            float cross_dYdth = sum_Y * sum_dYdth - sum_YdYdth;
+            float cross_dYdphi = sum_Y * sum_dYdphi - sum_YdYdphi;
+            
+            float3 thetaDir = float3(-sin(atan2(py, px)), cos(atan2(py, px)), 0.0f);
+            float r_center = sqrt(px*px + py*py + pz*pz);
+            float phi_global = acos(clamp(pz / max(r_center, 0.0001f), -1.0f, 1.0f));
+            float3 phiDir = float3(cos(atan2(py, px))*cos(phi_global), sin(atan2(py, px))*cos(phi_global), -sin(phi_global));
+            
+            float webStrength = 60.0f; 
+            shiftVx += (cross_dYdth * thetaDir.x + cross_dYdphi * phiDir.x) * webStrength;
+            shiftVy += (cross_dYdth * thetaDir.y + cross_dYdphi * phiDir.y) * webStrength;
+            shiftVz += (cross_dYdth * thetaDir.z + cross_dYdphi * phiDir.z) * webStrength;
+        }
 
-    // ODS-03: Dynamic Brownian Jitter
-    if ((u.debugFlags & (1 << 4)) && currentTemp > 0.001f) {
-        float n_strength = currentTemp * u.jitterFactor * 5.0f * dt;
-        shiftVx += noise(id, u.time) * n_strength;
-        shiftVy += noise(id + 1, u.time) * n_strength;
-        shiftVz += noise(id + 2, u.time) * n_strength;
+        // ODS-03: Thermal Energy Evolution
+        float targetTemp = clamp(pow(jitterTotal, 0.6f) * 0.8f, 0.0f, 1.5f);
+        currentTemp = mix(currentTemp, targetTemp, 0.02f); 
     }
 
     // ── Noether Symmetry Breaking ─────────────────────────────────────
@@ -515,9 +524,10 @@ kernel void compute_physics(
 
         float orig_px = px;
         float orig_py = py;
-        // shiftX/Y/Z and shiftVx/Vy/Vz are now declared at kernel scope
-
         float selfCharge = p.spinW.w;
+        
+        uint closest_id = p.entanglement.x;
+        float min_dist2 = colRad2 * colRad2; // track closest neighbor
 
         for (int z = startCellZ; z <= endCellZ; z++) {
             for (int y = startCellY; y <= endCellY; y++) {
@@ -554,10 +564,15 @@ kernel void compute_physics(
                         // float r2_clamped = max(dist2, 1e-7f); // This line is now part of the new block
                         float q1q2 = selfCharge * np.spinW.w;
                         // float eForce = (u.eFieldStiffness * q1q2) / r2_clamped; // This line is now part of the new block
-                    
                         float3 r_vec = float3(ddx, ddy, ddz);
                         float r2 = dist2; // Use dist2 directly
                         Particle p2 = np; // Alias for clarity in new code
+                        uint p2_orig_id = p2.entanglement.y;
+
+                        if (r2 > 1e-12f && r2 < min_dist2 && p2_orig_id != id) {
+                            min_dist2 = r2;
+                            closest_id = p2_orig_id;
+                        }
 
                         if (r2 > 0.00001f) {
                             float r2_clamped = max(r2, 0.0001f);
@@ -618,6 +633,9 @@ kernel void compute_physics(
                 }
             }
         }
+
+        // Update entanglement to point to closest neighbor
+        p.entanglement.x = closest_id;
 
         // Position correction applied directly
         px += shiftX;

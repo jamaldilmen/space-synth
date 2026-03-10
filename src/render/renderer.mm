@@ -853,7 +853,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       float cameraPos[3];  // 12 bytes
       float time;          // 4 bytes
       float envelopePhase; // 4 bytes
-    }; // 28 bytes total
+      float rotationX;     // 4 bytes
+    }; // 32 bytes total
 
     PhysicsUniforms *phys = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
     BlackHoleUniforms bhUniforms;
@@ -869,6 +870,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
 
     bhUniforms.time = phys->time;
     bhUniforms.envelopePhase = config.envelopePhase;
+    bhUniforms.rotationX = config.blackHoleRotationX;
 
     [enc setRenderPipelineState:blackHolePipeline];
     [enc setFragmentBytes:&bhUniforms
@@ -889,6 +891,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc setDepthStencilState:depthState];
   [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
   [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+  [enc setVertexBuffer:particleBuffer
+                offset:0
+               atIndex:2]; // Random-access for Webbing
   [enc drawPrimitives:MTLPrimitiveTypePoint
           vertexStart:0
           vertexCount:particleCount];

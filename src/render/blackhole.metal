@@ -12,6 +12,7 @@ struct BlackHoleUniforms {
     packed_float3 cameraPos;
     float time;
     float envelopePhase;
+    float rotationX;
 };
 
 // --- Spatial Hash Data Structures ---
@@ -316,7 +317,17 @@ fragment float4 fragment_black_hole(
         state = step_rk4(state, STEP_SIZE);
         float3 cartPos = bl_to_cartesian(state.r, state.th, state.ph);
         
-        float4 partData = sample_spatial_grid_velocity(cartPos, gridU, cellStarts, sortedParticles);
+        // Apply inverse rotation so the spatial grid appears rotated
+        float c = cos(-uniforms.rotationX);
+        float s = sin(-uniforms.rotationX);
+        float3x3 rotX = float3x3(
+            1.0, 0.0, 0.0,
+            0.0, c,   -s,
+            0.0, s,    c
+        );
+        
+        float3 gridPos = rotX * cartPos;
+        float4 partData = sample_spatial_grid_velocity(gridPos, gridU, cellStarts, sortedParticles);
         
         if (partData.a > 0.001) {
             float3 vel = partData.xyz;
@@ -361,11 +372,11 @@ fragment float4 fragment_black_hole(
     // it picks up immense brightness from trapped light.
     if (accumulatedColor.a < 0.99) {
         float photon_sphere = r_horizon * 1.5;
-        if (min_r < photon_sphere * 1.2) {
+        if (min_r < photon_sphere * 1.25) { // Wider acceptance for the arc
             // How close did it get to the exact photon orbit?
-            float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.2);
+            float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.25);
             if (proximity > 0.0) {
-                float intensity = pow(proximity, 4.0) * 1.5; 
+                float intensity = pow(proximity, 3.0) * 2.0; // Boosted intensity for Gargantua effect
                 float3 glowColor = float3(1.0, 0.8, 0.5) * intensity; // White-hot plasma glow
                 
                 float alpha = intensity * (1.0 - accumulatedColor.a);

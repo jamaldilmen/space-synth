@@ -79,7 +79,7 @@ fragment float4 postfx_fragment(
             // Extract only the brightest HDR pixels for the flare
             float4 sampleColor = currentFrame.sample(s, uv + offset);
             float luma = dot(sampleColor.rgb, float3(0.299, 0.587, 0.114));
-            float threshold = 1.2; // HDR threshold
+            float threshold = 1.8; // Higher HDR threshold so disk core doesn't blowout
             float extraction = max(0.0, luma - threshold);
             
             bloom += sampleColor * extraction * weight;
@@ -96,17 +96,17 @@ fragment float4 postfx_fragment(
             
             float4 sampleColor = currentFrame.sample(s, uv + offset);
             float luma = dot(sampleColor.rgb, float3(0.299, 0.587, 0.114));
-            float threshold = 1.0; 
+            float threshold = 1.5; 
             float extraction = max(0.0, luma - threshold);
             
-            bloom += sampleColor * extraction * weight * 0.5; // less intense vertically
+            bloom += sampleColor * extraction * weight * 0.3; // Less intense vertically
             v_weight_sum += weight * 0.5;
         }
 
         bloom /= (h_weight_sum + v_weight_sum + 0.001);
         
-        // The blueshifted disk will bloom powerfully over the event horizon
-        color.rgb += bloom.rgb * u.bloomIntensity * 3.0; // Boosted IMAX glare multiplier
+        // Lowered bloom multiplier so the disk remains sharp
+        color.rgb += bloom.rgb * u.bloomIntensity * 1.2; // Reduced from 3.0
     }
 
     // ── ACES Tonemapping (HDR → SDR) ────────────────────────────────────

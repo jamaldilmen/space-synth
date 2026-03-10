@@ -33,6 +33,7 @@ struct VertexOut {
     float luminance;   // HDR emission intensity
     float originDist;  // Distance from universe origin (0,0,0) for event horizon
     float2 velDir2D;   // Phase 11: Screen-space velocity direction for string elongation
+    float2 strDir2D;   // Partner string connection vector
 };
 
 // HSV to RGB conversion
@@ -53,13 +54,14 @@ static float3 hsv2rgb(float h, float s, float v) {
 
 vertex VertexOut particle_vertex(
     uint vid [[vertex_id]],
-    device const Particle* particles [[buffer(0)]],
-    constant CameraUniforms& cam [[buffer(1)]])
+    device const Particle* particlesIn [[buffer(0)]],
+    constant CameraUniforms& cam [[buffer(1)]],
+    device const Particle* particlesRef [[buffer(2)]])
 {
     VertexOut out;
-    device const Particle& p = particles[vid];
+    Particle in = particlesIn[vid];
     float R = cam.plateRadius;
-    float mass = p.posW.w;
+    float mass = in.posW.w;
 
     // Wall particles (mass=0) are invisible — they're structural, not visual
     if (mass < 0.001f) {
@@ -70,21 +72,41 @@ vertex VertexOut particle_vertex(
         out.originDist = 0.0f;
         out.dist = 1.0f;
         out.velDir2D = float2(0);
+        out.strDir2D = float2(0);
         return out;
     }
 
     // Map normalized plate coords to world: scale all axes by R for isotropic 3D
-    float3 worldPos = p.posW.xyz * R;
+    float3 worldPos = in.posW.xyz * R;
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
     
     // Phase 11: Project velocity into screen-space for string elongation
-    float3 velWorld = p.velW.xyz * R;
+    float3 velWorld = in.velW.xyz * R;
     float4 endClip = cam.viewProjection * float4(worldPos + velWorld * 0.5f, 1.0);
     float2 v1_screen = out.position.xy / out.position.w;
     float2 v2_screen = endClip.xy / endClip.w;
     
     out.velDir2D = (v2_screen - v1_screen) * 5.0f; // Pass raw screen-space velocity for dynamic elongation
+
+    // ── Phase 18: Chord Connections (Entanglement Webbing) ──
+    out.strDir2D = float2(0.0f);
+    uint partnerID = in.entanglement.x;
+    if (partnerID < 1000000 && partnerID != vid) { 
+        float4 partnerPosW = float4(particlesRef[partnerID].posW.xyz, 1.0f);
+        float4 partnerPosC = cam.viewProjection * partnerPosW; // Use cam.viewProjection
+        
+        float2 myNDC = out.position.xy / max(0.0001f, out.position.w);
+        float2 partnerNDC = partnerPosC.xy / max(0.0001f, partnerPosC.w);
+        
+        float2 dirNDC = partnerNDC - myNDC;
+        float screenDist = length(dirNDC);
+        
+        // Only draw strings between reasonably close particles
+        if (screenDist < 0.15f && screenDist > 0.002f) {
+             out.strDir2D = dirNDC * 20.0f; // Stretch to connect
+        }
+    }
 
     // Dynamic Point Size Scaling
     float isOrtho = cam.padding[0];
@@ -93,7 +115,7 @@ vertex VertexOut particle_vertex(
     
     // VJ Sustain: Particle size grows with thermal energy (audio activity)
     // Hot particles at harmonic nodes become slightly larger during sustain
-    float temp = p.prevW.w;
+    float temp = in.prevW.w;
     float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 1x → 2.5x
     float rawSize = cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist));
     out.pointSize = clamp(rawSize, 1.0f, 32.0f); // Hard cap at 32px to prevent overdraw
@@ -103,26 +125,26 @@ vertex VertexOut particle_vertex(
 
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
-        float phase = p.velW.w;
+        float phase = in.velW.w;
         float hue = (phase + M_PI_F) / (2.0f * M_PI_F);
-        float speed = length(p.velW.xyz);
+        float speed = length(in.velW.xyz);
         float saturation = 0.85f;
         float value = 0.5f + clamp(speed * 3.0f, 0.0f, 0.5f);
         out.color = hsv2rgb(hue, saturation, value);
     } else {
         // Default: warm sand tones based on wave height (normalized Z)
-        float h = clamp(p.posW.z, -1.0f, 1.0f);
+        float h = clamp(in.posW.z, -1.0f, 1.0f);
         float base = 0.6f + h * 0.35f;
         out.color = float3(base * 1.6f, base * 1.3f, base * 0.9f);
 
         // Speed-based brightness boost
-        float speed = length(p.velW.xyz);
+        float speed = length(in.velW.xyz);
         float boost = clamp(speed * 8.0f, 0.0f, 0.8f);
         out.color += float3(boost * 0.6f, boost * 0.4f, boost * 0.2f);
     }
 
     // ── Phase 16: Gargantua Cosmics & Phase 18 Volumetric Raytracer ──
-    float originR = length(p.posW.xyz);
+    float originR = length(in.posW.xyz);
     out.originDist = originR;
     
     // During the Black Hole Phase, we cull all particles within the core region (r < 1.5).
@@ -139,6 +161,7 @@ vertex VertexOut particle_vertex(
         out.originDist = 0.0f;
         out.dist = 1.0f;
         out.velDir2D = float2(0);
+        out.strDir2D = float2(0);
         return out;
     }
 
@@ -155,7 +178,7 @@ fragment float4 particle_fragment(
     float2 pc = pointCoord - 0.5f;
     
     // Rotate pointCoord into velocity-aligned frame
-    float2 vd = in.velDir2D;
+    float2 vd = in.velDir2D + in.strDir2D; // Combine velocity blur and partner string connection!
     float speedSq = dot(vd, vd);
     float speed = sqrt(speedSq);
     float2 dir = (speed > 1e-4f) ? vd / speed : float2(1, 0);

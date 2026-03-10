@@ -29,6 +29,9 @@ struct RenderConfig {
   // Phase 17: Black Hole Rendering Gate
   float envelopePhase = 0.0f;
   float envelopeProgress = 0.0f;
+
+  // Phase 18: Aesthetics
+  float blackHoleRotationX = 0.0f;
 };
 
 // Debug bitmasks for PhysicsUniforms.debugFlags

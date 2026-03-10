@@ -254,6 +254,8 @@ kernel void scatter_particles(
     
     if (int(writePos) < u.particleCount) {
         // Physical memory copy to ensure contiguous access during collisions!
-        sortedParticles[writePos] = particlesInput[id];
+        Particle p = particlesInput[id];
+        p.entanglement.y = id; // Store original ID for entanglement tracking
+        sortedParticles[writePos] = p;
     }
 }

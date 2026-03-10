@@ -1,4 +1,5 @@
 #include "audio/audio_engine.h"
+#include "audio/fft.h"
 #include "audio/synth.h"
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudio/CoreAudio.h>
@@ -51,6 +52,8 @@ struct AudioEngine::Impl {
   AudioComponentInstance audioUnit = nullptr;
   Synth *synth = nullptr;
   float sampleRate = 48000.0f;
+
+  std::unique_ptr<FFTAnalyzer> fft;
 };
 
 static OSStatus audioOutputCallback(void *inRefCon,
@@ -60,35 +63,84 @@ static OSStatus audioOutputCallback(void *inRefCon,
                                     AudioBufferList *ioData) {
   static int callbackCount = 0;
   if (++callbackCount % 100 == 1) {
-    fprintf(stderr, "[AUDIO] Callback pulse (%d) | frames=%u\n", callbackCount,
-            (unsigned int)inNumberFrames);
+    fprintf(stderr, "[AUDIO] Output Callback pulse (%d) | frames=%u\n",
+            callbackCount, (unsigned int)inNumberFrames);
   }
 
   auto *impl = static_cast<AudioEngine::Impl *>(inRefCon);
-  if (!impl->synth)
-    return noErr;
-
   float *outL = static_cast<float *>(ioData->mBuffers[0].mData);
   float *outR = (ioData->mNumberBuffers > 1)
                     ? static_cast<float *>(ioData->mBuffers[1].mData)
                     : nullptr;
 
-  const float sampleRate = impl->sampleRate;
-
-  if (outR) {
-    impl->synth->processBlock(sampleRate, outL, outR, inNumberFrames);
-  } else {
-    for (UInt32 i = 0; i < inNumberFrames; i++) {
-      float sL = 0.0f, sR = 0.0f;
-      impl->synth->tick(sampleRate, sL, sR);
-      outL[i] = sL;
+  if (impl->synth) {
+    const float sampleRate = impl->sampleRate;
+    if (outR) {
+      impl->synth->processBlock(sampleRate, outL, outR, inNumberFrames);
+    } else {
+      for (UInt32 i = 0; i < inNumberFrames; i++) {
+        float sL = 0.0f, sR = 0.0f;
+        impl->synth->tick(sampleRate, sL, sR);
+        outL[i] = sL;
+      }
     }
+  } else {
+    // Silence if no synth attached
+    memset(outL, 0, inNumberFrames * sizeof(float));
+    if (outR)
+      memset(outR, 0, inNumberFrames * sizeof(float));
   }
 
   return noErr;
 }
 
-AudioEngine::AudioEngine() : impl_(new Impl()) {}
+static OSStatus audioInputCallback(void *inRefCon,
+                                   AudioUnitRenderActionFlags *ioActionFlags,
+                                   const AudioTimeStamp *inTimeStamp,
+                                   UInt32 inBusNumber, UInt32 inNumberFrames,
+                                   AudioBufferList *ioData) {
+  auto *engine = static_cast<AudioEngine *>(inRefCon);
+  auto *impl = engine->impl_;
+
+  AudioBufferList bufferList;
+  bufferList.mNumberBuffers = 1;
+  bufferList.mBuffers[0].mDataByteSize = inNumberFrames * sizeof(float);
+  bufferList.mBuffers[0].mNumberChannels = 1;
+  bufferList.mBuffers[0].mData =
+      nullptr; // Let CoreAudio allocate it or we must provide our own.
+
+  // It's safer to provide our own buffer for the render call to fill
+  float localBuffer[4096];
+  if (inNumberFrames > 4096)
+    return noErr; // Safe guard
+  bufferList.mBuffers[0].mData = localBuffer;
+
+  OSStatus err = AudioUnitRender(impl->audioUnit, ioActionFlags, inTimeStamp,
+                                 inBusNumber, inNumberFrames, &bufferList);
+  if (err == noErr) {
+    float *inSamples = static_cast<float *>(bufferList.mBuffers[0].mData);
+    // Write mono audio to ring buffer
+    engine->ringBuffer_.write(inSamples, inNumberFrames);
+
+    // Calculate RMS amplitude
+    float sumSq = 0.0f;
+    for (UInt32 i = 0; i < inNumberFrames; i++) {
+      sumSq += inSamples[i] * inSamples[i];
+    }
+    float rms = std::sqrt(sumSq / inNumberFrames);
+    engine->amplitude_.store(rms, std::memory_order_relaxed);
+  }
+  return err;
+}
+
+AudioEngine::AudioEngine() : impl_(new Impl()) {
+  // Initialize VJ bands: 16 logarithmic bands
+  vjBands_.resize(16);
+  for (int i = 0; i < 16; i++) {
+    vjBands_[i].frequency = 40.0f * std::pow(2.0f, i * 0.5f); // 40Hz to ~7.5kHz
+    vjBands_[i].amplitude = 0.0f;
+  }
+}
 
 AudioEngine::~AudioEngine() {
   stop();
@@ -105,36 +157,57 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   sampleRate_ = sampleRate;
   impl_->sampleRate = static_cast<float>(sampleRate);
 
-  AudioComponentDescription desc = {kAudioUnitType_Output,
-                                    kAudioUnitSubType_DefaultOutput,
+  impl_->fft = std::make_unique<FFTAnalyzer>(2048, sampleRate);
+
+  // Use VoiceProcessingIO or HALOutput to get both input and output
+#if TARGET_OS_IPHONE
+  OSType subType = kAudioUnitSubType_VoiceProcessingIO;
+#else
+  OSType subType = kAudioUnitSubType_HALOutput;
+#endif
+
+  AudioComponentDescription desc = {kAudioUnitType_Output, subType,
                                     kAudioUnitManufacturer_Apple, 0, 0};
 
   AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
   if (!comp) {
-    fprintf(stderr, "[AUDIO ERROR] Could not find default output component\n");
+    fprintf(stderr, "[AUDIO ERROR] Could not find IO component\n");
     return false;
   }
 
   OSStatus err = AudioComponentInstanceNew(comp, &impl_->audioUnit);
   if (err != noErr) {
-    fprintf(stderr,
-            "[AUDIO ERROR] Could not create audio unit instance (err=%d)\n",
+    fprintf(stderr, "[AUDIO ERROR] Could not create IO unit (err=%d)\n",
             (int)err);
     return false;
   }
 
-  AURenderCallbackStruct callback;
-  callback.inputProc = audioOutputCallback;
-  callback.inputProcRefCon = impl_;
+  // Enable Input on Bus 1 (Input bus)
+  UInt32 enableIO = 1;
+  err = AudioUnitSetProperty(
+      impl_->audioUnit, kAudioOutputUnitProperty_EnableIO,
+      kAudioUnitScope_Input, 1, &enableIO, sizeof(enableIO));
 
+  // Enable Output on Bus 0 (Output bus)
+  err = AudioUnitSetProperty(
+      impl_->audioUnit, kAudioOutputUnitProperty_EnableIO,
+      kAudioUnitScope_Output, 0, &enableIO, sizeof(enableIO));
+
+  // Set Output Callback
+  AURenderCallbackStruct outCallback;
+  outCallback.inputProc = audioOutputCallback;
+  outCallback.inputProcRefCon = impl_;
   err = AudioUnitSetProperty(
       impl_->audioUnit, kAudioUnitProperty_SetRenderCallback,
-      kAudioUnitScope_Input, 0, &callback, sizeof(callback));
-  if (err != noErr) {
-    fprintf(stderr, "[AUDIO ERROR] Could not set render callback (err=%d)\n",
-            (int)err);
-    return false;
-  }
+      kAudioUnitScope_Input, 0, &outCallback, sizeof(outCallback));
+
+  // Set Input Callback
+  AURenderCallbackStruct inCallback;
+  inCallback.inputProc = audioInputCallback;
+  inCallback.inputProcRefCon = this; // Pass AudioEngine instance
+  err = AudioUnitSetProperty(
+      impl_->audioUnit, kAudioOutputUnitProperty_SetInputCallback,
+      kAudioUnitScope_Global, 1, &inCallback, sizeof(inCallback));
 
   AudioStreamBasicDescription stream;
   stream.mSampleRate = sampleRate;
@@ -144,32 +217,34 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   stream.mBytesPerPacket = 4;
   stream.mFramesPerPacket = 1;
   stream.mBytesPerFrame = 4;
-  stream.mChannelsPerFrame = 2;
+  stream.mChannelsPerFrame = 2; // Stereo out
   stream.mBitsPerChannel = 32;
 
+  // Set format for Output (Bus 0)
   err = AudioUnitSetProperty(impl_->audioUnit, kAudioUnitProperty_StreamFormat,
                              kAudioUnitScope_Input, 0, &stream, sizeof(stream));
-  if (err != noErr) {
-    fprintf(stderr, "[AUDIO ERROR] Could not set stream format (err=%d)\n",
-            (int)err);
-    return false;
-  }
+
+  // Set format for Input (Bus 1) - Mono In
+  stream.mChannelsPerFrame = 1;
+  err =
+      AudioUnitSetProperty(impl_->audioUnit, kAudioUnitProperty_StreamFormat,
+                           kAudioUnitScope_Output, 1, &stream, sizeof(stream));
 
   err = AudioUnitInitialize(impl_->audioUnit);
   if (err != noErr) {
-    fprintf(stderr, "[AUDIO ERROR] Could not initialize audio unit (err=%d)\n",
+    fprintf(stderr, "[AUDIO ERROR] Could not initialize IO unit (err=%d)\n",
             (int)err);
     return false;
   }
 
   OSStatus startErr = AudioOutputUnitStart(impl_->audioUnit);
   if (startErr != noErr) {
-    fprintf(stderr, "[AUDIO ERROR] Could not start audio output (err=%d)\n",
+    fprintf(stderr, "[AUDIO ERROR] Could not start IO output (err=%d)\n",
             (int)startErr);
     return false;
   }
 
-  printf("[AUDIO] Engine started successfully at %d Hz\n", sampleRate);
+  printf("[AUDIO] IO Engine started successfully at %d Hz\n", sampleRate);
   running_ = true;
   return true;
 }
@@ -186,6 +261,13 @@ void AudioEngine::stop() {
   running_ = false;
 }
 
-int AudioEngine::readSamples(float *buffer, int maxFrames) { return 0; }
+int AudioEngine::readSamples(float *buffer, int maxFrames) {
+  return ringBuffer_.read(buffer, maxFrames);
+}
+
+std::vector<AudioEngine::VJBand> AudioEngine::getVJBands() const {
+  std::lock_guard<std::mutex> lock(vjMutex_);
+  return vjBands_;
+}
 
 } // namespace space

@@ -188,6 +188,13 @@ int main() {
   static float uiTrailDecay = 0.0f;
   static float uiChromatic = 0.0f;
 
+  // ── Phase 18: Black Hole Aesthetics ──────────────────────────────
+  static float uiBlackHoleRotationX = 0.0f;
+  static bool uiAutoRotateBlackHole = true;
+
+  // ── Phase 18: VJ Mode ────────────────────────────────────────────
+  static bool uiVJMode = false;
+
   // ── Sequencer State (Phase 12) ───────────────────────────────────
   struct SeqNote {
     int midi;
@@ -371,6 +378,9 @@ int main() {
     static RenderConfig config;
     config.width = window.width();
     config.height = window.height();
+    config.blackHoleRotationX =
+        uiBlackHoleRotationX +
+        (uiAutoRotateBlackHole ? (float)ImGui::GetTime() * 0.2f : 0.0f);
 
     // ── ImGui HUD ──────────────────────────────────────────────────
     static Preset currentPreset;
@@ -632,6 +642,30 @@ int main() {
         ImGui::Unindent();
       }
 
+      if (ImGui::CollapsingHeader("VJ MODE & AUDIO INPUT",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::Checkbox("Enable VJ Mode (Mic/System In)", &uiVJMode);
+        ImGui::SetItemTooltip(
+            "Visualize incoming audio using 16-band FFT harmonic sculpting");
+
+        if (uiVJMode) {
+          // Visualize the bands as a small EQ graphic
+          auto bands = audio.getVJBands();
+          float maxAmp = 0.001f;
+          for (const auto &b : bands)
+            maxAmp = std::max(maxAmp, b.amplitude);
+
+          ImGui::Text("Live Spectrum:");
+          for (size_t i = 0; i < bands.size(); i++) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%4.0fHz", bands[i].frequency);
+            ImGui::ProgressBar(bands[i].amplitude, ImVec2(-1.0f, 10.0f), buf);
+          }
+        }
+        ImGui::Unindent();
+      }
+
       if (ImGui::CollapsingHeader("AUDIO SYNTH",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
@@ -705,6 +739,15 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiWaveDepth = 20.0f;
         ImGui::SetItemTooltip("Vibrational displacement intensity");
+
+        ImGui::Spacing();
+        ImGui::SeparatorText("BLACK HOLE");
+        ImGui::SliderAngle("Rotation X", &uiBlackHoleRotationX, -180.0f,
+                           180.0f);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiBlackHoleRotationX = 0.0f;
+        ImGui::Checkbox("Auto-Rotate", &uiAutoRotateBlackHole);
+        ImGui::SetItemTooltip("Continuous rotation over time");
 
         if (ImGui::Button("Reset Camera")) {
           camera.reset();

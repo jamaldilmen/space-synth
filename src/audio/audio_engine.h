@@ -58,16 +58,35 @@ public:
     return amplitude_.load(std::memory_order_relaxed);
   }
 
+  // Expose internals for CoreAudio callbacks
+  AudioRingBuffer &ringBuffer() { return ringBuffer_; }
+  std::atomic<float> &amplitude() { return amplitude_; }
+
+  // ── VJ Audio Analysis (Phase 18) ─────────────────────────
+  struct VJBand {
+    float frequency; // Center frequency of the band
+    float amplitude; // Current envelope-followed amplitude
+  };
+
+  // Get the current VJ frequency analysis bands (lock-free read)
+  std::vector<VJBand> getVJBands() const;
+
+  // Called by render thread to process available ring buffer audio into VJ
+  // bands
+  void processAudioAnalysis(float dt);
+
 public:
   struct Impl;
-
-private:
   Impl *impl_ = nullptr;
 
   AudioRingBuffer ringBuffer_;
   std::atomic<float> amplitude_{0.0f};
   std::atomic<bool> running_{false};
   int sampleRate_ = 48000;
+
+  // VJ State
+  std::vector<VJBand> vjBands_;
+  mutable std::mutex vjMutex_;
 };
 
 } // namespace space

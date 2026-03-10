@@ -132,6 +132,42 @@ static OSStatus audioInputCallback(void *inRefCon,
     }
     float rms = std::sqrt(sumSq / inNumberFrames);
     engine->amplitude_.store(rms, std::memory_order_relaxed);
+
+    // Phase 18: Feed incoming live audio to the FFT Analyzer
+    if (impl->fft) {
+      if (impl->fft->process(inSamples, inNumberFrames)) {
+        // FFT frame is ready. Extract logarithmic bins.
+        const auto &magnitudes = impl->fft->magnitudes();
+
+        std::lock_guard<std::mutex> lock(engine->vjMutex_);
+        for (int i = 0; i < 16; i++) {
+          float centerFreq = engine->vjBands_[i].frequency;
+          int binStart = (int)(centerFreq * 0.8f * 2048 / engine->sampleRate_);
+          int binEnd = (int)(centerFreq * 1.25f * 2048 / engine->sampleRate_);
+          binStart = std::max(1, std::min(1023, binStart));
+          binEnd = std::max(binStart + 1, std::min(1024, binEnd));
+
+          float bandEnergy = 0.0f;
+          for (int b = binStart; b < binEnd; b++) {
+            bandEnergy += magnitudes[b] * magnitudes[b];
+          }
+          bandEnergy = std::sqrt(bandEnergy / (binEnd - binStart));
+
+          // Envelope following (fast attack, tuned release per frequency group)
+          float currentAmp = engine->vjBands_[i].amplitude;
+          if (bandEnergy > currentAmp) {
+            engine->vjBands_[i].amplitude =
+                std::min(1.0f, currentAmp + (bandEnergy - currentAmp) * 0.8f);
+          } else {
+            float release =
+                (i < 4) ? 0.98f
+                        : 0.95f; // Bass decays slightly slower for visual punch
+            engine->vjBands_[i].amplitude =
+                std::max(0.0f, currentAmp * release);
+          }
+        }
+      }
+    }
   }
   return err;
 }

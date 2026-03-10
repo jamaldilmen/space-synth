@@ -527,7 +527,7 @@ int main() {
           uiParticleSize = 4.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
 
-        ImGui::SliderInt("Amount", &uiParticleCount, 10000, 1000000);
+        ImGui::SliderInt("Amount", &uiParticleCount, 10000, 5000000);
         if (ImGui::Button("Reset to Default")) {
           uiParticleCount = 1000000;
         }

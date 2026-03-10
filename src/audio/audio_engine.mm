@@ -241,6 +241,24 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
       impl_->audioUnit, kAudioOutputUnitProperty_EnableIO,
       kAudioUnitScope_Output, 0, &enableIO, sizeof(enableIO));
 
+#if !TARGET_OS_IPHONE
+  // On macOS with HALOutput, we must explicitly bind the input scope to the
+  // default input device
+  AudioDeviceID inputDeviceID = kAudioObjectUnknown;
+  UInt32 propertySize = sizeof(inputDeviceID);
+  AudioObjectPropertyAddress propertyAddress = {
+      kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain};
+  OSStatus propErr =
+      AudioObjectGetPropertyData(kAudioObjectSystemObject, &propertyAddress, 0,
+                                 nullptr, &propertySize, &inputDeviceID);
+  if (propErr == noErr && inputDeviceID != kAudioObjectUnknown) {
+    AudioUnitSetProperty(
+        impl_->audioUnit, kAudioOutputUnitProperty_CurrentDevice,
+        kAudioUnitScope_Global, 0, &inputDeviceID, sizeof(inputDeviceID));
+  }
+#endif
+
   // Set Output Callback
   AURenderCallbackStruct outCallback;
   outCallback.inputProc = audioOutputCallback;

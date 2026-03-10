@@ -488,6 +488,23 @@ kernel void compute_physics(
             shiftVz += (cross_dYdth * thetaDir.z + cross_dYdphi * phiDir.z) * webStrength;
         }
 
+        // ── Phase 19: Elastic Shell Restoring Force (Staccato Bounce-Back) ──
+        // Fixes the issue where short key presses shoot particles outward and leave them stranded.
+        // This spring force naturally pulls the fabric of space back to a resting sphere (radius 0.75).
+        float restingRadius = 0.75f;
+        float currentR = sqrt(px*px + py*py + pz*pz);
+        if (currentR > 0.001f) {
+            float displacement = currentR - restingRadius;
+            float3 dir = float3(px, py, pz) / currentR;
+            
+            // Spring stiffness controls the "bounce back" speed. High stiffness = fast snap backwards.
+            float springStiffness = 50.0f; 
+            
+            shiftVx -= dir.x * displacement * springStiffness * dt;
+            shiftVy -= dir.y * displacement * springStiffness * dt;
+            shiftVz -= dir.z * displacement * springStiffness * dt;
+        }
+
         // ODS-03: Thermal Energy Evolution
         float targetTemp = clamp(pow(jitterTotal, 0.6f) * 0.8f, 0.0f, 1.5f);
         currentTemp = mix(currentTemp, targetTemp, 0.02f); 

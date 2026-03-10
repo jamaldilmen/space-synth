@@ -52,7 +52,14 @@ kernel void count_cells(
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
-    atomic_fetch_add_explicit(&cellCounts[cellIndices[id]], 1u, memory_order_relaxed);
+    
+    uint cellID = cellIndices[id];
+    // Cap atomic increments to 32 (MAX_PER_CELL from particles.metal)
+    // This prevents massive GPU stalling/freezing when millions of particles clump at the origin.
+    uint current = atomic_load_explicit(&cellCounts[cellID], memory_order_relaxed);
+    if (current < 32) {
+        atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
+    }
 }
 
 // ── Phase 3: Multi-pass Blelloch Prefix Sum ──────────────────────────────────
@@ -249,13 +256,22 @@ kernel void scatter_particles(
     if (int(id) >= u.particleCount) return;
 
     uint cellID = cellIndices[id];
-    uint offset = atomic_fetch_add_explicit(&cellOffsets[cellID], 1u, memory_order_relaxed);
-    uint writePos = cellStarts[cellID] + offset;
     
-    if (int(writePos) < u.particleCount) {
-        // Physical memory copy to ensure contiguous access during collisions!
-        Particle p = particlesInput[id];
-        p.entanglement.y = id; // Store original ID for entanglement tracking
-        sortedParticles[writePos] = p;
+    // Only scatter if we haven't hit the 32 particle limit for this cell
+    uint currentOffset = atomic_load_explicit(&cellOffsets[cellID], memory_order_relaxed);
+    if (currentOffset < 32) {
+        uint offset = atomic_fetch_add_explicit(&cellOffsets[cellID], 1u, memory_order_relaxed);
+        
+        // Double check against race conditions
+        if (offset < 32) {
+            uint writePos = cellStarts[cellID] + offset;
+            
+            if (int(writePos) < u.particleCount) {
+                // Physical memory copy to ensure contiguous access during collisions!
+                Particle p = particlesInput[id];
+                p.entanglement.y = id; // Store original ID for entanglement tracking
+                sortedParticles[writePos] = p;
+            }
+        }
     }
 }

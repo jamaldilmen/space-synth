@@ -54,6 +54,7 @@ struct AudioEngine::Impl {
   float sampleRate = 48000.0f;
 
   std::unique_ptr<FFTAnalyzer> fft;
+  std::vector<float> inputScratchBuffer;
 };
 
 static OSStatus audioOutputCallback(void *inRefCon,
@@ -109,11 +110,13 @@ static OSStatus audioInputCallback(void *inRefCon,
   bufferList.mBuffers[0].mData =
       nullptr; // Let CoreAudio allocate it or we must provide our own.
 
-  // It's safer to provide our own buffer for the render call to fill
-  float localBuffer[4096];
-  if (inNumberFrames > 4096)
-    return noErr; // Safe guard
-  bufferList.mBuffers[0].mData = localBuffer;
+  // Ensure scratch buffer is large enough (resize is safe-ish here because it
+  // shouldn't hit after first frame)
+  if (impl->inputScratchBuffer.size() < inNumberFrames) {
+    impl->inputScratchBuffer.resize(inNumberFrames);
+  }
+
+  bufferList.mBuffers[0].mData = impl->inputScratchBuffer.data();
 
   OSStatus err = AudioUnitRender(impl->audioUnit, ioActionFlags, inTimeStamp,
                                  inBusNumber, inNumberFrames, &bufferList);
@@ -158,12 +161,15 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   impl_->sampleRate = static_cast<float>(sampleRate);
 
   impl_->fft = std::make_unique<FFTAnalyzer>(2048, sampleRate);
+  impl_->inputScratchBuffer.resize(8192, 0.0f);
 
   // Use VoiceProcessingIO or HALOutput to get both input and output
 #if TARGET_OS_IPHONE
   OSType subType = kAudioUnitSubType_VoiceProcessingIO;
 #else
-  OSType subType = kAudioUnitSubType_HALOutput;
+  OSType subType =
+      kAudioUnitSubType_VoiceProcessingIO; // Force VoiceProcessingIO for
+                                           // acoustic echo cancellation
 #endif
 
   AudioComponentDescription desc = {kAudioUnitType_Output, subType,

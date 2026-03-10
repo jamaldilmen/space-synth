@@ -107,7 +107,8 @@ public:
     int sampleOffset;
   };
   std::vector<MidiCommand> commandQueue_;
-  std::vector<MidiCommand> swapBuffer_; // Pre-allocated swap buffer (avoids RT heap alloc)
+  std::vector<MidiCommand>
+      swapBuffer_; // Pre-allocated swap buffer (avoids RT heap alloc)
   mutable std::mutex queueMutex_;
 
   void processCommands();
@@ -136,6 +137,14 @@ public:
   static float midiToFreq(int midi) {
     return 440.0f * std::pow(2.0f, (midi - 69) / 12.0f);
   }
+
+  void setMasterVolume(float v) {
+    masterVolume_ = std::max(0.0f, std::min(1.0f, v));
+  }
+  float masterVolume() const { return masterVolume_; }
+
+private:
+  float masterVolume_ = 1.0f;
 };
 
 } // namespace space

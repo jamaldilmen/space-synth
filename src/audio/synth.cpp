@@ -13,7 +13,8 @@ void Voice::init(float sampleRate) {
   filter.setSampleRate(sampleRate);
   filter.reset();
   static std::atomic<uint32_t> globalSeed(42);
-  rngState = (globalSeed.fetch_add(1, std::memory_order_relaxed) * 1103515245u + 12345u);
+  rngState = (globalSeed.fetch_add(1, std::memory_order_relaxed) * 1103515245u +
+              12345u);
 }
 
 static uint32_t xorshift32(uint32_t &state) {
@@ -83,7 +84,7 @@ void Synth::processBlock(float sampleRate, float *outL, float *outR,
   // Flush denormals to zero on ARM (prevents denormal performance penalty)
   uint64_t fpcr;
   __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
-  __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr | (1 << 24))); // FZ bit
+  __asm__ __volatile__("msr fpcr, %0" ::"r"(fpcr | (1 << 24))); // FZ bit
 #endif
 
   {
@@ -121,6 +122,10 @@ void Synth::processBlock(float sampleRate, float *outL, float *outR,
 
     float limited = std::tanh(mixed * 0.45f) * 0.9f;
     chorus_.process(limited, limited, outL[i], outR[i]);
+
+    // Apply Master Volume
+    outL[i] *= masterVolume_;
+    outR[i] *= masterVolume_;
   }
 }
 
@@ -143,7 +148,8 @@ void Synth::processCommands() {
 void Synth::noteOn(int midi, float velocity, int sampleOffset) {
   std::lock_guard<std::mutex> lock(queueMutex_);
   if (commandQueue_.size() < 256) {
-    commandQueue_.push_back({MidiCommand::NoteOn, midi, velocity, sampleOffset});
+    commandQueue_.push_back(
+        {MidiCommand::NoteOn, midi, velocity, sampleOffset});
     // Keep queue sorted by sample offset
     std::sort(commandQueue_.begin(), commandQueue_.end(),
               [](const MidiCommand &a, const MidiCommand &b) {
@@ -181,11 +187,21 @@ void Synth::handleNoteOnInternal(int midi, float velocity) {
     for (const auto &[m, voice] : voices_) {
       float score = -1.0f;
       switch (voice.envelope.phase) {
-      case EnvPhase::Release: score = 3.0f + (1.0f - voice.envelope.amplitude); break;
-      case EnvPhase::Sustain: score = 2.0f + (1.0f - voice.envelope.amplitude); break;
-      case EnvPhase::Decay:   score = 1.0f + (1.0f - voice.envelope.amplitude); break;
-      case EnvPhase::Attack:  score = -1.0f; break; // Never steal Attack
-      default:                score = 4.0f; break;   // Off/silent = best candidate
+      case EnvPhase::Release:
+        score = 3.0f + (1.0f - voice.envelope.amplitude);
+        break;
+      case EnvPhase::Sustain:
+        score = 2.0f + (1.0f - voice.envelope.amplitude);
+        break;
+      case EnvPhase::Decay:
+        score = 1.0f + (1.0f - voice.envelope.amplitude);
+        break;
+      case EnvPhase::Attack:
+        score = -1.0f;
+        break; // Never steal Attack
+      default:
+        score = 4.0f;
+        break; // Off/silent = best candidate
       }
       if (score > bestScore) {
         bestScore = score;

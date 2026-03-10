@@ -406,12 +406,25 @@ int main() {
       presetsLoaded = true;
     }
 
-    // ── Floating Toggle Button ──────────────────────────────────────
-    ImGui::SetNextWindowPos(ImVec2(window.width() - 50, 20));
-    ImGui::Begin("##toggle", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
-                     ImGuiWindowFlags_AlwaysAutoResize);
-    if (ImGui::Button(showHUD ? "X" : "::", ImVec2(30, 30))) {
+    // ── Top Right Control Window ──────────────────────────────────────
+    ImGui::SetNextWindowPos(ImVec2(window.width() - 250, 20));
+    ImGui::SetNextWindowSize(ImVec2(230, 0));
+    ImGui::Begin("##topright", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);
+
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 0.6f));
+    ImGui::Text("MASTER VOLUME");
+    ImGui::PopStyleColor();
+
+    float currentVol = synth.masterVolume();
+    if (ImGui::SliderFloat("##MasterVol", &currentVol, 0.0f, 1.0f, "%.2f")) {
+      synth.setMasterVolume(currentVol);
+    }
+
+    ImGui::Spacing();
+
+    if (ImGui::Button(showHUD ? "HIDE ARCHITECT" : "SHOW ARCHITECT",
+                      ImVec2(215, 30))) {
       showHUD = !showHUD;
     }
     if (ImGui::IsItemHovered())

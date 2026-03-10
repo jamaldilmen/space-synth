@@ -165,7 +165,8 @@ int main() {
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
-  static int uiParticleCount = 1000000;
+  static int uiParticleCount =
+      1000000; // Default remains 1M for startup stability, but max is now 5M
   static float uiJitter = 0.1f;
   static float uiScale = 100.0f; // NEW DEFAULT: 100.0f as requested
   static float uiSupernova = 0.0f;

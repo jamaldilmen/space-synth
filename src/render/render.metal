@@ -92,7 +92,7 @@ vertex VertexOut particle_vertex(
     // ── Phase 18: Chord Connections (Entanglement Webbing) ──
     out.strDir2D = float2(0.0f);
     uint partnerID = in.entanglement.x;
-    if (partnerID < 1000000 && partnerID != vid) { 
+    if (partnerID < 5000000 && partnerID != vid) { 
         float4 partnerPosW = float4(particlesRef[partnerID].posW.xyz, 1.0f);
         float4 partnerPosC = cam.viewProjection * partnerPosW; // Use cam.viewProjection
         

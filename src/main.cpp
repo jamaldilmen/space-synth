@@ -75,7 +75,7 @@ int main() {
   }
 
   // ── Particles ───────────────────────────────────────────────────────
-  const int PARTICLE_COUNT = 1000000;
+  const int PARTICLE_COUNT = 5000000;
   const float MAX_WAVE_DEPTH = 100.0f;
   const float PLATE_RADIUS = 400.0f;
 

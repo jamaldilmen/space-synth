@@ -206,13 +206,8 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   impl_->fft = std::make_unique<FFTAnalyzer>(2048, sampleRate);
   impl_->inputScratchBuffer.resize(8192, 0.0f);
 
-  // Use VoiceProcessingIO on iOS for echo cancellation, but HALOutput on macOS
-  // to avoid system audio ducking/AGC
-#if TARGET_OS_IPHONE
+  // Use VoiceProcessingIO but disable system ducking and AGC
   OSType subType = kAudioUnitSubType_VoiceProcessingIO;
-#else
-  OSType subType = kAudioUnitSubType_HALOutput;
-#endif
 
   AudioComponentDescription desc = {kAudioUnitType_Output, subType,
                                     kAudioUnitManufacturer_Apple, 0, 0};
@@ -241,23 +236,19 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
       impl_->audioUnit, kAudioOutputUnitProperty_EnableIO,
       kAudioUnitScope_Output, 0, &enableIO, sizeof(enableIO));
 
-#if !TARGET_OS_IPHONE
-  // On macOS with HALOutput, we must explicitly bind the input scope to the
-  // default input device
-  AudioDeviceID inputDeviceID = kAudioObjectUnknown;
-  UInt32 propertySize = sizeof(inputDeviceID);
-  AudioObjectPropertyAddress propertyAddress = {
-      kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal,
-      kAudioObjectPropertyElementMain};
-  OSStatus propErr =
-      AudioObjectGetPropertyData(kAudioObjectSystemObject, &propertyAddress, 0,
-                                 nullptr, &propertySize, &inputDeviceID);
-  if (propErr == noErr && inputDeviceID != kAudioObjectUnknown) {
-    AudioUnitSetProperty(
-        impl_->audioUnit, kAudioOutputUnitProperty_CurrentDevice,
-        kAudioUnitScope_Global, 0, &inputDeviceID, sizeof(inputDeviceID));
-  }
-#endif
+  // Disable VoiceProcessing AGC and Ducking globally
+  UInt32 disable = 0;
+  AudioUnitSetProperty(impl_->audioUnit,
+                       2101 /* kAUVoiceIOProperty_VoiceProcessingEnableAGC */,
+                       kAudioUnitScope_Global, 0, &disable, sizeof(disable));
+  AudioUnitSetProperty(impl_->audioUnit,
+                       2102 /* kAUVoiceIOProperty_DuckNonVoiceAudio */,
+                       kAudioUnitScope_Global, 0, &disable, sizeof(disable));
+
+  UInt32 enableBypass = 1;
+  AudioUnitSetProperty(
+      impl_->audioUnit, 2100 /* kAUVoiceIOProperty_BypassVoiceProcessing */,
+      kAudioUnitScope_Global, 0, &enableBypass, sizeof(enableBypass));
 
   // Set Output Callback
   AURenderCallbackStruct outCallback;

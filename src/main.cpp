@@ -664,6 +664,18 @@ int main() {
             "Visualize incoming audio using 16-band FFT harmonic sculpting");
 
         if (uiVJMode) {
+          static float uiInputGain = 2.0f;
+          if (ImGui::SliderFloat("Input Gain", &uiInputGain, 0.1f, 10.0f,
+                                 "%.2f x")) {
+            audio.setVJInputGain(uiInputGain);
+          }
+          if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            uiInputGain = 2.0f;
+            audio.setVJInputGain(uiInputGain);
+          }
+          ImGui::SetItemTooltip(
+              "Boost quiet audio signals before FFT analysis");
+
           // Visualize the bands as a small EQ graphic
           auto bands = audio.getVJBands();
           float maxAmp = 0.001f;

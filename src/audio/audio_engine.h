@@ -75,6 +75,14 @@ public:
   // bands
   void processAudioAnalysis(float dt);
 
+  // VJ Input Gain Control
+  void setVJInputGain(float gain) {
+    vjInputGain_.store(gain, std::memory_order_relaxed);
+  }
+  float vjInputGain() const {
+    return vjInputGain_.load(std::memory_order_relaxed);
+  }
+
 public:
   struct Impl;
   Impl *impl_ = nullptr;
@@ -87,6 +95,7 @@ public:
   // VJ State
   std::vector<VJBand> vjBands_;
   mutable std::mutex vjMutex_;
+  std::atomic<float> vjInputGain_{2.0f}; // Default boost to 2.0x
 };
 
 } // namespace space

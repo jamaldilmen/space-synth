@@ -122,6 +122,13 @@ static OSStatus audioInputCallback(void *inRefCon,
                                  inBusNumber, inNumberFrames, &bufferList);
   if (err == noErr) {
     float *inSamples = static_cast<float *>(bufferList.mBuffers[0].mData);
+    float gain = engine->vjInputGain();
+
+    // Apply input gain
+    for (UInt32 i = 0; i < inNumberFrames; i++) {
+      inSamples[i] *= gain;
+    }
+
     // Write mono audio to ring buffer
     engine->ringBuffer_.write(inSamples, inNumberFrames);
 
@@ -199,13 +206,12 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   impl_->fft = std::make_unique<FFTAnalyzer>(2048, sampleRate);
   impl_->inputScratchBuffer.resize(8192, 0.0f);
 
-  // Use VoiceProcessingIO or HALOutput to get both input and output
+  // Use VoiceProcessingIO on iOS for echo cancellation, but HALOutput on macOS
+  // to avoid system audio ducking/AGC
 #if TARGET_OS_IPHONE
   OSType subType = kAudioUnitSubType_VoiceProcessingIO;
 #else
-  OSType subType =
-      kAudioUnitSubType_VoiceProcessingIO; // Force VoiceProcessingIO for
-                                           // acoustic echo cancellation
+  OSType subType = kAudioUnitSubType_HALOutput;
 #endif
 
   AudioComponentDescription desc = {kAudioUnitType_Output, subType,

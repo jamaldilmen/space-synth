@@ -321,17 +321,10 @@ float4 sample_spatial_grid_velocity(
     // Scale inversely by particleCount so it looks consistent regardless of slider
     float density = clamp(count * (1000000.0f / max(1.0f, float(gridU.particleCount))) * 0.003f, 0.0f, 1.0f);
     
-    // MATHEMATICALLY THIN DISK:
-    // The particles might be scattered in a 3D sphere, but a real accretion disk is extremely thin.
-    // We enforce a hard cutoff near the equatorial plane (z = 0).
-    float diskThickness = 0.05f; 
-    if (abs(cartPos.z) > diskThickness) {
-        return float4(0.0);
-    }
-    
-    // Soft blend at the edges of the disk height
-    float z_mask = 1.0f - (abs(cartPos.z) / diskThickness);
-    density *= z_mask * z_mask;
+    // Restore soft z-mask: Gaussian falloff to avoid hard shadows while shaping the disk
+    float diskThickness = 0.2f;
+    float zMask = exp(-(cartPos.z * cartPos.z) / (diskThickness * diskThickness));
+    density *= zMask;
     
     // Suppress density at the outer edges of the screen to focus on the hole
     float r = length(cartPos.xy);

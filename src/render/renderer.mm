@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstring>
 #include <simd/simd.h>
+#include <mach/mach_time.h>
+#include <mach/mach.h>
 
 namespace space {
 
@@ -97,6 +99,15 @@ struct Renderer::Impl {
   float envIntensity = 0.0f;
 
   float prevViewProj[16];
+
+  // ═══ CIA-MODE WATERMARK STATE (Phase 19) ═══
+  float wmOffsetX = 0.0f;
+  float wmOffsetY = 0.0f;
+  float wmVelX = 0.2f;
+  float wmVelY = 0.15f;
+  float wmShiftTimer = 0.0f;
+  float wmShiftOffset = 0.0f;
+  uint64_t lastRenderTime = 0;
 
   void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
   void renderWithCamera(id<CAMetalDrawable> drawable,
@@ -947,21 +958,55 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
 
   // Render ImGui on top
   {
+    // ── CIA-MODE DYNAMIC WATERMARK ──
+    // This implements a "DVD bounce" + 3s position shift for maximum protection.
     const char *watermark = "(@jamaldimen)";
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
     ImVec2 textSize = ImGui::CalcTextSize(watermark);
-    
-    if (textSize.x > 0 && textSize.y > 0) {
-      float stepX = textSize.x * 2.5f;
-      float stepY = textSize.y * 4.0f;
-      ImU32 wmColor = ImColor(1.0f, 1.0f, 1.0f, 0.40f); // 40% Opacity for verification
 
-      for (float y = 0; y < displaySize.y + stepY; y += stepY) {
+    // Update Animation State
+    uint64_t now = mach_absolute_time();
+    static mach_timebase_info_data_t timebase;
+    if (timebase.denom == 0) mach_timebase_info(&timebase);
+    
+    float dt = 0.016f; // Default to 60fps
+    if (lastRenderTime > 0) {
+      uint64_t elapsed = now - lastRenderTime;
+      dt = (float)((double)elapsed * timebase.numer / timebase.denom / 1.0e9);
+    }
+    lastRenderTime = now;
+    if (dt > 0.1f) dt = 0.1f; // Clamp to avoid leaps
+
+    // Bouncing logic
+    wmOffsetX += wmVelX * dt * 100.0f;
+    wmOffsetY += wmVelY * dt * 100.0f;
+
+    float boundsX = textSize.x * 2.5f;
+    float boundsY = textSize.y * 3.5f;
+
+    if (wmOffsetX < 0 || wmOffsetX > boundsX) { wmVelX *= -1.0f; wmOffsetX = std::max(0.0f, std::min(wmOffsetX, boundsX)); }
+    if (wmOffsetY < 0 || wmOffsetY > boundsY) { wmVelY *= -1.0f; wmOffsetY = std::max(0.0f, std::min(wmOffsetY, boundsY)); }
+
+    // Shifting logic (every 3s)
+    wmShiftTimer += dt;
+    if (wmShiftTimer > 3.0f) {
+      wmShiftTimer = 0.0f;
+      wmShiftOffset = (float)(rand() % 100) / 100.0f;
+    }
+
+    if (textSize.x > 0 && textSize.y > 0) {
+      float stepX = textSize.x * 3.5f;
+      float stepY = textSize.y * 5.5f;
+      ImU32 wmColor = ImColor(1.0f, 1.0f, 1.0f, 0.15f); // 15% opacity
+
+      for (float y = -stepY; y < displaySize.y + stepY; y += stepY) {
         int rowIdx = (int)(y / stepY);
-        float startX = (rowIdx % 2 == 0) ? 0.0f : (-stepX * 0.5f);
-        for (float x = startX; x < displaySize.x + stepX; x += stepX) {
-          drawList->AddText(ImVec2(x, y), wmColor, watermark);
+        float shift = (rowIdx % 2 == 0) ? 0.0f : (stepX * 0.5f);
+        shift += wmShiftOffset * stepX; // Periodic jump
+
+        for (float x = -stepX; x < displaySize.x + stepX; x += stepX) {
+          drawList->AddText(ImVec2(x + wmOffsetX + shift, y + wmOffsetY), wmColor, watermark);
         }
       }
     }

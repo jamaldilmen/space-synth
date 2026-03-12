@@ -804,8 +804,7 @@ int main() {
             synth.chorus().setRate(cRate);
           }
           float cDepth = synth.chorus().depth();
-          if (ImGui::SliderFloat("LFO Depth", &cDepth, 0.0f, 10.0f,
-                                 "%.2f ms")) {
+          if (ImGui::SliderFloat("LFO Depth##Chorus", &cDepth, 0.0f, 10.0f, "%.2f ms")) {
             synth.chorus().setDepth(cDepth);
           }
           float cMix = synth.chorus().mix();

@@ -304,7 +304,10 @@ float4 sample_spatial_grid_velocity(
     
     uint cellID = (cz * gridU.gridSize + cy) * gridU.gridSize + cx;
     uint startIdx = cellStarts[cellID];
-    uint nextIdx = cellStarts[cellID + 1];
+    
+    // Safely get next cell's start index to compute count
+    uint totalCells = gridU.gridSize * gridU.gridSize * gridU.gridSizeZ;
+    uint nextIdx = (cellID + 1 < totalCells) ? cellStarts[cellID + 1] : gridU.particleCount;
     float count = float(nextIdx - startIdx);
     
     if (count == 0.0) return float4(0.0);
@@ -317,9 +320,9 @@ float4 sample_spatial_grid_velocity(
     avgVel /= float(samples);
     
     // Density calibration: 
-    // The image shows a massive glowing sphere because density is too high everywhere.
-    // Scale inversely by particleCount so it looks consistent regardless of slider
-    float density = clamp(count * (1000000.0f / max(1.0f, float(gridU.particleCount))) * 0.003f, 0.0f, 1.0f);
+    // The image shows a massive glowing sphere because density is too high everywhere.    // Scale density to prevent blowout at 10M, but retain strong core brightness
+    float countFactor = 5000000.0f / max(1.0f, float(gridU.particleCount));
+    float density = clamp(count * countFactor * 0.008f, 0.0f, 1.0f);
     
     // Restore soft z-mask: Gaussian falloff to avoid hard shadows while shaping the disk
     float diskThickness = 0.2f;

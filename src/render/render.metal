@@ -147,7 +147,13 @@ vertex VertexOut particle_vertex(
     // particles with full relativistic Kerr-metric ray-bending (gravitational lensing).
     // We hide the particles entirely during silence (envelopePhase < 0.5) to avoid dual rendering.
     // Unconditionally hand over the inner r < 1.25 to the volumetric raytracer to prevent linear projection over the horizon.
-    if (cam.envelopePhase < 0.5f || originR < 1.25f) {
+    // FIX: Only cull if we are INSIDE the black hole radius (r < 1.25), OR if we are in silence phase AND we want the black hole to take over completely.
+    // However, if the black hole raytracer relies on volumetric data, culling particles here *deletes* them from the scene.
+    // Actually, culling in the vertex shader just stops them from drawing as points. The spatial hash still has them.
+    // Wait, the spatial hash is built BEFORE render.metal! So culling in render.metal is fine for the grid.
+    // BUT the user says "where do the particles go". It means they want to see particles outside the accretion disk even during silence!
+    if ((cam.envelopePhase < 0.5f && originR < 1.25f) || (cam.envelopePhase >= 0.5f && originR < 1.25f)) {
+        // Just always cull the center (r < 1.25), let particles exist outside of it at all times.
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);

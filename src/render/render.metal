@@ -148,11 +148,10 @@ vertex VertexOut particle_vertex(
     // ── Phase 16: Gargantua Cosmics & Phase 18 Volumetric Raytracer ──
     float originR = length(in.posW.xyz);
     out.originDist = originR;
-    
-    // During the Black Hole Phase, `blackhole.metal` raytracer uses the Spatial Hash Grid to render 
     // particles with full relativistic Kerr-metric ray-bending (gravitational lensing).
     // We hide the particles entirely during silence (envelopePhase < 0.5) to avoid dual rendering.
-    if (cam.envelopePhase < 0.5f) {
+    // Unconditionally hand over the inner r < 1.25 to the volumetric raytracer to prevent linear projection over the horizon.
+    if (cam.envelopePhase < 0.5f || originR < 1.25f) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);

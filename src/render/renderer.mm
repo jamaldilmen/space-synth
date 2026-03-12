@@ -125,10 +125,12 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   impl_->currentFrame = 0;
 
   NSError *error = nil;
-  NSString *execPath = [[[NSProcessInfo processInfo] arguments][0]
-      stringByDeletingLastPathComponent];
-  NSString *libPath =
-      [execPath stringByAppendingPathComponent:@"default.metallib"];
+  NSString *libPath = [[NSBundle mainBundle] pathForResource:@"default" ofType:@"metallib"];
+  if (!libPath) {
+    // Fallback for build directory
+    NSString *execPath = [[[NSProcessInfo processInfo] arguments][0] stringByDeletingLastPathComponent];
+    libPath = [execPath stringByAppendingPathComponent:@"default.metallib"];
+  }
   NSURL *libURL = [NSURL fileURLWithPath:libPath];
   impl_->library = [impl_->device newLibraryWithURL:libURL error:&error];
 

@@ -8,8 +8,10 @@
 #include "core/preset_manager.h"
 #include "imgui.h"
 #include "render/renderer.h"
-#include "ui/ui_theme.h"
 #include "ui/window.h"
+#include "ui/ui_theme.h"
+#include "core/logger.h"
+#include "core/resource_helper.h"
 #include <cstdio>
 #include <fcntl.h>
 #include <signal.h>
@@ -59,10 +61,11 @@ int main() {
   ensureSingleInstance();
   // ── Window ──────────────────────────────────────────────────────────
   Window window;
-  if (!window.create(1280, 720, "SPACE Synth")) {
+  if (!window.create(1280, 800, "SPACE Synth v1.0 [STABLE]")) {
     fprintf(stderr, "Failed to create window\n");
     return 1;
   }
+  Logger::log("Application Started: SPACE Synth v1.0 [STABLE]");
 
   space::UITheme::ApplyPremiumTheme();
 
@@ -93,9 +96,10 @@ int main() {
   // ── Camera ──────────────────────────────────────────────────────────
   Camera camera;
   window.setMouseCallback([&](const MouseEvent &e) {
-    if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)
-      return;
-    if (e.isDown && e.button == 0) {
+    // Note: We don't check WantCaptureMouse here because window.mm already
+    // filters the INITIAL mouseDown. We want rotation to continue even if the
+    // mouse drags over UI windows after starting outside.
+    if (e.isDown && (e.button == 0 || e.button == 1)) {
       // Rotate: scaling deltas for sensitivity
       camera.rotate(-e.dx * 0.005f, -e.dy * 0.005f);
     }
@@ -173,7 +177,6 @@ int main() {
   static int uiParticleCount = 5000000;
   static float uiJitter = 0.1f;
   static float uiScale = 100.0f; // NEW DEFAULT: 100.0f as requested
-  static float uiSupernova = 0.0f;
   static float uiWaveDepth = 20.0f;
   static float uiEField = 0.5f;
   static float uiBField = 1.0f;
@@ -448,12 +451,14 @@ int main() {
     static int selectedPresetIdx = -1;
 
     if (!presetsLoaded) {
-      presetFiles = PresetManager::scanPresets("../presets");
+      std::string presetsDir = ResourceHelper::getResourcePath("presets");
+      presetFiles = PresetManager::scanPresets(presetsDir);
       // Try to load default.json
       for (int i = 0; i < (int)presetFiles.size(); i++) {
         if (presetFiles[i] == "default.json") {
           selectedPresetIdx = i;
-          if (PresetManager::loadPreset("../presets/" + presetFiles[i],
+          std::string path = ResourceHelper::getResourcePath("presets/" + presetFiles[i]);
+          if (PresetManager::loadPreset(path,
                                         currentPreset)) {
             uiParticleSize = currentPreset.particleSize;
             uiJitter = currentPreset.jitterScale;
@@ -465,30 +470,44 @@ int main() {
       presetsLoaded = true;
     }
 
-    // ── Top Right Control Window ──────────────────────────────────────
-    ImGui::SetNextWindowPos(ImVec2(window.width() - 250, 20));
-    ImGui::SetNextWindowSize(ImVec2(230, 0));
-    ImGui::Begin("##topright", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);
+    // ── Top Right Overlay Control Panel ──────────────────────────────
+    if (showHUD) {
+      ImGui::SetNextWindowPos(ImVec2(window.width() - 250, 20));
+      ImGui::SetNextWindowSize(ImVec2(230, 0));
+      ImGui::Begin("##topright", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);
 
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 0.6f));
-    ImGui::Text("MASTER VOLUME");
-    ImGui::PopStyleColor();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 0.6f));
+      ImGui::Text("MASTER VOLUME");
+      ImGui::PopStyleColor();
 
-    float currentVol = synth.masterVolume();
-    if (ImGui::SliderFloat("##MasterVol", &currentVol, 0.0f, 1.0f, "%.2f")) {
-      synth.setMasterVolume(currentVol);
+      float currentVol = synth.masterVolume();
+      if (ImGui::SliderFloat("##MasterVol", &currentVol, 0.0f, 1.0f, "%.2f")) {
+        synth.setMasterVolume(currentVol);
+      }
+
+      ImGui::Spacing();
+
+      if (ImGui::Button("HIDE ARCHITECT", ImVec2(215, 30))) {
+        showHUD = false;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hide UI (TAB)");
+      ImGui::End();
+    } else {
+      // Minimal restore button when HUD is hidden
+      ImGui::SetNextWindowPos(ImVec2(window.width() - 160, 20));
+      ImGui::SetNextWindowSize(ImVec2(140, 0));
+      ImGui::Begin("##restore_ui", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);
+      if (ImGui::Button("SHOW ARCHITECT", ImVec2(130, 30))) {
+        showHUD = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Restore UI (TAB)");
+      ImGui::End();
     }
 
-    ImGui::Spacing();
-
-    if (ImGui::Button(showHUD ? "HIDE ARCHITECT" : "SHOW ARCHITECT",
-                      ImVec2(215, 30))) {
-      showHUD = !showHUD;
-    }
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Toggle HUD (TAB)");
-    ImGui::End();
 
     if (showHUD) {
       ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
@@ -498,21 +517,14 @@ int main() {
       ImGui::Begin("PHYSICS ARCHITECT", nullptr,
                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-      ImGui::TextColored(ImVec4(0.5f, 0.6f, 1.0f, 1.0f),
-                         "S P A C E   S Y N T H");
-      ImGui::Separator();
-      ImGui::Spacing();
-
-      if (ImGui::CollapsingHeader("MACROS", ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (ImGui::CollapsingHeader("GLOBALS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::PushStyleColor(ImGuiCol_SliderGrab,
-                              ImVec4(1.0f, 0.3f, 0.0f, 1.0f));
-        ImGui::SliderFloat("Supernova", &uiSupernova, 0.0f, 1.0f, "%.2f");
-        ImGui::PopStyleColor();
-        ImGui::SetItemTooltip("Global A/V Macro: Overdrives Chorus, Jitter, "
-                              "Drive, Bloom, and Particle Size simultaneously");
+        ImGui::Text("Performance View");
+        ImGui::TextDisabled("FPS: %.1f | Mode: %s", ImGui::GetIO().Framerate, 
+                            uiOrthoMode ? "Orthogonal" : "Perspective");
         ImGui::Unindent();
       }
+      ImGui::Spacing();
 
       if (ImGui::CollapsingHeader("PRESETS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
@@ -524,7 +536,8 @@ int main() {
             const bool is_selected = (selectedPresetIdx == n);
             if (ImGui::Selectable(presetFiles[n].c_str(), is_selected)) {
               selectedPresetIdx = n;
-              if (PresetManager::loadPreset("../presets/" + presetFiles[n],
+              std::string path = ResourceHelper::getResourcePath("presets/" + presetFiles[n]);
+              if (PresetManager::loadPreset(path,
                                             currentPreset)) {
                 uiParticleSize = currentPreset.particleSize;
                 uiJitter = currentPreset.jitterScale;
@@ -535,7 +548,6 @@ int main() {
                 uiStringStiffness = currentPreset.stringStiffness;
                 uiRestLength = currentPreset.restLength;
                 uiParticleCount = currentPreset.particleCount;
-                uiSupernova = currentPreset.supernova;
               }
             }
             if (is_selected)
@@ -554,9 +566,8 @@ int main() {
           currentPreset.stringStiffness = uiStringStiffness;
           currentPreset.restLength = uiRestLength;
           currentPreset.particleCount = uiParticleCount;
-          currentPreset.supernova = uiSupernova;
-          PresetManager::savePreset(
-              "../presets/" + presetFiles[selectedPresetIdx], currentPreset);
+          std::string path = ResourceHelper::getResourcePath("presets/" + presetFiles[selectedPresetIdx]);
+          PresetManager::savePreset(path, currentPreset);
         }
         ImGui::Unindent();
       }
@@ -1028,13 +1039,10 @@ int main() {
     } // if (showHUD)
 
     // ── Apply Audio-Visual Macros ─────────────────────────────────────
-    // Calculate effective values interpolated by Supernova Macro
-    float effectiveSize =
-        uiParticleSize + (uiSupernova * 8.0f); // Grow up to +8px
-    float effectiveDrive =
-        synth.drive() + (uiSupernova * 3.4f); // Push into Moog clipping
-    float effectiveJitterMultiplier =
-        1.0f + (uiSupernova * 9.0f); // 10x Phase Drift
+    // Calculate effective values
+    float effectiveSize = uiParticleSize;
+    float effectiveDrive = synth.drive();
+    float effectiveJitterMultiplier = 1.0f;
 
     // Push volatile settings back into synth
     synth.setJitter(uiJitter * effectiveJitterMultiplier);
@@ -1057,9 +1065,9 @@ int main() {
     synth.envelopeParams().attack = uiAttack / 1000.0f;
     synth.envelopeParams().release = uiRelease / 1000.0f;
     // Supernova adds on top of user slider values
-    config.bloomIntensity = uiBloom + uiSupernova * 1.5f;
-    config.trailDecay = uiTrailDecay + uiSupernova * 0.1f;
-    config.chromaticAmount = uiChromatic + uiSupernova * 0.015f;
+    config.bloomIntensity = uiBloom;
+    config.trailDecay = uiTrailDecay;
+    config.chromaticAmount = uiChromatic;
 
     // ── Update ADSR ────────────────────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;
@@ -1133,12 +1141,17 @@ int main() {
 
       int vc = synth.activeVoiceCount();
       if (vc > 0) {
-        printf("\n%d fps | %dk particles | %d voice%s | amp %.2f    ", fps,
-               PARTICLE_COUNT / 1000, vc, vc > 1 ? "s" : "",
-               synth.totalAmplitude());
+        char buf[256];
+        snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Voices: %d | Amp: %.2f", 
+                 fps, PARTICLE_COUNT / 1000, vc, synth.totalAmplitude());
+        Logger::log(buf);
+        printf("\n%s    ", buf);
       } else {
-        printf("\n%d fps | %dk particles | ready    ", fps,
-               PARTICLE_COUNT / 1000);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Ready", 
+                 fps, PARTICLE_COUNT / 1000);
+        Logger::log(buf);
+        printf("\n%s    ", buf);
       }
 
       // ── Auto GPU Readback Probe ──
@@ -1156,10 +1169,8 @@ int main() {
     }
   });
 
-  printf("SPACE Synth — %dk particles\n", PARTICLE_COUNT / 1000);
-  printf("Keys: A-; for notes, Z/X octave shift\n");
-
-  window.run();
+  Logger::log("Application Session End");
+  Logger::exportToDownloads();
 
   printf("\n");
   return 0;

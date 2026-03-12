@@ -1169,16 +1169,25 @@ int main() {
       fflush(stdout);
     }
 
-    // ── Watermark (Permanent) ─────────────────────────────────────────
+    // ── Watermark (Tiled Diagonal Pattern) ────────────────────────────
     {
       const char *watermark = "(@jamaldimen)";
       ImVec2 textSize = ImGui::CalcTextSize(watermark);
-      float margin = 20.0f * window.getContentScale();
-      ImVec2 textPos = ImVec2(window.width() - textSize.x - margin,
-                              window.height() - textSize.y - margin);
+      float scale = window.getContentScale();
+      float stepX = textSize.x * 2.5f; 
+      float stepY = textSize.y * 5.0f;
+      
+      ImU32 wmColor = ImColor(1.0f, 1.0f, 1.0f, 0.12f); // Subtle 12% opacity
+      ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-      ImGui::GetForegroundDrawList()->AddText(textPos, ImColor(1.0f, 1.0f, 1.0f, 0.4f),
-                                              watermark);
+      for (float y = -stepY; y < window.height() + stepY; y += stepY) {
+        bool offsetRow = ((int)(y / stepY) % 2 == 0);
+        float startX = offsetRow ? -stepX * 0.5f : 0.0f;
+        
+        for (float x = startX; x < window.width() + stepX; x += stepX) {
+          drawList->AddText(ImVec2(x, y), wmColor, watermark);
+        }
+      }
     }
   });
 

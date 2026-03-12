@@ -23,6 +23,8 @@ cd ..
 # 3. Copy binary and assets
 echo "🚚 Copying files..."
 cp build/SpaceSynth "${MACOS_DIR}/"
+strip -x "${MACOS_DIR}/SpaceSynth"
+
 cp build/default.metallib "${RESOURCES_DIR}/"
 cp -r presets "${RESOURCES_DIR}/"
 mkdir -p "${RESOURCES_DIR}/fonts"

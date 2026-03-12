@@ -14,7 +14,7 @@ struct FFTAnalyzer::Impl {
 };
 
 FFTAnalyzer::FFTAnalyzer(int fftSize, int sampleRate)
-    : fftSize_(fftSize), sampleRate_(sampleRate), impl_(new Impl())
+    : impl_(new Impl()), fftSize_(fftSize), sampleRate_(sampleRate)
 {
     int log2n = static_cast<int>(std::log2(fftSize));
     impl_->fftSetup = vDSP_create_fftsetup(log2n, FFT_RADIX2);

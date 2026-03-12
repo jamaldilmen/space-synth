@@ -964,8 +964,7 @@ void Renderer::renderImGui(void *renderEncoder) {
   ImGui::Render();
   ImGui_ImplMetal_RenderDrawData(
       ImGui::GetDrawData(),
-      (__bridge id<MTLCommandBuffer>)[(
-          __bridge id<MTLRenderCommandEncoder>)renderEncoder commandBuffer],
+      nil, // commandBuffer is not used directly by the current implementation
       (__bridge id<MTLRenderCommandEncoder>)renderEncoder);
 }
 

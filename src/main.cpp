@@ -82,7 +82,7 @@ int main() {
   // ── Particles ───────────────────────────────────────────────────────
   const int PARTICLE_COUNT = 10000000;
   const float MAX_WAVE_DEPTH = 100.0f;
-  const float PLATE_RADIUS = 400.0f;
+  // (PLATE_RADIUS removed)
 
   ParticleSystem particles;
   particles.init(PARTICLE_COUNT, MAX_WAVE_DEPTH);
@@ -324,6 +324,7 @@ int main() {
       seqLogTimer += dt;
       if (seqLogTimer >= 0.5f) {
         auto stats = renderer.getPhysicsStats();
+        (void)stats; // Suppress unused warning
         printf("[SEQ-DATA] t=%.1f voices=%d amp=%.2f\n", seqTime,
                synth.activeVoiceCount(), synth.totalAmplitude());
         seqLogTimer = 0;

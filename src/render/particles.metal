@@ -79,7 +79,6 @@ static float noise(uint id, uint frame) {
 
 // Collision constants
 constant int MAX_PER_CELL = 32; // Optimized for 1M particle neighbor scans
-constant float COLLISION_RESTITUTION = 0.85f;
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
@@ -105,7 +104,6 @@ kernel void compute_physics(
     float py = p.posW.y;
     float pz = p.posW.z;
     float mass = p.posW.w;
-    float phase = p.velW.w;
 
     // ── Störmer-Verlet: derive velocity from position history ────────
     float prevX = p.prevW.x;

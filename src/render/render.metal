@@ -21,11 +21,7 @@ struct CameraUniforms {
     float2 padding;
 };
 
-// Safe normalization to prevent NaNs at rest (Phase 12 bug fix)
-static float2 safe_normalize(float2 v) {
-    float l = length(v);
-    return (l > 1e-9f) ? v / l : float2(0.0f, 0.0f);
-}
+// (safe_normalize removed to fix unused warning)
 
 struct VertexOut {
     float4 position [[position]];

@@ -73,7 +73,9 @@ struct CameraUniforms {
   float plateRadius;
   float phaseViz; // 1.0 = phase coloring, 0.0 = default
   float waveDepth;
-  float padding[1];
+  float envelopePhase; // 0=silence(black hole), 1-4=ADSR
+  float orthoMode;
+  float padding[2];
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

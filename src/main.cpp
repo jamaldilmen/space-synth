@@ -820,6 +820,20 @@ int main() {
         ImGui::SetItemTooltip("Envelope attack duration");
         synth.envelopeParams().attack = uiAttack / 1000.0f;
 
+        static float uiDecay = 100.0f;
+        ImGui::SliderFloat("Decay", &uiDecay, 5.0f, 1000.0f, "%.0f ms");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiDecay = 100.0f;
+        ImGui::SetItemTooltip("Envelope decay duration");
+        synth.envelopeParams().decay = uiDecay / 1000.0f;
+
+        static float uiSustain = 0.7f;
+        ImGui::SliderFloat("Sustain", &uiSustain, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiSustain = 0.7f;
+        ImGui::SetItemTooltip("Sustain level — controls visual expansion size");
+        synth.envelopeParams().sustain = uiSustain;
+
         ImGui::SliderFloat("Release", &uiRelease, 1.0f, 2000.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiRelease = 400.0f;

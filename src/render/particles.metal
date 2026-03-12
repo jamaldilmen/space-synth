@@ -686,14 +686,12 @@ kernel void compute_physics(
     }
 
     // ── Envelope-Coupled Velocity Damping ──────────────────────────────
-    // Rule: visuals track the sound. Not Attack = no free coasting.
-    // Attack is the ONLY phase where particles get to keep momentum.
-    if (u.envelopePhase > 1.5f) {
-        // NOT in Attack: kill momentum hard. Forces (spring/collapse) drive motion, not inertia.
-        float damp = (u.envelopePhase > 3.5f) ? 0.15f : 0.5f; // Release=brutal, Sustain=firm
-        vpx *= damp;
-        vpy *= damp;
-        vpz *= damp;
+    // Release: kill momentum so collapse tracks the envelope fade
+    // Sustain: let it breathe — no damping
+    if (u.envelopePhase > 3.5f) {
+        vpx *= 0.15f;
+        vpy *= 0.15f;
+        vpz *= 0.15f;
     }
 
     // Combine proxy with force pulses
@@ -709,27 +707,34 @@ kernel void compute_physics(
     float3 nextPos = float3(px, py, pz) + finalV;
 
     // ── DIRECT ENVELOPE→RADIUS COUPLING ──────────────────────────────
-    // The visual radius MUST track the sound envelope. This is not a force.
-    // It's a hard constraint: sound amplitude = visual size. Period.
+    // Attack: constrain expansion to match envelope ramp
+    // Decay/Sustain: soft attractor at lcI-scaled radius (sustain level = visual size)
+    // Release: constrain contraction to match envelope fade
     if (!collapsed && !isSilence) {
         float nextR = length(nextPos);
         if (nextR > 0.001f) {
-            float targetRadius;
-            if (u.envelopePhase < 1.5f) {
-                // Attack: expand from 0 to 0.75
-                targetRadius = 0.75f * u.envelopeProgress;
-            } else if (u.envelopePhase < 3.5f) {
-                // Decay/Sustain: hold at 0.75
-                targetRadius = 0.75f;
-            } else {
-                // Release: contract from 0.75 back to 0
-                targetRadius = 0.75f * (1.0f - u.envelopeProgress);
-            }
-
             float3 dir = nextPos / nextR;
-            float blendedR = mix(nextR, targetRadius, 0.25f);
-            nextPos = dir * blendedR;
-            finalV *= 0.75f;
+
+            if (u.envelopePhase < 1.5f) {
+                // Attack: blend toward expanding target
+                float targetRadius = 0.75f * u.envelopeProgress;
+                float blendedR = mix(nextR, targetRadius, 0.25f);
+                nextPos = dir * blendedR;
+                finalV *= 0.75f;
+            } else if (u.envelopePhase < 3.5f) {
+                // Decay/Sustain: soft attractor proportional to amplitude
+                // Lower sustain level = smaller visual radius
+                float targetRadius = lcI * 0.9f;
+                // Gentle blend — allows expansion past target but always pulls back
+                float blendedR = mix(nextR, targetRadius, 0.05f);
+                nextPos = dir * blendedR;
+            } else {
+                // Release: pull inward, tracking envelope fade
+                float targetRadius = max(0.01f, nextR * (1.0f - u.envelopeProgress));
+                float blendedR = mix(nextR, targetRadius, 0.25f);
+                nextPos = dir * blendedR;
+                finalV *= 0.75f;
+            }
         }
     }
 

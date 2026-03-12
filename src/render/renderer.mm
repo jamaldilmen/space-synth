@@ -529,7 +529,8 @@ void Renderer::render(const RenderConfig &config) {
   cam.plateRadius = R;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.waveDepth = config.modeP * 20.0f; // Using modeP to scale depth
-  cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
+  cam.envelopePhase = config.envelopePhase;
+  cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -578,7 +579,8 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
-  cam.padding[0] = config.orthoMode ? 1.0f : 0.0f;
+  cam.envelopePhase = config.envelopePhase;
+  cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);

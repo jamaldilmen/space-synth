@@ -16,7 +16,9 @@ struct CameraUniforms {
     float plateRadius;
     float phaseViz;    // 1.0 = phase coloring, 0.0 = default
     float waveDepth;
-    float padding[1];
+    float envelopePhase; // 0=silence(black hole), 1-4=ADSR
+    float orthoMode;
+    float2 padding;
 };
 
 // Safe normalization to prevent NaNs at rest (Phase 12 bug fix)
@@ -109,7 +111,7 @@ vertex VertexOut particle_vertex(
     }
 
     // Dynamic Point Size Scaling
-    float isOrtho = cam.padding[0];
+    float isOrtho = cam.orthoMode;
     float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
     out.dist = dist;
     
@@ -153,7 +155,8 @@ vertex VertexOut particle_vertex(
     // If we draw them here as raw 2D points, they will linearly project and obscure the
     // event horizon.
     // Unconditionally hand over the inner r < 1.25 to the volumetric raytracer.
-    if (originR < 1.25f) {
+    // Also hide particles entirely during silence (envelopePhase < 0.5) because dual rendering happens.
+    if (cam.envelopePhase < 0.5f || originR < 1.25f) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);

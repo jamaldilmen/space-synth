@@ -1169,30 +1169,6 @@ int main() {
       fflush(stdout);
     }
 
-    // ── Watermark (Tiled Diagonal Pattern) ────────────────────────────
-    {
-      const char *watermark = "(@jamaldimen)";
-      ImU32 wmColor = ImColor(1.0f, 1.0f, 1.0f, 0.25f); // Increased to 25% opacity
-      ImDrawList* drawList = ImGui::GetForegroundDrawList();
-      
-      // Get text size carefully
-      ImVec2 textSize = ImGui::CalcTextSize(watermark);
-      if (textSize.x > 0 && textSize.y > 0) {
-        float stepX = textSize.x * 3.0f; 
-        float stepY = textSize.y * 4.0f;
-        float w = (float)window.width();
-        float h = (float)window.height();
-
-        for (float y = 0; y < h + stepY; y += stepY) {
-          int rowIdx = (int)(y / stepY);
-          float startX = (rowIdx % 2 == 0) ? 0.0f : (-stepX * 0.5f);
-          
-          for (float x = startX; x < w + stepX; x += stepX) {
-            drawList->AddText(ImVec2(x, y), wmColor, watermark);
-          }
-        }
-      }
-    }
   });
 
   window.run();

@@ -946,6 +946,27 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   }
 
   // Render ImGui on top
+  {
+    const char *watermark = "(@jamaldimen)";
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    ImVec2 textSize = ImGui::CalcTextSize(watermark);
+    
+    if (textSize.x > 0 && textSize.y > 0) {
+      float stepX = textSize.x * 2.5f;
+      float stepY = textSize.y * 4.0f;
+      ImU32 wmColor = ImColor(1.0f, 1.0f, 1.0f, 0.40f); // 40% Opacity for verification
+
+      for (float y = 0; y < displaySize.y + stepY; y += stepY) {
+        int rowIdx = (int)(y / stepY);
+        float startX = (rowIdx % 2 == 0) ? 0.0f : (-stepX * 0.5f);
+        for (float x = startX; x < displaySize.x + stepX; x += stepX) {
+          drawList->AddText(ImVec2(x, y), wmColor, watermark);
+        }
+      }
+    }
+  }
+
   ImGui::Render();
   ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, postEnc);
 

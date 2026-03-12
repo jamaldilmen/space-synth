@@ -1169,6 +1169,8 @@ int main() {
     }
   });
 
+  window.run();
+
   Logger::log("Application Session End");
   Logger::exportToDownloads();
 

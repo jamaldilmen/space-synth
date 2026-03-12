@@ -326,7 +326,7 @@ kernel void compute_physics(
             // ── Self-Oscillation Feature (Empty Space Resonance) ──
             // When lcI > 1.25 (filter/LFO resonance), standing wave plasma filaments emerge
             if (lcI > 1.25f) {
-                // Cap resonance force so supernova doesn't snap the webbing completely
+                // Cap resonance force to prevent string webbing logic tears
                 float resonance = min(lcI - 1.25f, 5.0f);
                 float ribs = sin(r_curr * 15.0f - u.time * 25.0f) * cos(atan2(py, px) * 8.0f);
                 float waveForce = ribs * 150.0f * resonance;

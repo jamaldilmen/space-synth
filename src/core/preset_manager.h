@@ -23,7 +23,6 @@ struct Preset {
   float stringStiffness = 0.01f;
   float restLength = 0.01f;
   int particleCount = 1000000;
-  float supernova = 0.0f;
 
   // Render (Future-proofing for Post-FX)
   float bloomIntensity = 0.0f;

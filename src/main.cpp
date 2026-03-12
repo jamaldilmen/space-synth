@@ -1173,7 +1173,6 @@ int main() {
     {
       const char *watermark = "(@jamaldimen)";
       ImVec2 textSize = ImGui::CalcTextSize(watermark);
-      float scale = window.getContentScale();
       float stepX = textSize.x * 2.5f; 
       float stepY = textSize.y * 5.0f;
       

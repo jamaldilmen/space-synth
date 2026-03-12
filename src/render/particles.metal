@@ -154,6 +154,15 @@ kernel void compute_physics(
     bool collapsed = false; // Tracks if particle has been force-collapsed into singularity
     bool isSilence = (u.envelopePhase < 0.5f); // Gate for force immunity
 
+    float globalTargetRadius = 0.75f;
+    if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) {
+        globalTargetRadius = 0.75f * t;
+    } else if (u.envelopePhase >= 1.5f && u.envelopePhase < 3.5f) {
+        globalTargetRadius = 0.75f + pow(lcI, 3.0f) * 50.0f;
+    } else if (u.envelopePhase >= 3.5f) {
+        globalTargetRadius = max(0.01f, r_curr * (1.0f - t));
+    }
+
     // ─── PHASE 0: SILENCE → BLACK HOLE WITH ACCRETION DISK ───────────────
     if (u.envelopePhase < 0.5f) {
         float rLen = r_curr;
@@ -282,9 +291,9 @@ kernel void compute_physics(
             shiftVz += dir.z * ripple * dt;
         }
     }
-    // ─── PHASE 2/3: DECAY/SUSTAIN → SUN (Radiating Sphere) ──────────────
+    // ─── PHASE 2/3: DECAY/SUSTAIN → SUN (Radiating Sphere / Plasma) ──────────────
     else if (u.envelopePhase < 3.5f) {
-        float targetRadius = 0.75f;
+        float targetRadius = globalTargetRadius;
         if (r_curr > 0.001f) {
             float3 dir = pvec / r_curr;
             float displacement = (r_curr - targetRadius);
@@ -313,6 +322,23 @@ kernel void compute_physics(
 
             // Photosphere temperature
             currentTemp = mix(currentTemp, 1.5f, 0.1f * dt);
+
+            // ── Self-Oscillation Feature (Empty Space Resonance) ──
+            // When lcI > 1.25 (filter/LFO resonance), standing wave plasma filaments emerge
+            if (lcI > 1.25f) {
+                float resonance = lcI - 1.25f;
+                float ribs = sin(r_curr * 15.0f - u.time * 25.0f) * cos(atan2(py, px) * 8.0f);
+                float waveForce = ribs * 150.0f * resonance;
+                shiftVx += dir.x * waveForce * dt;
+                shiftVy += dir.y * waveForce * dt;
+                shiftVz += dir.z * waveForce * dt;
+                
+                float filament = sin(pz * 20.0f) * 100.0f * resonance;
+                shiftVx += tangent.x * filament * dt;
+                shiftVy += tangent.y * filament * dt;
+                
+                currentTemp += 5.0f * resonance * dt;
+            }
         }
     }
     // ─── PHASE 4: RELEASE → GRAVITATIONAL COLLAPSE ───────────────────────
@@ -499,7 +525,7 @@ kernel void compute_physics(
         // ── Phase 19: Elastic Shell Restoring Force (Staccato Bounce-Back) ──
         // Fixes the issue where short key presses shoot particles outward and leave them stranded.
         // This spring force naturally pulls the fabric of space back to a resting sphere (radius 0.75).
-        float restingRadius = 0.75f;
+        float restingRadius = globalTargetRadius;
         float currentR = sqrt(px*px + py*py + pz*pz);
         if (currentR > 0.001f) {
             float displacement = currentR - restingRadius;
@@ -717,21 +743,17 @@ kernel void compute_physics(
 
             if (u.envelopePhase < 1.5f) {
                 // Attack: blend toward expanding target
-                float targetRadius = 0.75f * u.envelopeProgress;
-                float blendedR = mix(nextR, targetRadius, 0.25f);
+                float blendedR = mix(nextR, globalTargetRadius, 0.25f);
                 nextPos = dir * blendedR;
                 finalV *= 0.75f;
             } else if (u.envelopePhase < 3.5f) {
                 // Decay/Sustain: soft attractor proportional to amplitude
-                // Lower sustain level = smaller visual radius
-                float targetRadius = lcI * 0.9f;
                 // Gentle blend — allows expansion past target but always pulls back
-                float blendedR = mix(nextR, targetRadius, 0.05f);
+                float blendedR = mix(nextR, globalTargetRadius, 0.05f);
                 nextPos = dir * blendedR;
             } else {
                 // Release: pull inward, tracking envelope fade
-                float targetRadius = max(0.01f, nextR * (1.0f - u.envelopeProgress));
-                float blendedR = mix(nextR, targetRadius, 0.25f);
+                float blendedR = mix(nextR, globalTargetRadius, 0.25f);
                 nextPos = dir * blendedR;
                 finalV *= 0.75f;
             }

@@ -290,19 +290,20 @@ bool Window::create(int width, int height, const std::string &title) {
 
     // Load Roboto Font
     ImGuiIO &io = ImGui::GetIO();
-    NSString *fontPath = [[NSString
-        stringWithUTF8String:space::Window::getExecutablePath().c_str()]
-        stringByDeletingLastPathComponent];
-    fontPath =
-        [fontPath stringByAppendingPathComponent:
-                      @"../third_party/imgui/misc/fonts/Roboto-Medium.ttf"];
+    NSString *fontPath = [[NSBundle mainBundle] pathForResource:@"Roboto-Medium" ofType:@"ttf" inDirectory:@"fonts"];
+    if (!fontPath) {
+      // Fallback for build directory
+      NSString *execPath = [[[NSProcessInfo processInfo] arguments][0] stringByDeletingLastPathComponent];
+      fontPath = [execPath stringByAppendingPathComponent:@"../third_party/imgui/misc/fonts/Roboto-Medium.ttf"];
+    }
 
-    float fontSize = 16.0f * scale;
+    float baseFontSize = 20.0f; // Increased from 16.0 for better readability
+    float fontSize = baseFontSize * scale;
     if ([[NSFileManager defaultManager] fileExistsAtPath:fontPath]) {
       io.Fonts->AddFontFromFileTTF([fontPath UTF8String], fontSize);
     }
 
-    io.FontGlobalScale = 1.0f / scale; // Since we loaded at physical size
+    io.FontGlobalScale = 1.0f / scale;
 
     [impl_->window setContentView:impl_->metalView];
     [impl_->window makeKeyAndOrderFront:nil];
@@ -320,6 +321,11 @@ void *Window::metalLayer() const { return (__bridge void *)impl_->layer; }
 void *Window::metalDevice() const { return (__bridge void *)impl_->device; }
 int Window::width() const { return impl_->width; }
 int Window::height() const { return impl_->height; }
+float Window::getContentScale() const {
+  if (impl_->window)
+    return [impl_->window backingScaleFactor];
+  return 1.0f;
+}
 
 std::string Window::getExecutablePath() {
   NSString *path = [[NSProcessInfo processInfo] arguments][0];

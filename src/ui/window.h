@@ -36,6 +36,7 @@ public:
 
   int width() const;
   int height() const;
+  float getContentScale() const;
 
   void setKeyCallback(KeyCallback cb);
   void setMouseCallback(MouseCallback cb);

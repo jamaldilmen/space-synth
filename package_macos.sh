@@ -25,7 +25,8 @@ echo "🚚 Copying files..."
 cp build/SpaceSynth "${MACOS_DIR}/"
 cp build/default.metallib "${RESOURCES_DIR}/"
 cp -r presets "${RESOURCES_DIR}/"
-# If you have fonts or images, copy them here too
+mkdir -p "${RESOURCES_DIR}/fonts"
+cp third_party/imgui/misc/fonts/Roboto-Medium.ttf "${RESOURCES_DIR}/fonts/"
 # cp src/ui/fonts/*.ttf "${RESOURCES_DIR}/"
 
 # 4. Create Info.plist

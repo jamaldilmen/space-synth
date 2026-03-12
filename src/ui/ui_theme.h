@@ -4,23 +4,23 @@
 namespace space {
 namespace UITheme {
 
-inline void ApplyPremiumTheme() {
+inline void ApplyPremiumTheme(float scale = 1.0f) {
   auto &style = ImGui::GetStyle();
   auto &colors = style.Colors;
 
   // ── Spacing & Rounding ──────────────────────────────────────────
-  style.WindowPadding = ImVec2(16, 16);
-  style.FramePadding = ImVec2(10, 8);
-  style.ItemSpacing = ImVec2(12, 10);
-  style.ItemInnerSpacing = ImVec2(8, 6);
-  style.WindowRounding = 14.0f;
-  style.FrameRounding = 5.0f;
-  style.PopupRounding = 5.0f;
-  style.ScrollbarRounding = 12.0f;
-  style.GrabRounding = 5.0f;
-  style.TabRounding = 5.0f;
-  style.WindowTitleAlign = ImVec2(0.0f, 0.5f); // Left align title
-  style.WindowBorderSize = 1.0f;
+  style.WindowPadding = ImVec2(16 * scale, 16 * scale);
+  style.FramePadding = ImVec2(10 * scale, 8 * scale);
+  style.ItemSpacing = ImVec2(12 * scale, 10 * scale);
+  style.ItemInnerSpacing = ImVec2(8 * scale, 6 * scale);
+  style.WindowRounding = 14.0f * scale;
+  style.FrameRounding = 5.0f * scale;
+  style.PopupRounding = 5.0f * scale;
+  style.ScrollbarRounding = 12.0f * scale;
+  style.GrabRounding = 5.0f * scale;
+  style.TabRounding = 5.0f * scale;
+  style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+  style.WindowBorderSize = 1.0f * scale;
   style.FrameBorderSize = 0.0f;
 
   // ── Ultra-Premium Design Colors ───────────────────────────────

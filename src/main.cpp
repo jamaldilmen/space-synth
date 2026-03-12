@@ -67,7 +67,8 @@ int main() {
   }
   Logger::log("Application Started: SPACE Synth v1.0 [STABLE]");
 
-  space::UITheme::ApplyPremiumTheme();
+  float scale = window.getContentScale();
+  space::UITheme::ApplyPremiumTheme(scale);
 
   // ── Renderer ────────────────────────────────────────────────────────
   Renderer renderer;

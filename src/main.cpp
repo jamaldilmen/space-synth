@@ -1168,6 +1168,18 @@ int main() {
 
       fflush(stdout);
     }
+
+    // ── Watermark (Permanent) ─────────────────────────────────────────
+    {
+      const char *watermark = "(@jamaldimen)";
+      ImVec2 textSize = ImGui::CalcTextSize(watermark);
+      float margin = 20.0f * window.getContentScale();
+      ImVec2 textPos = ImVec2(window.width() - textSize.x - margin,
+                              window.height() - textSize.y - margin);
+
+      ImGui::GetForegroundDrawList()->AddText(textPos, ImColor(1.0f, 1.0f, 1.0f, 0.4f),
+                                              watermark);
+    }
   });
 
   window.run();

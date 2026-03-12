@@ -31,7 +31,10 @@ struct RenderConfig {
   float envelopeProgress = 0.0f;
 
   // Phase 18: Aesthetics
-  float blackHoleRotationX = 0.0f;
+  float rotationX = 0.0f;
+  float rotationY = 0.0f;
+  float rotationZ = 0.0f;
+  float jitterFactor = 0.1f;
 };
 
 // Debug bitmasks for PhysicsUniforms.debugFlags

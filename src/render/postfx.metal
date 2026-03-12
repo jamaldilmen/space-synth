@@ -135,22 +135,24 @@ fragment float4 postfx_fragment(
     
     float2 velocity = uv - prevUV;
     
-    // 4. Streak the brightest pixels along the velocity vector (DNGR ray-bundle effect)
-    if (length(velocity) > 0.001) {
-        int blurSamples = 8;
-        float4 blurColor = color; // keep base pixel
-        
-        for (int i = 1; i < blurSamples; i++) {
-            // Sample backwards along the motion track
-            float2 sampleUV = uv - velocity * (float(i) / float(blurSamples - 1));
-            
-            // We only streak the very bright core pixels to simulate light-bending bundles,
-            // not the dark empty space or faint dust.
-            float4 sColor = currentFrame.sample(s, sampleUV);
-            float3 mappedS = acesTonemap(sColor.rgb);
-            blurColor.rgb += mappedS;
+    // 4. Streak only the very brightest core pixels (reduced from 8 to 4 samples, HDR-gated)
+    float velLen = length(velocity);
+    if (velLen > 0.002) {
+        // Only blur pixels that are actually bright (HDR luminance gate)
+        float luma = dot(color.rgb, float3(0.299, 0.587, 0.114));
+        if (luma > 0.3) {
+            int blurSamples = 4; // Reduced from 8 for sharper disk
+            float blurStrength = min(velLen * 0.5, 1.0); // Scale blur with velocity, cap at 1x
+            float4 blurColor = color;
+
+            for (int i = 1; i < blurSamples; i++) {
+                float2 sampleUV = uv - velocity * blurStrength * (float(i) / float(blurSamples - 1));
+                float4 sColor = currentFrame.sample(s, sampleUV);
+                float3 mappedS = acesTonemap(sColor.rgb);
+                blurColor.rgb += mappedS;
+            }
+            color.rgb = blurColor.rgb / float(blurSamples);
         }
-        color.rgb = blurColor.rgb / float(blurSamples);
     }
 
     // ── VRAM Trail Decay (persistence) ──────────────────────────────────

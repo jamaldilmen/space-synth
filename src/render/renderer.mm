@@ -870,7 +870,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
 
     bhUniforms.time = phys->time;
     bhUniforms.envelopePhase = config.envelopePhase;
-    bhUniforms.rotationX = config.blackHoleRotationX;
+    bhUniforms.rotationX = config.rotationX;
 
     [enc setRenderPipelineState:blackHolePipeline];
     [enc setFragmentBytes:&bhUniforms

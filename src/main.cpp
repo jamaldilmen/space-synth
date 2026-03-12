@@ -74,6 +74,11 @@ int main() {
     return 1;
   }
 
+  // ImGui global configuration
+  ImGuiIO &io = ImGui::GetIO();
+  io.ConfigDragClickToInputText =
+      true; // Enable double-click to type on all sliders
+
   // ── Particles ───────────────────────────────────────────────────────
   const int PARTICLE_COUNT = 5000000;
   const float MAX_WAVE_DEPTH = 100.0f;
@@ -165,8 +170,7 @@ int main() {
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
-  static int uiParticleCount =
-      1000000; // Default remains 1M for startup stability, but max is now 5M
+  static int uiParticleCount = 1000000;
   static float uiJitter = 0.1f;
   static float uiScale = 100.0f; // NEW DEFAULT: 100.0f as requested
   static float uiSupernova = 0.0f;
@@ -176,6 +180,15 @@ int main() {
   static float uiGravity = 0.8f;
   static float uiStringStiffness = 50.0f;
   static float uiRestLength = 0.05f;
+  static float uiRotationX = 0.0f;
+  static float uiRotationY = 0.0f;
+  static float uiRotationZ = 0.0f;
+  static bool uiAutoRotateScene = false;
+
+  // Global Modulation LFO
+  static float uiLFORate = 0.5f;
+  static float uiLFODepth = 0.0f;
+  static float uiLFOPhase = 0.0f;
 
   // uiSpeedCap removed: driven by synth.drive() instead
   static bool uiChorus = true;
@@ -279,6 +292,10 @@ int main() {
   float fpsTimer = 0.0f;
   int fps = 0;
 
+  // ImGui global configuration
+  ImGui::GetIO().ConfigDragClickToInputText =
+      true; // Enable double-click to type on all sliders
+
   // ── Frame callback ──────────────────────────────────────────────────
   window.setFrameCallback([&](float dt) {
     // ── Run sequencer logic (Phase 12 stability) ───────────────────
@@ -323,9 +340,44 @@ int main() {
     std::vector<VoiceGPUData> voiceData;
     static std::unordered_map<int, float> lastAmps;
 
-    for (int i = 0; i < (int)activeVoices.size(); i++) {
+    // ── VJ Audio Band Injection ──
+    if (uiVJMode) {
+      auto bands = audio.getVJBands();
+      for (size_t i = 0; i < bands.size() && voiceData.size() < MAX_EMITTERS;
+           i++) {
+        if (bands[i].amplitude > 0.005f) {
+          int emIdx = voiceData.size() % MAX_EMITTERS;
+
+          float dAmp =
+              std::max(0.0f, bands[i].amplitude - lastAmps[-(int)i - 1]);
+          lastAmps[-(int)i - 1] = bands[i].amplitude;
+
+          VoiceGPUData vd;
+          // Assign unique harmonic modes (M,N) based on frequency band index
+          vd.m = (int)(i % 5) + 1;
+          vd.n = (int)(i / 5) + 1;
+          vd.alpha = 1.0f + (float)i * 0.15f;
+          vd.amplitude = bands[i].amplitude;
+          vd.emitterX = emitters[emIdx].x;
+          vd.emitterY = emitters[emIdx].y;
+          vd.emitterZ = emitters[emIdx].z;
+          vd.frequency = bands[i].frequency;
+          vd.deltaAmp = dAmp;
+          vd.phase =
+              std::fmod((float)ImGui::GetTime() * bands[i].frequency * 0.05f,
+                        M_PI_F * 2.0f);
+
+          voiceData.push_back(vd);
+        } else {
+          lastAmps[-(int)i - 1] = 0.0f;
+        }
+      }
+    }
+
+    for (int i = 0;
+         i < (int)activeVoices.size() && voiceData.size() < MAX_EMITTERS; i++) {
       const auto &v = activeVoices[i];
-      int emIdx = i % MAX_EMITTERS;
+      int emIdx = voiceData.size() % MAX_EMITTERS;
 
       // Compute transient delta (Phase 12 shockwaves)
       float lastA = lastAmps.count(v.mode->m + v.mode->n * 100)
@@ -334,17 +386,19 @@ int main() {
       float dAmp = std::max(0.0f, v.amplitude - lastA);
       lastAmps[v.mode->m + v.mode->n * 100] = v.amplitude;
 
-      voiceData.push_back({v.mode->m,
-                           v.mode->n,
-                           (float)v.mode->alpha,
-                           v.amplitude,
-                           emitters[emIdx].x,
-                           emitters[emIdx].y,
-                           emitters[emIdx].z,
-                           v.frequency,
-                           dAmp,
-                           v.phase,
-                           {0.0f, 0.0f}});
+      VoiceGPUData vd;
+      vd.m = v.mode->m;
+      vd.n = v.mode->n;
+      vd.alpha = (float)v.mode->alpha;
+      vd.amplitude = v.amplitude;
+      vd.emitterX = emitters[emIdx].x;
+      vd.emitterY = emitters[emIdx].y;
+      vd.emitterZ = emitters[emIdx].z;
+      vd.frequency = v.frequency;
+      vd.deltaAmp = dAmp;
+      vd.phase = v.phase;
+
+      voiceData.push_back(vd);
     }
     // Cleanup old voices from lastAmps if they aren't active
     if (activeVoices.empty())
@@ -379,9 +433,12 @@ int main() {
     static RenderConfig config;
     config.width = window.width();
     config.height = window.height();
-    config.blackHoleRotationX =
-        uiBlackHoleRotationX +
-        (uiAutoRotateBlackHole ? (float)ImGui::GetTime() * 0.2f : 0.0f);
+    config.rotationX =
+        uiRotationX + uiBlackHoleRotationX +
+        (uiAutoRotateBlackHole ? (float)ImGui::GetTime() * 0.2f : 0.0f) +
+        (uiAutoRotateScene ? (float)ImGui::GetTime() * 0.15f : 0.0f);
+    config.rotationY = uiRotationY;
+    config.rotationZ = uiRotationZ;
 
     // ── ImGui HUD ──────────────────────────────────────────────────
     static Preset currentPreset;
@@ -567,6 +624,22 @@ int main() {
           uiRestLength = 0.01f;
         ImGui::SetItemTooltip("Ideal distance where string tension relaxes");
 
+        ImGui::SliderFloat("Rotate X", &uiRotationX, -M_PI_F, M_PI_F,
+                           "%.3f rad");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiRotationX = 0.0f;
+
+        ImGui::SliderFloat("Rotate Y", &uiRotationY, -M_PI_F, M_PI_F,
+                           "%.3f rad");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiRotationY = 0.0f;
+
+        ImGui::SliderFloat("Rotate Z", &uiRotationZ, -M_PI_F, M_PI_F,
+                           "%.3f rad");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiRotationZ = 0.0f;
+
+        ImGui::Checkbox("Auto Rotate View", &uiAutoRotateScene);
         ImGui::Unindent();
       }
 
@@ -574,10 +647,11 @@ int main() {
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         ImGui::Checkbox("ODS-01 Quantum Entanglement", &uiQuantumEntangle);
-        ImGui::SetItemTooltip(
-            "Enable telepathic state transfer between paired particles");
+        ImGui::SetItemTooltip("Enable telepathic state transfer "
+                              "between paired particles");
         ImGui::Checkbox("ODS-06 Black Holes", &uiBlackHoles);
-        ImGui::SetItemTooltip("Enable gravitational collapse (Schwarzschild "
+        ImGui::SetItemTooltip("Enable gravitational collapse "
+                              "(Schwarzschild "
                               "radius) at high density");
         ImGui::Unindent();
       }
@@ -586,8 +660,8 @@ int main() {
         ImGui::Indent();
 
         ImGui::Checkbox("Deterministic (Fixed dt)", &uiFixedTimestep);
-        ImGui::SetItemTooltip(
-            "Force dt = 1/60s for perfectly repeatable experiments");
+        ImGui::SetItemTooltip("Force dt = 1/60s for perfectly "
+                              "repeatable experiments");
 
         ImGui::Separator();
         ImGui::Text("Force Isolation (Solo/Mute):");
@@ -621,7 +695,8 @@ int main() {
         }
 
         ImGui::Checkbox("Auto-Mode (Self-Healing)", &uiAutoMode);
-        ImGui::SetItemTooltip("Automatically dial down parameters and reset on "
+        ImGui::SetItemTooltip("Automatically dial down parameters "
+                              "and reset on "
                               "stability failure");
 
         ImGui::Unindent();
@@ -652,7 +727,8 @@ int main() {
         if (ImGui::Button("Auto-Arrange")) {
           emitters.arrangeSphere(numVoices, 0.4f);
         }
-        ImGui::SetItemTooltip("Arrange emitters in a 3D sphere (r=0.4)");
+        ImGui::SetItemTooltip("Arrange emitters in a 3D sphere "
+                              "(r=0.4)");
         ImGui::Unindent();
       }
 
@@ -660,8 +736,8 @@ int main() {
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         ImGui::Checkbox("Enable VJ Mode (Mic/System In)", &uiVJMode);
-        ImGui::SetItemTooltip(
-            "Visualize incoming audio using 16-band FFT harmonic sculpting");
+        ImGui::SetItemTooltip("Visualize incoming audio using "
+                              "16-band FFT harmonic sculpting");
 
         if (uiVJMode) {
           static float uiInputGain = 2.0f;
@@ -673,10 +749,11 @@ int main() {
             uiInputGain = 2.0f;
             audio.setVJInputGain(uiInputGain);
           }
-          ImGui::SetItemTooltip(
-              "Boost quiet audio signals before FFT analysis");
+          ImGui::SetItemTooltip("Boost quiet audio signals before "
+                                "FFT analysis");
 
-          // Visualize the bands as a small EQ graphic
+          // Visualize the bands as a small EQ
+          // graphic
           auto bands = audio.getVJBands();
           float maxAmp = 0.001f;
           for (const auto &b : bands)
@@ -704,18 +781,38 @@ int main() {
         ImGui::SetItemTooltip("Oscillator waveform type");
 
         if (ImGui::SliderFloat("Drive", &uiScale, 1.0f, 10.0f, "%.1f")) {
-          // This was previously mislabeled as 'Scale' in one place and 'Drive'
-          // in another. Let's use it for Scale (as requested) and move Drive to
-          // a separate slider if needed.
+          // This was previously mislabeled as
+          // 'Scale' in one place and 'Drive' in
+          // another. Let's use it for Scale (as
+          // requested) and move Drive to a separate
+          // slider if needed.
           renderer.setScale(uiScale);
         }
-        ImGui::SetItemTooltip(
-            "Filter saturation and analog clipping (Moog-style)");
+        ImGui::SetItemTooltip("Filter saturation and analog clipping "
+                              "(Moog-style)");
 
         if (ImGui::Checkbox("BBD Chorus", &uiChorus)) {
           synth.chorus().setEnabled(uiChorus);
         }
         ImGui::SetItemTooltip("Lush stereo bucket-brigade dual delay");
+
+        if (uiChorus) {
+          ImGui::Indent();
+          float cRate = synth.chorus().rate();
+          if (ImGui::SliderFloat("LFO Rate", &cRate, 0.1f, 10.0f, "%.2f Hz")) {
+            synth.chorus().setRate(cRate);
+          }
+          float cDepth = synth.chorus().depth();
+          if (ImGui::SliderFloat("LFO Depth", &cDepth, 0.0f, 10.0f,
+                                 "%.2f ms")) {
+            synth.chorus().setDepth(cDepth);
+          }
+          float cMix = synth.chorus().mix();
+          if (ImGui::SliderFloat("Chorus Mix", &cMix, 0.0f, 1.0f, "%.2f")) {
+            synth.chorus().setMix(cMix);
+          }
+          ImGui::Unindent();
+        }
 
         ImGui::SliderFloat("Attack", &uiAttack, 5.0f, 500.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -736,7 +833,8 @@ int main() {
       if (ImGui::Checkbox("Keyboard Mode", &kbMode)) {
         synth.setKeyboardMode(kbMode);
       }
-      ImGui::SetItemTooltip("Toggle between Piano layout (Keyboard) and "
+      ImGui::SetItemTooltip("Toggle between Piano layout (Keyboard) "
+                            "and "
                             "linear mapping (Full Range)");
       ImGui::Unindent();
 
@@ -746,6 +844,13 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiJitter = 1.0f;
         ImGui::SetItemTooltip("Random displacement factor");
+
+        ImGui::Separator();
+        ImGui::Text("GLOBAL LFO");
+        ImGui::SliderFloat("LFO Rate", &uiLFORate, 0.01f, 10.0f, "%.2f Hz");
+        ImGui::SliderFloat("LFO Depth", &uiLFODepth, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Modulates Jitter, Size, and Scale over time");
+
         ImGui::Unindent();
       }
 
@@ -759,7 +864,8 @@ int main() {
           uiScale = 100.0f;
           renderer.setScale(uiScale);
         }
-        ImGui::SetItemTooltip("Global cosmic scale (Expansion/Contraction)");
+        ImGui::SetItemTooltip("Global cosmic scale "
+                              "(Expansion/Contraction)");
 
         ImGui::SliderFloat("Wave Depth", &uiWaveDepth, 5.0f, 100.0f, "%.1f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -782,7 +888,8 @@ int main() {
         if (ImGui::Button("Snap Back (Reset)")) {
           renderer.triggerReset();
         }
-        ImGui::SetItemTooltip("Instantly re-seed all particles into center");
+        ImGui::SetItemTooltip("Instantly re-seed all particles into "
+                              "center");
 
         ImGui::Unindent();
       }
@@ -919,9 +1026,16 @@ int main() {
     synth.setJitter(uiJitter * effectiveJitterMultiplier);
     synth.setDrive(effectiveDrive);
 
-    config.particleSize = effectiveSize;
-    config.plateRadius = uiScale;
+    // Update Global LFO
+    uiLFOPhase =
+        std::fmod(uiLFOPhase + dt * uiLFORate * M_PI_F * 2.0f, M_PI_F * 2.0f);
+    float lfoVal = sin(uiLFOPhase) * uiLFODepth;
+
+    config.particleSize = effectiveSize * (1.0f + lfoVal * 0.2f);
+    config.plateRadius = uiScale * (1.0f + lfoVal * 0.1f);
     config.cameraRho = camera.getRho();
+    config.jitterFactor =
+        uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
     config.orthoMode = uiOrthoMode;
     config.phaseViz = uiPhaseViz;
 

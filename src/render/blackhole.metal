@@ -19,7 +19,9 @@ struct BlackHoleUniforms {
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
-    float4 prevW;  // prevX, prevY, prevZ, pad
+    float4 prevW;  // prevX, prevY, prevZ, temperature
+    float4 spinW;  // spinX, spinY, spinZ, charge
+    uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
 struct SpatialHashUniforms {
@@ -214,6 +216,69 @@ float3 bl_to_cartesian(float r, float th, float ph) {
     return float3(r_a * sin_th * cos(ph), r_a * sin_th * sin(ph), r * cos(th));
 }
 
+// ── Procedural Starfield ──────────────────────
+// Maps final ray direction (th, ph) to a field of stars.
+// The gravitational lensing warps th/ph, so distant stars appear bent around the hole.
+static float starHash(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * float3(443.897, 441.423, 437.195));
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+static float3 sampleStarfield(float th, float ph, float time) {
+    // Convert spherical exit direction to a 2D UV on the celestial sphere
+    float2 starUV = float2(ph / (2.0 * 3.14159265), th / 3.14159265);
+
+    // Tile the sky into a grid of potential star positions
+    float2 gridScale = float2(200.0, 100.0); // Star density
+    float2 cell = floor(starUV * gridScale);
+    float2 frac_uv = fract(starUV * gridScale);
+
+    float brightness = 0.0;
+    float3 starColor = float3(0.0);
+
+    // Check this cell and neighbors for star points
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            float2 neighbor = cell + float2(dx, dy);
+            float h = starHash(neighbor);
+            float2 starPos = float2(h, starHash(neighbor + 100.0));
+
+            float2 diff = (frac_uv - starPos) - float2(dx, dy);
+            float dist = length(diff);
+
+            // Only ~15% of cells have visible stars
+            if (h > 0.85) {
+                float mag = (h - 0.85) / 0.15; // 0-1 magnitude
+                float pointSpread = exp(-dist * dist * 800.0); // Tight point
+                float glow = exp(-dist * dist * 80.0) * 0.15;  // Soft halo
+
+                float star = (pointSpread + glow) * mag;
+                brightness += star;
+
+                // Color temperature variation (blue-white to warm)
+                float temp = starHash(neighbor + 50.0);
+                float3 col = mix(
+                    float3(0.8, 0.85, 1.0),  // Cool blue-white
+                    float3(1.0, 0.9, 0.7),   // Warm yellow
+                    temp
+                );
+                // Rare bright blue giants
+                if (temp > 0.9) col = float3(0.7, 0.8, 1.0) * 1.5;
+
+                starColor += col * star;
+            }
+        }
+    }
+
+    // Subtle Milky Way band (galactic plane glow near equator)
+    float milkyWay = exp(-pow((th - 1.5707) * 3.0, 2.0)) * 0.03;
+    float mwNoise = starHash(floor(starUV * 500.0)) * 0.5 + 0.5;
+    starColor += float3(0.6, 0.55, 0.5) * milkyWay * mwNoise;
+
+    return starColor;
+}
+
 // ── Volumetric Grid Sampling ──────────────────
 float4 sample_spatial_grid_velocity(
     float3 cartPos,
@@ -364,28 +429,36 @@ fragment float4 fragment_black_hole(
     }
     
     if (hitHorizon) {
+        // Pure black inside event horizon, but composite over starfield for opacity
         return float4(0.0, 0.0, 0.0, 1.0 * opacity);
     }
-    
+
     // ── PHOTON SPHERE GLOW (Gargantua Aesthetics) ──
-    // If the ray grazed the photon sphere (~1.5 * r_horizon) without falling in, 
-    // it picks up immense brightness from trapped light.
     if (accumulatedColor.a < 0.99) {
         float photon_sphere = r_horizon * 1.5;
-        if (min_r < photon_sphere * 1.25) { // Wider acceptance for the arc
-            // How close did it get to the exact photon orbit?
+        if (min_r < photon_sphere * 1.25) {
             float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.25);
             if (proximity > 0.0) {
-                float intensity = pow(proximity, 3.0) * 2.0; // Boosted intensity for Gargantua effect
-                float3 glowColor = float3(1.0, 0.8, 0.5) * intensity; // White-hot plasma glow
-                
+                float intensity = pow(proximity, 3.0) * 2.0;
+                float3 glowColor = float3(1.0, 0.8, 0.5) * intensity;
+
                 float alpha = intensity * (1.0 - accumulatedColor.a);
                 accumulatedColor.rgb += glowColor * alpha;
                 accumulatedColor.a += alpha;
             }
         }
     }
-    
+
+    // ── STARFIELD BACKGROUND (Gravitational Lensing Visible) ──
+    // Rays that escape sample a procedural starfield at their warped exit direction.
+    // The Kerr metric bends the ray's th/ph, so stars appear warped around the hole.
+    if (!hitHorizon && accumulatedColor.a < 0.99) {
+        float3 stars = sampleStarfield(state.th, state.ph, uniforms.time);
+        float starAlpha = (1.0 - accumulatedColor.a);
+        accumulatedColor.rgb += stars * starAlpha;
+        accumulatedColor.a += starAlpha * saturate(length(stars) * 2.0);
+    }
+
     accumulatedColor.a = hitHorizon ? 1.0 : accumulatedColor.a;
     accumulatedColor *= opacity;
     return accumulatedColor;

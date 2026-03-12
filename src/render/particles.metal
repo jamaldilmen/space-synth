@@ -287,9 +287,18 @@ kernel void compute_physics(
         float targetRadius = 0.75f;
         if (r_curr > 0.001f) {
             float3 dir = pvec / r_curr;
-            // Hooke's law spring toward shell surface
             float displacement = (r_curr - targetRadius);
-            float springForce = displacement * 25.0f * lcI;
+
+            // Hard velocity brake: kill outward momentum so particles snap to shell
+            // The further past targetRadius, the harder the brake
+            float overshoot = max(0.0f, displacement) / (targetRadius + 0.1f);
+            float brakeFactor = max(0.05f, 1.0f - overshoot * 3.0f);
+            vpx *= brakeFactor;
+            vpy *= brakeFactor;
+            vpz *= brakeFactor;
+
+            // Strong spring toward shell surface (matched to explosion force)
+            float springForce = displacement * 80.0f * lcI;
             shiftVx -= dir.x * springForce * dt;
             shiftVy -= dir.y * springForce * dt;
             shiftVz -= dir.z * springForce * dt;
@@ -310,8 +319,8 @@ kernel void compute_physics(
     else {
         if (r_curr > 0.001f) {
             float3 dir = pvec / r_curr;
-            // Collapse intensity grows with release progress
-            float collapseBase = 50.0f * lcI;
+            // Collapse: strong from the start, minimum floor so it always pulls
+            float collapseBase = max(50.0f * lcI, 30.0f);
             float progressFactor = 1.0f + t * t * 8.0f;
             float gamma2 = 1.0f / max(0.01f, 1.0f - (SCHWARZSCHILD_RS * t) / r_curr);
             float collapsePull = collapseBase * progressFactor * gamma2;
@@ -328,13 +337,10 @@ kernel void compute_physics(
             shiftVy += spinForce.y * dragStrength * dt;
             shiftVz += spinForce.z * dragStrength * dt;
 
-            // Cosmological redshift
-            float redshift = 1.0f / (1.0f + t * t * 2.0f);
-            vpx *= redshift; vpy *= redshift; vpz *= redshift;
-            currentTemp *= (1.0f - t * 0.02f);
+            currentTemp *= (1.0f - t * 0.05f);
 
-            // Event horizon capture at collapse completion
-            if (t > 0.9f && r_curr < SCHWARZSCHILD_RS * 2.0f) {
+            // Event horizon capture
+            if (t > 0.8f && r_curr < SCHWARZSCHILD_RS * 2.0f) {
                 vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
                 shiftVx *= 0.1f; shiftVy *= 0.1f; shiftVz *= 0.1f;
             }
@@ -409,11 +415,13 @@ kernel void compute_physics(
             shiftVz += inducedV.z * 0.1f;
 
             // Phase 4 & 12: Mechanical Point Source Impulse + Shockwaves
+            // Base impulse uses deltaAmp (transient-only), not raw amp.
+            // This prevents continuous outward push during sustain.
             float pushRadius = 2.0f;
             if (r < pushRadius) {
                 float3 radialDir = float3(dx / r, dy / r, dz / r);
-                float impulseForce = amp * (1.0f - r / pushRadius) * 20.0f;
-                
+                float impulseForce = voices[vi].deltaAmp * 80.0f * (1.0f - r / pushRadius);
+
                 float densityScale = 1.0f / max(0.1f, u.plateRadius / 400.0f);
                 float shockwave = voices[vi].deltaAmp * 400.0f * (1.0f - r / pushRadius) * densityScale;
                 impulseForce += shockwave;
@@ -677,20 +685,56 @@ kernel void compute_physics(
         }
     }
 
+    // ── Envelope-Coupled Velocity Damping ──────────────────────────────
+    // Rule: visuals track the sound. Not Attack = no free coasting.
+    // Attack is the ONLY phase where particles get to keep momentum.
+    if (u.envelopePhase > 1.5f) {
+        // NOT in Attack: kill momentum hard. Forces (spring/collapse) drive motion, not inertia.
+        float damp = (u.envelopePhase > 3.5f) ? 0.15f : 0.5f; // Release=brutal, Sustain=firm
+        vpx *= damp;
+        vpy *= damp;
+        vpz *= damp;
+    }
+
     // Combine proxy with force pulses
     float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
-    
+
     // Speed cap
     float speed = length(finalV);
     if (speed > u.speedCap) {
         finalV = (finalV / max(speed, 0.0001f)) * u.speedCap;
     }
-    
+
     // Final position integration
-    // PHASE 14 BUG FIX: Do NOT add shiftX/Y/Z here, they were already added to px/py/pz
     float3 nextPos = float3(px, py, pz) + finalV;
 
+    // ── DIRECT ENVELOPE→RADIUS COUPLING ──────────────────────────────
+    // The visual radius MUST track the sound envelope. This is not a force.
+    // It's a hard constraint: sound amplitude = visual size. Period.
+    if (!collapsed && !isSilence) {
+        float nextR = length(nextPos);
+        if (nextR > 0.001f) {
+            float targetRadius;
+            if (u.envelopePhase < 1.5f) {
+                // Attack: expand from 0 to 0.75
+                targetRadius = 0.75f * u.envelopeProgress;
+            } else if (u.envelopePhase < 3.5f) {
+                // Decay/Sustain: hold at 0.75
+                targetRadius = 0.75f;
+            } else {
+                // Release: contract from 0.75 back to 0
+                targetRadius = 0.75f * (1.0f - u.envelopeProgress);
+            }
+
+            float3 dir = nextPos / nextR;
+            float blendedR = mix(nextR, targetRadius, 0.25f);
+            nextPos = dir * blendedR;
+            finalV *= 0.75f;
+        }
+    }
+
     // Phase accumulation
+    speed = length(finalV);
     float newPhase = p.velW.w + speed * dt;
 
     // ── ODS-04: Dimming My Light (Stealth / ANC) ───────────────────────────

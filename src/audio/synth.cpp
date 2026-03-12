@@ -92,28 +92,34 @@ void Synth::processBlock(float sampleRate, float *outL, float *outR,
     swapBuffer_.swap(commandQueue_);
   }
 
-  // Interleave commands and synthesis for sample-accurate timing
+  // Lock mutex_ with try_lock: never blocks the RT thread.
+  // If the main thread holds it (reading voices for UI), we still synthesize
+  // from existing voice state but skip note-on/off commands this block.
+  // Commands stay in swapBuffer_ and will be processed next block.
+  std::unique_lock<std::mutex> voiceLock(mutex_, std::try_to_lock);
+
   int cmdIdx = 0;
 
   for (int i = 0; i < numFrames; i++) {
-    // Fire all commands scheduled for this specific sample
-    while (cmdIdx < (int)swapBuffer_.size() &&
-           swapBuffer_[cmdIdx].sampleOffset <= i) {
-      const auto &cmd = swapBuffer_[cmdIdx];
-      if (cmd.type == MidiCommand::NoteOn) {
-        handleNoteOnInternal(cmd.midi, cmd.velocity);
-      } else {
-        handleNoteOffInternal(cmd.midi);
+    // Only process MIDI commands if we got the lock
+    if (voiceLock.owns_lock()) {
+      while (cmdIdx < (int)swapBuffer_.size() &&
+             swapBuffer_[cmdIdx].sampleOffset <= i) {
+        const auto &cmd = swapBuffer_[cmdIdx];
+        if (cmd.type == MidiCommand::NoteOn) {
+          handleNoteOnInternal(cmd.midi, cmd.velocity);
+        } else {
+          handleNoteOffInternal(cmd.midi);
+        }
+        cmdIdx++;
       }
-      cmdIdx++;
     }
 
     float mixed = 0.0f;
     for (auto it = voices_.begin(); it != voices_.end();) {
       mixed += it->second.tick(sampleRate, jitter_);
-      // Update envelope and clean up finished voices
       it->second.envelope.update(1.0f / sampleRate, envParams_);
-      if (!it->second.envelope.isActive()) {
+      if (voiceLock.owns_lock() && !it->second.envelope.isActive()) {
         it = voices_.erase(it);
       } else {
         ++it;
@@ -123,10 +129,17 @@ void Synth::processBlock(float sampleRate, float *outL, float *outR,
     float limited = std::tanh(mixed * 0.45f) * 0.9f;
     chorus_.process(limited, limited, outL[i], outR[i]);
 
-    // Apply Master Volume
     outL[i] *= masterVolume_;
     outR[i] *= masterVolume_;
   }
+
+  // If we couldn't get the lock, re-queue unprocessed commands for next block
+  if (!voiceLock.owns_lock() && !swapBuffer_.empty()) {
+    std::lock_guard<std::mutex> lock(queueMutex_);
+    commandQueue_.insert(commandQueue_.begin(), swapBuffer_.begin(),
+                         swapBuffer_.end());
+  }
+  swapBuffer_.clear();
 }
 
 void Synth::processCommands() {
@@ -274,15 +287,43 @@ Synth::EnvelopeState Synth::getDominantEnvelope() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (voices_.empty()) {
-    return {0.0f, 0.0f, 0.0f}; // Silence → Black hole
+    return {0.0f, 0.0f, 0.0f}; // Silence -> Black hole
   }
 
-  // Find the loudest voice to determine lifecycle phase
-  float maxAmp = 0.0f;
+  // Priority: Attack > Decay > Sustain > Release > loudest.
+  // During fast arps, a new Attack voice MUST override an older louder voice
+  // so the GPU sees the explosion (Phase 1) instead of staying in sustain.
   const Voice *dominant = nullptr;
+  float maxAmp = 0.0f;
+  int bestPriority = -1; // Higher = wins
 
   for (const auto &[note, voice] : voices_) {
-    if (voice.envelope.amplitude > maxAmp) {
+    if (voice.envelope.amplitude < 0.001f)
+      continue;
+
+    int priority = 0;
+    switch (voice.envelope.phase) {
+    case EnvPhase::Attack:
+      priority = 4;
+      break;
+    case EnvPhase::Decay:
+      priority = 3;
+      break;
+    case EnvPhase::Sustain:
+      priority = 2;
+      break;
+    case EnvPhase::Release:
+      priority = 1;
+      break;
+    default:
+      priority = 0;
+      break;
+    }
+
+    // Pick highest priority phase; within same priority, pick loudest
+    if (priority > bestPriority ||
+        (priority == bestPriority && voice.envelope.amplitude > maxAmp)) {
+      bestPriority = priority;
       maxAmp = voice.envelope.amplitude;
       dominant = &voice;
     }

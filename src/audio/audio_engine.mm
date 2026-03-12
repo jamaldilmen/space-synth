@@ -241,9 +241,17 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   AudioUnitSetProperty(impl_->audioUnit,
                        2101 /* kAUVoiceIOProperty_VoiceProcessingEnableAGC */,
                        kAudioUnitScope_Global, 0, &disable, sizeof(disable));
+
+  // Set ducking to 0 on BUS 0 (Output)
   AudioUnitSetProperty(impl_->audioUnit,
                        2102 /* kAUVoiceIOProperty_DuckNonVoiceAudio */,
                        kAudioUnitScope_Global, 0, &disable, sizeof(disable));
+
+  // Set ducking to 0 on BUS 1 (Input) specifically (some Mac versions need
+  // this)
+  AudioUnitSetProperty(impl_->audioUnit,
+                       2102 /* kAUVoiceIOProperty_DuckNonVoiceAudio */,
+                       kAudioUnitScope_Global, 1, &disable, sizeof(disable));
 
   UInt32 enableBypass = 1;
   AudioUnitSetProperty(

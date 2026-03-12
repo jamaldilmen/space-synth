@@ -80,7 +80,7 @@ int main() {
       true; // Enable double-click to type on all sliders
 
   // ── Particles ───────────────────────────────────────────────────────
-  const int PARTICLE_COUNT = 5000000;
+  const int PARTICLE_COUNT = 10000000;
   const float MAX_WAVE_DEPTH = 100.0f;
   const float PLATE_RADIUS = 400.0f;
 
@@ -170,7 +170,7 @@ int main() {
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
-  static int uiParticleCount = 1000000;
+  static int uiParticleCount = 5000000;
   static float uiJitter = 0.1f;
   static float uiScale = 100.0f; // NEW DEFAULT: 100.0f as requested
   static float uiSupernova = 0.0f;
@@ -584,9 +584,9 @@ int main() {
           uiParticleSize = 4.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
 
-        ImGui::SliderInt("Amount", &uiParticleCount, 10000, 5000000);
+        ImGui::SliderInt("Amount", &uiParticleCount, 0, 10000000);
         if (ImGui::Button("Reset to Default")) {
-          uiParticleCount = 1000000;
+          uiParticleCount = 5000000;
         }
         ImGui::SetItemTooltip("Active number of particles");
 

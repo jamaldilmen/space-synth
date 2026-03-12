@@ -319,7 +319,8 @@ float4 sample_spatial_grid_velocity(
     // Density calibration: 
     // The image shows a massive glowing sphere because density is too high everywhere.
     // We need to heavily attenuate it so we only see the actual discrete particles forming the disk.
-    float density = clamp(count * 0.003f, 0.0f, 1.0f);
+    // Scale inversely by particleCount so it looks consistent regardless of slider
+    float density = clamp(count * (1000000.0f / max(1.0f, float(gridU.particleCount))) * 0.003f, 0.0f, 1.0f);
     
     // Restore soft z-mask: Gaussian falloff to avoid hard shadows while shaping the disk
     float diskThickness = 0.2f;

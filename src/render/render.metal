@@ -149,14 +149,10 @@ vertex VertexOut particle_vertex(
     float originR = length(in.posW.xyz);
     out.originDist = originR;
     
-    // During the Black Hole Phase, we cull all particles within the core region (r < 1.5).
-    // The `blackhole.metal` raytracer uses the Spatial Hash Grid to render these 
+    // During the Black Hole Phase, `blackhole.metal` raytracer uses the Spatial Hash Grid to render 
     // particles with full relativistic Kerr-metric ray-bending (gravitational lensing).
-    // If we draw them here as raw 2D points, they will linearly project and obscure the
-    // event horizon.
-    // Unconditionally hand over the inner r < 1.25 to the volumetric raytracer.
-    // Also hide particles entirely during silence (envelopePhase < 0.5) because dual rendering happens.
-    if (cam.envelopePhase < 0.5f || originR < 1.25f) {
+    // We hide the particles entirely during silence (envelopePhase < 0.5) to avoid dual rendering.
+    if (cam.envelopePhase < 0.5f) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);

@@ -158,7 +158,8 @@ kernel void compute_physics(
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) {
         globalTargetRadius = 0.75f * t;
     } else if (u.envelopePhase >= 1.5f && u.envelopePhase < 3.5f) {
-        globalTargetRadius = 0.75f + pow(lcI, 3.0f) * 50.0f;
+        // Cap the cubic expansion tightly so Supernova doesn't delete particles into floating point infinity
+        globalTargetRadius = 0.75f + min(80.0f, pow(lcI, 2.5f) * 20.0f);
     } else if (u.envelopePhase >= 3.5f) {
         globalTargetRadius = max(0.01f, r_curr * (1.0f - t));
     }
@@ -265,7 +266,8 @@ kernel void compute_physics(
     }
     // ─── PHASE 1: ATTACK → BIG BANG EXPLOSION ────────────────────────────
     else if (u.envelopePhase < 1.5f) {
-        float explosionPower = (1.0f - t) * 80.0f * lcI;
+        // Cap explosion power
+        float explosionPower = (1.0f - t) * 80.0f * min(lcI, 3.0f);
 
         if (r_curr < 0.001f) {
             // Particle at singularity: initialize random direction
@@ -326,7 +328,8 @@ kernel void compute_physics(
             // ── Self-Oscillation Feature (Empty Space Resonance) ──
             // When lcI > 1.25 (filter/LFO resonance), standing wave plasma filaments emerge
             if (lcI > 1.25f) {
-                float resonance = lcI - 1.25f;
+                // Cap resonance force so supernova doesn't snap the webbing completely
+                float resonance = min(lcI - 1.25f, 5.0f);
                 float ribs = sin(r_curr * 15.0f - u.time * 25.0f) * cos(atan2(py, px) * 8.0f);
                 float waveForce = ribs * 150.0f * resonance;
                 shiftVx += dir.x * waveForce * dt;

@@ -158,8 +158,8 @@ kernel void compute_physics(
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) {
         globalTargetRadius = 0.75f * t;
     } else if (u.envelopePhase >= 1.5f && u.envelopePhase < 3.5f) {
-        // Cap the cubic expansion tightly so Supernova doesn't delete particles into floating point infinity
-        globalTargetRadius = 0.75f + min(80.0f, pow(lcI, 2.5f) * 20.0f);
+        // Restore earlier linear limit to prevent chords and Supernova from blowing out
+        globalTargetRadius = max(0.75f, lcI * 0.9f);
     } else if (u.envelopePhase >= 3.5f) {
         globalTargetRadius = max(0.01f, r_curr * (1.0f - t));
     }

@@ -12,6 +12,8 @@
 #include "ui/ui_theme.h"
 #include "core/logger.h"
 #include "core/resource_helper.h"
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <fcntl.h>
 #include <signal.h>
@@ -97,9 +99,6 @@ int main() {
   // ── Camera ──────────────────────────────────────────────────────────
   Camera camera;
   window.setMouseCallback([&](const MouseEvent &e) {
-    // Note: We don't check WantCaptureMouse here because window.mm already
-    // filters the INITIAL mouseDown. We want rotation to continue even if the
-    // mouse drags over UI windows after starting outside.
     if (e.isDown && (e.button == 0 || e.button == 1)) {
       // Rotate: scaling deltas for sensitivity
       camera.rotate(-e.dx * 0.005f, -e.dy * 0.005f);
@@ -200,7 +199,7 @@ int main() {
   static float uiAttack = 20.0f;   // ms
   static float uiRelease = 400.0f; // ms
   static bool uiCollisions =
-      true; // Particle-particle collisions (MUST be on for Phase 5)
+      false; // Off by default — grid too small for 10M (32^3 cells, MAX_PER_CELL=32)
   static bool uiPhaseViz = false; // Feynman phase arrow coloring
   static float uiBloom = 0.0f;
   static float uiTrailDecay = 0.0f;
@@ -342,47 +341,150 @@ int main() {
 
     // Build voice data for GPU (with emitter positions)
     auto activeVoices = synth.getActiveVoices();
-    std::vector<VoiceGPUData> voiceData;
+    std::vector<VoiceGPUData> vjVoices;
+    std::vector<VoiceGPUData> synthVoices;
     static std::unordered_map<int, float> lastAmps;
 
     // ── VJ Audio Band Injection ──
+    // Per-band release state: tracks amplitude for smooth fade-out
+    // 3C: Crossfade support — track previous mode for smooth transitions
+    struct VJBandState {
+      float amp; int group;
+      int lastM; int lastN; float lastAlpha;
+      // Crossfade: previous mode fading out when mode changes
+      int prevM; int prevN; float prevAlpha;
+      float crossfade; // 1.0 = fully old mode, 0.0 = fully new mode
+    };
+    static std::array<VJBandState, 16> vjBandState{};
+    static constexpr float VJ_RELEASE_RATE = 5.0f; // decay per second (~200ms full fade)
+    static constexpr float VJ_CROSSFADE_RATE = 8.0f; // crossfade speed (~125ms)
+
     if (uiVJMode) {
       auto bands = audio.getVJBands();
-      for (size_t i = 0; i < bands.size() && voiceData.size() < MAX_EMITTERS;
-           i++) {
+      uint32_t tMask = audio.getTransientMask();
+
+      // Curated mode palettes: transient vs sustain per frequency group
+      struct ModeDef { int m; int n; float alpha; };
+      static const ModeDef transientModes[6] = {
+        {0, 1, 2.40f},  // Sub: radial pulse
+        {0, 2, 5.52f},  // Kick: radial explosion
+        {6, 1, 6.38f},  // Low-mid: scattered
+        {5, 2, 8.41f},  // Mid: complex shrapnel
+        {10,1, 10.5f},  // Hi-mid: fine detail
+        {8, 1, 8.65f},  // Air: chaotic sparkle
+      };
+      static const ModeDef sustainModes[6] = {
+        {1, 1, 3.83f},  // Sub: simple breathing
+        {2, 1, 5.13f},  // Kick/bass: warm wave
+        {3, 1, 6.38f},  // Low-mid: flowing
+        {2, 2, 7.01f},  // Mid: medium complexity
+        {4, 1, 7.58f},  // Hi-mid: detailed
+        {3, 2, 8.41f},  // Air: texture
+      };
+
+      // Update per-band release state
+      size_t bandCount = std::min(bands.size(), (size_t)16);
+      for (size_t i = 0; i < bandCount; i++) {
+        int group = (i < 2) ? 0 : (i < 4) ? 1 : (i < 7) ? 2 : (i < 10) ? 3 : (i < 13) ? 4 : 5;
         if (bands[i].amplitude > 0.005f) {
-          int emIdx = voiceData.size() % MAX_EMITTERS;
+          // Active: track live amplitude and mode
+          vjBandState[i].amp = bands[i].amplitude;
+          vjBandState[i].group = group;
+          bool isOnset = (tMask >> i) & 1;
+          const ModeDef& mode = isOnset ? transientModes[group] : sustainModes[group];
+          // 3C: Detect mode change → trigger crossfade
+          if (mode.m != vjBandState[i].lastM || mode.n != vjBandState[i].lastN) {
+            vjBandState[i].prevM = vjBandState[i].lastM;
+            vjBandState[i].prevN = vjBandState[i].lastN;
+            vjBandState[i].prevAlpha = vjBandState[i].lastAlpha;
+            vjBandState[i].crossfade = 1.0f; // start full crossfade
+          }
+          vjBandState[i].lastM = mode.m;
+          vjBandState[i].lastN = mode.n;
+          vjBandState[i].lastAlpha = mode.alpha;
+        } else if (vjBandState[i].amp > 0.01f) {
+          // Releasing: decay amplitude smoothly
+          vjBandState[i].amp -= VJ_RELEASE_RATE * dt;
+          if (vjBandState[i].amp < 0.01f) vjBandState[i].amp = 0.0f;
+        } else {
+          vjBandState[i].amp = 0.0f;
+        }
+        // 3C: Decay crossfade timer
+        if (vjBandState[i].crossfade > 0.0f) {
+          vjBandState[i].crossfade -= VJ_CROSSFADE_RATE * dt;
+          if (vjBandState[i].crossfade < 0.0f) vjBandState[i].crossfade = 0.0f;
+        }
+      }
+
+      // Sort by current amplitude (live + releasing), take top 6
+      constexpr int VJ_MAX_VOICES = 6;
+      std::array<size_t, 16> bandIdx;
+      for (size_t i = 0; i < bandCount; i++) bandIdx[i] = i;
+      std::sort(bandIdx.begin(), bandIdx.begin() + bandCount,
+                [&](size_t a, size_t b) { return vjBandState[a].amp > vjBandState[b].amp; });
+
+      int vjAdded = 0;
+      for (size_t bi = 0; bi < bandCount && vjAdded < VJ_MAX_VOICES; bi++) {
+        size_t i = bandIdx[bi];
+        float amp = vjBandState[i].amp;
+        if (amp > 0.005f) {
+          int emIdx = vjVoices.size() % MAX_EMITTERS;
 
           float dAmp =
-              std::max(0.0f, bands[i].amplitude - lastAmps[-(int)i - 1]);
-          lastAmps[-(int)i - 1] = bands[i].amplitude;
+              std::max(0.0f, amp - lastAmps[-(int)i - 1]);
+          lastAmps[-(int)i - 1] = amp;
 
+          // 3C: Crossfade weighting — new mode fades in, old mode fades out
+          float xfade = vjBandState[i].crossfade; // 1.0=old, 0.0=new
+          float newWeight = 1.0f - xfade;
+          float freq = (i < bands.size()) ? bands[i].frequency : 440.0f;
+          float phase = std::fmod((float)ImGui::GetTime() * freq * 0.05f,
+                                  M_PI_F * 2.0f);
+
+          // Primary voice (new/current mode)
           VoiceGPUData vd;
-          // Assign unique harmonic modes (M,N) based on frequency band index
-          vd.m = (int)(i % 5) + 1;
-          vd.n = (int)(i / 5) + 1;
-          vd.alpha = 1.0f + (float)i * 0.15f;
-          vd.amplitude = bands[i].amplitude;
+          vd.m = vjBandState[i].lastM;
+          vd.n = vjBandState[i].lastN;
+          vd.alpha = vjBandState[i].lastAlpha;
+          vd.amplitude = amp * newWeight;
           vd.emitterX = emitters[emIdx].x;
           vd.emitterY = emitters[emIdx].y;
           vd.emitterZ = emitters[emIdx].z;
-          vd.frequency = bands[i].frequency;
-          vd.deltaAmp = dAmp;
-          vd.phase =
-              std::fmod((float)ImGui::GetTime() * bands[i].frequency * 0.05f,
-                        M_PI_F * 2.0f);
+          vd.frequency = freq;
+          vd.deltaAmp = dAmp * newWeight;
+          vd.phase = phase;
+          vd.bandGroup = vjBandState[i].group;
 
-          voiceData.push_back(vd);
+          vjVoices.push_back(vd);
+          vjAdded++;
+
+          // Crossfade voice (old mode fading out)
+          if (xfade > 0.01f && vjAdded < VJ_MAX_VOICES + 3) {
+            VoiceGPUData vdOld;
+            vdOld.m = vjBandState[i].prevM;
+            vdOld.n = vjBandState[i].prevN;
+            vdOld.alpha = vjBandState[i].prevAlpha;
+            vdOld.amplitude = amp * xfade;
+            vdOld.emitterX = emitters[emIdx].x;
+            vdOld.emitterY = emitters[emIdx].y;
+            vdOld.emitterZ = emitters[emIdx].z;
+            vdOld.frequency = freq;
+            vdOld.deltaAmp = 0.0f;
+            vdOld.phase = phase;
+            vdOld.bandGroup = vjBandState[i].group;
+            vjVoices.push_back(vdOld);
+          }
         } else {
           lastAmps[-(int)i - 1] = 0.0f;
         }
       }
     }
 
+    // Synth voices (cap at 8)
     for (int i = 0;
-         i < (int)activeVoices.size() && voiceData.size() < MAX_EMITTERS; i++) {
+         i < (int)activeVoices.size() && synthVoices.size() < 8; i++) {
       const auto &v = activeVoices[i];
-      int emIdx = voiceData.size() % MAX_EMITTERS;
+      int emIdx = (vjVoices.size() + synthVoices.size()) % MAX_EMITTERS;
 
       // Compute transient delta (Phase 12 shockwaves)
       float lastA = lastAmps.count(v.mode->m + v.mode->n * 100)
@@ -402,12 +504,26 @@ int main() {
       vd.frequency = v.frequency;
       vd.deltaAmp = dAmp;
       vd.phase = v.phase;
+      vd.bandGroup = 0;
 
-      voiceData.push_back(vd);
+      synthVoices.push_back(vd);
     }
     // Cleanup old voices from lastAmps if they aren't active
     if (activeVoices.empty())
       lastAmps.clear();
+
+    // Phase 4A: Merge voice sets with dynamic amplitude weighting
+    float vjAmp = 0.0f, synthAmp = 0.0f;
+    for (auto& v : vjVoices) vjAmp += v.amplitude;
+    for (auto& v : synthVoices) synthAmp += v.amplitude;
+    float sumAmp = vjAmp + synthAmp + 1e-6f;
+    float vjW = 0.3f + 0.7f * (vjAmp / sumAmp);
+    float synthW = 0.3f + 0.7f * (synthAmp / sumAmp);
+
+    std::vector<VoiceGPUData> voiceData;
+    for (auto v : synthVoices) { v.amplitude *= synthW; voiceData.push_back(v); }
+    for (auto v : vjVoices) { v.amplitude *= vjW; voiceData.push_back(v); }
+    if (voiceData.size() > MAX_EMITTERS) voiceData.resize(MAX_EMITTERS);
 
     camera.update(dt);
     float view[16], proj[16], viewProj[16];
@@ -1117,6 +1233,17 @@ int main() {
 
     // Phase 17: Wire ADSR lifecycle to black hole dynamics
     auto envState = synth.getDominantEnvelope();
+
+    // VJ mode: if VJ bands are driving voices but synth is silent,
+    // override envelope to sustain so GPU doesn't gate forces
+    if (uiVJMode && envState.phase < 0.5f && !voiceData.empty()) {
+        float vjMaxAmp = 0.0f;
+        for (const auto& vd : voiceData) vjMaxAmp = std::max(vjMaxAmp, vd.amplitude);
+        envState.phase = 3.0f;     // Sustain
+        envState.progress = 1.0f;  // Fully in sustain
+        envState.intensity = vjMaxAmp;
+    }
+
     renderer.setEnvelopeState(envState.phase, envState.progress,
                               envState.intensity);
 
@@ -1124,8 +1251,22 @@ int main() {
     config.envelopePhase = envState.phase;
     config.envelopeProgress = envState.progress;
 
+    float effectiveTotalAmp = synth.totalAmplitude();
+    if (uiVJMode) {
+        for (const auto& vd : voiceData) effectiveTotalAmp += vd.amplitude;
+    }
+
+    // Phase 1A: Smoothed amplitude envelope (attack-release)
+    // Prevents jarring jumps and ensures particles have time to respond
+    static float smoothedAmp = 0.0f;
+    float rise = 0.25f, decay = 0.12f;
+    if (effectiveTotalAmp > smoothedAmp)
+        smoothedAmp = rise * effectiveTotalAmp + (1.0f - rise) * smoothedAmp;
+    else
+        smoothedAmp = decay * effectiveTotalAmp + (1.0f - decay) * smoothedAmp;
+
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
-                         synth.totalAmplitude(), uiWaveDepth,
+                         smoothedAmp, uiWaveDepth,
                          uiJitter * effectiveJitterMultiplier, effectiveDrive,
                          uiEField, uiBField, uiGravity, uiStringStiffness,
                          uiRestLength, debugFlags);

@@ -13,7 +13,7 @@ struct RenderConfig {
 
   // Post-FX
   float bloomIntensity = 0.0f;
-  float trailDecay = 0.0f; // Persistence of previous frame
+  float trailDecay = 0.0f; // Persistence of previous frame (user-controlled via POST-FX)
   float chromaticAmount = 0.0f;
 
   // New Simulation
@@ -90,7 +90,8 @@ struct VoiceGPUData {
   float frequency;
   float deltaAmp;   // Transient spike detection
   float phase;      // Audio-rate oscillator phase
-  float padding[2]; // Alignment to 48 bytes (16x3)
+  int bandGroup;    // Perceptual frequency group (0-5) for color mapping
+  float padding;    // Alignment to 48 bytes (16x3)
 };
 
 // Physics uniforms for compute shader

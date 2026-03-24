@@ -629,7 +629,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Spatial hash build (4 phases) ──────────────────────────────
-    if (collisionsEnabled && assignCellsPipeline && countCellsPipeline &&
+    // Only build when collisions are on OR during silence/release (raytracer needs density)
+    bool needSpatialHash = collisionsEnabled ||
+        (physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f);
+    if (needSpatialHash && assignCellsPipeline && countCellsPipeline &&
         prefixSumLocalPipeline && prefixSumBlocksPipeline &&
         prefixSumAddPipeline && scatterPipeline) {
       // Upload spatial hash uniforms
@@ -862,7 +865,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
   // 1. Draw Black Hole Background (raymarching)
-  if (blackHolePipeline && config.envelopePhase <= 0.5f) {
+  // Only run during silence or release — saves ~51B trig ops/frame during play
+  PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
+  bool needRaytracer = (phys_gate->envelopePhase < 0.5f || phys_gate->envelopePhase > 3.5f);
+  if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8 bytes
       float cameraPos[3];  // 12 bytes

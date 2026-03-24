@@ -164,10 +164,14 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureMouse)
+    return;
   [self handleMouseEvent:event isDown:YES button:0];
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureMouse)
+    return;
   [self handleMouseEvent:event isDown:YES button:1];
 }
 
@@ -176,6 +180,8 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {
+  if (ImGui::GetIO().WantCaptureMouse)
+    return;
   [self handleMouseEvent:event isDown:YES button:1];
 }
 

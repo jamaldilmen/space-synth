@@ -66,6 +66,10 @@ public:
   struct VJBand {
     float frequency; // Center frequency of the band
     float amplitude; // Current envelope-followed amplitude
+    float fastEnv = 0.0f;
+    float slowEnv = 0.0f;
+    float cooldown = 0.0f;
+    bool isTransient = false;
   };
 
   // Get the current VJ frequency analysis bands (lock-free read)
@@ -96,6 +100,10 @@ public:
   std::vector<VJBand> vjBands_;
   mutable std::mutex vjMutex_;
   std::atomic<float> vjInputGain_{2.0f}; // Default boost to 2.0x
+  std::atomic<uint32_t> transientMask_{0};
+
+public:
+  uint32_t getTransientMask() const { return transientMask_.load(std::memory_order_acquire); }
 };
 
 } // namespace space

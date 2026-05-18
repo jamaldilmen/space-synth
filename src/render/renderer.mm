@@ -883,9 +883,13 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
   // 1. Draw Black Hole Background (raymarching)
-  // Only run during silence or release — saves ~51B trig ops/frame during play
+  // Run during silence, sustain, or release. Attack + decay are skipped
+  // (the shader-internal opacity would be 0 in those phases anyway, so
+  // skipping avoids the ~51B trig ops/frame raytrace cost during the
+  // loudest, most CPU-hungry transients).
   PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-  bool needRaytracer = (phys_gate->envelopePhase < 0.5f || phys_gate->envelopePhase > 3.5f);
+  bool needRaytracer = (phys_gate->envelopePhase < 0.5f      // silence
+                     || phys_gate->envelopePhase > 2.5f);    // sustain or release
   if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8 bytes

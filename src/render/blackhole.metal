@@ -344,9 +344,20 @@ fragment float4 fragment_black_hole(
     device const uint* cellStarts [[buffer(2)]],
     device const Particle* sortedParticles [[buffer(3)]])
 {
-    // if (uniforms.envelopePhase > 0.5) return float4(0.0);
-    // float opacity = saturate(1.0 - (uniforms.envelopePhase / 0.5));
-    float opacity = 1.0;
+    // ADSR opacity gate, matches particle_vertex lensScale in render.metal.
+    //   0 = silence (full)
+    //   1 = attack  (fade out)
+    //   2 = decay   (hidden)
+    //   3 = sustain (ramp back in like aftertouch)
+    //   4 = release (full collapse)
+    float p = uniforms.envelopePhase;
+    float opacity;
+    if (p < 0.5)       opacity = 1.0;
+    else if (p < 1.5)  opacity = mix(1.0, 0.0, clamp(p, 0.0, 1.0));
+    else if (p < 2.5)  opacity = 0.0;
+    else if (p < 3.5)  opacity = mix(0.0, 0.7, clamp(p - 2.5, 0.0, 1.0));
+    else               opacity = mix(0.7, 1.0, clamp(p - 3.5, 0.0, 1.0));
+    if (opacity <= 0.001) return float4(0.0);
     
     float2 uv = in.uv * 2.0 - 1.0; uv.y *= -1.0;
     uv.x *= uniforms.resolution.x / uniforms.resolution.y;
@@ -435,52 +446,23 @@ fragment float4 fragment_black_hole(
         if (state.r > 2.0) break; // Allow a slightly larger escape radius
     }
     
-    // --- ANALYICAL THIN DISK LAYER (Fallback/Core Glow) ---
-    float r_bh = length(cameraWo / cameraDistScale);
-    float3 d_bh = rayDir;
-    // Disk is in z=0 plane. Origin is (0,0,0).
-    // ray(t) = O + tD -> Oz + tDz = 0 -> t = -Oz / Dz
-    if (abs(d_bh.z) > 1e-4) {
-        float t_disk = -(rayOrigin.z) / d_bh.z;
-        if (t_disk > 0.0) {
-            float3 p_disk = rayOrigin + t_disk * d_bh;
-            float r_disk = length(p_disk);
-            if (r_disk > r_horizon * 1.5 && r_disk < 1.0) {
-                // Check if disk is blocked by the hole (back side)
-                // float3 toCamera = rayOrigin - p_disk;
-                // float distToHole = length(cross(toCamera, -normalize(toCamera))); // Approximation
-                bool blocked = (r_disk > r_horizon * 2.0) && (t_disk > r_bh); // Simple Z-depth/distance check
-                
-                if (!blocked) {
-                    float diskAlpha = exp(-(r_disk - r_horizon*2.0)*4.0) * 0.3;
-                    float3 diskCol = float3(1.0, 0.5, 0.1) * diskAlpha;
-                    accumulatedColor.rgb += diskCol * (1.0 - accumulatedColor.a);
-                    accumulatedColor.a = max(accumulatedColor.a, diskAlpha);
-                }
-            }
-        }
-    }
+    // ANALYTIC THIN DISK LAYER REMOVED — was a hardcoded 2D orange ring in
+    // the z=0 plane (ray-plane intersection) drawn on top of the proper
+    // Kerr raytraced volumetric. Color was hardcoded float3(1.0, 0.5, 0.1)
+    // independent of particle state, so it acted as a "second BH entity"
+    // visually layered on the real one. The geodesic raymarcher above
+    // already produces the disk from the actual particle field.
 
     if (hitHorizon) {
         // Pure black inside event horizon, but composite over starfield for opacity
         return float4(0.0, 0.0, 0.0, 1.0 * opacity);
     }
 
-    // ── PHOTON SPHERE GLOW (Gargantua Aesthetics) ──
-    if (accumulatedColor.a < 0.99) {
-        float photon_sphere = r_horizon * 1.5;
-        if (min_r < photon_sphere * 1.25) {
-            float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.12);
-            if (proximity > 0.0) {
-                float intensity = pow(proximity, 4.0) * 5.0; // Tighter, brighter ring
-                float3 glowColor = float3(1.0, 0.9, 0.7) * intensity;
-
-                float alpha = intensity * (1.0 - accumulatedColor.a);
-                accumulatedColor.rgb += glowColor * alpha;
-                accumulatedColor.a += alpha;
-            }
-        }
-    }
+    // PHOTON SPHERE GLOW REMOVED — was a hardcoded white-ish ring at
+    // r = 1.5·R_horizon overlaid on the raymarched output. Same problem as
+    // the analytic disk: a hand-painted ring layered on the actual
+    // raytracer. The geodesic accumulation already creates a photon-sphere
+    // brightening where rays orbit before falling in.
 
     // ── STARFIELD BACKGROUND (Gravitational Lensing Visible) ──
     // Rays that escape sample a procedural starfield at their warped exit direction.

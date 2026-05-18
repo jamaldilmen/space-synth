@@ -99,25 +99,55 @@ vertex VertexOut particle_vertex(
 
     // ── Gravitational lensing (screen-space Schwarzschild approximation) ──
     // Real GR: light deflection angle Δθ ≈ 2·R_s / b for impact parameter b.
-    // Here we approximate it in NDC after projection — push each particle
-    // AWAY from the projected BH center with magnitude ~1/b, capped to
-    // prevent blow-up near the origin. This produces the Interstellar /
-    // Gargantua wrap-around where the back of the accretion disk appears
-    // above and below the central void (Einstein ring).
+    // Approximated in NDC: push each particle AWAY from the projected BH
+    // center with magnitude ~1/b, capped to prevent blow-up. Produces the
+    // Interstellar/Gargantua wrap where the back of the disk appears above
+    // and below the central void.
+    //
+    // ADSR-gated visibility: BH is the rest state and the destination of
+    // release. Attack/Decay hide it (the frequency force blows particles
+    // out of the hole, they harden into a free shape). Sustain ramps the
+    // hole back like aftertouch. Release collapses everything into the
+    // full Gargantua wrap. Phase mapping per CameraUniforms:
+    //   0 = silence (full BH)
+    //   1 = attack  (fade out)
+    //   2 = decay   (hidden)
+    //   3 = sustain (ramp back in)
+    //   4 = release (full BH collapse)
     {
-        float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
-        if (bhClip.w > 0.001f && out.position.w > 0.001f) {
-            float2 ndcP  = out.position.xy / out.position.w;
-            float2 ndcBH = bhClip.xy / bhClip.w;
-            float2 dvec  = ndcP - ndcBH;
-            float impact = max(length(dvec), 0.04f);
-            float2 idir  = dvec / impact;
-            // Visual gain 0.08 → noticeable bend without distorting the
-            // outer disk. Cap at 0.5 NDC units so close-in particles don't
-            // shoot off-screen. Tunable.
-            float deflection = min(0.08f / impact, 0.5f);
-            ndcP += idir * deflection;
-            out.position.xy = ndcP * out.position.w;
+        float p = cam.envelopePhase;
+        float lensScale;
+        if (p < 0.5)       lensScale = 1.0;                                     // silence
+        else if (p < 1.5)  lensScale = mix(1.0, 0.0, clamp(p, 0.0, 1.0));       // attack: fade out
+        else if (p < 2.5)  lensScale = 0.0;                                     // decay: hidden
+        else if (p < 3.5)  lensScale = mix(0.0, 0.7, clamp(p - 2.5, 0.0, 1.0)); // sustain: ramp back
+        else               lensScale = mix(0.7, 1.0, clamp(p - 3.5, 0.0, 1.0)); // release: collapse
+
+        if (lensScale > 0.001) {
+            float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
+            if (bhClip.w > 0.001f && out.position.w > 0.001f) {
+                // Depth gate: only lens particles BEHIND the BH from the
+                // camera's POV. Clip-space w is distance from camera
+                // (bigger = further). Real GR: front-side disk passes
+                // straight to the eye, back-side disk wraps around. Without
+                // this gate the front disk also bends outward and you see a
+                // second concentric "rim" padding the lensed back.
+                float depthBehind = out.position.w - bhClip.w;
+                // Smooth ramp so particles right at the BH depth don't pop.
+                // Width ~5% of camera-to-BH distance.
+                float behindFactor = smoothstep(0.0f, max(bhClip.w * 0.05f, 0.05f), depthBehind);
+
+                float2 ndcP  = out.position.xy / out.position.w;
+                float2 ndcBH = bhClip.xy / bhClip.w;
+                float2 dvec  = ndcP - ndcBH;
+                float impact = max(length(dvec), 0.04f);
+                float2 idir  = dvec / impact;
+                // Gain 0.05 and cap 0.18 → noticeable wrap on the back of
+                // the disk without yeeting particles to the screen edge.
+                float deflection = min(0.05f / impact, 0.18f) * lensScale * behindFactor;
+                ndcP += idir * deflection;
+                out.position.xy = ndcP * out.position.w;
+            }
         }
     }
     

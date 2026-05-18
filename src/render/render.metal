@@ -96,6 +96,30 @@ vertex VertexOut particle_vertex(
     float3 worldPos = in.posW.xyz * R;
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
+
+    // ── Gravitational lensing (screen-space Schwarzschild approximation) ──
+    // Real GR: light deflection angle Δθ ≈ 2·R_s / b for impact parameter b.
+    // Here we approximate it in NDC after projection — push each particle
+    // AWAY from the projected BH center with magnitude ~1/b, capped to
+    // prevent blow-up near the origin. This produces the Interstellar /
+    // Gargantua wrap-around where the back of the accretion disk appears
+    // above and below the central void (Einstein ring).
+    {
+        float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
+        if (bhClip.w > 0.001f && out.position.w > 0.001f) {
+            float2 ndcP  = out.position.xy / out.position.w;
+            float2 ndcBH = bhClip.xy / bhClip.w;
+            float2 dvec  = ndcP - ndcBH;
+            float impact = max(length(dvec), 0.04f);
+            float2 idir  = dvec / impact;
+            // Visual gain 0.08 → noticeable bend without distorting the
+            // outer disk. Cap at 0.5 NDC units so close-in particles don't
+            // shoot off-screen. Tunable.
+            float deflection = min(0.08f / impact, 0.5f);
+            ndcP += idir * deflection;
+            out.position.xy = ndcP * out.position.w;
+        }
+    }
     
     // Phase 11: Project velocity into screen-space for string elongation
     float3 velWorld = in.velW.xyz * R;

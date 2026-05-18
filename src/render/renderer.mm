@@ -109,6 +109,11 @@ struct Renderer::Impl {
   float wmShiftOffset = 0.0f;
   uint64_t lastRenderTime = 0;
 
+  // GPU performance instrumentation
+  float lastComputeMs = 0;
+  float lastRenderMs = 0;
+  int profileFrameCount = 0;
+
   void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
   void renderWithCamera(id<CAMetalDrawable> drawable,
                         id<MTLCommandBuffer> cmdBuf, int frameIdx,
@@ -571,6 +576,11 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   uint64_t computeFinishedTicket = impl_->frameEventValue;
   [computeCmdBuf encodeSignalEvent:impl_->frameEvent
                              value:computeFinishedTicket];
+  Impl *impl_ptr = impl_;
+  [computeCmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    double gpuMs = (cb.GPUEndTime - cb.GPUStartTime) * 1000.0;
+    impl_ptr->lastComputeMs = (float)gpuMs;
+  }];
   [computeCmdBuf commit];
 
   // 2. Render Pass
@@ -579,6 +589,14 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   __block dispatch_semaphore_t block_sema = impl_->inFlightSemaphore;
   [renderCmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
     dispatch_semaphore_signal(block_sema);
+    double gpuMs = (buffer.GPUEndTime - buffer.GPUStartTime) * 1000.0;
+    impl_ptr->lastRenderMs = (float)gpuMs;
+    impl_ptr->profileFrameCount++;
+    if (impl_ptr->profileFrameCount % 120 == 0) {
+      printf("[PROFILE] Compute: %.2fms | Render+PostFX: %.2fms | Total GPU: %.2fms\n",
+             impl_ptr->lastComputeMs, impl_ptr->lastRenderMs,
+             impl_ptr->lastComputeMs + impl_ptr->lastRenderMs);
+    }
   }];
 
   // Wait for compute
@@ -629,7 +647,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Spatial hash build (4 phases) ──────────────────────────────
-    if (collisionsEnabled && assignCellsPipeline && countCellsPipeline &&
+    // Only build when collisions are on OR during silence/release (raytracer needs density)
+    bool needSpatialHash = collisionsEnabled ||
+        (physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f);
+    if (needSpatialHash && assignCellsPipeline && countCellsPipeline &&
         prefixSumLocalPipeline && prefixSumBlocksPipeline &&
         prefixSumAddPipeline && scatterPipeline) {
       // Upload spatial hash uniforms
@@ -862,7 +883,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
   // 1. Draw Black Hole Background (raymarching)
-  if (blackHolePipeline && config.envelopePhase <= 0.5f) {
+  // Only run during silence or release — saves ~51B trig ops/frame during play
+  PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
+  bool needRaytracer = (phys_gate->envelopePhase < 0.5f || phys_gate->envelopePhase > 3.5f);
+  if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8 bytes
       float cameraPos[3];  // 12 bytes
@@ -956,61 +980,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
                 vertexCount:3];
   }
 
-  // Render ImGui on top
-  {
-    // ── CIA-MODE DYNAMIC WATERMARK ──
-    // This implements a "DVD bounce" + 3s position shift for maximum protection.
-    const char *watermark = "(@jamaldimen)";
-    ImDrawList* drawList = ImGui::GetForegroundDrawList();
-    ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-    ImVec2 textSize = ImGui::CalcTextSize(watermark);
-
-    // Update Animation State
-    uint64_t now = mach_absolute_time();
-    static mach_timebase_info_data_t timebase;
-    if (timebase.denom == 0) mach_timebase_info(&timebase);
-    
-    float dt = 0.016f; // Default to 60fps
-    if (lastRenderTime > 0) {
-      uint64_t elapsed = now - lastRenderTime;
-      dt = (float)((double)elapsed * timebase.numer / timebase.denom / 1.0e9);
-    }
-    lastRenderTime = now;
-    if (dt > 0.1f) dt = 0.1f; // Clamp to avoid leaps
-
-    // Bouncing logic
-    wmOffsetX += wmVelX * dt * 100.0f;
-    wmOffsetY += wmVelY * dt * 100.0f;
-
-    float boundsX = textSize.x * 2.5f;
-    float boundsY = textSize.y * 3.5f;
-
-    if (wmOffsetX < 0 || wmOffsetX > boundsX) { wmVelX *= -1.0f; wmOffsetX = std::max(0.0f, std::min(wmOffsetX, boundsX)); }
-    if (wmOffsetY < 0 || wmOffsetY > boundsY) { wmVelY *= -1.0f; wmOffsetY = std::max(0.0f, std::min(wmOffsetY, boundsY)); }
-
-    // Shifting logic (every 3s)
-    wmShiftTimer += dt;
-    if (wmShiftTimer > 3.0f) {
-      wmShiftTimer = 0.0f;
-      wmShiftOffset = (float)(rand() % 100) / 100.0f;
-    }
-
-    if (textSize.x > 0 && textSize.y > 0) {
-      float stepX = textSize.x * 3.5f;
-      float stepY = textSize.y * 5.5f;
-      ImU32 wmColor = ImColor(1.0f, 1.0f, 1.0f, 0.15f); // 15% opacity
-
-      for (float y = -stepY; y < displaySize.y + stepY; y += stepY) {
-        int rowIdx = (int)(y / stepY);
-        float shift = (rowIdx % 2 == 0) ? 0.0f : (stepX * 0.5f);
-        shift += wmShiftOffset * stepX; // Periodic jump
-
-        for (float x = -stepX; x < displaySize.x + stepX; x += stepX) {
-          drawList->AddText(ImVec2(x + wmOffsetX + shift, y + wmOffsetY), wmColor, watermark);
-        }
-      }
-    }
-  }
+  // Watermark removed for screen recording (was tiled DVD-bounce @jamaldimen overlay).
 
   ImGui::Render();
   ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, postEnc);

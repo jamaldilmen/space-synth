@@ -21,7 +21,8 @@ struct VoiceData {
     float frequency;
     float deltaAmp;
     float phase;
-    float padding[2];
+    int bandGroup;
+    float padding;
 };
 
 struct PhysicsUniforms {
@@ -222,14 +223,10 @@ kernel void compute_physics(
                 shiftVz -= shearZ * dt;
             }
 
-            // 4. GRAVITATIONAL LENSING (photon sphere bending)
-            float photonSphere = SCHWARZSCHILD_RS * 3.0f;
-            if (rLen > photonSphere * 0.8f && rLen < photonSphere * 1.5f) {
-                float3 perpDir = cross(dir, float3(0.0f, 0.0f, 1.0f));
-                float bendStrength = 8.0f / (abs(rLen - photonSphere) + 0.05f);
-                shiftVx += perpDir.x * bendStrength * dt;
-                shiftVy += perpDir.y * bendStrength * dt;
-            }
+            // 4. GRAVITATIONAL LENSING — removed from particle physics.
+            // This force pushed particles perpendicular to the disk plane,
+            // creating orbital "yoyo" rings. Lensing is a LIGHT effect handled
+            // by the Kerr raytracer in blackhole.metal, not a matter force.
 
             // 5. HAWKING RADIATION (quantum fluctuations near horizon)
             if (rLen < SCHWARZSCHILD_RS * 4.0f) {
@@ -390,7 +387,11 @@ kernel void compute_physics(
     float dynamicMass = baseMass;
 
     // Safety: Clamp voiceCount to prevent reading beyond buffer or into uninitialized memory
-    int numVoices = min((int)u.voiceCount, 16); 
+    int numVoices = min((int)u.voiceCount, 16);
+
+    // Track which band exerts strongest force (for per-band color) — declared outside voice block
+    int bestBand = 0;
+    float bestForce = 0.0f;
 
     if (numVoices > 0 && baseMass < 1000.0f) {
         float massAdd = 0.0f;
@@ -479,7 +480,14 @@ kernel void compute_physics(
             shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
             shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
             shiftVz += (dYdth * thetaDir.z + dYdphi * phiDir.z) * sculptStrength;
-            
+
+            // Track dominant band for per-band coloring
+            float fMag = abs(dYdth) + abs(dYdphi);
+            if (fMag * amp > bestForce) {
+                bestForce = fMag * amp;
+                bestBand = voices[vi].bandGroup;
+            }
+
             // Radial breathing
             float radialForce = visualAmp * Y_here * 12.0f;
             float3 centerVec = float3(px, py, pz);
@@ -524,20 +532,42 @@ kernel void compute_physics(
         }
 
         // ── Phase 19: Elastic Shell Restoring Force (Staccato Bounce-Back) ──
-        // Fixes the issue where short key presses shoot particles outward and leave them stranded.
-        // This spring force naturally pulls the fabric of space back to a resting sphere (radius 0.75).
-        float restingRadius = globalTargetRadius;
-        float currentR = sqrt(px*px + py*py + pz*pz);
-        if (currentR > 0.001f) {
-            float displacement = currentR - restingRadius;
-            float3 dir = float3(px, py, pz) / currentR;
-            
-            // Spring stiffness controls the "bounce back" speed. High stiffness = fast snap backwards.
-            float springStiffness = 50.0f; 
-            
-            shiftVx -= dir.x * displacement * springStiffness * dt;
-            shiftVy -= dir.y * displacement * springStiffness * dt;
-            shiftVz -= dir.z * displacement * springStiffness * dt;
+        // DISABLED — was preventing particles from extending through the sphere.
+        // HTML cymatics reference has no shell; shapes flow continuously across
+        // the volume, connecting across both sides. Restore by changing `false`
+        // back to `!isSilence` if needed.
+        if (false) {
+            float restingRadius = globalTargetRadius;
+            float currentR = sqrt(px*px + py*py + pz*pz);
+            if (currentR > 0.001f) {
+                float displacement = currentR - restingRadius;
+                float3 dir = float3(px, py, pz) / currentR;
+                float springStiffness = 50.0f;
+                shiftVx -= dir.x * displacement * springStiffness * dt;
+                shiftVy -= dir.y * displacement * springStiffness * dt;
+                shiftVz -= dir.z * displacement * springStiffness * dt;
+
+                // ── VJ Azimuthal Restoring Force ──────────────────────────────
+                // Only during play — prevents lobe sticking when voices drop.
+                float3 n = dir;
+                int N = u.particleCount;
+                float offset_f = 2.0f / (float)N;
+                float increment = M_PI_F * (3.0f - sqrt(5.0f));
+                float yHome = 1.0f - (2.0f * (float)id + 1.0f) * offset_f * 0.5f;
+                float r_xy = sqrt(max(0.0f, 1.0f - yHome * yHome));
+                float phiHome = (float)id * increment;
+                float3 h = float3(cos(phiHome) * r_xy, yHome, sin(phiHome) * r_xy);
+                float3 h_tan = h - dot(h, n) * n;
+                float hLen = length(h_tan);
+                if (hLen > 0.001f) {
+                    h_tan /= hLen;
+                    float amp = clamp(u.totalAmplitude, 0.0f, 1.0f);
+                    float spreadStrength = (1.0f - amp) * 0.4f;
+                    shiftVx += h_tan.x * spreadStrength;
+                    shiftVy += h_tan.y * spreadStrength;
+                    shiftVz += h_tan.z * spreadStrength;
+                }
+            }
         }
 
         // ODS-03: Thermal Energy Evolution
@@ -709,6 +739,36 @@ kernel void compute_physics(
         if (collapsed) {
             shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
             vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+        } else {
+            // ── 3B: Ambient Idle State ──────────────────────────────────
+            // Gentle motion during silence so particles feel alive, not dead.
+            float r_idle = sqrt(px*px + py*py + pz*pz);
+            if (r_idle > 0.01f) {
+                // 1. Slow rotation around Y axis (~0.1 rad/s)
+                float omega = 0.1f * dt;
+                float cosO = cos(omega);
+                float sinO = sin(omega);
+                float newPx = px * cosO + pz * sinO;
+                float newPz = -px * sinO + pz * cosO;
+                px = newPx;
+                pz = newPz;
+
+                // 2. Breathing radius: ±5% at 0.2 Hz
+                float breathe = 0.05f * sin(u.time * 0.2f * 2.0f * M_PI_F);
+                float3 rDir = float3(px, py, pz) / r_idle;
+                shiftVx += rDir.x * breathe * 0.5f * dt;
+                shiftVy += rDir.y * breathe * 0.5f * dt;
+                shiftVz += rDir.z * breathe * 0.5f * dt;
+
+                // 3. Per-particle turbulence (slowly varying Perlin-like)
+                uint slowFrame = u.frameCounter / 8u; // change every 8 frames
+                float turbX = noise(id, slowFrame) * 0.02f;
+                float turbY = noise(id + 7777u, slowFrame) * 0.02f;
+                float turbZ = noise(id + 15555u, slowFrame) * 0.02f;
+                shiftVx += turbX;
+                shiftVy += turbY;
+                shiftVz += turbZ;
+            }
         }
     }
 
@@ -719,6 +779,16 @@ kernel void compute_physics(
         vpx *= 0.15f;
         vpy *= 0.15f;
         vpz *= 0.15f;
+    }
+
+    // ── VJ Silence Damping ──────────────────────────────────────────────
+    // When amplitude drops, apply extra friction so particles return to sphere
+    float silence = 1.0f - clamp(u.totalAmplitude, 0.0f, 1.0f);
+    if (silence > 0.5f) {
+        float extra = mix(1.0f, 0.90f, (silence - 0.5f) * 2.0f);
+        vpx *= extra;
+        vpy *= extra;
+        vpz *= extra;
     }
 
     // Combine proxy with force pulses
@@ -734,10 +804,11 @@ kernel void compute_physics(
     float3 nextPos = float3(px, py, pz) + finalV;
 
     // ── DIRECT ENVELOPE→RADIUS COUPLING ──────────────────────────────
-    // Attack: constrain expansion to match envelope ramp
-    // Decay/Sustain: soft attractor at lcI-scaled radius (sustain level = visual size)
-    // Release: constrain contraction to match envelope fade
-    if (!collapsed && !isSilence) {
+    // DISABLED — every-frame radial blend toward globalTargetRadius was
+    // preventing particles from extending through the sphere. HTML cymatics
+    // lets particles flow freely. Restore by changing `false` to
+    // `!collapsed && !isSilence` if needed.
+    if (false) {
         float nextR = length(nextPos);
         if (nextR > 0.001f) {
             float3 dir = nextPos / nextR;
@@ -797,7 +868,11 @@ kernel void compute_physics(
     if (mass > 0.0f) {
         p.prevW = float4(px, py, pz, currentTemp);
         p.posW = float4(nextPos, mass);
-        p.velW = float4(finalV, newPhase);
+        // Pack band ID (3 bits) into upper bits of phase float
+        uint phaseBits = (uint)clamp(((newPhase + M_PI_F) / (2.0f * M_PI_F)) * (float)0x1FFFFFFFu, 0.0f, (float)0x1FFFFFFFu);
+        uint bandBits = (uint)(bestBand & 0x7);
+        uint packed = (bandBits << 29) | phaseBits;
+        p.velW = float4(finalV, as_type<float>(packed));
     }
 }
 

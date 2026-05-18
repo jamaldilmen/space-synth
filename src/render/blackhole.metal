@@ -344,8 +344,9 @@ fragment float4 fragment_black_hole(
     device const uint* cellStarts [[buffer(2)]],
     device const Particle* sortedParticles [[buffer(3)]])
 {
-    if (uniforms.envelopePhase > 0.5) return float4(0.0);
-    float opacity = saturate(1.0 - (uniforms.envelopePhase / 0.5));
+    // if (uniforms.envelopePhase > 0.5) return float4(0.0);
+    // float opacity = saturate(1.0 - (uniforms.envelopePhase / 0.5));
+    float opacity = 1.0;
     
     float2 uv = in.uv * 2.0 - 1.0; uv.y *= -1.0;
     uv.x *= uniforms.resolution.x / uniforms.resolution.y;
@@ -355,8 +356,12 @@ fragment float4 fragment_black_hole(
     float3 right = normalize(cross(forward, float3(0.0, 1.0, 0.0)));
     float3 up = normalize(cross(right, forward));
     
-    float cameraDistScale = 250.0f; 
-    float3 rayOrigin = cameraWo / cameraDistScale; 
+    // Scale camera position into ray-space so the black hole is reachable.
+    // Camera feeds plateRadius (default 100) as distance. We need ~5.0 in
+    // ray-space for the RK4 integrator to reach RS=0.40 within 512 steps.
+    float camDist = length(cameraWo);
+    float cameraDistScale = max(camDist / 5.0f, 0.01f);
+    float3 rayOrigin = cameraWo / cameraDistScale;
     float fovFactor = 0.6;
     float3 rayDir = normalize(forward + uv.x * right * fovFactor + uv.y * up * fovFactor);
     
@@ -399,20 +404,26 @@ fragment float4 fragment_black_hole(
             float doppler = 1.0 - v_obs * 0.5; 
             doppler = clamp(doppler, 0.2, 3.0);
             
-            float3 color;
-            if (speed > 5.0) color = float3(1.0, 0.95, 0.9);
-            else if (speed > 2.0) color = float3(1.0, 0.6, 0.2);
-            else color = float3(1.0, 0.4, 0.1); // Warmer base color for the disk
+            float brightnessFactor = pow(doppler, 3.0); // I ∝ D^3
             
-            float brightnessFactor = pow(doppler, 2.5);
+            // Blackbody approximation: T_obs = D * T_emit
+            // Base temperature mapping (K) based on speed/location
+            float baseTemp = 3000.0; // Warm orange/red base
+            if (speed > 5.0) baseTemp = 10000.0; // Hot white/blue
+            else if (speed > 2.0) baseTemp = 6000.0; // Yellow/white
             
-            if (doppler > 1.0) {
-                 color.b *= brightnessFactor;
-                 color.r /= doppler;
-            } else {
-                 color.r *= pow(1.0/doppler, 2.0);
-                 color.b *= doppler;
-            }
+            float obsTemp = baseTemp * doppler;
+            
+            // Simple blackbody RGB mapping (normalized)
+            float3 bbColor;
+            if (obsTemp > 8000.0) bbColor = float3(0.7, 0.8, 1.0); // Blue-ish
+            else if (obsTemp > 5000.0) bbColor = float3(1.0, 0.95, 0.9); // White-ish
+            else if (obsTemp > 3500.0) bbColor = float3(1.0, 0.6, 0.2); // Orange
+            else bbColor = float3(1.0, 0.2, 0.05); // Deep red
+            
+            float3 color = bbColor * brightnessFactor;
+            
+            // Removed channel hacks - handled by blackbody mapping above
             
             // Soften alpha accumulation but boost base density visibility
             float alpha = partData.a * (1.0 - accumulatedColor.a) * 0.95;
@@ -424,6 +435,32 @@ fragment float4 fragment_black_hole(
         if (state.r > 2.0) break; // Allow a slightly larger escape radius
     }
     
+    // --- ANALYICAL THIN DISK LAYER (Fallback/Core Glow) ---
+    float r_bh = length(cameraWo / cameraDistScale);
+    float3 d_bh = rayDir;
+    // Disk is in z=0 plane. Origin is (0,0,0).
+    // ray(t) = O + tD -> Oz + tDz = 0 -> t = -Oz / Dz
+    if (abs(d_bh.z) > 1e-4) {
+        float t_disk = -(rayOrigin.z) / d_bh.z;
+        if (t_disk > 0.0) {
+            float3 p_disk = rayOrigin + t_disk * d_bh;
+            float r_disk = length(p_disk);
+            if (r_disk > r_horizon * 1.5 && r_disk < 1.0) {
+                // Check if disk is blocked by the hole (back side)
+                // float3 toCamera = rayOrigin - p_disk;
+                // float distToHole = length(cross(toCamera, -normalize(toCamera))); // Approximation
+                bool blocked = (r_disk > r_horizon * 2.0) && (t_disk > r_bh); // Simple Z-depth/distance check
+                
+                if (!blocked) {
+                    float diskAlpha = exp(-(r_disk - r_horizon*2.0)*4.0) * 0.3;
+                    float3 diskCol = float3(1.0, 0.5, 0.1) * diskAlpha;
+                    accumulatedColor.rgb += diskCol * (1.0 - accumulatedColor.a);
+                    accumulatedColor.a = max(accumulatedColor.a, diskAlpha);
+                }
+            }
+        }
+    }
+
     if (hitHorizon) {
         // Pure black inside event horizon, but composite over starfield for opacity
         return float4(0.0, 0.0, 0.0, 1.0 * opacity);
@@ -433,10 +470,10 @@ fragment float4 fragment_black_hole(
     if (accumulatedColor.a < 0.99) {
         float photon_sphere = r_horizon * 1.5;
         if (min_r < photon_sphere * 1.25) {
-            float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.25);
+            float proximity = 1.0 - abs(min_r - photon_sphere) / (photon_sphere * 0.12);
             if (proximity > 0.0) {
-                float intensity = pow(proximity, 3.0) * 2.0;
-                float3 glowColor = float3(1.0, 0.8, 0.5) * intensity;
+                float intensity = pow(proximity, 4.0) * 5.0; // Tighter, brighter ring
+                float3 glowColor = float3(1.0, 0.9, 0.7) * intensity;
 
                 float alpha = intensity * (1.0 - accumulatedColor.a);
                 accumulatedColor.rgb += glowColor * alpha;

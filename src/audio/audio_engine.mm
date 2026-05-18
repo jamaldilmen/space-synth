@@ -173,6 +173,26 @@ static OSStatus audioInputCallback(void *inRefCon,
                 std::max(0.0f, currentAmp * release);
           }
         }
+
+        // Per-band onset detection (fast/slow envelope ratio)
+        uint32_t mask = 0;
+        for (int i = 0; i < 16; i++) {
+          auto& b = engine->vjBands_[i];
+          float E = b.amplitude * b.amplitude;
+          b.fastEnv = 0.3f * E + 0.7f * b.fastEnv;
+          b.slowEnv = 0.01f * E + 0.99f * b.slowEnv;
+          b.isTransient = false;
+          if (b.cooldown > 0.f) b.cooldown -= (float)inNumberFrames / engine->sampleRate_;
+          if (E > 1e-5f && b.slowEnv > 0.f && b.cooldown <= 0.f) {
+            float ratio = b.fastEnv / (b.slowEnv + 1e-6f);
+            if (ratio > 2.0f) {
+              b.isTransient = true;
+              b.cooldown = 0.03f;
+              mask |= (1u << i);
+            }
+          }
+        }
+        engine->transientMask_.store(mask, std::memory_order_release);
       }
     }
   }

@@ -34,6 +34,24 @@ struct VertexOut {
     float2 strDir2D;   // Partner string connection vector
 };
 
+// Decode packed phase + band ID from velW.w
+static void decodePhaseAndBand(float packed, thread float &phase, thread int &bandId) {
+    uint bits = as_type<uint>(packed);
+    bandId = int((bits >> 29) & 0x7);
+    uint phaseBits = bits & 0x1FFFFFFFu;
+    phase = ((float)phaseBits / (float)0x1FFFFFFFu) * (2.0f * M_PI_F) - M_PI_F;
+}
+
+// Per-band color palette (6 perceptual frequency groups)
+constant float3 kBandColors[6] = {
+    float3(1.0, 0.4, 0.1),  // Sub (orange)
+    float3(1.0, 0.8, 0.2),  // Kick (gold)
+    float3(0.4, 1.0, 0.3),  // Low-mid (green)
+    float3(0.2, 0.9, 1.0),  // Mid (cyan)
+    float3(0.6, 0.7, 1.0),  // Hi-mid (blue)
+    float3(1.0, 0.6, 1.0),  // Air (magenta)
+};
+
 // HSV to RGB conversion
 static float3 hsv2rgb(float h, float s, float v) {
     float c = v * s;
@@ -121,39 +139,56 @@ vertex VertexOut particle_vertex(
     // HDR luminance from thermal energy (ODS-03)
     out.luminance = 1.0f + max(0.0f, temp) * 2.0f; // Subtle warm glow, not blinding white
 
+    // Decode packed phase + band ID
+    float phase; int bandId;
+    decodePhaseAndBand(in.velW.w, phase, bandId);
+    int bClamped = clamp(bandId, 0, 5);
+
     if (cam.phaseViz > 0.5f) {
         // Feynman phase arrow coloring: phase → hue
-        float phase = in.velW.w;
         float hue = (phase + M_PI_F) / (2.0f * M_PI_F);
         float speed = length(in.velW.xyz);
         float saturation = 0.85f;
         float value = 0.5f + clamp(speed * 3.0f, 0.0f, 0.5f);
         out.color = hsv2rgb(hue, saturation, value);
     } else {
-        // Default: warm sand tones based on wave height (normalized Z)
-        float h = clamp(in.posW.z, -1.0f, 1.0f);
-        float base = 0.6f + h * 0.35f;
-        out.color = float3(base * 1.6f, base * 1.3f, base * 0.9f);
+        // ── Blackbody temperature coloring (Interstellar Gargantua aesthetic) ──
+        // Temperature is stored in prevW.w by the compute shader.
+        // Inner disk is hot (white/blue), outer disk is cool (orange/red).
+        float T = clamp(temp, 0.0f, 5.0f); // temp range from compute shader
+        float tNorm = clamp(T / 5.0f, 0.0f, 1.0f); // 0 = cold, 1 = hottest
 
-        // Speed-based brightness boost
+        // Blackbody ramp: deep red → orange → white → blue-white
+        float3 bbColor;
+        if (tNorm < 0.25f) {
+            bbColor = mix(float3(0.6, 0.15, 0.02), float3(1.0, 0.4, 0.05), tNorm * 4.0f);
+        } else if (tNorm < 0.5f) {
+            bbColor = mix(float3(1.0, 0.4, 0.05), float3(1.0, 0.75, 0.4), (tNorm - 0.25f) * 4.0f);
+        } else if (tNorm < 0.75f) {
+            bbColor = mix(float3(1.0, 0.75, 0.4), float3(1.0, 0.95, 0.9), (tNorm - 0.5f) * 4.0f);
+        } else {
+            bbColor = mix(float3(1.0, 0.95, 0.9), float3(0.8, 0.85, 1.0), (tNorm - 0.75f) * 4.0f);
+        }
+
+        // Blend with per-band color when voices are active (bandId > 0)
+        float3 bandColor = kBandColors[bClamped];
+        float bandMix = (bClamped > 0) ? 0.4f : 0.0f;
+        out.color = mix(bbColor, bandColor, bandMix);
+
+        // Speed-based brightness boost (Doppler-like)
         float speed = length(in.velW.xyz);
         float boost = clamp(speed * 8.0f, 0.0f, 0.8f);
-        out.color += float3(boost * 0.6f, boost * 0.4f, boost * 0.2f);
+        out.color += float3(boost * 0.3f, boost * 0.2f, boost * 0.1f);
     }
 
-    // ── Phase 16: Gargantua Cosmics & Phase 18 Volumetric Raytracer ──
+    // ── Gargantua: Only cull particles inside the event horizon ──
+    // The Schwarzschild radius is 0.40. Cull at RS so the raytracer's black
+    // void shows through, but the entire accretion disk (r > 0.40) renders
+    // as visible particles with temperature-based color.
     float originR = length(in.posW.xyz);
     out.originDist = originR;
-    // particles with full relativistic Kerr-metric ray-bending (gravitational lensing).
-    // We hide the particles entirely during silence (envelopePhase < 0.5) to avoid dual rendering.
-    // Unconditionally hand over the inner r < 1.25 to the volumetric raytracer to prevent linear projection over the horizon.
-    // FIX: Only cull if we are INSIDE the black hole radius (r < 1.25), OR if we are in silence phase AND we want the black hole to take over completely.
-    // However, if the black hole raytracer relies on volumetric data, culling particles here *deletes* them from the scene.
-    // Actually, culling in the vertex shader just stops them from drawing as points. The spatial hash still has them.
-    // Wait, the spatial hash is built BEFORE render.metal! So culling in render.metal is fine for the grid.
-    // BUT the user says "where do the particles go". It means they want to see particles outside the accretion disk even during silence!
-    if ((cam.envelopePhase < 0.5f && originR < 1.25f) || (cam.envelopePhase >= 0.5f && originR < 1.25f)) {
-        // Just always cull the center (r < 1.25), let particles exist outside of it at all times.
+    float RS_CULL = 0.40f;
+    if (originR < RS_CULL) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);
@@ -172,39 +207,32 @@ fragment float4 particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
-    // Phase 11: String Theory Rendering
-    // Stretch the circular point sprite into an ellipse along velocity direction
-    // This replaces 0D point particles with 1D vibrating "strings"
-    float2 pc = pointCoord - 0.5f;
-    
-    // Rotate pointCoord into velocity-aligned frame
-    float2 vd = in.velDir2D + in.strDir2D; // Combine velocity blur and partner string connection!
-    float speedSq = dot(vd, vd);
-    float speed = sqrt(speedSq);
-    float2 dir = (speed > 1e-4f) ? vd / speed : float2(1, 0);
-    float2 perp = float2(-dir.y, dir.x);
-    float along = dot(pc, dir);  
-    float across = dot(pc, perp); 
-    
-    // Dynamic elongation: 1.0 = circle at rest, 0.1 = thin string at high speed
-    float elongation = clamp(speed, 0.0f, 1.0f);
-    float stringWidth = mix(1.0f, 0.25f, elongation);
-    float d = length(float2(along, across / stringWidth)) * 2.1f;
+    // Sphere impostor: reconstruct a hemisphere normal from the point-sprite
+    // UV. Lambertian shade against a fixed key light + small ambient so the
+    // phase-viz and motion read as 3D balls instead of 2D confetti.
+    // String Theory elongation removed — was streaking particles into 1D
+    // strings along velocity (the confetti look). Particles are spheres now.
+    float2 pc = (pointCoord - 0.5f) * 2.0f;   // [-1, 1] over the quad
+    float r2 = dot(pc, pc);
+    if (r2 > 1.0f) discard_fragment();         // clip to the disc
 
-    // Sharper core falloff
-    float core = pow(max(0.0f, 1.0f - d), 2.5f);
-    float glow = exp(-d * d * 5.0f);
+    float z = sqrt(1.0f - r2);
+    float3 n = float3(pc.x, -pc.y, z);         // flip Y to match screen orientation
 
-    float3 coreColor = float3(1.0f, 0.98f, 0.95f);
-    float3 glowColor = in.color;
+    // Fixed key light from upper-right-front, plus rim from behind.
+    float3 keyDir = normalize(float3(0.4f, 0.6f, 0.7f));
+    float diff = max(0.0f, dot(n, keyDir));
+    float rim  = pow(1.0f - max(0.0f, n.z), 3.0f) * 0.6f;
+    float spec = pow(max(0.0f, dot(n, keyDir)), 24.0f) * 0.5f;
 
-    float3 finalColor = mix(glowColor * glow, coreColor, core);
-    
-    // High-contrast Alpha: 0.15 base + energy boost
-    float baseAlpha = 0.15f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.05f;
-    float alpha = (core * 0.6f + glow * 0.25f) * baseAlpha;
-
+    float3 baseColor = in.color;
+    float3 finalColor = baseColor * (0.25f + 0.85f * diff) + float3(spec) + baseColor * rim;
     finalColor *= in.luminance;
+
+    // Alpha: solid in the center, soft edge from the implicit sphere silhouette.
+    float baseAlpha = 0.5f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.15f;
+    float edge = smoothstep(1.0f, 0.85f, r2);  // softens silhouette slightly
+    float alpha = edge * baseAlpha;
 
     float fadeDistance = 6.0f;
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));

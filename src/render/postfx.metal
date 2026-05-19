@@ -116,25 +116,25 @@ fragment float4 postfx_fragment(
     // To simulate the streak of a ray-bundle over the camera exposure time,
     // we calculate the exact screen-space velocity of this pixel by un-projecting
     // it to world space, then re-projecting it with the previous frame's matrix.
-    
-    // We assume the Black Hole and accretion disk particles are far away, 
+
+    // We assume the Black Hole and accretion disk particles are far away,
     // so we approximate their depth as far-plane (z=0.99) for the optical flow proxy.
     float4 ndcPos = float4(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0, 0.99, 1.0);
-    
+
     // 1. Un-project to World Space
     float4 worldPos = u.inverseViewProj * ndcPos;
     worldPos /= worldPos.w;
-    
+
     // 2. Re-project with previous frame's View-Projection
     float4 prevClipPos = u.prevViewProj * worldPos;
     prevClipPos /= prevClipPos.w;
-    
+
     // 3. Calculate screen-space velocity vector
     float2 prevUV = prevClipPos.xy * 0.5 + 0.5;
     prevUV.y = 1.0 - prevUV.y;
-    
+
     float2 velocity = uv - prevUV;
-    
+
     // 4. Streak only the very brightest core pixels (reduced from 8 to 4 samples, HDR-gated)
     float velLen = length(velocity);
     if (velLen > 0.002) {

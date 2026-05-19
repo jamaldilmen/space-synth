@@ -54,10 +54,12 @@ kernel void count_cells(
     if (int(id) >= u.particleCount) return;
     
     uint cellID = cellIndices[id];
-    // Cap atomic increments to 32 (MAX_PER_CELL from particles.metal)
-    // This prevents massive GPU stalling/freezing when millions of particles clump at the origin.
+    // Cap atomic increments to MAX_PER_CELL (128, see particles.metal).
+    // Prevents massive GPU stalling when millions of particles clump at the
+    // origin while still resolving dense disk regions (avg cell density at
+    // 5M particles / 64^3 cells ~ 19, disk peaks well below 128).
     uint current = atomic_load_explicit(&cellCounts[cellID], memory_order_relaxed);
-    if (current < 32) {
+    if (current < 128) {
         atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
     }
 }

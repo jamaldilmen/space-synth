@@ -2,10 +2,13 @@
 using namespace metal;
 
 // Phase 18: Kerr-Metric Hollywood Raytracer
-constant float M = 0.40;   // Black hole mass (matches RS = 0.40)
+constant float M = 0.025;  // Tiny BH. Horizon ≈ 0.029 sim ≈ world r=2.9 at
+                            // simScale=100 — small dot at the center,
+                            // particles dominate the visual.
 constant float a = 0.99 * M; // Spin parameter (Kerr)
-constant int MAX_STEPS = 512;
-constant float STEP_SIZE = 0.05; // Larger step size since RK4 is more stable
+constant int MAX_STEPS = 1500;     // Was 512; bumped for world-space traversal
+                                   // (no more cameraDistScale rescale hack)
+constant float STEP_BASE = 0.05f;  // Base step; adaptive sizing below
 
 struct BlackHoleUniforms {
     float2 resolution;
@@ -13,6 +16,8 @@ struct BlackHoleUniforms {
     float time;
     float envelopePhase;
     float rotationX;
+    float simScale;       // particle scale (plateRadius), see notes below
+    float orthoFrustum;   // ortho half-extent in world units (0 = perspective)
 };
 
 // --- Spatial Hash Data Structures ---
@@ -345,11 +350,6 @@ fragment float4 fragment_black_hole(
     device const Particle* sortedParticles [[buffer(3)]])
 {
     // ADSR opacity gate, matches particle_vertex lensScale in render.metal.
-    //   0 = silence (full)
-    //   1 = attack  (fade out)
-    //   2 = decay   (hidden)
-    //   3 = sustain (ramp back in like aftertouch)
-    //   4 = release (full collapse)
     float p = uniforms.envelopePhase;
     float opacity;
     if (p < 0.5)       opacity = 1.0;
@@ -367,14 +367,36 @@ fragment float4 fragment_black_hole(
     float3 right = normalize(cross(forward, float3(0.0, 1.0, 0.0)));
     float3 up = normalize(cross(right, forward));
     
-    // Scale camera position into ray-space so the black hole is reachable.
-    // Camera feeds plateRadius (default 100) as distance. We need ~5.0 in
-    // ray-space for the RK4 integrator to reach RS=0.40 within 512 steps.
+    // Match the scene's projection mode. The rest of the scene uses ORTHO
+    // with frustum = plateRadius * 1.2 in world units; the raytracer was
+    // doing perspective with fov 0.6 → BH rendered at perspective size,
+    // disconnected from the ortho-projected particles. That's why the BH
+    // looked "frozen at one big size" regardless of zoom.
+    //
+    // For ortho: every pixel is a parallel ray with the same direction
+    // (`forward`); the ray origin is offset across the camera's right/up
+    // axes by uv·frustum_half. BH apparent size = horizon/frustum_half →
+    // scales properly with zoom (rho up → frustum up → BH smaller).
+    //
+    // Also: divide cameraWo by simScale so the integrator runs in particle
+    // sim coords (matches BH horizon at M=0.025 sim).
     float camDist = length(cameraWo);
-    float cameraDistScale = max(camDist / 5.0f, 0.01f);
-    float3 rayOrigin = cameraWo / cameraDistScale;
-    float fovFactor = 0.6;
-    float3 rayDir = normalize(forward + uv.x * right * fovFactor + uv.y * up * fovFactor);
+    float3 rayOrigin, rayDir;
+    if (uniforms.orthoFrustum > 0.0f) {
+        // Ortho: per-pixel origin offset, constant direction.
+        float aspect = uniforms.resolution.x / uniforms.resolution.y;
+        float halfW = uniforms.orthoFrustum * aspect / uniforms.simScale;
+        float halfH = uniforms.orthoFrustum / uniforms.simScale;
+        rayOrigin = (cameraWo / uniforms.simScale)
+                  + uv.x * halfW * right
+                  + uv.y * halfH * up;
+        rayDir = forward;
+    } else {
+        // Perspective fallback.
+        rayOrigin = cameraWo / uniforms.simScale;
+        float fovFactor = 0.6;
+        rayDir = normalize(forward + uv.x * right * fovFactor + uv.y * up * fovFactor);
+    }
     
     RayState state = init_ray(rayOrigin, rayDir);
     float4 accumulatedColor = float4(0.0);
@@ -383,15 +405,23 @@ fragment float4 fragment_black_hole(
     float min_r = state.r; // Track closest approach to singularity
     
     for (int step = 0; step < MAX_STEPS; step++) {
-        // Track the closest approach to the singularity for photon-sphere glow
         min_r = min(min_r, state.r);
-        
+
         if (state.r <= r_horizon * 1.01) {
             hitHorizon = true;
             break;
         }
-        
-        state = step_rk4(state, STEP_SIZE);
+        // Escape: bail if ray flies far past the BH (matches Garganty).
+        if (state.r > 50.0) break;
+
+        // Adaptive step size — big steps far from horizon, small near.
+        // Without this, fixed step=0.05 needs 1000+ steps to traverse from
+        // cam=10 to horizon. Adaptive matches Garganty's approach.
+        float radial_limit = max(0.01f, 0.2f * (state.r - r_horizon));
+        float polar_limit  = max(0.002f, abs(sin(state.th)) * 0.4f);
+        float dlambda = min(min(radial_limit, polar_limit), 0.5f);
+
+        state = step_rk4(state, dlambda);
         float3 cartPos = bl_to_cartesian(state.r, state.th, state.ph);
         
         // Apply inverse rotation so the spatial grid appears rotated

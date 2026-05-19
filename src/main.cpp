@@ -1296,16 +1296,33 @@ int main() {
         printf("\n%s    ", buf);
       }
 
-      // ── Auto GPU Readback Probe ──
-      GPUParticle probe[2];
-      renderer.readbackParticles(probe, 2);
-      printf("\n  [GPU] dt=%.4f voices=%d amp=%.3f", dt, vc,
-             synth.totalAmplitude());
-      printf("\n  [P0] pos(%.4f, %.4f, %.4f) vel(%.6f, %.6f, %.6f)", probe[0].x,
-             probe[0].y, probe[0].z, probe[0].vx, probe[0].vy, probe[0].vz);
-      printf("\n  [P1] pos(%.4f, %.4f, %.4f) vel(%.6f, %.6f, %.6f)\n",
-             probe[1].x, probe[1].y, probe[1].z, probe[1].vx, probe[1].vy,
-             probe[1].vz);
+      // ── Auto GPU Readback Probe — sample 1000, classify ──
+      const int PROBE_N = 1000;
+      static std::vector<GPUParticle> probe(PROBE_N);
+      renderer.readbackParticles(probe.data(), PROBE_N);
+      int liveCount = 0, wallCount = 0, insideRS = 0, movingCount = 0;
+      int liveBand[10] = {0};
+      for (int i = 0; i < PROBE_N; i++) {
+        const auto &p = probe[i];
+        bool isWall = p.mass < 0.001f;
+        float r = std::sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+        float v = std::sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
+        if (isWall) wallCount++;
+        else {
+          liveCount++;
+          if (r < 0.40f) insideRS++;
+          if (v > 1e-5f) movingCount++;
+          int bucket = std::min(9, (int)(r / 0.4f));
+          liveBand[bucket]++;
+        }
+      }
+      printf("\n  [PROBE-%d] live=%d walls=%d insideRS=%d moving=%d  "
+             "envPhase=%.1f voices=%d\n",
+             PROBE_N, liveCount, wallCount, insideRS, movingCount,
+             config.envelopePhase, vc);
+      printf("  [BAND] r<0.4:%d  0.4-0.8:%d  0.8-1.2:%d  1.2-1.6:%d  1.6-2.0:%d  2.0+:%d\n",
+             liveBand[0], liveBand[1], liveBand[2], liveBand[3], liveBand[4],
+             liveBand[5]+liveBand[6]+liveBand[7]+liveBand[8]+liveBand[9]);
 
       fflush(stdout);
     }

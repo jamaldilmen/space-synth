@@ -79,7 +79,10 @@ static float noise(uint id, uint frame) {
 }
 
 // Collision constants
-constant int MAX_PER_CELL = 32; // Optimized for 1M particle neighbor scans
+constant int MAX_PER_CELL = 128; // Was 32 (sized for 1M); bumped for 5M+ so
+                                  // dense disk regions don't clip the neighbor
+                                  // scan / density readback. Must match the
+                                  // atomic cap in spatial_hash.metal.
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
@@ -183,35 +186,24 @@ kernel void compute_physics(
 
             // ═══ MULTI-LAYER FORCES (fixed strength — no amplitude scaling) ═══
 
-            // 1. CENTRAL SINGULARITY PULL (inverse-cubic — weak at disk, strong near core)
-            float centralPull = 2.0f / (rLen * rLen * rLen + PLANCK_LENGTH_SQ);
-            shiftVx -= dir.x * centralPull * dt;
-            shiftVy -= dir.y * centralPull * dt;
-            shiftVz -= dir.z * centralPull * dt;
+            // 1. SOFT GRAVITY — Step 1 of emergent BH (re-enabled).
+            // Was 2/r³ (singular). Now G / (r² + r0²) with r0=0.5 soft core.
+            // G=50 made acceleration ~40/sec at r=1 → particles blasted
+            // straight through center to r>2 in milliseconds. G=1.0 gives
+            // ~0.8/sec at r=1 → Kepler orbital period ~7s at r=1.
+            float G = 1.0f;
+            float r0 = 0.5f;
+            float gMag = G / (rLen * rLen + r0 * r0);
+            shiftVx -= dir.x * gMag * dt;
+            shiftVy -= dir.y * gMag * dt;
+            shiftVz -= dir.z * gMag * dt;
 
-            // 2. DISK CONFINEMENT (permanent Interstellar toroid)
-            // Even at silence, we want a majestic permanent accretion disk (Gargantua).
-            // Assign a permanent parking orbit to each particle.
-            float orbitalRadius = (SCHWARZSCHILD_RS * 1.05f) + fract(float(id) * 0.123456f) * 0.8f;
-            if (rLen > SCHWARZSCHILD_RS) { // only apply if it hasn't fallen in yet
-                float2 diskDir = normalize(float2(px, py) + float2(1e-6f));
-                
-                float3 diskTarget = float3(
-                    diskDir.x * orbitalRadius,
-                    diskDir.y * orbitalRadius,
-                    (fract(float(id) * 0.61803398875f) - 0.5f) * diskThickness // distribute z
-                );
-                
-                float3 toDisk = diskTarget - float3(px, py, pz);
-                float toDiskLen = length(toDisk);
-                if (toDiskLen > 0.001f) {
-                    // Strong restorative force to maintain the disk shape against gravity
-                    float3 diskForce = (toDisk / toDiskLen) * 80.0f * (1.0f / (toDiskLen + 0.1f));
-                    shiftVx += diskForce.x * dt;
-                    shiftVy += diskForce.y * dt;
-                    shiftVz += diskForce.z * dt;
-                }
-            }
+            // 2. DISK CONFINEMENT — TEMP DISABLED.
+            // Was a hardcoded spring force pulling every particle to a
+            // fixed orbital target on a thin xy-plane ring. That ring IS
+            // the "2D hardcoded BH" — the shape was defined by code, not
+            // emergent from physics. Disabling to see what particles do
+            // without an imposed shape.
 
             // 3. KERR FRAME-DRAGGING (Keplerian differential rotation)
             if (rXY > SCHWARZSCHILD_RS * 1.05f && diskHeight < diskThickness * 1.5f) {
@@ -221,6 +213,40 @@ kernel void compute_physics(
                 shiftVy += tangent.y * angularVel * dt;
                 float shearZ = pz * 0.5f * angularVel / (diskThickness + 0.1f);
                 shiftVz -= shearZ * dt;
+            }
+
+            // 3b. DENSITY PRESSURE — TEMP DISABLED for Step 1 verification.
+            // Was overpowering gravity (pressure scale 12 vs gravity scale 1)
+            // and pushing all particles outward → blowing up the Gaussian
+            // spawn instead of collapsing it. Re-enable in a later step
+            // after we have orbital dynamics holding particles in place.
+            if (false /* su.gridSize > 0 */) {
+                int cx = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
+                int cy = clamp(int((py + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
+                int cz = clamp(int((pz + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
+                uint cID = uint((cz * su.gridSize + cy) * su.gridSize + cx);
+                uint count = cellCounts[cID];
+                if (count > 24u) {
+                    // World-space cell-center position
+                    float ccx = (float(cx) + 0.5f) * su.cellSize - 1.0f;
+                    float ccy = (float(cy) + 0.5f) * su.cellSize - 1.0f;
+                    float ccz = (float(cz) + 0.5f) * su.cellSize - 1.0f;
+                    float3 outward = float3(px - ccx, py - ccy, pz - ccz);
+                    float outLen = length(outward) + 1e-6f;
+                    // log2(count/24) gives a smooth ramp from 1 (count=48) up
+                    // to ~2.4 (count=128 cap). Pressure scale 12 chosen so
+                    // disk confinement (max ~5 vel/frame at target) and
+                    // pressure share the same dynamic range.
+                    float pressure = log2(float(count) * (1.0f / 24.0f)) * 12.0f;
+                    float3 push = (outward / outLen) * pressure;
+                    shiftVx += push.x * dt;
+                    shiftVy += push.y * dt;
+                    shiftVz += push.z * dt;
+                    // Heat the particle — dense regions are hot plasma.
+                    currentTemp = mix(currentTemp,
+                                      1.0f + log2(float(count) * (1.0f / 24.0f)) * 0.8f,
+                                      0.15f);
+                }
             }
 
             // 4. GRAVITATIONAL LENSING — removed from particle physics.
@@ -236,13 +262,16 @@ kernel void compute_physics(
                 currentTemp = mix(currentTemp, 0.3f, 0.05f);
             }
 
-            // 6. EVENT HORIZON FREEZE
-            if (rLen < SCHWARZSCHILD_RS) {
-                vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
-                shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
-                currentTemp = 0.0f;
-                collapsed = true;
-            }
+            // 6. EVENT HORIZON FREEZE — DISABLED.
+            // Was a trapdoor: any particle that crossed r < RS got both its
+            // velocity AND accumulated shift forces zeroed, then `collapsed`
+            // flag set. Disk confinement (block 2) is gated `if (rLen > RS)`
+            // so it couldn't rescue trapped particles. Result: particles
+            // drifted into RS over time, accumulated there, became invisible
+            // via RS_CULL in render.metal. The visible field decayed away.
+            // Removing the freeze lets particles pass through RS freely;
+            // RS_CULL still hides them while inside but they re-emerge on
+            // the other side or get pulled back out by disk confinement.
 
             // ═══ OPTICAL EFFECTS ═══
             if (distFromDisk < diskThickness) {

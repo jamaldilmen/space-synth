@@ -42,7 +42,12 @@ struct Renderer::Impl {
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
 
   // Spatial hash buffers
-  static constexpr int kGridSize = 32; // 32x32x32 (64^3 too expensive for 1M)
+  static constexpr int kGridSize = 64; // 64x64x64 = 262K cells. Was 32^3 sized
+                                       // for 1M particles; with 5M+ avg per
+                                       // cell hit 153 and the MAX_PER_CELL=32
+                                       // atomic cap clipped 80%+ of particles
+                                       // out of neighbor/density readback.
+                                       // 64^3 → avg ~19/cell on 5M.
   static constexpr int kTotalCells =
       kGridSize * kGridSize * kGridSize;     // 32,768
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
@@ -883,28 +888,31 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
   // 1. Draw Black Hole Background (raymarching)
-  // Run during silence, sustain, or release. Attack + decay are skipped
-  // (the shader-internal opacity would be 0 in those phases anyway, so
-  // skipping avoids the ~51B trig ops/frame raytrace cost during the
-  // loudest, most CPU-hungry transients).
+  // Re-enabled. The raytracer renders pure BLACK inside the Kerr geodesic
+  // event horizon — that's the dark central void the lensed accretion-disk
+  // lobes wrap around (Interstellar/Gargantua look). Without it the
+  // particle lensing arches around nothing visible.
+  // Run during silence, sustain, release. Attack + decay skip (shader-side
+  // opacity is 0 there anyway).
   PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-  bool needRaytracer = (phys_gate->envelopePhase < 0.5f      // silence
-                     || phys_gate->envelopePhase > 2.5f);    // sustain or release
+  bool needRaytracer = (phys_gate->envelopePhase < 0.5f
+                     || phys_gate->envelopePhase > 2.5f);
   if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
-      float resolution[2]; // 8 bytes
-      float cameraPos[3];  // 12 bytes
-      float time;          // 4 bytes
-      float envelopePhase; // 4 bytes
-      float rotationX;     // 4 bytes
-    }; // 32 bytes total
+      float resolution[2]; // 8
+      float cameraPos[3];  // 12
+      float time;          // 4
+      float envelopePhase; // 4
+      float rotationX;     // 4
+      float simScale;      // 4 — particle scale (plateRadius)
+      float orthoFrustum;  // 4 — ortho half-extent in world units (0 = persp)
+    }; // 40 bytes
 
     PhysicsUniforms *phys = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
     BlackHoleUniforms bhUniforms;
     bhUniforms.resolution[0] = (float)width;
     bhUniforms.resolution[1] = (float)height;
 
-    // Note: cameraPos comes from the CameraUniforms bound to cameraBuffer
     CameraUniforms *camStruct =
         (CameraUniforms *)cameraBuffer[frameIdx].contents;
     bhUniforms.cameraPos[0] = camStruct->cameraPos[0];
@@ -914,6 +922,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     bhUniforms.time = phys->time;
     bhUniforms.envelopePhase = config.envelopePhase;
     bhUniforms.rotationX = config.rotationX;
+    bhUniforms.simScale = std::max(0.01f, config.plateRadius);
+    // Ortho frustum half-extent = cameraRho * 1.2 (matches main.cpp:534).
+    // Was using plateRadius (constant 100) which made the raytracer ignore
+    // zoom entirely. cameraRho varies 50-2000 with the user's zoom.
+    bhUniforms.orthoFrustum = config.orthoMode ? (config.cameraRho * 1.2f) : 0.0f;
 
     [enc setRenderPipelineState:blackHolePipeline];
     [enc setFragmentBytes:&bhUniforms

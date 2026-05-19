@@ -97,60 +97,50 @@ vertex VertexOut particle_vertex(
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
 
-    // ── Gravitational lensing (screen-space Schwarzschild approximation) ──
-    // Real GR: light deflection angle Δθ ≈ 2·R_s / b for impact parameter b.
-    // Approximated in NDC: push each particle AWAY from the projected BH
-    // center with magnitude ~1/b, capped to prevent blow-up. Produces the
-    // Interstellar/Gargantua wrap where the back of the disk appears above
-    // and below the central void.
+    // ── Gravitational lensing — per-particle 3D bend, no 2D coherent pattern ──
+    // The previous (ba85dcc) lens computed deflection from NDC distance —
+    // every particle got pushed radially from the projected BH center with
+    // magnitude ~1/NDC-distance. That creates a perfect coherent circle of
+    // distortion on screen (the "2D locked shape" — always centered on
+    // projected origin regardless of disk geometry).
     //
-    // ADSR-gated visibility: BH is the rest state and the destination of
-    // release. Attack/Decay hide it (the frequency force blows particles
-    // out of the hole, they harden into a free shape). Sustain ramps the
-    // hole back like aftertouch. Release collapses everything into the
-    // full Gargantua wrap. Phase mapping per CameraUniforms:
-    //   0 = silence (full BH)
-    //   1 = attack  (fade out)
-    //   2 = decay   (hidden)
-    //   3 = sustain (ramp back in)
-    //   4 = release (full BH collapse)
+    // Now: the deflection magnitude is driven by each particle's actual
+    // 3D impact parameter (perpendicular distance of the camera→particle
+    // ray to the BH origin in world space). Direction stays NDC-radial
+    // (so the bend is visible in screen). Particles in different 3D
+    // positions bend by different amounts → no coherent circular ring
+    // pattern emerges, just per-particle deflection of varying strengths.
     {
-        float p = cam.envelopePhase;
-        float lensScale;
-        if (p < 0.5)       lensScale = 1.0;                                     // silence
-        else if (p < 1.5)  lensScale = mix(1.0, 0.0, clamp(p, 0.0, 1.0));       // attack: fade out
-        else if (p < 2.5)  lensScale = 0.0;                                     // decay: hidden
-        else if (p < 3.5)  lensScale = mix(0.0, 0.7, clamp(p - 2.5, 0.0, 1.0)); // sustain: ramp back
-        else               lensScale = mix(0.7, 1.0, clamp(p - 3.5, 0.0, 1.0)); // release: collapse
-
-        if (lensScale > 0.001) {
-            float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
-            if (bhClip.w > 0.001f && out.position.w > 0.001f) {
-                // Depth gate: only lens particles BEHIND the BH from the
-                // camera's POV. Clip-space w is distance from camera
-                // (bigger = further). Real GR: front-side disk passes
-                // straight to the eye, back-side disk wraps around. Without
-                // this gate the front disk also bends outward and you see a
-                // second concentric "rim" padding the lensed back.
-                float depthBehind = out.position.w - bhClip.w;
-                // Smooth ramp so particles right at the BH depth don't pop.
-                // Width ~5% of camera-to-BH distance.
-                float behindFactor = smoothstep(0.0f, max(bhClip.w * 0.05f, 0.05f), depthBehind);
-
-                float2 ndcP  = out.position.xy / out.position.w;
-                float2 ndcBH = bhClip.xy / bhClip.w;
-                float2 dvec  = ndcP - ndcBH;
-                float impact = max(length(dvec), 0.04f);
-                float2 idir  = dvec / impact;
-                // Gain 0.05 and cap 0.18 → noticeable wrap on the back of
-                // the disk without yeeting particles to the screen edge.
-                float deflection = min(0.05f / impact, 0.18f) * lensScale * behindFactor;
-                ndcP += idir * deflection;
+        float3 camPos = cam.cameraPos.xyz;
+        float3 toPart = worldPos - camPos;
+        float distP   = length(toPart);
+        float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
+        if (distP > 0.001f && bhClip.w > 0.001f && out.position.w > 0.001f) {
+            float3 rayDir   = toPart / distP;
+            float t         = dot(-camPos, rayDir);
+            float3 closest  = camPos + rayDir * t;
+            float worldImpact = length(closest);     // 3D impact parameter
+            // Don't gate on depth — apply to every particle, modulate by
+            // 3D impact. Particles far from the BH ray (large worldImpact)
+            // bend little; particles whose ray passes close to BH bend a lot.
+            float2 ndcP  = out.position.xy / out.position.w;
+            float2 ndcBH = bhClip.xy / bhClip.w;
+            float2 dvec  = ndcP - ndcBH;
+            float ndcDist = length(dvec);
+            if (ndcDist > 1e-4f) {
+                float safeImpact = max(worldImpact, 0.15f);
+                // Magnitude tied to 3D geometry; cap 0.5 NDC so close-in
+                // particles don't blow off-screen. Gain 0.30 tuned for
+                // default ortho camera distance ~100.
+                float deflection = min(0.50f, 0.30f / safeImpact);
+                ndcP += (dvec / ndcDist) * deflection;
                 out.position.xy = ndcP * out.position.w;
             }
         }
     }
-    
+
+    // out.position already set at line 102, modified by lensing block above.
+
     // Phase 11: Project velocity into screen-space for string elongation
     float3 velWorld = in.velW.xyz * R;
     float4 endClip = cam.viewProjection * float4(worldPos + velWorld * 0.5f, 1.0);
@@ -183,12 +173,15 @@ vertex VertexOut particle_vertex(
     float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
     out.dist = dist;
     
-    // VJ Sustain: Particle size grows with thermal energy (audio activity)
-    // Hot particles at harmonic nodes become slightly larger during sustain
+    // Particle size. Baseline raised from 1.0 → 2.5 so rest particles render
+    // at the SAME physical size as play particles. The sphere impostor needs
+    // ~20+ pixels to read as a 3D sphere; the old 1.0× baseline made rest
+    // particles ~10px and they looked like 2D dots. Heat now only boosts
+    // *beyond* baseline (up to 4.0× for hot play particles).
     float temp = in.prevW.w;
-    float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 1x → 2.5x
+    float heatSizeBoost = 2.5f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 2.5x → 4.0x
     float rawSize = cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist));
-    out.pointSize = clamp(rawSize, 1.0f, 32.0f); // Hard cap at 32px to prevent overdraw
+    out.pointSize = clamp(rawSize, 1.0f, 64.0f); // Cap raised 32 → 64 for sphere impostor headroom
 
     // HDR luminance from thermal energy (ODS-03)
     out.luminance = 1.0f + max(0.0f, temp) * 2.0f; // Subtle warm glow, not blinding white
@@ -241,7 +234,8 @@ vertex VertexOut particle_vertex(
     // as visible particles with temperature-based color.
     float originR = length(in.posW.xyz);
     out.originDist = originR;
-    float RS_CULL = 0.40f;
+    // RS_CULL matches raytracer horizon at M=0.025 (≈ 0.029 sim coords).
+    float RS_CULL = 0.029f;
     if (originR < RS_CULL) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
@@ -261,35 +255,53 @@ fragment float4 particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
-    // Sphere impostor: reconstruct a hemisphere normal from the point-sprite
-    // UV. Lambertian shade against a fixed key light + small ambient so the
-    // phase-viz and motion read as 3D balls instead of 2D confetti.
-    // String Theory elongation removed — was streaking particles into 1D
-    // strings along velocity (the confetti look). Particles are spheres now.
-    float2 pc = (pointCoord - 0.5f) * 2.0f;   // [-1, 1] over the quad
-    float r2 = dot(pc, pc);
-    if (r2 > 1.0f) discard_fragment();         // clip to the disc
+    // LIGHT SAMPLE rendering — each particle is a photon STREAK, not a dot.
+    // Real raytraced light accumulates ALONG the photon path through bent
+    // geometry → continuous strands on screen, not discrete points. We
+    // approximate this by stretching each particle's emission Gaussian
+    // along its screen-space velocity (passed in by the vertex shader as
+    // velDir2D). Orbital particles in the xy plane streak tangentially;
+    // many overlapping streaks become continuous curved light bands as
+    // the orbital motion sweeps around the BH.
+    float2 pc = (pointCoord - 0.5f) * 2.0f;        // [-1, 1] over the quad
 
-    float z = sqrt(1.0f - r2);
-    float3 n = float3(pc.x, -pc.y, z);         // flip Y to match screen orientation
+    // Rotate UV into a velocity-aligned frame. velDir2D from vertex is
+    // already scaled by a visual gain — magnitude controls streak length.
+    float2 vd     = in.velDir2D;
+    float speed   = length(vd);
+    float2 dir    = (speed > 1e-4f) ? vd / speed : float2(1.0f, 0.0f);
+    float2 perp   = float2(-dir.y, dir.x);
+    float along   = dot(pc, dir);
+    float across  = dot(pc, perp);
 
-    // Fixed key light from upper-right-front, plus rim from behind.
-    float3 keyDir = normalize(float3(0.4f, 0.6f, 0.7f));
-    float diff = max(0.0f, dot(n, keyDir));
-    float rim  = pow(1.0f - max(0.0f, n.z), 3.0f) * 0.6f;
-    float spec = pow(max(0.0f, dot(n, keyDir)), 24.0f) * 0.5f;
+    // Stretch factor:
+    //   stationary (speed≈0) → circular Gaussian (a faint dot)
+    //   high speed           → elongated streak along motion direction
+    // Cap at 0.85 so the streak never collapses to a 1D line — keeps
+    // some perpendicular thickness for visual softness.
+    float elong  = clamp(speed * 0.6f, 0.0f, 0.85f);
+    float widthY = mix(1.0f, 0.20f, elong);          // shrink across
+    float lengthX = mix(1.0f, 1.6f,  elong);          // expand along
 
-    float3 baseColor = in.color;
-    float3 finalColor = baseColor * (0.25f + 0.85f * diff) + float3(spec) + baseColor * rim;
-    finalColor *= in.luminance;
+    // Distance in the warped frame (anisotropic Gaussian).
+    float2 warped = float2(along / lengthX, across / widthY);
+    float r2 = dot(warped, warped);
 
-    // Alpha: solid in the center, soft edge from the implicit sphere silhouette.
-    float baseAlpha = 0.5f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.15f;
-    float edge = smoothstep(1.0f, 0.85f, r2);  // softens silhouette slightly
-    float alpha = edge * baseAlpha;
+    // Pure emission, no discard — fades smoothly at edges so neighbor
+    // sprites blend into continuous bands. Hotspot (white core) REMOVED
+    // — it stacked under additive blending and bleached the disk to pure
+    // white in dense regions, killing the blackbody color (red/orange
+    // outer / blue inner). Now color comes ENTIRELY from in.color
+    // (blackbody) so dense regions stay colorful.
+    float glow = exp(-r2 * 2.0f);
+
+    float3 emission = in.color * in.luminance * glow * 1.8f;
+
+    float baseAlpha = 0.08f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.06f;
+    float alpha = glow * baseAlpha;
 
     float fadeDistance = 6.0f;
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));
 
-    return float4(finalColor * alpha * fadeAmount, alpha * fadeAmount);
+    return float4(emission * alpha * fadeAmount, alpha * fadeAmount);
 }

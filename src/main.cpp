@@ -252,6 +252,22 @@ int main() {
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
+    // Arrow keys = orbit camera. Handled BEFORE the isRepeat gate so a
+    // held key fires every macOS key-repeat tick → smooth continuous
+    // rotation. Step is a velocity impulse; Camera::update applies
+    // friction and soft-locks to the nearest 90° quadrant when the
+    // user lets go.
+    //   123=Left  124=Right  125=Down  126=Up
+    if (e.isDown) {
+      constexpr float ARROW_STEP = 0.035f; // ≈ 2°/tick
+      switch (e.keyCode) {
+      case 123: camera.rotate(+ARROW_STEP, 0.0f); return;
+      case 124: camera.rotate(-ARROW_STEP, 0.0f); return;
+      case 126: camera.rotate(0.0f, +ARROW_STEP); return;
+      case 125: camera.rotate(0.0f, -ARROW_STEP); return;
+      }
+    }
+
     if (e.isRepeat)
       return;
 
@@ -1032,6 +1048,16 @@ int main() {
         ImGui::SameLine();
         if (ImGui::Button("Snap Back (Reset)")) {
           renderer.triggerReset();
+        }
+        // Live camera angles. Arrow keys ←/→ rotate azimuth (φ),
+        // ↑/↓ rotate elevation (θ). Soft-locks at 0°/90°/180°/270°.
+        {
+          const float RAD2DEG = 180.0f / M_PI_F;
+          float phiDeg   = camera.getPhi()   * RAD2DEG;
+          float thetaDeg = camera.getTheta() * RAD2DEG;
+          ImGui::Text("Azimuth φ : %+7.2f°   (←/→)", phiDeg);
+          ImGui::Text("Elevation θ: %+7.2f°   (↑/↓)", thetaDeg);
+          ImGui::Text("Distance ρ : %.1f",            camera.getRho());
         }
         ImGui::SetItemTooltip("Instantly re-seed all particles into "
                               "center");

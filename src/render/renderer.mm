@@ -611,6 +611,12 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // ── Camera ──────────────────────────────────────────────────────────
   CameraUniforms cam = {};
   memcpy(cam.viewProj, viewProj, 16 * sizeof(float));
+  // World-space camera position — was previously NEVER set in this render
+  // path, leaving cameraPos = (0,0,0). The raytracer then started rays AT
+  // the BH origin → all rays inside the horizon → BH appeared huge.
+  cam.cameraPos[0] = config.cameraPos[0];
+  cam.cameraPos[1] = config.cameraPos[1];
+  cam.cameraPos[2] = config.cameraPos[2];
   cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
@@ -661,9 +667,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // Upload spatial hash uniforms
       SpatialHashUniforms su = {};
       su.gridSize = kGridSize;
+      // Particle field extends to ~Gaussian σ=1 spawn → 99% live within
+      // r=3 sim coords. Hash must cover [-3, +3] so out-of-unit-cube
+      // particles aren't squashed into edge cells (which made the raytracer
+      // sample miss the entire disk).
+      su.halfExtent = 3.0f;
       su.particleCount = particleCount;
-      su.cellSize = 2.0f / (float)kGridSize;
-      su.invCellSize = (float)kGridSize / 2.0f;
+      su.cellSize = 2.0f * su.halfExtent / (float)kGridSize;
+      su.invCellSize = (float)kGridSize / (2.0f * su.halfExtent);
       su.gridSizeZ = kGridSize;
       memcpy(spatialHashUniformBuffer.contents, &su,
              sizeof(SpatialHashUniforms));

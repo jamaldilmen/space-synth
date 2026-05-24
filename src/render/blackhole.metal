@@ -2,10 +2,13 @@
 using namespace metal;
 
 // Phase 18: Kerr-Metric Hollywood Raytracer
-constant float M = 0.025;  // Tiny BH. Horizon ≈ 0.029 sim ≈ world r=2.9 at
-                            // simScale=100 — small dot at the center,
-                            // particles dominate the visual.
-constant float a = 0.99 * M; // Spin parameter (Kerr)
+// ── CANONICAL BH MASS — change here and update particles.metal:BH_M
+// and render.metal:RS_CULL to match.
+//   M = 0.5     → horizon ≈ 0.57 sim coords
+//              → disk ring at r=1.5-4 → shapes are 2.6-7× the BH.
+//                Visibly bigger than the BH but not absurdly so.
+constant float M = 0.5;
+constant float a = 0.99 * M; // Spin parameter (Kerr, near-extremal)
 constant int MAX_STEPS = 1500;     // Was 512; bumped for world-space traversal
                                    // (no more cameraDistScale rescale hack)
 constant float STEP_BASE = 0.05f;  // Base step; adaptive sizing below
@@ -29,12 +32,14 @@ struct Particle {
     uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
+// Mirrors spatial_hash.metal. Layout must match.
 struct SpatialHashUniforms {
-    int gridSize;       // 256
+    int gridSize;
     int particleCount;
-    float cellSize;     // 2.0 / gridSize
-    float invCellSize;  // gridSize / 2.0
-    int gridSizeZ;      // 32
+    float cellSize;
+    float invCellSize;
+    int gridSizeZ;
+    float halfExtent;
 };
 
 struct VertexOut {
@@ -299,9 +304,9 @@ float4 sample_spatial_grid_velocity(
         return float4(0.0);
     }
     
-    int cx = int((cartPos.x + 1.0f) * gridU.invCellSize);
-    int cy = int((cartPos.y + 1.0f) * gridU.invCellSize);
-    int cz = int((cartPos.z + 1.0f) * gridU.invCellSize);
+    int cx = int((cartPos.x + gridU.halfExtent) * gridU.invCellSize);
+    int cy = int((cartPos.y + gridU.halfExtent) * gridU.invCellSize);
+    int cz = int((cartPos.z + gridU.halfExtent) * gridU.invCellSize);
     
     if (cx < 0 || cx >= gridU.gridSize || cy < 0 || cy >= gridU.gridSize || cz < 0 || cz >= gridU.gridSize) {
         return float4(0.0);
@@ -494,15 +499,10 @@ fragment float4 fragment_black_hole(
     // raytracer. The geodesic accumulation already creates a photon-sphere
     // brightening where rays orbit before falling in.
 
-    // ── STARFIELD BACKGROUND (Gravitational Lensing Visible) ──
-    // Rays that escape sample a procedural starfield at their warped exit direction.
-    // The Kerr metric bends the ray's th/ph, so stars appear warped around the hole.
-    if (!hitHorizon && accumulatedColor.a < 0.99) {
-        float3 stars = sampleStarfield(state.th, state.ph, uniforms.time);
-        float starAlpha = (1.0 - accumulatedColor.a);
-        accumulatedColor.rgb += stars * starAlpha;
-        accumulatedColor.a += starAlpha * saturate(length(stars) * 2.0);
-    }
+    // STARFIELD REMOVED — was painting a procedural sky on escape rays
+    // that clashed with the particle field and looked like a static
+    // background texture. The BH visual is now just void + accretion;
+    // escape rays render transparent.
 
     accumulatedColor.a = hitHorizon ? 1.0 : accumulatedColor.a;
     accumulatedColor *= opacity;

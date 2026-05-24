@@ -202,7 +202,10 @@ int main() {
       false; // Off by default — grid too small for 10M (32^3 cells, MAX_PER_CELL=32)
   static bool uiPhaseViz = false; // Feynman phase arrow coloring
   static float uiBloom = 0.0f;
-  static float uiTrailDecay = 0.0f;
+  static float uiTrailDecay = 0.88f; // Light-trail feedback ON by default.
+                                      // Fast-orbiting particles smear into
+                                      // velocity-proportional trails — the
+                                      // trails ARE the accretion-disk look.
   static float uiChromatic = 0.0f;
 
   // ── Phase 18: Black Hole Aesthetics ──────────────────────────────
@@ -1173,6 +1176,9 @@ int main() {
     config.particleSize = effectiveSize * (1.0f + lfoVal * 0.2f);
     config.plateRadius = uiScale * (1.0f + lfoVal * 0.1f);
     config.cameraRho = camera.getRho();
+    config.cameraPos[0] = camera.getX();
+    config.cameraPos[1] = camera.getY();
+    config.cameraPos[2] = camera.getZ();
     config.jitterFactor =
         uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
     config.orthoMode = uiOrthoMode;

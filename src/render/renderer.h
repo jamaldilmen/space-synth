@@ -19,6 +19,8 @@ struct RenderConfig {
   // New Simulation
   float modeP = 1.0f; // Depth Mode multiplier
   float cameraRho = 800.0f;
+  float cameraPos[3] = {0.0f, 0.0f, 0.0f};  // World-space camera position
+                                             // (set from main.cpp each frame)
   bool orthoMode = true;
   bool phaseViz = false;
 
@@ -126,11 +128,12 @@ struct PhysicsUniforms {
 
 // Spatial hash uniforms for collision grid
 struct SpatialHashUniforms {
-  int gridSize; // 32
+  int gridSize;
   int particleCount;
-  float cellSize;    // 2.0 / gridSize
-  float invCellSize; // gridSize / 2.0
-  int gridSizeZ;     // 32
+  float cellSize;    // 2*halfExtent / gridSize
+  float invCellSize; // gridSize / (2*halfExtent)
+  int gridSizeZ;
+  float halfExtent;  // particle field half-extent in sim coords
 };
 
 // Stats readback from GPU (conservation laws)

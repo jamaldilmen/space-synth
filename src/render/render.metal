@@ -183,8 +183,12 @@ vertex VertexOut particle_vertex(
     float rawSize = cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist));
     out.pointSize = clamp(rawSize, 1.0f, 64.0f); // Cap raised 32 → 64 for sphere impostor headroom
 
-    // HDR luminance from thermal energy (ODS-03)
-    out.luminance = 1.0f + max(0.0f, temp) * 2.0f; // Subtle warm glow, not blinding white
+    // HDR luminance from thermal energy (ODS-03). Particles render at full
+    // brightness in ALL phases — they ARE the visual, both at rest (fast
+    // orbital spin → light trails → accretion disk) and on play (Chladni
+    // shapes). No multiplex dimming; the raytracer only draws the dark
+    // void, it does not replace the particles.
+    out.luminance = 1.0f + max(0.0f, temp) * 2.0f;
 
     // Decode packed phase + band ID
     float phase; int bandId;
@@ -234,8 +238,10 @@ vertex VertexOut particle_vertex(
     // as visible particles with temperature-based color.
     float originR = length(in.posW.xyz);
     out.originDist = originR;
-    // RS_CULL matches raytracer horizon at M=0.025 (≈ 0.029 sim coords).
-    float RS_CULL = 0.029f;
+    // RS_CULL = unified BH horizon. Must match BH_HORIZON in
+    // particles.metal and `M + sqrt(M²-a²)` in blackhole.metal. With
+    // M=0.5, a=0.99M → horizon ≈ 0.57 sim coords.
+    float RS_CULL = 0.57f;
     if (originR < RS_CULL) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
@@ -295,7 +301,12 @@ fragment float4 particle_fragment(
     // (blackbody) so dense regions stay colorful.
     float glow = exp(-r2 * 2.0f);
 
-    float3 emission = in.color * in.luminance * glow * 1.8f;
+    // Emission multiplier reduced 1.8 → 0.5. With G=20 gravity, particles
+    // orbit fast and the velocity-aligned streaks pile up under additive
+    // blending → field saturated to white everywhere. Lower per-particle
+    // emission lets dense regions glow bright but sparse stay dim, so the
+    // BH void and disk structure remain visible against the field.
+    float3 emission = in.color * in.luminance * glow * 0.5f;
 
     float baseAlpha = 0.08f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.06f;
     float alpha = glow * baseAlpha;

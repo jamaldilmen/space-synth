@@ -60,6 +60,7 @@ struct SpatialHashUniforms {
     float cellSize;
     float invCellSize;
     int gridSizeZ;
+    float halfExtent;   // particle field half-extent in sim coords
 };
 
 // (Removed Bessel functions - no longer used)
@@ -86,7 +87,25 @@ constant int MAX_PER_CELL = 128; // Was 32 (sized for 1M); bumped for 5M+ so
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
-constant float SCHWARZSCHILD_RS = 0.40f;    // Matches blackhole.metal RS
+
+// ── Unified BH constants ────────────────────────────────────────────────────
+// All BH-related sizes derive from BH_M (the visual Schwarzschild radius in
+// sim coords). Must match `M` in blackhole.metal:5.
+//   BH_M       = mass / Schwarzschild radius (sim coords)
+//   BH_HORIZON = Kerr outer horizon = M + sqrt(M² − a²) for a=0.99M ≈ 1.14·M
+// All gates that previously used the stale `SCHWARZSCHILD_RS = 0.40` constant
+// now derive from these so the particle physics' notion of "near horizon"
+// matches what the raytracer actually draws as the horizon.
+//
+// NOTE: gravity strength is a SEPARATE physical parameter (not derived from
+// BH_M) because using M_visual=0.025 as the gravitational mass would give
+// orbital periods of ~40s — too slow to be visually interesting. Real BHs
+// have decoupled "apparent shadow size" from "orbital timescale" anyway
+// (the shadow scales with M, orbital periods scale with M but also with r³,
+// so picking a usable r where M is visible is a separate tuning).
+constant float BH_M       = 0.5f;
+constant float BH_HORIZON = 0.57f;          // ≈ M + sqrt(M² − a²), a = 0.99M
+constant float SCHWARZSCHILD_RS = BH_HORIZON; // legacy alias (existing gates)
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
@@ -122,8 +141,13 @@ kernel void compute_physics(
     // ── Phase 7: Deterministic Debug Mode ──────────────────────────
     float dt = (u.debugFlags & (1 << 6)) ? (1.0f / 60.0f) : u.dt;
     
-    // Base friction (damps previous velocity)
-    float baseFric = pow(0.02f, dt); 
+    // Base friction. Was pow(0.02, dt) ≈ 0.968/frame (heavy damping) which
+    // killed orbital stability — Kepler orbits need energy conservation,
+    // friction makes them spiral in. Bumped to pow(0.9, dt) ≈ 0.9991/frame
+    // → nearly zero damping at rest, particles orbit cleanly.
+    // During play, voice forces still dominate; the small friction prevents
+    // runaway velocity buildup but doesn't crush orbital momentum.
+    float baseFric = pow(0.9f, dt);
 
     float dynamicFric = baseFric;
 
@@ -186,17 +210,25 @@ kernel void compute_physics(
 
             // ═══ MULTI-LAYER FORCES (fixed strength — no amplitude scaling) ═══
 
-            // 1. SOFT GRAVITY — Step 1 of emergent BH (re-enabled).
-            // Was 2/r³ (singular). Now G / (r² + r0²) with r0=0.5 soft core.
-            // G=50 made acceleration ~40/sec at r=1 → particles blasted
-            // straight through center to r>2 in milliseconds. G=1.0 gives
-            // ~0.8/sec at r=1 → Kepler orbital period ~7s at r=1.
-            float G = 1.0f;
-            float r0 = 0.5f;
-            float gMag = G / (rLen * rLen + r0 * r0);
+            // 1. GRAVITY — flat rotation curve, BH MUST DOMINATE.
+            // G bumped 20 → 100 so the central pull dominates all other
+            // forces including voice perturbations. r0 0.5 → 0.1 so the
+            // gravity well is sharper near the BH (less softening fudge).
+            // 1/(r+r0) falloff keeps gravity meaningful at large r so
+            // escaped particles get pulled back, not lost.
+            // MUST match the spawn velocity formula in particles.cpp.
+            float G = 100.0f;
+            float r0 = 0.1f;
+            float gMag = G / (rLen + r0);
             shiftVx -= dir.x * gMag * dt;
             shiftVy -= dir.y * gMag * dt;
             shiftVz -= dir.z * gMag * dt;
+
+            // 1b. Z-PLANE DAMPING. Active pull toward z=0 so the disk
+            // stays flat. Voice perturbations push particles in 3D; without
+            // this, the disk puffs into a 3D ball. Strength tuned so it
+            // doesn't fight orbital motion in the xy plane.
+            shiftVz -= pz * 5.0f * dt;
 
             // 2. DISK CONFINEMENT — TEMP DISABLED.
             // Was a hardcoded spring force pulling every particle to a
@@ -205,15 +237,16 @@ kernel void compute_physics(
             // emergent from physics. Disabling to see what particles do
             // without an imposed shape.
 
-            // 3. KERR FRAME-DRAGGING (Keplerian differential rotation)
-            if (rXY > SCHWARZSCHILD_RS * 1.05f && diskHeight < diskThickness * 1.5f) {
-                float angularVel = 15.0f / sqrt(rXY + 0.1f);
-                float2 tangent = float2(-py, px) / (rXY + 0.001f);
-                shiftVx += tangent.x * angularVel * dt;
-                shiftVy += tangent.y * angularVel * dt;
-                float shearZ = pz * 0.5f * angularVel / (diskThickness + 0.1f);
-                shiftVz -= shearZ * dt;
-            }
+            // 3. KERR FRAME-DRAGGING — DISABLED.
+            // Added a `15/sqrt(rXY)` tangential force ON TOP of the orbital
+            // velocity the particles already have from spawn + gravity.
+            // At r=1.5 that's ~12 units/s of extra spin vs the ~3.5
+            // orbital velocity → particles got over-sped and flung
+            // outward, breaking the orbit. The orbital velocity alone
+            // (v² = G·r/(r²+r0²), set at spawn, maintained by gravity)
+            // already makes particles spin around the BH cleanly.
+            // The vertical-shear z-damping it also did is handled by the
+            // thin spawn (z σ=0.05) instead.
 
             // 3b. DENSITY PRESSURE — TEMP DISABLED for Step 1 verification.
             // Was overpowering gravity (pressure scale 12 vs gravity scale 1)
@@ -221,9 +254,9 @@ kernel void compute_physics(
             // spawn instead of collapsing it. Re-enable in a later step
             // after we have orbital dynamics holding particles in place.
             if (false /* su.gridSize > 0 */) {
-                int cx = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
-                int cy = clamp(int((py + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
-                int cz = clamp(int((pz + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
+                int cx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+                int cy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+                int cz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
                 uint cID = uint((cz * su.gridSize + cy) * su.gridSize + cx);
                 uint count = cellCounts[cID];
                 if (count > 24u) {
@@ -619,9 +652,9 @@ kernel void compute_physics(
 
     // ── Particle-Particle Collisions (spatial hash neighbor scan) ─────
     if (u.collisionsOn > 0 && su.gridSize > 0) {
-        int cellX = clamp(int((px + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
-        int cellY = clamp(int((py + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
-        int cellZ = clamp(int((pz + 1.0f) * su.invCellSize), 0, su.gridSize - 1);
+        int cellX = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int cellY = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int cellZ = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
 
         float colRad = u.collisionRadius;
         float colRad2 = colRad * colRad;
@@ -831,6 +864,40 @@ kernel void compute_physics(
 
     // Final position integration
     float3 nextPos = float3(px, py, pz) + finalV;
+
+    // ── BRUNETON-STYLE ANALYTIC ORBITS ──────────────────────────────────
+    // Per-particle home orbit (r_home, phi_offset) set at spawn in spinW.
+    // At REST (envPhase < 0.5 AND no voice amplitude): position is FULLY
+    // analytic — no integration, no drift, no pulse. Particle is exactly
+    // on its orbital trajectory at all times.
+    // During PLAY: nextPos comes from the integrator (voice forces win) +
+    // a small pull back toward analytic so particles don't fully escape.
+    {
+        float r_home    = p.spinW.x;
+        float phi_offset = p.spinW.y;
+        if (r_home > 0.001f) {
+            // K=4 → ~1.57s period at r=1 (fast enough for strong trails).
+            // omega = K/r^1.5 = K · rsqrt(r³) (avoids pow, faster on GPU).
+            float r3 = r_home * r_home * r_home;
+            float omega = 4.0f * rsqrt(r3);
+            float phi   = phi_offset + omega * u.time;
+            float3 target = float3(r_home * cos(phi),
+                                   r_home * sin(phi),
+                                   0.0f);
+
+            float voiceMute = clamp(u.totalAmplitude, 0.0f, 1.0f);
+            if (voiceMute < 0.01f) {
+                // Pure rest — position IS the analytic orbit. No lerp,
+                // no integration noise. Eliminates "pulsing" from the
+                // tug-of-war between integrator and lerp.
+                nextPos = target;
+            } else {
+                // Play — voice forces dominate, weak pull toward home.
+                float alpha = clamp(0.5f * (1.0f - voiceMute) * dt, 0.0f, 1.0f);
+                nextPos = mix(nextPos, target, alpha);
+            }
+        }
+    }
 
     // ── DIRECT ENVELOPE→RADIUS COUPLING ──────────────────────────────
     // DISABLED — every-frame radial blend toward globalTargetRadius was

@@ -14,11 +14,12 @@ struct Particle {
 };
 
 struct SpatialHashUniforms {
-    int gridSize;       // 256
+    int gridSize;       // 64 (kGridSize)
     int particleCount;
-    float cellSize;     // 2.0 / gridSize
-    float invCellSize;  // gridSize / 2.0
-    int gridSizeZ;      // 32
+    float cellSize;     // 2*halfExtent / gridSize
+    float invCellSize;  // gridSize / (2*halfExtent)
+    int gridSizeZ;      // 64
+    float halfExtent;   // particle field half-extent in sim coords (e.g. 3.0)
 };
 
 // ── Phase 1: Assign each particle to a cell ID ─────────────────────────────
@@ -35,10 +36,10 @@ kernel void assign_cells(
     float py = particles[id].posW.y;
     float pz = particles[id].posW.z;
 
-    // Map [-1,1] → [0, gridSize-1]
-    int cellX = clamp(int((px + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
-    int cellY = clamp(int((py + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
-    int cellZ = clamp(int((pz + 1.0f) * u.invCellSize), 0, u.gridSize - 1);
+    // Map [-halfExtent, +halfExtent] → [0, gridSize-1]
+    int cellX = clamp(int((px + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    int cellY = clamp(int((py + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    int cellZ = clamp(int((pz + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
 
     cellIndices[id] = uint((cellZ * u.gridSize + cellY) * u.gridSize + cellX);
 }

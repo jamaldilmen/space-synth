@@ -106,6 +106,12 @@ constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
 constant float BH_M       = 0.5f;
 constant float BH_HORIZON = 0.57f;          // ≈ M + sqrt(M² − a²), a = 0.99M
 constant float SCHWARZSCHILD_RS = BH_HORIZON; // legacy alias (existing gates)
+// Hard outer cap for the accretion disk in the equatorial plane. Gravity is
+// 1/(r+r0) (flat rotation curve) which is too weak to recapture particles
+// flung tangentially; without this cap they drift outward indefinitely and
+// render as horizontal pin spikes in the disk plane. 3.0 = 5.3× horizon =
+// scale-accurate Kerr disk outer edge.
+constant float ORBIT_R_MAX = 3.0f;
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
@@ -924,6 +930,26 @@ kernel void compute_physics(
                 float blendedR = mix(nextR, globalTargetRadius, 0.25f);
                 nextPos = dir * blendedR;
                 finalV *= 0.75f;
+            }
+        }
+    }
+
+    // ── HARD OUTER RADIUS CAP (disk plane) ──────────────────────────────
+    // Pull any escapee back to ORBIT_R_MAX and zero its outward radial
+    // velocity (keep tangential so it keeps orbiting). Vertical (z) is
+    // already constrained by the z-plane damping above.
+    {
+        float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
+        if (rXY2 > ORBIT_R_MAX * ORBIT_R_MAX) {
+            float rXY = sqrt(rXY2);
+            float scale = ORBIT_R_MAX / rXY;
+            nextPos.x *= scale;
+            nextPos.y *= scale;
+            float2 radialDir = float2(nextPos.x, nextPos.y) * (1.0f / ORBIT_R_MAX);
+            float vRad = finalV.x * radialDir.x + finalV.y * radialDir.y;
+            if (vRad > 0.0f) {
+                finalV.x -= vRad * radialDir.x;
+                finalV.y -= vRad * radialDir.y;
             }
         }
     }

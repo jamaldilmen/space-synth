@@ -5,8 +5,7 @@ using namespace metal;
 // ── CANONICAL BH MASS — change here and update particles.metal:BH_M
 // and render.metal:RS_CULL to match.
 //   M = 0.5     → horizon ≈ 0.57 sim coords
-//              → disk ring at r=1.5-4 → shapes are 2.6-7× the BH.
-//                Visibly bigger than the BH but not absurdly so.
+//              → small BH; disk breathes from r=1 (silence) to r=3 (play)
 constant float M = 0.5;
 constant float a = 0.99 * M; // Spin parameter (Kerr, near-extremal)
 constant int MAX_STEPS = 1500;     // Was 512; bumped for world-space traversal
@@ -21,6 +20,7 @@ struct BlackHoleUniforms {
     float rotationX;
     float simScale;       // particle scale (plateRadius), see notes below
     float orthoFrustum;   // ortho half-extent in world units (0 = perspective)
+    float shadowRadius;   // black shadow radius in sim coords (user-tunable)
 };
 
 // --- Spatial Hash Data Structures ---
@@ -290,60 +290,115 @@ static float3 sampleStarfield(float th, float ph, float time) {
 }
 
 // ── Volumetric Grid Sampling ──────────────────
-float4 sample_spatial_grid_velocity(
-    float3 cartPos,
+
+// Single-cell read: returns float4(avgVel, density) for one spatial-hash
+// cell, or zero if the cell is out of bounds / empty.
+static float4 sample_one_cell(
+    int cx, int cy, int cz,
     constant SpatialHashUniforms& gridU,
     device const uint* cellStarts,
-    device const Particle* sortedParticles) 
+    device const Particle* sortedParticles)
 {
-    // The particle grid is scaled 1.0 = Edge of screen. 
-    // The shader black hole `RS` is 0.40. 
-    // We map the physical `cartPos` directly to the grid coordinates.
-    // If the ray is INSIDE the event horizon, we return exactly 0 density so it stays pitch black.
-    if (length(cartPos) < M + sqrt(M*M - a*a)) {
+    if (cx < 0 || cx >= gridU.gridSize ||
+        cy < 0 || cy >= gridU.gridSize ||
+        cz < 0 || cz >= gridU.gridSizeZ) {
         return float4(0.0);
     }
-    
-    int cx = int((cartPos.x + gridU.halfExtent) * gridU.invCellSize);
-    int cy = int((cartPos.y + gridU.halfExtent) * gridU.invCellSize);
-    int cz = int((cartPos.z + gridU.halfExtent) * gridU.invCellSize);
-    
-    if (cx < 0 || cx >= gridU.gridSize || cy < 0 || cy >= gridU.gridSize || cz < 0 || cz >= gridU.gridSize) {
-        return float4(0.0);
-    }
-    
-    uint cellID = (cz * gridU.gridSize + cy) * gridU.gridSize + cx;
+    uint cellID = uint((cz * gridU.gridSize + cy) * gridU.gridSize + cx);
     uint startIdx = cellStarts[cellID];
-    
-    // Safely get next cell's start index to compute count
-    uint totalCells = gridU.gridSize * gridU.gridSize * gridU.gridSizeZ;
-    uint nextIdx = (cellID + 1 < totalCells) ? cellStarts[cellID + 1] : gridU.particleCount;
+    uint totalCells = uint(gridU.gridSize * gridU.gridSize * gridU.gridSizeZ);
+    uint nextIdx = (cellID + 1 < totalCells)
+                       ? cellStarts[cellID + 1]
+                       : uint(gridU.particleCount);
     float count = float(nextIdx - startIdx);
-    
     if (count == 0.0) return float4(0.0);
-    
+
+    // Average more of the cell's particles for a stable mean velocity. The
+    // old 4-sample average flickered: the spatial sort reshuffles which
+    // particles land first in the cell each frame, so a 4-wide window jumped
+    // around frame-to-frame → visible temporal glitch in the disk colour.
+    // 12 samples settle the mean without materially touching FPS (these reads
+    // only happen on rays that actually hit the disk).
     float3 avgVel = float3(0.0);
-    int samples = min(int(count), 4);
+    int samples = min(int(count), 12);
     for (int i = 0; i < samples; i++) {
         avgVel += sortedParticles[startIdx + i].velW.xyz;
     }
     avgVel /= float(samples);
-    
-    // Density calibration: 
-    // The image shows a massive glowing sphere because density is too high everywhere.    // Scale density to prevent blowout at 10M, but retain strong core brightness
+
     float countFactor = 5000000.0f / max(1.0f, float(gridU.particleCount));
-    float density = clamp(count * countFactor * 0.008f, 0.0f, 1.0f);
-    
-    // Restore soft z-mask: Gaussian falloff to avoid hard shadows while shaping the disk
+    // Grid-aware density scale: total particles fixed, so cells at finer
+    // resolution hold proportionally fewer particles each. Brightness per
+    // ray-step would drop ∝ 1/gridVolume without this. Calibration: 0.008
+    // was tuned at 64³; we rescale to keep visual density invariant under
+    // grid resolution changes.
+    float gridScale = float(gridU.gridSize) / 64.0f;
+    // Base calib raised 0.008 → 0.016: the geodesically-lensed volumetric is
+    // the REAL bent disk (RK4 rays sampling the particle density), but it was
+    // too faint to see, so the crude NDC particle-smear won the frame and read
+    // grainy/cheap. Bringing the volumetric forward lets the continuous lensed
+    // band carry the disk instead of sparse particle streaks.
+    float densityCalib = 0.016f * gridScale * gridScale * gridScale;
+    float density = clamp(count * countFactor * densityCalib, 0.0f, 1.0f);
+    return float4(avgVel, density);
+}
+
+float4 sample_spatial_grid_velocity(
+    float3 cartPos,
+    constant SpatialHashUniforms& gridU,
+    device const uint* cellStarts,
+    device const Particle* sortedParticles)
+{
+    // Inside the event horizon → no emission (the void).
+    if (length(cartPos) < M + sqrt(M*M - a*a)) {
+        return float4(0.0);
+    }
+
+    // Outside the actual particle field → no emission. Tracks the
+    // orbital cap (ORBIT_R_MAX=3.0) via gridU.halfExtent — both match.
+    float r = length(cartPos.xy);
+    if (r > gridU.halfExtent) return float4(0.0);
+
+    // Trilinear interpolation between the 8 cells whose centers form a
+    // cube around cartPos. Without this, the volumetric paints in
+    // visible cubic steps (one cell ≈ 16% of half-screen at max zoom).
+    // Center-aligned: cell (i,j,k) is centered at ((i+0.5)·cellSize
+    // − halfExtent), so we shift by 0.5 before flooring.
+    float3 f = (cartPos + gridU.halfExtent) * gridU.invCellSize - 0.5;
+    int3 i0 = int3(floor(f));
+    float3 t = f - float3(i0);
+
+    // Hermite-smooth the interpolation weights (smoothstep per axis). Plain
+    // trilinear is only C0 — the gradient is discontinuous at every cell
+    // centre, which at deep zoom reads as faceted, blocky creases across the
+    // disk. t·t·(3−2t) makes the blend C1 (zero gradient at cell boundaries),
+    // so neighbouring voxels melt together instead of showing flat facets.
+    t = t * t * (3.0 - 2.0 * t);
+
+    float4 c000 = sample_one_cell(i0.x,     i0.y,     i0.z,     gridU, cellStarts, sortedParticles);
+    float4 c100 = sample_one_cell(i0.x + 1, i0.y,     i0.z,     gridU, cellStarts, sortedParticles);
+    float4 c010 = sample_one_cell(i0.x,     i0.y + 1, i0.z,     gridU, cellStarts, sortedParticles);
+    float4 c110 = sample_one_cell(i0.x + 1, i0.y + 1, i0.z,     gridU, cellStarts, sortedParticles);
+    float4 c001 = sample_one_cell(i0.x,     i0.y,     i0.z + 1, gridU, cellStarts, sortedParticles);
+    float4 c101 = sample_one_cell(i0.x + 1, i0.y,     i0.z + 1, gridU, cellStarts, sortedParticles);
+    float4 c011 = sample_one_cell(i0.x,     i0.y + 1, i0.z + 1, gridU, cellStarts, sortedParticles);
+    float4 c111 = sample_one_cell(i0.x + 1, i0.y + 1, i0.z + 1, gridU, cellStarts, sortedParticles);
+
+    float4 c00 = mix(c000, c100, t.x);
+    float4 c10 = mix(c010, c110, t.x);
+    float4 c01 = mix(c001, c101, t.x);
+    float4 c11 = mix(c011, c111, t.x);
+    float4 c0  = mix(c00,  c10,  t.y);
+    float4 c1  = mix(c01,  c11,  t.y);
+    float4 result = mix(c0, c1, t.z);
+
+    // Gaussian z-taper for disk thickness — applied AFTER interp so the
+    // thickness is smooth, not stepped per cell.
     float diskThickness = 0.2f;
     float zMask = exp(-(cartPos.z * cartPos.z) / (diskThickness * diskThickness));
-    density *= zMask;
-    
-    // Suppress density at the outer edges of the screen to focus on the hole
-    float r = length(cartPos.xy);
-    if (r > 1.2f) return float4(0.0);
-    
-    return float4(avgVel, density);
+    result.a *= zMask;
+
+    return result;
 }
 
 // ── Main Shader Raymarcher ───────────────────
@@ -403,11 +458,39 @@ fragment float4 fragment_black_hole(
         rayDir = normalize(forward + uv.x * right * fovFactor + uv.y * up * fovFactor);
     }
     
+    // ── Analytic shadow (photon capture cross-section) ──────────────
+    // The APPARENT black disk of a BH is NOT the coordinate horizon — it's
+    // the photon-capture cross-section, which strong lensing magnifies to
+    // b_crit = 3√3·M ≈ 2.6·M (Schwarzschild), i.e. ~2.6× the horizon
+    // radius. Drawing only the horizon (r_+ ≈ 1.14·M) made the shadow
+    // ~4.5× too small — the "pea on a plate" look. Ref: James, von
+    // Tunzelmann, Franklin & Thorne 2015 (arXiv:1502.03808); the Kerr
+    // shadow is D-shaped but its equivalent radius stays ≈ 5M for all spins.
+    //
+    // A ray whose straight-line impact parameter b < b_crit is captured →
+    // pure black. Computing this analytically (a) renders the shadow at its
+    // physically-correct large size, and (b) lets shadow pixels skip the
+    // 1500-step geodesic march entirely → big FPS win when the BH fills
+    // the frame at zoom.
+    // Physical photon-capture radius is 3√3·M ≈ 2.6 sim, but that dwarfs
+    // this build's tight disk (r≈3). shadowRadius (UI "BH Size") lets the
+    // shadow be dialed to read proportionally against the disk.
+    float b_crit = uniforms.shadowRadius;
+    {
+        float alongBH = dot(-rayOrigin, rayDir);  // BH at origin
+        float3 perpBH = -rayOrigin - alongBH * rayDir;
+        float b = length(perpBH);
+        if (b < b_crit) {
+            return float4(0.0, 0.0, 0.0, 1.0 * opacity); // shadow, no march
+        }
+    }
+
     RayState state = init_ray(rayOrigin, rayDir);
     float4 accumulatedColor = float4(0.0);
     bool hitHorizon = false;
-    float r_horizon = M + sqrt(M*M - a*a); 
+    float r_horizon = M + sqrt(M*M - a*a);
     float min_r = state.r; // Track closest approach to singularity
+    float prev_r = state.r; // Track previous r to detect outbound escape
     
     for (int step = 0; step < MAX_STEPS; step++) {
         min_r = min(min_r, state.r);
@@ -467,8 +550,8 @@ fragment float4 fragment_black_hole(
             else if (obsTemp > 3500.0) bbColor = float3(1.0, 0.6, 0.2); // Orange
             else bbColor = float3(1.0, 0.2, 0.05); // Deep red
             
-            float3 color = bbColor * brightnessFactor;
-            
+            float3 color = bbColor * brightnessFactor * 2.5f; // emission boost
+
             // Removed channel hacks - handled by blackbody mapping above
             
             // Soften alpha accumulation but boost base density visibility
@@ -478,7 +561,14 @@ fragment float4 fragment_black_hole(
             if (accumulatedColor.a > 0.99) break;
         }
         
-        if (state.r > 2.0) break; // Allow a slightly larger escape radius
+        // Escape ONLY if the ray has passed closest approach AND is now
+        // heading outward past the disk's outer edge. This is what makes
+        // the lensing visible: rays must fully integrate through the
+        // approach, bend around the BH, then escape carrying disk
+        // material from the FAR side of the BH back to the camera (the
+        // famous Gargantua top arc).
+        if (state.r > prev_r && state.r > 3.0) break;
+        prev_r = state.r;
     }
     
     // ANALYTIC THIN DISK LAYER REMOVED — was a hardcoded 2D orange ring in

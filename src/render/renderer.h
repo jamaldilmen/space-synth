@@ -37,6 +37,30 @@ struct RenderConfig {
   float rotationY = 0.0f;
   float rotationZ = 0.0f;
   float jitterFactor = 0.1f;
+
+  // Black-hole shadow radius (sim coords). The physical photon-capture
+  // value is 3√3·M ≈ 2.6, but the disk here is scaled tight (r≈3), so a
+  // smaller shadow reads more proportionally. User-tunable via "BH Size".
+  float shadowRadius = 1.0f;
+
+  // Creative post-FX (cyberpunk / techno / cinematic)
+  float glitchAmount = 0.0f;   // RGB block displacement, beat-reactive
+  float scanlineAmount = 0.0f; // CRT scanlines
+  float neonGrade = 0.0f;      // cyberpunk color grade
+  float vignette = 0.0f;       // edge darkening
+  float audioLevel = 0.0f;     // total amplitude (drives reactive FX)
+  float fxTime = 0.0f;         // running seconds for animated FX
+
+  // Resolume-style VJ effects
+  float mirrorMode = 0.0f;
+  float kaleidoSegments = 0.0f;
+  float tileCount = 1.0f;
+  float twirl = 0.0f;
+  float hueShift = 0.0f;
+  float strobe = 0.0f;
+  float invert = 0.0f;
+  float posterize = 0.0f;
+  float blurAmount = 0.0f; // multi-pass Gaussian blur (ping-pong)
 };
 
 // Debug bitmasks for PhysicsUniforms.debugFlags
@@ -61,7 +85,22 @@ struct PostFXUniforms {
   float bloomIntensity;
   float trailDecay;
   float chromaticAmount;
-  float padding[3];
+  float time;          // seconds, drives animated glitch
+  float glitchAmount;  // 0-1 cyberpunk RGB block displacement
+  float scanlineAmount;// 0-1 CRT scanlines
+  float neonGrade;     // 0-1 cyberpunk color grade
+  float vignette;      // 0-1 edge darkening
+  float audioLevel;    // 0-1 total amplitude → beat-reactive FX
+  // Resolume-style VJ effects
+  float mirrorMode;      // 0 off, 1 H, 2 V, 3 quad
+  float kaleidoSegments; // 0 off, else 2-16
+  float tileCount;       // <=1 off, else NxN
+  float twirl;           // -1..1
+  float hueShift;        // 0-1
+  float strobe;          // 0-1
+  float invert;          // 0-1
+  float posterize;       // 0 off, else 2-16
+  float edrHeadroom;   // display EDR headroom (1.0 = SDR); keeps 80-byte align
   float inverseViewProj[16];
   float prevViewProj[16];
 };
@@ -77,7 +116,8 @@ struct CameraUniforms {
   float waveDepth;
   float envelopePhase; // 0=silence(black hole), 1-4=ADSR
   float orthoMode;
-  float padding[2];
+  float bhShadowNdcRadius; // shadow's on-screen radius = lens Einstein radius
+  float aspect;            // width/height, to make the lens screen-isotropic
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

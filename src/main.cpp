@@ -175,6 +175,9 @@ int main() {
   static bool showHUD = true;
   static float uiParticleSize = 4.0f;
   static int uiParticleCount = 5000000;
+  static float uiShadowRadius = 2.4f; // BH shadow radius (sim coords) — bigger
+                                      // dark sphere so the hole fills the frame
+                                      // and the lensed ring reads as a fat band
   static float uiJitter = 0.1f;
   static float uiScale = 100.0f; // NEW DEFAULT: 100.0f as requested
   static float uiWaveDepth = 20.0f;
@@ -202,11 +205,28 @@ int main() {
       false; // Off by default — grid too small for 10M (32^3 cells, MAX_PER_CELL=32)
   static bool uiPhaseViz = false; // Feynman phase arrow coloring
   static float uiBloom = 0.0f;
-  static float uiTrailDecay = 0.88f; // Light-trail feedback ON by default.
+  static float uiTrailDecay = 0.05f; // "Fluidity" — motion-trail feedback.
+                                      // Dialed to 5% (was 0.88, too smeared).
                                       // Fast-orbiting particles smear into
                                       // velocity-proportional trails — the
                                       // trails ARE the accretion-disk look.
   static float uiChromatic = 0.0f;
+  // Creative cyberpunk/techno post-FX
+  static float uiGlitch = 0.0f;
+  static float uiScanlines = 0.0f;
+  static float uiNeonGrade = 0.0f;
+  static float uiVignette = 0.0f;
+  static float uiFxTime = 0.0f; // running seconds for animated FX
+  // Resolume-style VJ effects
+  static int uiMirrorMode = 0;   // 0 off,1 H,2 V,3 quad
+  static int uiKaleido = 0;      // segments (0 off)
+  static int uiTile = 1;         // NxN (1 off)
+  static float uiTwirl = 0.0f;
+  static float uiHueShift = 0.0f;
+  static float uiStrobe = 0.0f;
+  static float uiInvert = 0.0f;
+  static int uiPosterize = 0;    // levels (0 off)
+  static float uiBlur = 0.0f;    // multi-pass Gaussian blur
 
   // ── Phase 18: Black Hole Aesthetics ──────────────────────────────
   static float uiBlackHoleRotationX = 0.0f;
@@ -261,10 +281,10 @@ int main() {
     if (e.isDown) {
       constexpr float ARROW_STEP = 0.035f; // ≈ 2°/tick
       switch (e.keyCode) {
-      case 123: camera.rotate(+ARROW_STEP, 0.0f); return;
-      case 124: camera.rotate(-ARROW_STEP, 0.0f); return;
-      case 126: camera.rotate(0.0f, +ARROW_STEP); return;
-      case 125: camera.rotate(0.0f, -ARROW_STEP); return;
+      case 123: camera.rotateKey(+ARROW_STEP, 0.0f); return;
+      case 124: camera.rotateKey(-ARROW_STEP, 0.0f); return;
+      case 126: camera.rotateKey(0.0f, +ARROW_STEP); return;
+      case 125: camera.rotateKey(0.0f, -ARROW_STEP); return;
       }
     }
 
@@ -738,6 +758,13 @@ int main() {
         }
         ImGui::SetItemTooltip("Active number of particles");
 
+        ImGui::SliderFloat("BH Size", &uiShadowRadius, 0.3f, 5.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiShadowRadius = 2.4f;
+        ImGui::SetItemTooltip(
+            "Black-hole shadow radius (sim coords). Physical value ~2.6; "
+            "lower reads proportional to the disk.");
+
         // Limit / SpeedCap moved to Audio Synth (Analog Drive)
 
         ImGui::SliderFloat("E-Field Core", &uiEField, 0.0f, 0.5f, "%.4f");
@@ -1081,6 +1108,77 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiChromatic = 0.0f;
         ImGui::SetItemTooltip("RGB split lens effect");
+
+        ImGui::SeparatorText("CYBERPUNK / TECHNO");
+
+        ImGui::SliderFloat("Glitch", &uiGlitch, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiGlitch = 0.0f;
+        ImGui::SetItemTooltip("Datamosh RGB block tear (beat-reactive)");
+
+        ImGui::SliderFloat("Scanlines", &uiScanlines, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiScanlines = 0.0f;
+        ImGui::SetItemTooltip("CRT scanlines");
+
+        ImGui::SliderFloat("Neon Grade", &uiNeonGrade, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiNeonGrade = 0.0f;
+        ImGui::SetItemTooltip("Cyberpunk color grade (indigo/magenta/cyan)");
+
+        ImGui::SliderFloat("Vignette", &uiVignette, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiVignette = 0.0f;
+        ImGui::SetItemTooltip("Cinematic edge darkening");
+        ImGui::Unindent();
+      }
+
+      if (ImGui::CollapsingHeader("VJ FX (Resolume-style)",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        const char *mirrorNames[] = {"Off", "Horizontal", "Vertical", "Quad"};
+        ImGui::Combo("Mirror", &uiMirrorMode, mirrorNames, 4);
+        ImGui::SetItemTooltip("Fold the image onto itself");
+
+        ImGui::SliderInt("Kaleidoscope", &uiKaleido, 0, 16);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiKaleido = 0;
+        ImGui::SetItemTooltip("Radial segments (0 = off)");
+
+        ImGui::SliderInt("Tile", &uiTile, 1, 8);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiTile = 1;
+        ImGui::SetItemTooltip("NxN repeat (1 = off)");
+
+        ImGui::SliderFloat("Twirl", &uiTwirl, -1.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiTwirl = 0.0f;
+        ImGui::SetItemTooltip("Swirl distortion");
+
+        ImGui::SliderFloat("Hue Shift", &uiHueShift, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiHueShift = 0.0f;
+        ImGui::SetItemTooltip("Rotate all colours");
+
+        ImGui::SliderFloat("Strobe", &uiStrobe, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiStrobe = 0.0f;
+        ImGui::SetItemTooltip("Beat-reactive flash");
+
+        ImGui::SliderFloat("Invert", &uiInvert, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiInvert = 0.0f;
+        ImGui::SetItemTooltip("Colour invert mix");
+
+        ImGui::SliderInt("Posterize", &uiPosterize, 0, 16);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiPosterize = 0;
+        ImGui::SetItemTooltip("Quantize colours (0 = off)");
+
+        ImGui::SliderFloat("Blur", &uiBlur, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          uiBlur = 0.0f;
+        ImGui::SetItemTooltip("Multi-pass Gaussian blur (ping-pong HDR)");
         ImGui::Unindent();
       }
 
@@ -1209,6 +1307,7 @@ int main() {
         uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
     config.orthoMode = uiOrthoMode;
     config.phaseViz = uiPhaseViz;
+    config.shadowRadius = uiShadowRadius;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;
@@ -1217,6 +1316,24 @@ int main() {
     config.bloomIntensity = uiBloom;
     config.trailDecay = uiTrailDecay;
     config.chromaticAmount = uiChromatic;
+    // Creative FX + beat reactivity
+    uiFxTime += dt;
+    config.glitchAmount = uiGlitch;
+    config.scanlineAmount = uiScanlines;
+    config.neonGrade = uiNeonGrade;
+    config.vignette = uiVignette;
+    config.fxTime = uiFxTime;
+    config.audioLevel = std::min(1.0f, synth.totalAmplitude());
+    // VJ FX
+    config.mirrorMode = (float)uiMirrorMode;
+    config.kaleidoSegments = (float)uiKaleido;
+    config.tileCount = (float)uiTile;
+    config.twirl = uiTwirl;
+    config.hueShift = uiHueShift;
+    config.strobe = uiStrobe;
+    config.invert = uiInvert;
+    config.posterize = (float)uiPosterize;
+    config.blurAmount = uiBlur;
 
     // ── Update ADSR ────────────────────────────────────────────────
     synth.envelopeParams().attack = uiAttack / 1000.0f;

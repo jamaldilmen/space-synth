@@ -4,6 +4,7 @@
 #include <Metal/Metal.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
+#import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <algorithm>
 #include <cstring>
@@ -25,6 +26,15 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> physicsPipeline = nil;
   id<MTLRenderPipelineState> particlePipeline = nil;
   id<MTLRenderPipelineState> postPipeline = nil;
+  // Ping-pong HDR pool for multi-pass effects (blur/echo/feedback)
+  id<MTLRenderPipelineState> blurPipeline = nil;
+  id<MTLTexture> pingTexture[2] = {nil, nil};
+  // HDR glow (bloom): bright-pass extraction → ping-pong blur → composite.
+  // Two dedicated half-res HDR buffers so the glow's own blur never collides
+  // with the user-facing blur slider's ping-pong pool.
+  id<MTLRenderPipelineState> brightPipeline = nil;
+  id<MTLTexture> bloomTexture = nil;  // finished glow, bound at texture(2)
+  id<MTLTexture> bloomScratch = nil;  // ping-pong partner for the glow blur
   id<MTLRenderPipelineState> blackHolePipeline = nil;
 
   // Spatial hash pipelines
@@ -42,14 +52,16 @@ struct Renderer::Impl {
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
 
   // Spatial hash buffers
-  static constexpr int kGridSize = 64; // 64x64x64 = 262K cells. Was 32^3 sized
-                                       // for 1M particles; with 5M+ avg per
-                                       // cell hit 153 and the MAX_PER_CELL=32
-                                       // atomic cap clipped 80%+ of particles
-                                       // out of neighbor/density readback.
-                                       // 64^3 → avg ~19/cell on 5M.
+  static constexpr int kGridSize = 128; // 128³ = 2.1M cells. Bumped from 64
+                                        // so the raytracer's volumetric
+                                        // sample resolves finer detail in
+                                        // the disk. cellSize = 6/128 ≈ 0.047
+                                        // sim → ≈ 8% of half-screen at max
+                                        // zoom (vs 16% at 64³). Trilinear
+                                        // interp in sample_one_cell smooths
+                                        // the rest.
   static constexpr int kTotalCells =
-      kGridSize * kGridSize * kGridSize;     // 32,768
+      kGridSize * kGridSize * kGridSize;     // 2,097,152
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
   id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
@@ -255,11 +267,41 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
         [[MTLRenderPipelineDescriptor alloc] init];
     desc.vertexFunction = postVertexFunc;
     desc.fragmentFunction = postFragmentFunc;
-    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // EDR drawable
     impl_->postPipeline =
         [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (error)
       NSLog(@"Post-FX pipeline error: %@", error);
+  }
+
+  // ── Ping-pong blur pipeline (HDR multi-pass building block) ──────────
+  id<MTLFunction> blurFragmentFunc =
+      [impl_->library newFunctionWithName:@"blur_fragment"];
+  if (postVertexFunc && blurFragmentFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = postVertexFunc;       // reuse fullscreen triangle
+    desc.fragmentFunction = blurFragmentFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+    impl_->blurPipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Blur pipeline error: %@", error);
+  }
+
+  // ── HDR bright-pass pipeline (bloom extraction) ──────────────────────
+  id<MTLFunction> brightFragmentFunc =
+      [impl_->library newFunctionWithName:@"bright_fragment"];
+  if (postVertexFunc && brightFragmentFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = postVertexFunc;       // reuse fullscreen triangle
+    desc.fragmentFunction = brightFragmentFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+    impl_->brightPipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Bright-pass pipeline error: %@", error);
   }
 
   // ── Black Hole Pipeline ─────────────────────────────────────────────
@@ -554,6 +596,14 @@ void Renderer::render(const RenderConfig &config) {
   cam.waveDepth = config.modeP * 20.0f; // Using modeP to scale depth
   cam.envelopePhase = config.envelopePhase;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
+  {
+    float frustum = config.cameraRho * 1.2f;
+    cam.bhShadowNdcRadius =
+        (config.orthoMode && frustum > 1e-4f)
+            ? config.shadowRadius * config.plateRadius / frustum
+            : 0.0f;
+    cam.aspect = aspect;
+  }
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -623,6 +673,19 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.envelopePhase = config.envelopePhase;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
+  // Lens Einstein radius = the shadow's on-screen radius, so the lensed
+  // particle ring lands exactly on the raytraced shadow edge (ring radius ==
+  // hole radius). Ortho only: half-screen (world) = cameraRho*1.2, and a
+  // sim-radius r projects to NDC r*plateRadius/(cameraRho*1.2). Perspective
+  // → 0 disables the lens.
+  {
+    float frustum = config.cameraRho * 1.2f;
+    cam.bhShadowNdcRadius =
+        (config.orthoMode && frustum > 1e-4f)
+            ? config.shadowRadius * config.plateRadius / frustum
+            : 0.0f;
+    cam.aspect = (float)impl_->width / (float)impl_->height;
+  }
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -917,7 +980,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       float rotationX;     // 4
       float simScale;      // 4 — particle scale (plateRadius)
       float orthoFrustum;  // 4 — ortho half-extent in world units (0 = persp)
-    }; // 40 bytes
+      float shadowRadius;  // 4 — black shadow radius in sim coords (user-tunable)
+    }; // 44 bytes
 
     PhysicsUniforms *phys = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
     BlackHoleUniforms bhUniforms;
@@ -938,6 +1002,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     // Was using plateRadius (constant 100) which made the raytracer ignore
     // zoom entirely. cameraRho varies 50-2000 with the user's zoom.
     bhUniforms.orthoFrustum = config.orthoMode ? (config.cameraRho * 1.2f) : 0.0f;
+    bhUniforms.shadowRadius = config.shadowRadius;
 
     [enc setRenderPipelineState:blackHolePipeline];
     [enc setFragmentBytes:&bhUniforms
@@ -966,6 +1031,121 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
           vertexCount:particleCount];
   [enc endEncoding];
 
+  // ── Multi-pass Gaussian blur via ping-pong HDR pool ───────────────
+  // Foundation for real blur / future bloom / DOF / feedback. Two reused
+  // HDR buffers, flipped H↔V each pass; bypassed entirely (no passes
+  // encoded) when blurAmount is 0. Uniforms go via setFragmentBytes so
+  // each pass gets its own values inside one command buffer.
+  id<MTLTexture> postSource = offscreenTexture;
+  if (blurPipeline && config.blurAmount > 0.001f && pingTexture[0] &&
+      pingTexture[1]) {
+    int iterations = 1 + (int)(config.blurAmount * 3.0f); // 1-4 H+V pairs
+    float radius = 1.0f + config.blurAmount * 4.0f;
+    struct BlurU {
+      float dir[2];
+      float radius;
+      float pad;
+    };
+    id<MTLTexture> src = offscreenTexture;
+    int dstIdx = 0;
+    for (int it = 0; it < iterations; it++) {
+      for (int axis = 0; axis < 2; axis++) {
+        id<MTLTexture> dst = pingTexture[dstIdx];
+        BlurU bu;
+        bu.dir[0] = (axis == 0) ? (1.0f / (float)width) : 0.0f;
+        bu.dir[1] = (axis == 1) ? (1.0f / (float)height) : 0.0f;
+        bu.radius = radius;
+        bu.pad = 0.0f;
+        MTLRenderPassDescriptor *bp =
+            [MTLRenderPassDescriptor renderPassDescriptor];
+        bp.colorAttachments[0].texture = dst;
+        bp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        bp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> be =
+            [cmdBuf renderCommandEncoderWithDescriptor:bp];
+        [be setRenderPipelineState:blurPipeline];
+        [be setFragmentTexture:src atIndex:0];
+        [be setFragmentBytes:&bu length:sizeof(bu) atIndex:0];
+        [be drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [be endEncoding];
+        src = dst;
+        dstIdx ^= 1;
+      }
+    }
+    postSource = src;
+  }
+
+  // ── HDR glow: bright-pass → wide ping-pong blur (half-res) ─────────
+  // Modern bloom split: extract HDR energy above a soft knee into a half-res
+  // buffer, then blur it wide and cheap. The finished glow lands in
+  // bloomTexture, which the final post pass adds back additively. Decoupled
+  // from the user blur slider via its own two buffers. Bypassed at intensity 0.
+  if (brightPipeline && blurPipeline && config.bloomIntensity > 0.001f &&
+      bloomTexture && bloomScratch) {
+    int bw = width / 2 > 0 ? width / 2 : 1;
+    int bh = height / 2 > 0 ? height / 2 : 1;
+
+    // 1) Bright-pass: extract from the scene about to be shown → bloomTexture
+    struct BrightU {
+      float threshold;
+      float softKnee;
+      float pad0;
+      float pad1;
+    };
+    BrightU bru;
+    bru.threshold = 1.0f; // glow only past SDR white (HDR cores: disk/particles)
+    bru.softKnee = 0.5f;
+    bru.pad0 = 0.0f;
+    bru.pad1 = 0.0f;
+    {
+      MTLRenderPassDescriptor *brp =
+          [MTLRenderPassDescriptor renderPassDescriptor];
+      brp.colorAttachments[0].texture = bloomTexture;
+      brp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+      brp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> bre =
+          [cmdBuf renderCommandEncoderWithDescriptor:brp];
+      [bre setRenderPipelineState:brightPipeline];
+      [bre setFragmentTexture:postSource atIndex:0];
+      [bre setFragmentBytes:&bru length:sizeof(bru) atIndex:0];
+      [bre drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [bre endEncoding];
+    }
+
+    // 2) Wide separable blur, ping-ponging bloomTexture ↔ bloomScratch.
+    // Each iteration is H then V, so the result lands back in bloomTexture.
+    struct BlurU {
+      float dir[2];
+      float radius;
+      float pad;
+    };
+    int iterations = 3;          // wide, soft halo
+    float radius = 2.5f;         // half-res texels → covers a lot of screen
+    for (int it = 0; it < iterations; it++) {
+      for (int axis = 0; axis < 2; axis++) {
+        id<MTLTexture> src = (axis == 0) ? bloomTexture : bloomScratch;
+        id<MTLTexture> dst = (axis == 0) ? bloomScratch : bloomTexture;
+        BlurU bu;
+        bu.dir[0] = (axis == 0) ? (1.0f / (float)bw) : 0.0f;
+        bu.dir[1] = (axis == 1) ? (1.0f / (float)bh) : 0.0f;
+        bu.radius = radius;
+        bu.pad = 0.0f;
+        MTLRenderPassDescriptor *bp =
+            [MTLRenderPassDescriptor renderPassDescriptor];
+        bp.colorAttachments[0].texture = dst;
+        bp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        bp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> be =
+            [cmdBuf renderCommandEncoderWithDescriptor:bp];
+        [be setRenderPipelineState:blurPipeline];
+        [be setFragmentTexture:src atIndex:0];
+        [be setFragmentBytes:&bu length:sizeof(bu) atIndex:0];
+        [be drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [be endEncoding];
+      }
+    }
+  }
+
   // ── Second Pass: Post-FX to drawable ──────────────────────────────
   MTLRenderPassDescriptor *finalPass =
       [MTLRenderPassDescriptor renderPassDescriptor];
@@ -982,6 +1162,35 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.bloomIntensity = config.bloomIntensity;
   post.trailDecay = config.trailDecay;
   post.chromaticAmount = config.chromaticAmount;
+  post.time = config.fxTime;
+  post.glitchAmount = config.glitchAmount;
+  post.scanlineAmount = config.scanlineAmount;
+  post.neonGrade = config.neonGrade;
+  post.vignette = config.vignette;
+  post.audioLevel = config.audioLevel;
+  post.mirrorMode = config.mirrorMode;
+  post.kaleidoSegments = config.kaleidoSegments;
+  post.tileCount = config.tileCount;
+  post.twirl = config.twirl;
+  post.hueShift = config.hueShift;
+  post.strobe = config.strobe;
+  post.invert = config.invert;
+  post.posterize = config.posterize;
+  // EDR headroom: how far above SDR white this display can currently go
+  // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
+  // Drives how hard the HDR glow punches past white. Queried live because it
+  // shifts with display brightness and battery state.
+  {
+    NSScreen *scr = [NSScreen mainScreen];
+    float headroom = 1.0f;
+    if (scr) {
+      headroom = (float)scr.maximumExtendedDynamicRangeColorComponentValue;
+      if (headroom < 1.0f) headroom = 1.0f;
+      if (headroom > 4.0f) headroom = 4.0f; // cap: 4× over white is plenty,
+                                            // raw XDR (16×) would sear the eyes
+    }
+    post.edrHeadroom = headroom;
+  }
 
   // Analytic Motion Blur: Inverse current matrix
   CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
@@ -1000,8 +1209,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [cmdBuf renderCommandEncoderWithDescriptor:finalPass];
   if (postPipeline) {
     [postEnc setRenderPipelineState:postPipeline];
-    [postEnc setFragmentTexture:offscreenTexture atIndex:0];
+    [postEnc setFragmentTexture:postSource atIndex:0];
     [postEnc setFragmentTexture:prevFrameTexture atIndex:1];
+    [postEnc setFragmentTexture:bloomTexture atIndex:2]; // HDR glow
     [postEnc setFragmentBuffer:postUniformBuffer[frameIdx] offset:0 atIndex:0];
     [postEnc drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0
@@ -1074,9 +1284,24 @@ void Renderer::resize(int width, int height) {
   hdrDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
 
-  // Feedback texture stays BGRA8 (post-tonemapped)
+  // Ping-pong HDR pool (two reused buffers for multi-pass effects)
+  impl_->pingTexture[0] = [impl_->device newTextureWithDescriptor:hdrDesc];
+  impl_->pingTexture[1] = [impl_->device newTextureWithDescriptor:hdrDesc];
+  // HDR glow buffers at half-res — bloom is low-frequency, so half-res is
+  // invisible and the blur taps cover twice the screen distance for free.
+  MTLTextureDescriptor *bloomDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:(NSUInteger)(width / 2 > 0 ? width / 2 : 1)
+                                  height:(NSUInteger)(height / 2 > 0 ? height / 2 : 1)
+                               mipmapped:NO];
+  bloomDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  impl_->bloomTexture = [impl_->device newTextureWithDescriptor:bloomDesc];
+  impl_->bloomScratch = [impl_->device newTextureWithDescriptor:bloomDesc];
+
+  // Feedback texture must match the EDR drawable (RGBA16Float) — it's a
+  // blit-copy of the drawable each frame, so trails keep their HDR highlights.
   MTLTextureDescriptor *colorDesc = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                    width:width
                                   height:height
                                mipmapped:NO];

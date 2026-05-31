@@ -18,7 +18,8 @@ struct CameraUniforms {
     float waveDepth;
     float envelopePhase; // 0=silence(black hole), 1-4=ADSR
     float orthoMode;
-    float2 padding;
+    float bhShadowNdcRadius; // shadow's on-screen radius = lens Einstein radius
+    float aspect;            // width/height, to make the lens screen-isotropic
 };
 
 // (safe_normalize removed to fix unused warning)
@@ -110,31 +111,48 @@ vertex VertexOut particle_vertex(
     // (so the bend is visible in screen). Particles in different 3D
     // positions bend by different amounts → no coherent circular ring
     // pattern emerges, just per-particle deflection of varying strengths.
-    {
-        float3 camPos = cam.cameraPos.xyz;
-        float3 toPart = worldPos - camPos;
-        float distP   = length(toPart);
+    // ── Gravitational lensing — point-mass lens equation ────────────────
+    // The old version pushed particles radially by an arbitrary 0.30/impact.
+    // That bend had NO relation to the shadow radius, so the bright ring and
+    // the dark hole were two different circles → it never read as a real BH.
+    //
+    // Real fix: the point-mass lens maps an unlensed angular offset β to an
+    // image radius θ via  β = θ − θ_E²/θ , i.e.
+    //     θ = ½(β + √(β² + 4·θ_E²)).
+    // As β→0 the image piles up AT θ_E (the Einstein / photon ring); far out
+    // (β≫θ_E) θ→β (no bend). We set θ_E = the shadow's on-screen radius
+    // (cam.bhShadowNdcRadius), so the lensed ring sits exactly on the shadow
+    // edge — ring radius == hole radius, which is what makes it a black hole.
+    //
+    // Gated to the silence phase: the lens belongs with the visible shadow,
+    // and this keeps it from distorting the Chladni shapes during play.
+    if (cam.bhShadowNdcRadius > 1e-4f && cam.envelopePhase < 0.5f) {
         float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
-        if (distP > 0.001f && bhClip.w > 0.001f && out.position.w > 0.001f) {
-            float3 rayDir   = toPart / distP;
-            float t         = dot(-camPos, rayDir);
-            float3 closest  = camPos + rayDir * t;
-            float worldImpact = length(closest);     // 3D impact parameter
-            // Don't gate on depth — apply to every particle, modulate by
-            // 3D impact. Particles far from the BH ray (large worldImpact)
-            // bend little; particles whose ray passes close to BH bend a lot.
+        if (bhClip.w > 0.001f && out.position.w > 0.001f) {
             float2 ndcP  = out.position.xy / out.position.w;
             float2 ndcBH = bhClip.xy / bhClip.w;
-            float2 dvec  = ndcP - ndcBH;
-            float ndcDist = length(dvec);
-            if (ndcDist > 1e-4f) {
-                float safeImpact = max(worldImpact, 0.15f);
-                // Magnitude tied to 3D geometry; cap 0.5 NDC so close-in
-                // particles don't blow off-screen. Gain 0.30 tuned for
-                // default ortho camera distance ~100.
-                float deflection = min(0.50f, 0.30f / safeImpact);
-                ndcP += (dvec / ndcDist) * deflection;
-                out.position.xy = ndcP * out.position.w;
+            // Work in screen-isotropic coords: NDC x covers more world than y
+            // by `aspect`, so scale x up to make a screen-circle a true circle.
+            float asp = max(cam.aspect, 1e-4f);
+            float2 d = (ndcP - ndcBH);
+            d.x *= asp;
+            float beta = length(d);
+            if (beta > 1e-5f) {
+                float thetaE = cam.bhShadowNdcRadius;
+                float thetaFull = 0.5f * (beta + sqrt(beta * beta + 4.0f * thetaE * thetaE));
+                // GENTLE lens. The full lens equation (and especially the old
+                // tanh soft-cap) collapsed every particle onto the θ_E ring,
+                // so the disk flattened into the same circle from every camera
+                // angle — the side view stopped looking 3D. Blending only
+                // partway toward the lensed image keeps the disk at its real
+                // radius (3D preserved, rotates correctly) while still pulling
+                // the inner material toward a photon-ring brightening at the
+                // shadow edge. Cheap too — no per-particle tanh across 5M.
+                float theta = mix(beta, thetaFull, 0.4f);
+                float2 lensed = (d / beta) * theta; // image offset, isotropic
+                lensed.x /= asp;                    // back to raw NDC
+                float2 lensedP = ndcBH + lensed;
+                out.position.xy = lensedP * out.position.w;
             }
         }
     }
@@ -178,10 +196,23 @@ vertex VertexOut particle_vertex(
     // ~20+ pixels to read as a 3D sphere; the old 1.0× baseline made rest
     // particles ~10px and they looked like 2D dots. Heat now only boosts
     // *beyond* baseline (up to 4.0× for hot play particles).
+    //
+    // Sub-linear distance growth (was linear `800/dist`). Anchored at the
+    // default ortho rho=400 so zoomed-out look is unchanged, but past that
+    // the size grows as pow(2/1, 0.65) instead of doubling each halving
+    // of distance. Without this, deep zoom (rho < 50) saturated every
+    // close particle at the 64px cap → uniform fat blobs filling the BH
+    // disk. The 1.275 = 2^0.35 anchors the formula so that at distRatio=2.0
+    // (default zoom) sizeScale=2.0, identical to the old linear behavior.
     float temp = in.prevW.w;
     float heatSizeBoost = 2.5f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 2.5x → 4.0x
-    float rawSize = cam.particleSize * heatSizeBoost * (800.0f / max(0.0001f, dist));
-    out.pointSize = clamp(rawSize, 1.0f, 64.0f); // Cap raised 32 → 64 for sphere impostor headroom
+    float distRatio = 800.0f / max(0.0001f, dist);
+    float sizeScale = pow(distRatio, 0.65f) * 1.275f;
+    float rawSize = cam.particleSize * heatSizeBoost * sizeScale;
+    // Cap lowered 64 → 40: with sub-linear growth, hot particles at rho=25
+    // hit ~40px naturally. A tighter cap keeps overdraw under control on
+    // TBDR (each capped sprite is fewer tile-fragment ops).
+    out.pointSize = clamp(rawSize, 1.0f, 40.0f);
 
     // HDR luminance from thermal energy (ODS-03). Particles render at full
     // brightness in ALL phases — they ARE the visual, both at rest (fast
@@ -299,7 +330,15 @@ fragment float4 particle_fragment(
     // white in dense regions, killing the blackbody color (red/orange
     // outer / blue inner). Now color comes ENTIRELY from in.color
     // (blackbody) so dense regions stay colorful.
-    float glow = exp(-r2 * 2.0f);
+    //
+    // Falloff steepened from -r2·2.0 to -r2·5.0. The old soft Gaussian
+    // made every sprite read as a fat ball — visible at zoom as discrete
+    // chunky blobs. The tighter falloff keeps the bright core sharp so
+    // many overlapping sprites blend additively into a continuous disk
+    // instead of looking like individual chunks. The continuous-band
+    // appearance comes from particle DENSITY (overlap), not from each
+    // sprite's individual falloff being soft.
+    float glow = exp(-r2 * 5.0f);
 
     // Emission multiplier reduced 1.8 → 0.5. With G=20 gravity, particles
     // orbit fast and the velocity-aligned streaks pile up under additive

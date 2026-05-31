@@ -106,12 +106,18 @@ constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
 constant float BH_M       = 0.5f;
 constant float BH_HORIZON = 0.57f;          // ≈ M + sqrt(M² − a²), a = 0.99M
 constant float SCHWARZSCHILD_RS = BH_HORIZON; // legacy alias (existing gates)
-// Hard outer cap for the accretion disk in the equatorial plane. Gravity is
-// 1/(r+r0) (flat rotation curve) which is too weak to recapture particles
-// flung tangentially; without this cap they drift outward indefinitely and
-// render as horizontal pin spikes in the disk plane. 3.0 = 5.3× horizon =
-// scale-accurate Kerr disk outer edge.
-constant float ORBIT_R_MAX = 3.0f;
+// Outer cap is now DYNAMIC — see compute_physics for the per-frame
+// blend. The values below are the two endpoints:
+//   ORBIT_R_BH      = silence/BH state, tight ring just past horizon.
+//                     Disk reads as a thin Saturn-ring around the BH.
+//   ORBIT_R_CHLADNI = play state, the godlike-creating cap. Bessel
+//                     voice forces fill this radius with structured
+//                     pattern.
+// totalAmplitude drives the blend: 0 → BH cap, > ~0.5 → CHLADNI cap.
+// Result: "explodes out of the BH on note attack, sucked back in on
+// release."
+constant float ORBIT_R_BH      = 1.0f;
+constant float ORBIT_R_CHLADNI = 3.0f;
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
@@ -934,18 +940,28 @@ kernel void compute_physics(
         }
     }
 
-    // ── HARD OUTER RADIUS CAP (disk plane) ──────────────────────────────
-    // Pull any escapee back to ORBIT_R_MAX and zero its outward radial
-    // velocity (keep tangential so it keeps orbiting). Vertical (z) is
-    // already constrained by the z-plane damping above.
+    // ── BREATHING OUTER RADIUS CAP ──────────────────────────────────────
+    // Tight (ORBIT_R_BH) during silence so the disk reads as a tight
+    // Saturn-ring around the BH. Expands to ORBIT_R_CHLADNI when notes
+    // play — gives Bessel voice forces room to push particles into the
+    // godlike Chladni pattern. envelopePhase-driven so it tracks the
+    // synth ADSR, not ambient amplitude. Phase: 0=silence, 0.5–1.5=
+    // attack, 1.5–2.5=decay, 2.5–3.5=sustain, 3.5–4.5=release.
     {
+        float ph = u.envelopePhase;
+        float cap_t;
+        if (ph < 0.5f)        cap_t = 0.0f;                                  // silence
+        else if (ph < 1.5f)   cap_t = ph - 0.5f;                             // attack
+        else if (ph < 3.5f)   cap_t = 1.0f;                                  // decay/sustain
+        else                  cap_t = clamp(1.0f - (ph - 3.5f), 0.0f, 1.0f); // release
+        float dynamic_cap = mix(ORBIT_R_BH, ORBIT_R_CHLADNI, cap_t);
         float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
-        if (rXY2 > ORBIT_R_MAX * ORBIT_R_MAX) {
+        if (rXY2 > dynamic_cap * dynamic_cap) {
             float rXY = sqrt(rXY2);
-            float scale = ORBIT_R_MAX / rXY;
+            float scale = dynamic_cap / rXY;
             nextPos.x *= scale;
             nextPos.y *= scale;
-            float2 radialDir = float2(nextPos.x, nextPos.y) * (1.0f / ORBIT_R_MAX);
+            float2 radialDir = float2(nextPos.x, nextPos.y) * (1.0f / dynamic_cap);
             float vRad = finalV.x * radialDir.x + finalV.y * radialDir.y;
             if (vRad > 0.0f) {
                 finalV.x -= vRad * radialDir.x;

@@ -8,10 +8,53 @@ struct PostFXUniforms {
     float bloomIntensity;   // 0-1
     float trailDecay;       // 0-1 (0 = no trails)
     float chromaticAmount;  // 0-0.02 typical
-    float padding[3];
+    float time;             // seconds (animated glitch)
+    float glitchAmount;     // 0-1 cyberpunk RGB block displacement
+    float scanlineAmount;   // 0-1 CRT scanlines
+    float neonGrade;        // 0-1 cyberpunk color grade
+    float vignette;         // 0-1 edge darkening
+    float audioLevel;       // 0-1 total amplitude (beat-reactive)
+    // ── Resolume-style VJ effects ──
+    float mirrorMode;       // 0 off, 1 H, 2 V, 3 quad
+    float kaleidoSegments;  // 0 off, else segment count (2-16)
+    float tileCount;        // <=1 off, else NxN repeat
+    float twirl;            // swirl amount (-1..1)
+    float hueShift;         // 0-1 hue rotation
+    float strobe;           // 0-1 strobe depth
+    float invert;           // 0-1 colour invert mix
+    float posterize;        // 0 off, else colour levels (2-16)
+    float edrHeadroom;      // display EDR headroom (1.0 = SDR), drives HDR glow
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
+
+// ── HSV helpers (Sam Hocevar / IQ) for hue-shift VJ effect ──────────────────
+static float3 rgb2hsv(float3 c) {
+    float4 K = float4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+    float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+    float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+static float3 hsv2rgb(float3 c) {
+    float4 K = float4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, saturate(p - K.xxx), c.y);
+}
+
+// ── Hash / noise helpers for glitch ─────────────────────────────────────────
+static float hash11(float p) {
+    p = fract(p * 0.1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
+}
+static float hash21(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
 
 struct PostVertexOut {
     float4 position [[position]];
@@ -43,74 +86,119 @@ fragment float4 postfx_fragment(
     PostVertexOut in [[stage_in]],
     texture2d<float> currentFrame [[texture(0)]],
     texture2d<float> previousFrame [[texture(1)]],
+    texture2d<float> bloomTex [[texture(2)]],
     constant PostFXUniforms& u [[buffer(0)]])
 {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
     float2 uv = in.uv;
 
-    // ── Chromatic aberration ────────────────────────────────────────────
-    float2 d = uv - 0.5;
-    float dist = length(d);
-    float2 offset = d * dist * u.chromaticAmount;
-
-    float r = currentFrame.sample(s, uv + offset).r;
-    float g = currentFrame.sample(s, uv).g;
-    float b = currentFrame.sample(s, uv - offset).b;
-    float4 color = float4(r, g, b, 1.0);
-
-    // ── IMAX Veiling Glare (Point Spread Function) ────────────────────────────
-    if (u.bloomIntensity > 0.0) {
-        float4 bloom = float4(0.0);
-        float2 px = u.bloomIntensity * 1.5 / u.resolution;
-        
-        // IMAX Anamorphic-style PSF:
-        // Wide horizontal spread for cinematic "streak" flares, tighter vertical halo.
-        // We sample exponentially further to create the "veiling" glare of a real lens.
-
-        // Horizontal wide streak (Anamorphic proxy)
-        const int h_samples = 12;
-        float h_weight_sum = 0.0;
-        for (int i = -h_samples; i <= h_samples; i++) {
-            if (i == 0) continue;
-            // Exponential falloff for the optical flare tail
-            float weight = 1.0 / (1.0 + abs(float(i)) * 0.8);
-            float2 offset = float2(float(i) * 3.0, 0.0) * px;
-            
-            // Extract only the brightest HDR pixels for the flare
-            float4 sampleColor = currentFrame.sample(s, uv + offset);
-            float luma = dot(sampleColor.rgb, float3(0.299, 0.587, 0.114));
-            float threshold = 1.8; // Higher HDR threshold so disk core doesn't blowout
-            float extraction = max(0.0, luma - threshold);
-            
-            bloom += sampleColor * extraction * weight;
-            h_weight_sum += weight;
-        }
-        
-        // Vertical soft halo (Standard spherical aberration proxy)
-        const int v_samples = 8;
-        float v_weight_sum = 0.0;
-        for (int i = -v_samples; i <= v_samples; i++) {
-            if (i == 0) continue;
-            float weight = 1.0 / (1.0 + abs(float(i)) * 1.5);
-            float2 offset = float2(0.0, float(i) * 2.0) * px;
-            
-            float4 sampleColor = currentFrame.sample(s, uv + offset);
-            float luma = dot(sampleColor.rgb, float3(0.299, 0.587, 0.114));
-            float threshold = 1.5; 
-            float extraction = max(0.0, luma - threshold);
-            
-            bloom += sampleColor * extraction * weight * 0.3; // Less intense vertically
-            v_weight_sum += weight * 0.5;
-        }
-
-        bloom /= (h_weight_sum + v_weight_sum + 0.001);
-        
-        // Lowered bloom multiplier so the disk remains sharp
-        color.rgb += bloom.rgb * u.bloomIntensity * 1.2; // Reduced from 3.0
+    // ── VJ geometric effects (Resolume-style), applied to sample UV ──────
+    // Mirror: fold one half onto the other.
+    if (u.mirrorMode > 0.5) {
+        int m = int(u.mirrorMode + 0.5);
+        if (m == 1 || m == 3) uv.x = (uv.x < 0.5) ? uv.x : 1.0 - uv.x; // H
+        if (m == 2 || m == 3) uv.y = (uv.y < 0.5) ? uv.y : 1.0 - uv.y; // V
+    }
+    // Tile: NxN repeat.
+    if (u.tileCount > 1.0) {
+        uv = fract(uv * u.tileCount);
+    }
+    // Kaleidoscope: fold the angle into N wedges around centre.
+    if (u.kaleidoSegments > 1.5) {
+        float2 c = uv - 0.5;
+        float r = length(c);
+        float ang = atan2(c.y, c.x);
+        float seg = 6.28318531 / u.kaleidoSegments;
+        ang = abs(fract(ang / seg) * seg - seg * 0.5);
+        c = float2(cos(ang), sin(ang)) * r;
+        uv = c + 0.5;
+    }
+    // Twirl: rotate around centre, stronger toward the middle.
+    if (abs(u.twirl) > 0.001) {
+        float2 c = uv - 0.5;
+        float r = length(c);
+        float ang = u.twirl * (0.5 - r) * 6.0;
+        float sa = sin(ang), ca = cos(ang);
+        c = float2(c.x * ca - c.y * sa, c.x * sa + c.y * ca);
+        uv = c + 0.5;
     }
 
-    // ── ACES Tonemapping (HDR → SDR) ────────────────────────────────────
+    // ── Cyberpunk glitch: horizontal RGB block displacement ──────────────
+    // The screen is split into horizontal bands; some bands jump sideways on
+    // a time+audio clock → the classic datamosh tear. Beat-reactive: louder
+    // audio widens both how many bands glitch and how far they jump.
+    float glitch = u.glitchAmount * (1.0 + u.audioLevel * 2.0);
+    float2 guv = uv;
+    if (glitch > 0.001) {
+        float t    = floor(u.time * 14.0);       // discrete glitch "frames"
+        float band = floor(uv.y * 28.0);         // 28 horizontal bands
+        float trig = hash21(float2(band, t));
+        if (trig > 1.0 - 0.45 * glitch) {        // only the "hot" bands jump
+            float dir = (hash11(band + t) > 0.5) ? 1.0 : -1.0;
+            float mag = (0.02 + 0.12 * glitch) * hash11(band * 1.7 + t);
+            guv.x += dir * mag;
+        }
+        guv.x += (hash21(float2(t, band * 3.1)) - 0.5) * 0.01 * glitch;
+    }
+
+    // ── Chromatic aberration + glitch RGB split ──────────────────────────
+    float2 d = uv - 0.5;
+    float dist = length(d);
+    float2 offset = d * dist * u.chromaticAmount;  // base radial CA
+    offset.x += glitch * 0.012;                     // glitch horizontal tear
+
+    float r = currentFrame.sample(s, guv + offset).r;
+    float g = currentFrame.sample(s, guv).g;
+    float b = currentFrame.sample(s, guv - offset).b;
+    float4 color = float4(r, g, b, 1.0);
+
+    // ── ACES Tonemapping (HDR scene → SDR base) ─────────────────────────
+    // Tonemap the scene to a clean SDR [0,1] base FIRST, then add the glow on
+    // top scaled by the display's EDR headroom so highlights punch ABOVE white
+    // into HDR range (paper-white = 1.0, peaks up to edrHeadroom×). On an SDR
+    // display headroom = 1.0, so this degrades gracefully to a normal add.
     color.rgb = acesTonemap(color.rgb);
+
+    // ── HDR glow — composite the pre-blurred bright-pass into headroom ────
+    // The glow is built in dedicated passes: a bright-pass extracts HDR pixels
+    // >threshold, then a wide ping-pong Gaussian softens it. Here we add that
+    // finished glow — the modern split (extract → blur cheap → composite)
+    // instead of a fat per-pixel sample loop. Audio-boosted so it blooms
+    // harder on beats; headroom-scaled so on XDR it goes genuinely brighter
+    // than white instead of clipping at SDR.
+    if (u.bloomIntensity > 0.0) {
+        float3 glow = bloomTex.sample(s, in.uv).rgb;
+        float boost = u.bloomIntensity * (1.5 + u.audioLevel * 1.0);
+        color.rgb += glow * boost * max(1.0, u.edrHeadroom);
+    }
+
+    // ── Neon cyberpunk color grade ───────────────────────────────────────
+    // Remaps tonal range to a synth palette: shadows → deep indigo, mids →
+    // magenta, highlights → cyan. Keeps per-pixel brightness so it grades
+    // colour without crushing the image.
+    if (u.neonGrade > 0.0) {
+        float luma = dot(color.rgb, float3(0.299, 0.587, 0.114));
+        float3 shadow = float3(0.04, 0.01, 0.16);
+        float3 mid    = float3(0.90, 0.12, 0.70);
+        float3 high   = float3(0.10, 0.95, 1.00);
+        float3 graded = mix(shadow, mid, smoothstep(0.0, 0.5, luma));
+        graded = mix(graded, high, smoothstep(0.5, 1.0, luma));
+        graded *= (luma + 0.06);
+        color.rgb = mix(color.rgb, graded, u.neonGrade);
+    }
+
+    // ── VJ colour effects ────────────────────────────────────────────────
+    if (u.hueShift > 0.001) {
+        float3 hsv = rgb2hsv(saturate(color.rgb));
+        hsv.x = fract(hsv.x + u.hueShift);
+        color.rgb = hsv2rgb(hsv);
+    }
+    if (u.posterize > 1.5) {
+        color.rgb = floor(color.rgb * u.posterize) / u.posterize;
+    }
+    if (u.invert > 0.001) {
+        color.rgb = mix(color.rgb, 1.0 - color.rgb, u.invert);
+    }
 
     // ── Analytical Motion Blur (Ray-Bundle proxy) ───────────────────────
     // To simulate the streak of a ray-bundle over the camera exposure time,
@@ -161,5 +249,97 @@ fragment float4 postfx_fragment(
         color = max(color, prev * u.trailDecay);
     }
 
+    // ── Scanlines (CRT / techno) — applied last so it doesn't feed back ──
+    if (u.scanlineAmount > 0.0) {
+        float line = 0.5 + 0.5 * sin(in.uv.y * u.resolution.y * 3.14159265);
+        color.rgb *= 1.0 - u.scanlineAmount * 0.6 * (1.0 - line);
+    }
+
+    // ── Vignette (cinematic framing) ─────────────────────────────────────
+    if (u.vignette > 0.0) {
+        float vig = smoothstep(0.85, 0.25, length(in.uv - 0.5));
+        color.rgb *= mix(1.0, vig, u.vignette);
+    }
+
+    // ── Strobe (VJ) — beat-reactive flash, applied last ──────────────────
+    if (u.strobe > 0.001) {
+        // ~8 Hz base, sped up by audio. Square flash between dark and full.
+        float rate = 6.0 + u.audioLevel * 10.0;
+        float flash = step(0.5, fract(u.time * rate));
+        color.rgb *= mix(1.0, flash, u.strobe);
+    }
+
+    // ── Output dither — break 8-bit banding (Resolume-style) ─────────────
+    // Triangular-PDF dither at ±1 LSB. Two hashes of the pixel position give
+    // a TPDF that's perceptually cleaner than a single uniform dither. Costs
+    // nothing and removes the gradient banding of an 8-bit SDR drawable.
+    float2 dpx = in.position.xy;
+    float dn1 = fract(sin(dot(dpx, float2(12.9898, 78.233))) * 43758.5453);
+    float dn2 = fract(sin(dot(dpx, float2(39.3468, 11.135))) * 24634.6345);
+    color.rgb += (dn1 + dn2 - 1.0) / 255.0;
+
     return color;
+}
+
+// ── Separable Gaussian blur (ping-pong multi-pass building block) ───────────
+// One axis per invocation; the renderer runs it H then V into ping-pong HDR
+// targets. 9-tap Gaussian. This is the reusable foundation for real blur,
+// future bloom, DOF and feedback effects — not a per-pixel uber-shader trick.
+struct BlurUniforms {
+    float2 direction;  // texel step (1/resolution) along one axis
+    float radius;      // spread multiplier
+    float pad;
+};
+
+fragment float4 blur_fragment(
+    PostVertexOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]],
+    constant BlurUniforms& u [[buffer(0)]])
+{
+    constexpr sampler s(mag_filter::linear, min_filter::linear,
+                        address::clamp_to_edge);
+    const float w[5] = {0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216};
+    float2 stepv = u.direction * u.radius;
+    float3 col = src.sample(s, in.uv).rgb * w[0];
+    for (int i = 1; i < 5; i++) {
+        col += src.sample(s, in.uv + stepv * float(i)).rgb * w[i];
+        col += src.sample(s, in.uv - stepv * float(i)).rgb * w[i];
+    }
+    return float4(col, 1.0);
+}
+
+// ── HDR bright-pass (bloom extraction) ──────────────────────────────────────
+// First stage of the modern glow split: keep only the energy ABOVE a soft HDR
+// knee, then feed that into the ping-pong Gaussian (cheap wide blur) before the
+// final composite adds it back. Soft-knee (not a hard step) so the glow ramps
+// in smoothly instead of popping at the threshold. The 1/(1+luma) firefly
+// weight tames single ultra-bright texels that would otherwise flicker as the
+// blur smears them — same trick as Jimenez/CoD bloom.
+struct BrightUniforms {
+    float threshold; // HDR knee (≈1.0 = only values past SDR white glow)
+    float softKnee;  // width of the smooth ramp below threshold
+    float pad0;
+    float pad1;
+};
+
+fragment float4 bright_fragment(
+    PostVertexOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]],
+    constant BrightUniforms& u [[buffer(0)]])
+{
+    constexpr sampler s(mag_filter::linear, min_filter::linear,
+                        address::clamp_to_edge);
+    float3 c = src.sample(s, in.uv).rgb;
+    float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+
+    // Soft-knee curve around the threshold (Jimenez): smooth ramp in [t-k, t+k]
+    float knee = max(u.softKnee, 0.0001);
+    float soft = clamp(luma - u.threshold + knee, 0.0, 2.0 * knee);
+    soft = (soft * soft) / (4.0 * knee + 0.0001);
+    float contrib = max(soft, luma - u.threshold) / max(luma, 0.0001);
+
+    float3 bright = c * contrib;
+    // Firefly clamp: down-weight tiny ultra-bright spikes so the blur is stable
+    bright *= 1.0 / (1.0 + luma);
+    return float4(bright, 1.0);
 }

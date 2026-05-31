@@ -275,8 +275,19 @@ bool Window::create(int width, int height, const std::string &title) {
     CGFloat scale = [impl_->window backingScaleFactor];
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.device = impl_->device;
-    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    layer.framebufferOnly = YES;
+    // ── EDR / HDR output ────────────────────────────────────────────────
+    // RGBA16Float drawable + extended-sRGB colorspace: values in [0,1] map
+    // exactly like SDR sRGB (existing look preserved), and values ABOVE 1.0
+    // extend into the display's HDR headroom. wantsEDR opts the layer into the
+    // brighter-than-white range so glow/highlights actually use the panel's
+    // peak brightness. On an SDR display headroom is 1.0 and this is a no-op.
+    layer.pixelFormat = MTLPixelFormatRGBA16Float;
+    layer.wantsExtendedDynamicRangeContent = YES;
+    CGColorSpaceRef edrSpace =
+        CGColorSpaceCreateWithName(kCGColorSpaceExtendedSRGB);
+    layer.colorspace = edrSpace;
+    CGColorSpaceRelease(edrSpace);
+    layer.framebufferOnly = NO; // drawable is blit-copied for the trail buffer
     layer.contentsScale = scale;
     layer.drawableSize = CGSizeMake(width * scale, height * scale);
     layer.maximumDrawableCount = 3;

@@ -1,6 +1,17 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Decode the packed phase out of velW.w (band ID lives in the upper 3 bits).
+// velW.w holds as_type<float>((bandBits<<29)|phaseBits) — a reinterpreted int,
+// NOT a usable float. Reading it directly as a float is garbage. This is the
+// inverse of the pack at the end of compute_physics and mirrors
+// render.metal::decodePhaseAndBand so producer and consumer stay in sync.
+static inline float decodePhase(float packed) {
+    uint bits = as_type<uint>(packed);
+    uint phaseBits = bits & 0x1FFFFFFFu;
+    return ((float)phaseBits / (float)0x1FFFFFFFu) * (2.0f * M_PI_F) - M_PI_F;
+}
+
 // GPU particle state — matches GPUParticle struct in C++ (64 bytes)
 struct Particle {
     float4 posW;   // x, y, z, mass
@@ -970,16 +981,16 @@ kernel void compute_physics(
         }
     }
 
-    // Phase accumulation
+    // Phase accumulation — decode prior phase first; p.velW.w is packed bits.
     speed = length(finalV);
-    float newPhase = p.velW.w + speed * dt;
+    float newPhase = decodePhase(p.velW.w) + speed * dt;
 
     // ── ODS-04: Dimming My Light (Stealth / ANC) ───────────────────────────
     if (u.debugFlags & (1 << 9)) {
         // Define the "User" cluster (~5% of particles)
         if ((id % 20) == 0) {
             // Active Noise Cancelling: Destructive interference by phase inversion
-            newPhase = fmod(p.velW.w + M_PI_F, 2.0f * M_PI_F);
+            newPhase = decodePhase(p.velW.w) + M_PI_F; // +π = inverted; wrapped at pack
             
             // Absolute Energy Damping: Absorb incoming force without moving
             finalV = float3(0.0f);
@@ -997,7 +1008,7 @@ kernel void compute_physics(
             // Telepathic state transfer (instant action at a distance)
             if (partnerTemp > currentTemp) {
                 currentTemp = mix(currentTemp, partnerTemp, 0.2f * dt); // Absorb heat
-                newPhase = mix(newPhase, prevParticles[partnerID].velW.w, 0.1f * dt); // Phase sync
+                newPhase = mix(newPhase, decodePhase(prevParticles[partnerID].velW.w), 0.1f * dt); // Phase sync
             }
         }
     }
@@ -1006,8 +1017,13 @@ kernel void compute_physics(
     if (mass > 0.0f) {
         p.prevW = float4(px, py, pz, currentTemp);
         p.posW = float4(nextPos, mass);
+        // Wrap phase into [0, 2π) before packing — a clamp here saturated every
+        // particle to phaseBits=max → identical hue. fmod can return negative,
+        // so add a turn to land in [0, 2π).
+        float wrapped = fmod(newPhase + M_PI_F, 2.0f * M_PI_F);
+        if (wrapped < 0.0f) wrapped += 2.0f * M_PI_F;
         // Pack band ID (3 bits) into upper bits of phase float
-        uint phaseBits = (uint)clamp(((newPhase + M_PI_F) / (2.0f * M_PI_F)) * (float)0x1FFFFFFFu, 0.0f, (float)0x1FFFFFFFu);
+        uint phaseBits = (uint)((wrapped / (2.0f * M_PI_F)) * (float)0x1FFFFFFFu);
         uint bandBits = (uint)(bestBand & 0x7);
         uint packed = (bandBits << 29) | phaseBits;
         p.velW = float4(finalV, as_type<float>(packed));

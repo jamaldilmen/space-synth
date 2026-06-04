@@ -14,6 +14,7 @@
 #include "core/resource_helper.h"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <fcntl.h>
 #include <signal.h>
@@ -331,7 +332,7 @@ int main() {
 
   // ── FPS counter ─────────────────────────────────────────────────────
   int frameCount = 0;
-  float fpsTimer = 0.0f;
+  auto fpsLastTime = std::chrono::steady_clock::now(); // real wall-clock FPS window
   int fps = 0;
 
   // ImGui global configuration
@@ -1424,23 +1425,26 @@ int main() {
 
     // FPS
     frameCount++;
-    fpsTimer += dt;
-    if (fpsTimer >= 1.0f) {
-      fps = frameCount;
+    // Real wall-clock FPS — NOT the physics dt (which is clamped to 0.033s in
+    // window.mm and would falsely cap the reported rate at ~30).
+    auto fpsNow = std::chrono::steady_clock::now();
+    float fpsElapsed = std::chrono::duration<float>(fpsNow - fpsLastTime).count();
+    if (fpsElapsed >= 1.0f) {
+      fps = (int)(frameCount / fpsElapsed + 0.5f);
       frameCount = 0;
-      fpsTimer -= 1.0f;
+      fpsLastTime = fpsNow;
 
       int vc = synth.activeVoiceCount();
       if (vc > 0) {
         char buf[256];
         snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Voices: %d | Amp: %.2f", 
-                 fps, PARTICLE_COUNT / 1000, vc, synth.totalAmplitude());
+                 fps, uiParticleCount / 1000, vc, synth.totalAmplitude());
         Logger::log(buf);
         printf("\n%s    ", buf);
       } else {
         char buf[256];
         snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Ready", 
-                 fps, PARTICLE_COUNT / 1000);
+                 fps, uiParticleCount / 1000);
         Logger::log(buf);
         printf("\n%s    ", buf);
       }

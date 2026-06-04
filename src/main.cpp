@@ -174,7 +174,7 @@ int main() {
 
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
-  static float uiParticleSize = 4.0f;
+  static float uiParticleSize = 2.0f;
   static int uiParticleCount = 5000000;
   static float uiShadowRadius = 2.4f; // BH shadow radius (sim coords) — bigger
                                       // dark sphere so the hole fills the frame
@@ -750,7 +750,7 @@ int main() {
 
         ImGui::SliderFloat("Size", &uiParticleSize, 0.5f, 10.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiParticleSize = 4.0f;
+          uiParticleSize = 2.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
 
         ImGui::SliderInt("Amount", &uiParticleCount, 0, 10000000);
@@ -766,65 +766,12 @@ int main() {
             "Black-hole shadow radius (sim coords). Physical value ~2.6; "
             "lower reads proportional to the disk.");
 
-        // Limit / SpeedCap moved to Audio Synth (Analog Drive)
-
-        ImGui::SliderFloat("E-Field Core", &uiEField, 0.0f, 0.5f, "%.4f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiEField = 0.05f;
-        ImGui::SetItemTooltip(
-            "Inverse-Square 1/r^2 Stiffness (Coulomb repulsion)");
-
-        ImGui::SliderFloat("B-Field Spin", &uiBField, 0.0f, 0.5f, "%.4f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiBField = 0.05f;
-        ImGui::SetItemTooltip(
-            "Vortex induction strength (Biot-Savart velocity transfer)");
-
-        ImGui::Separator();
-
-        ImGui::SliderFloat("Gravity (G)", &uiGravity, 0.0f, 0.1f, "%.4f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiGravity = 0.005f;
-        ImGui::SetItemTooltip(
-            "Newtonian Self-Gravity (Inward collapse to Potato Radius)");
-
-        ImGui::SliderFloat("String Tension", &uiStringStiffness, 0.0f, 0.2f,
-                           "%.4f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiStringStiffness = 0.01f;
-        ImGui::SetItemTooltip(
-            "Hooke's Law spring tension between neighbor particles");
-
-        ImGui::SliderFloat("String Rest", &uiRestLength, 0.0f, 0.1f, "%.4f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiRestLength = 0.01f;
-        ImGui::SetItemTooltip("Ideal distance where string tension relaxes");
-
-        ImGui::SliderFloat("Rotate X", &uiRotationX, -M_PI_F, M_PI_F,
-                           "%.3f rad");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiRotationX = 0.0f;
-
-        ImGui::SliderFloat("Rotate Y", &uiRotationY, -M_PI_F, M_PI_F,
-                           "%.3f rad");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiRotationY = 0.0f;
-
-        ImGui::SliderFloat("Rotate Z", &uiRotationZ, -M_PI_F, M_PI_F,
-                           "%.3f rad");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiRotationZ = 0.0f;
-
-        ImGui::Checkbox("Auto Rotate View", &uiAutoRotateScene);
         ImGui::Unindent();
       }
 
       if (ImGui::CollapsingHeader("NEW SCIENCE (Phase 9)",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::Checkbox("ODS-01 Quantum Entanglement", &uiQuantumEntangle);
-        ImGui::SetItemTooltip("Enable telepathic state transfer "
-                              "between paired particles");
         ImGui::Checkbox("ODS-06 Black Holes", &uiBlackHoles);
         ImGui::SetItemTooltip("Enable gravitational collapse "
                               "(Schwarzschild "
@@ -834,24 +781,6 @@ int main() {
 
       if (ImGui::CollapsingHeader("INDUSTRY DEBUGGING (Phase 7)")) {
         ImGui::Indent();
-
-        ImGui::Checkbox("Deterministic (Fixed dt)", &uiFixedTimestep);
-        ImGui::SetItemTooltip("Force dt = 1/60s for perfectly "
-                              "repeatable experiments");
-
-        ImGui::Separator();
-        ImGui::Text("Force Isolation (Solo/Mute):");
-        static const char *forceLabels[] = {"E-Field", "B-Field", "Gravity",
-                                            "Strings", "Jitter",  "Collisions"};
-        bool *solos[] = {&uiSoloEField,  &uiSoloBField, &uiSoloGravity,
-                         &uiSoloStrings, &uiSoloJitter, &uiSoloCollisions};
-
-        for (int i = 0; i < 6; i++) {
-          ImGui::Checkbox(forceLabels[i], solos[i]);
-          if (i % 2 == 0)
-            ImGui::SameLine(150);
-        }
-        ImGui::NewLine();
 
         auto stats = renderer.getPhysicsStats();
         if (stats.errorState > 0) {
@@ -869,11 +798,6 @@ int main() {
           ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f),
                              "Physics Core: OK");
         }
-
-        ImGui::Checkbox("Auto-Mode (Self-Healing)", &uiAutoMode);
-        ImGui::SetItemTooltip("Automatically dial down parameters "
-                              "and reset on "
-                              "stability failure");
 
         ImGui::Unindent();
       }
@@ -1029,10 +953,11 @@ int main() {
 
       if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::SliderFloat("Jitter", &uiJitter, 0.0f, 5.0f, "%.2f");
+        ImGui::SliderFloat("Jitter (not linked)", &uiJitter, 0.0f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiJitter = 1.0f;
-        ImGui::SetItemTooltip("Random displacement factor");
+        ImGui::SetItemTooltip("WARNING: not properly linked yet — no reliable "
+                              "visible effect. Kept for re-wiring later.");
 
         ImGui::Separator();
         ImGui::Text("GLOBAL LFO");
@@ -1060,15 +985,6 @@ int main() {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           uiWaveDepth = 20.0f;
         ImGui::SetItemTooltip("Vibrational displacement intensity");
-
-        ImGui::Spacing();
-        ImGui::SeparatorText("BLACK HOLE");
-        ImGui::SliderAngle("Rotation X", &uiBlackHoleRotationX, -180.0f,
-                           180.0f);
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiBlackHoleRotationX = 0.0f;
-        ImGui::Checkbox("Auto-Rotate", &uiAutoRotateBlackHole);
-        ImGui::SetItemTooltip("Continuous rotation over time");
 
         if (ImGui::Button("Reset Camera")) {
           camera.reset();
@@ -1265,14 +1181,6 @@ int main() {
         ImGui::Text("dt: %f | Particles: %d", dt, uiParticleCount);
         ImGui::Text("Total Amplitude: %.3f", synth.totalAmplitude());
 
-        if (ImGui::Button("Fetch GPU Memory (first 4)")) {
-          std::vector<GPUParticle> debugParts(4);
-          renderer.readbackParticles(debugParts.data(), 4);
-          for (int i = 0; i < 4; i++) {
-            ImGui::Text("P[%d]: pos[%5.2f, %5.2f, %5.2f]", i, debugParts[i].x,
-                        debugParts[i].y, debugParts[i].z);
-          }
-        }
         ImGui::Unindent();
       }
 

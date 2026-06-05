@@ -33,6 +33,7 @@ set(HEADERS
     src/core/lut.h
     src/core/modes.h
     src/core/particles.h
+    src/core/app_state.h
     src/core/envelope.h
     src/core/preset_manager.h
     src/core/logger.h

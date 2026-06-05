@@ -12,6 +12,7 @@
 #include "ui/ui_theme.h"
 #include "core/logger.h"
 #include "core/resource_helper.h"
+#include "core/app_state.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -174,67 +175,7 @@ int main() {
 
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
-  static float uiParticleSize = 2.0f;
-  static int uiParticleCount = 5000000;
-  static float uiShadowRadius = 2.4f; // BH shadow radius (sim coords) — bigger
-                                      // dark sphere so the hole fills the frame
-                                      // and the lensed ring reads as a fat band
-  static float uiJitter = 0.1f;
-  static float uiScale = 100.0f; // NEW DEFAULT: 100.0f as requested
-  static float uiWaveDepth = 20.0f;
-  static float uiEField = 0.5f;
-  static float uiBField = 1.0f;
-  static float uiGravity = 0.8f;
-  static float uiStringStiffness = 50.0f;
-  static float uiRestLength = 0.05f;
-  static float uiRotationX = 0.0f;
-  static float uiRotationY = 0.0f;
-  static float uiRotationZ = 0.0f;
-  static bool uiAutoRotateScene = false;
-
-  // Global Modulation LFO
-  static float uiLFORate = 0.5f;
-  static float uiLFODepth = 0.0f;
-  static float uiLFOPhase = 0.0f;
-
-  // uiSpeedCap removed: driven by synth.drive() instead
-  static bool uiChorus = true;
-  static bool uiOrthoMode = true;  // Use Orthographic projection
-  static float uiAttack = 20.0f;   // ms
-  static float uiRelease = 400.0f; // ms
-  static bool uiCollisions =
-      false; // Off by default — grid too small for 10M (32^3 cells, MAX_PER_CELL=32)
-  static bool uiPhaseViz = false; // Feynman phase arrow coloring
-  static float uiBloom = 0.0f;
-  static float uiTrailDecay = 0.05f; // "Fluidity" — motion-trail feedback.
-                                      // Dialed to 5% (was 0.88, too smeared).
-                                      // Fast-orbiting particles smear into
-                                      // velocity-proportional trails — the
-                                      // trails ARE the accretion-disk look.
-  static float uiChromatic = 0.0f;
-  // Creative cyberpunk/techno post-FX
-  static float uiGlitch = 0.0f;
-  static float uiScanlines = 0.0f;
-  static float uiNeonGrade = 0.0f;
-  static float uiVignette = 0.0f;
-  static float uiFxTime = 0.0f; // running seconds for animated FX
-  // Resolume-style VJ effects
-  static int uiMirrorMode = 0;   // 0 off,1 H,2 V,3 quad
-  static int uiKaleido = 0;      // segments (0 off)
-  static int uiTile = 1;         // NxN (1 off)
-  static float uiTwirl = 0.0f;
-  static float uiHueShift = 0.0f;
-  static float uiStrobe = 0.0f;
-  static float uiInvert = 0.0f;
-  static int uiPosterize = 0;    // levels (0 off)
-  static float uiBlur = 0.0f;    // multi-pass Gaussian blur
-
-  // ── Phase 18: Black Hole Aesthetics ──────────────────────────────
-  static float uiBlackHoleRotationX = 0.0f;
-  static bool uiAutoRotateBlackHole = true;
-
-  // ── Phase 18: VJ Mode ────────────────────────────────────────────
-  static bool uiVJMode = false;
+  static space::AppState app;
 
   // ── Sequencer State (Phase 12) ───────────────────────────────────
   struct SeqNote {
@@ -259,17 +200,6 @@ int main() {
     printf("[SEQ] Start: %s (%d notes)\n", name, (int)notes.size());
   };
 
-  // Industry-Level Debugging (Phase 7)
-  static bool uiFixedTimestep = false;
-  static bool uiSoloEField = true;
-  static bool uiSoloBField = true;
-  static bool uiSoloGravity = true;
-  static bool uiSoloStrings = true;
-  static bool uiSoloJitter = true;
-  static bool uiSoloCollisions = true;
-  static bool uiAutoMode = true;         // Auto-Self-Healing (Phase 8)
-  static bool uiQuantumEntangle = false; // Masterplan ODS-01 (Telepathy)
-  static bool uiBlackHoles = false;      // Masterplan ODS-06 (Singularities)
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -399,7 +329,7 @@ int main() {
     static constexpr float VJ_RELEASE_RATE = 5.0f; // decay per second (~200ms full fade)
     static constexpr float VJ_CROSSFADE_RATE = 8.0f; // crossfade speed (~125ms)
 
-    if (uiVJMode) {
+    if (app.uiVJMode) {
       auto bands = audio.getVJBands();
       uint32_t tMask = audio.getTransientMask();
 
@@ -569,7 +499,7 @@ int main() {
     float view[16], proj[16], viewProj[16];
     camera.buildViewMatrix(view);
 
-    if (uiOrthoMode) {
+    if (app.uiOrthoMode) {
       float aspect = (float)window.width() / (float)window.height();
       float frustum = camera.getRho() * 1.2f; // Dynamic orthographic zoom
       Renderer::orthoMatrix(proj, -frustum * aspect, frustum * aspect, -frustum,
@@ -595,11 +525,11 @@ int main() {
     config.width = window.width();
     config.height = window.height();
     config.rotationX =
-        uiRotationX + uiBlackHoleRotationX +
-        (uiAutoRotateBlackHole ? (float)ImGui::GetTime() * 0.2f : 0.0f) +
-        (uiAutoRotateScene ? (float)ImGui::GetTime() * 0.15f : 0.0f);
-    config.rotationY = uiRotationY;
-    config.rotationZ = uiRotationZ;
+        app.uiRotationX + app.uiBlackHoleRotationX +
+        (app.uiAutoRotateBlackHole ? (float)ImGui::GetTime() * 0.2f : 0.0f) +
+        (app.uiAutoRotateScene ? (float)ImGui::GetTime() * 0.15f : 0.0f);
+    config.rotationY = app.uiRotationY;
+    config.rotationZ = app.uiRotationZ;
 
     // ── ImGui HUD ──────────────────────────────────────────────────
     static Preset currentPreset;
@@ -617,8 +547,8 @@ int main() {
           std::string path = ResourceHelper::getResourcePath("presets/" + presetFiles[i]);
           if (PresetManager::loadPreset(path,
                                         currentPreset)) {
-            uiParticleSize = currentPreset.particleSize;
-            uiJitter = currentPreset.jitterScale;
+            app.uiParticleSize = currentPreset.particleSize;
+            app.uiJitter = currentPreset.jitterScale;
             synth.setDrive(currentPreset.speedCap);
           }
           break;
@@ -678,7 +608,7 @@ int main() {
         ImGui::Indent();
         ImGui::Text("Performance View");
         ImGui::TextDisabled("FPS: %.1f | Mode: %s", ImGui::GetIO().Framerate, 
-                            uiOrthoMode ? "Orthogonal" : "Perspective");
+                            app.uiOrthoMode ? "Orthogonal" : "Perspective");
         ImGui::Unindent();
       }
       ImGui::Spacing();
@@ -696,15 +626,15 @@ int main() {
               std::string path = ResourceHelper::getResourcePath("presets/" + presetFiles[n]);
               if (PresetManager::loadPreset(path,
                                             currentPreset)) {
-                uiParticleSize = currentPreset.particleSize;
-                uiJitter = currentPreset.jitterScale;
+                app.uiParticleSize = currentPreset.particleSize;
+                app.uiJitter = currentPreset.jitterScale;
                 synth.setDrive(currentPreset.speedCap);
-                uiEField = currentPreset.eField;
-                uiBField = currentPreset.bField;
-                uiGravity = currentPreset.gravity;
-                uiStringStiffness = currentPreset.stringStiffness;
-                uiRestLength = currentPreset.restLength;
-                uiParticleCount = currentPreset.particleCount;
+                app.uiEField = currentPreset.eField;
+                app.uiBField = currentPreset.bField;
+                app.uiGravity = currentPreset.gravity;
+                app.uiStringStiffness = currentPreset.stringStiffness;
+                app.uiRestLength = currentPreset.restLength;
+                app.uiParticleCount = currentPreset.particleCount;
               }
             }
             if (is_selected)
@@ -714,15 +644,15 @@ int main() {
         }
         ImGui::SameLine();
         if (ImGui::Button("Save") && selectedPresetIdx >= 0) {
-          currentPreset.particleSize = uiParticleSize;
-          currentPreset.jitterScale = uiJitter;
+          currentPreset.particleSize = app.uiParticleSize;
+          currentPreset.jitterScale = app.uiJitter;
           currentPreset.speedCap = synth.drive();
-          currentPreset.eField = uiEField;
-          currentPreset.bField = uiBField;
-          currentPreset.gravity = uiGravity;
-          currentPreset.stringStiffness = uiStringStiffness;
-          currentPreset.restLength = uiRestLength;
-          currentPreset.particleCount = uiParticleCount;
+          currentPreset.eField = app.uiEField;
+          currentPreset.bField = app.uiBField;
+          currentPreset.gravity = app.uiGravity;
+          currentPreset.stringStiffness = app.uiStringStiffness;
+          currentPreset.restLength = app.uiRestLength;
+          currentPreset.particleCount = app.uiParticleCount;
           std::string path = ResourceHelper::getResourcePath("presets/" + presetFiles[selectedPresetIdx]);
           PresetManager::savePreset(path, currentPreset);
         }
@@ -735,33 +665,33 @@ int main() {
 
         // Removed SimMode and SphereMode
 
-        if (ImGui::Checkbox("Collisions", &uiCollisions)) {
-          renderer.setCollisionsEnabled(uiCollisions);
+        if (ImGui::Checkbox("Collisions", &app.uiCollisions)) {
+          renderer.setCollisionsEnabled(app.uiCollisions);
         }
         ImGui::SetItemTooltip("Enable particle-particle elastic collisions");
 
-        ImGui::Checkbox("Phase Viz", &uiPhaseViz);
+        ImGui::Checkbox("Phase Viz", &app.uiPhaseViz);
         ImGui::SetItemTooltip(
             "Color particles by Feynman phase (action integral)");
 
-        ImGui::Checkbox("Ortho Camera", &uiOrthoMode);
+        ImGui::Checkbox("Ortho Camera", &app.uiOrthoMode);
         ImGui::SetItemTooltip(
             "Toggle between Orthographic (HTML vibe) and Perspective");
 
-        ImGui::SliderFloat("Size", &uiParticleSize, 0.5f, 10.0f, "%.2f");
+        ImGui::SliderFloat("Size", &app.uiParticleSize, 0.5f, 10.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiParticleSize = 2.0f;
+          app.uiParticleSize = 2.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
 
-        ImGui::SliderInt("Amount", &uiParticleCount, 0, 10000000);
+        ImGui::SliderInt("Amount", &app.uiParticleCount, 0, 10000000);
         if (ImGui::Button("Reset to Default")) {
-          uiParticleCount = 5000000;
+          app.uiParticleCount = 5000000;
         }
         ImGui::SetItemTooltip("Active number of particles");
 
-        ImGui::SliderFloat("BH Size", &uiShadowRadius, 0.3f, 5.0f, "%.2f");
+        ImGui::SliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiShadowRadius = 2.4f;
+          app.uiShadowRadius = 2.4f;
         ImGui::SetItemTooltip(
             "Black-hole shadow radius (sim coords). Physical value ~2.6; "
             "lower reads proportional to the disk.");
@@ -772,7 +702,7 @@ int main() {
       if (ImGui::CollapsingHeader("NEW SCIENCE (Phase 9)",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::Checkbox("ODS-06 Black Holes", &uiBlackHoles);
+        ImGui::Checkbox("ODS-06 Black Holes", &app.uiBlackHoles);
         ImGui::SetItemTooltip("Enable gravitational collapse "
                               "(Schwarzschild "
                               "radius) at high density");
@@ -790,7 +720,7 @@ int main() {
                                             : "Error: Energy Explosion");
           ImGui::PopStyleColor();
 
-          if (uiAutoMode) {
+          if (app.uiAutoMode) {
             ImGui::TextColored(ImVec4(1, 0.5, 0, 1),
                                "Auto-Mitigation Active...");
           }
@@ -835,19 +765,18 @@ int main() {
       if (ImGui::CollapsingHeader("VJ MODE & AUDIO INPUT",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::Checkbox("Enable VJ Mode (Mic/System In)", &uiVJMode);
+        ImGui::Checkbox("Enable VJ Mode (Mic/System In)", &app.uiVJMode);
         ImGui::SetItemTooltip("Visualize incoming audio using "
                               "16-band FFT harmonic sculpting");
 
-        if (uiVJMode) {
-          static float uiInputGain = 2.0f;
-          if (ImGui::SliderFloat("Input Gain", &uiInputGain, 0.1f, 10.0f,
+        if (app.uiVJMode) {
+          if (ImGui::SliderFloat("Input Gain", &app.uiInputGain, 0.1f, 10.0f,
                                  "%.2f x")) {
-            audio.setVJInputGain(uiInputGain);
+            audio.setVJInputGain(app.uiInputGain);
           }
           if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-            uiInputGain = 2.0f;
-            audio.setVJInputGain(uiInputGain);
+            app.uiInputGain = 2.0f;
+            audio.setVJInputGain(app.uiInputGain);
           }
           ImGui::SetItemTooltip("Boost quiet audio signals before "
                                 "FFT analysis");
@@ -880,23 +809,23 @@ int main() {
         }
         ImGui::SetItemTooltip("Oscillator waveform type");
 
-        if (ImGui::SliderFloat("Drive", &uiScale, 1.0f, 10.0f, "%.1f")) {
+        if (ImGui::SliderFloat("Drive", &app.uiScale, 1.0f, 10.0f, "%.1f")) {
           // This was previously mislabeled as
           // 'Scale' in one place and 'Drive' in
           // another. Let's use it for Scale (as
           // requested) and move Drive to a separate
           // slider if needed.
-          renderer.setScale(uiScale);
+          renderer.setScale(app.uiScale);
         }
         ImGui::SetItemTooltip("Filter saturation and analog clipping "
                               "(Moog-style)");
 
-        if (ImGui::Checkbox("BBD Chorus", &uiChorus)) {
-          synth.chorus().setEnabled(uiChorus);
+        if (ImGui::Checkbox("BBD Chorus", &app.uiChorus)) {
+          synth.chorus().setEnabled(app.uiChorus);
         }
         ImGui::SetItemTooltip("Lush stereo bucket-brigade dual delay");
 
-        if (uiChorus) {
+        if (app.uiChorus) {
           ImGui::Indent();
           float cRate = synth.chorus().rate();
           if (ImGui::SliderFloat("LFO Rate##Chorus", &cRate, 0.1f, 10.0f, "%.2f Hz")) {
@@ -913,31 +842,29 @@ int main() {
           ImGui::Unindent();
         }
 
-        ImGui::SliderFloat("Attack", &uiAttack, 5.0f, 500.0f, "%.0f ms");
+        ImGui::SliderFloat("Attack", &app.uiAttack, 5.0f, 500.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiAttack = 20.0f;
+          app.uiAttack = 20.0f;
         ImGui::SetItemTooltip("Envelope attack duration");
-        synth.envelopeParams().attack = uiAttack / 1000.0f;
+        synth.envelopeParams().attack = app.uiAttack / 1000.0f;
 
-        static float uiDecay = 100.0f;
-        ImGui::SliderFloat("Decay", &uiDecay, 5.0f, 1000.0f, "%.0f ms");
+        ImGui::SliderFloat("Decay", &app.uiDecay, 5.0f, 1000.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiDecay = 100.0f;
+          app.uiDecay = 100.0f;
         ImGui::SetItemTooltip("Envelope decay duration");
-        synth.envelopeParams().decay = uiDecay / 1000.0f;
+        synth.envelopeParams().decay = app.uiDecay / 1000.0f;
 
-        static float uiSustain = 0.7f;
-        ImGui::SliderFloat("Sustain", &uiSustain, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Sustain", &app.uiSustain, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiSustain = 0.7f;
+          app.uiSustain = 0.7f;
         ImGui::SetItemTooltip("Sustain level — controls visual expansion size");
-        synth.envelopeParams().sustain = uiSustain;
+        synth.envelopeParams().sustain = app.uiSustain;
 
-        ImGui::SliderFloat("Release", &uiRelease, 1.0f, 2000.0f, "%.0f ms");
+        ImGui::SliderFloat("Release", &app.uiRelease, 1.0f, 2000.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiRelease = 400.0f;
+          app.uiRelease = 400.0f;
         ImGui::SetItemTooltip("Envelope release duration");
-        synth.envelopeParams().release = uiRelease / 1000.0f;
+        synth.envelopeParams().release = app.uiRelease / 1000.0f;
 
         ImGui::Unindent();
       }
@@ -953,16 +880,16 @@ int main() {
 
       if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::SliderFloat("Jitter (not linked)", &uiJitter, 0.0f, 5.0f, "%.2f");
+        ImGui::SliderFloat("Jitter (not linked)", &app.uiJitter, 0.0f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiJitter = 1.0f;
+          app.uiJitter = 1.0f;
         ImGui::SetItemTooltip("WARNING: not properly linked yet — no reliable "
                               "visible effect. Kept for re-wiring later.");
 
         ImGui::Separator();
         ImGui::Text("GLOBAL LFO");
-        ImGui::SliderFloat("LFO Rate", &uiLFORate, 0.01f, 10.0f, "%.2f Hz");
-        ImGui::SliderFloat("LFO Depth", &uiLFODepth, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("LFO Rate", &app.uiLFORate, 0.01f, 10.0f, "%.2f Hz");
+        ImGui::SliderFloat("LFO Depth", &app.uiLFODepth, 0.0f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Modulates Jitter, Size, and Scale over time");
 
         ImGui::Unindent();
@@ -970,20 +897,20 @@ int main() {
 
       if (ImGui::CollapsingHeader("GEOMETRY", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        if (ImGui::SliderFloat("Space Scale", &uiScale, 10.0f, 2000.0f,
+        if (ImGui::SliderFloat("Space Scale", &app.uiScale, 10.0f, 2000.0f,
                                "%.0f")) {
-          renderer.setScale(uiScale);
+          renderer.setScale(app.uiScale);
         }
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-          uiScale = 100.0f;
-          renderer.setScale(uiScale);
+          app.uiScale = 100.0f;
+          renderer.setScale(app.uiScale);
         }
         ImGui::SetItemTooltip("Global cosmic scale "
                               "(Expansion/Contraction)");
 
-        ImGui::SliderFloat("Wave Depth", &uiWaveDepth, 5.0f, 100.0f, "%.1f");
+        ImGui::SliderFloat("Wave Depth", &app.uiWaveDepth, 5.0f, 100.0f, "%.1f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiWaveDepth = 20.0f;
+          app.uiWaveDepth = 20.0f;
         ImGui::SetItemTooltip("Vibrational displacement intensity");
 
         if (ImGui::Button("Reset Camera")) {
@@ -1011,41 +938,41 @@ int main() {
 
       if (ImGui::CollapsingHeader("POST-FX", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::SliderFloat("Bloom", &uiBloom, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Bloom", &app.uiBloom, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiBloom = 0.0f;
+          app.uiBloom = 0.0f;
         ImGui::SetItemTooltip("Cross-shaped bright-pass glow");
 
-        ImGui::SliderFloat("Fluidity", &uiTrailDecay, 0.0f, 0.99f, "%.2f");
+        ImGui::SliderFloat("Fluidity", &app.uiTrailDecay, 0.0f, 0.99f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiTrailDecay = 0.0f;
+          app.uiTrailDecay = 0.0f;
         ImGui::SetItemTooltip("Motion trails (Feedback factor)");
 
-        ImGui::SliderFloat("Chromatic", &uiChromatic, 0.0f, 0.02f, "%.3f");
+        ImGui::SliderFloat("Chromatic", &app.uiChromatic, 0.0f, 0.02f, "%.3f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiChromatic = 0.0f;
+          app.uiChromatic = 0.0f;
         ImGui::SetItemTooltip("RGB split lens effect");
 
         ImGui::SeparatorText("CYBERPUNK / TECHNO");
 
-        ImGui::SliderFloat("Glitch", &uiGlitch, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Glitch", &app.uiGlitch, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiGlitch = 0.0f;
+          app.uiGlitch = 0.0f;
         ImGui::SetItemTooltip("Datamosh RGB block tear (beat-reactive)");
 
-        ImGui::SliderFloat("Scanlines", &uiScanlines, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Scanlines", &app.uiScanlines, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiScanlines = 0.0f;
+          app.uiScanlines = 0.0f;
         ImGui::SetItemTooltip("CRT scanlines");
 
-        ImGui::SliderFloat("Neon Grade", &uiNeonGrade, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Neon Grade", &app.uiNeonGrade, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiNeonGrade = 0.0f;
+          app.uiNeonGrade = 0.0f;
         ImGui::SetItemTooltip("Cyberpunk color grade (indigo/magenta/cyan)");
 
-        ImGui::SliderFloat("Vignette", &uiVignette, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Vignette", &app.uiVignette, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiVignette = 0.0f;
+          app.uiVignette = 0.0f;
         ImGui::SetItemTooltip("Cinematic edge darkening");
         ImGui::Unindent();
       }
@@ -1054,47 +981,47 @@ int main() {
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         const char *mirrorNames[] = {"Off", "Horizontal", "Vertical", "Quad"};
-        ImGui::Combo("Mirror", &uiMirrorMode, mirrorNames, 4);
+        ImGui::Combo("Mirror", &app.uiMirrorMode, mirrorNames, 4);
         ImGui::SetItemTooltip("Fold the image onto itself");
 
-        ImGui::SliderInt("Kaleidoscope", &uiKaleido, 0, 16);
+        ImGui::SliderInt("Kaleidoscope", &app.uiKaleido, 0, 16);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiKaleido = 0;
+          app.uiKaleido = 0;
         ImGui::SetItemTooltip("Radial segments (0 = off)");
 
-        ImGui::SliderInt("Tile", &uiTile, 1, 8);
+        ImGui::SliderInt("Tile", &app.uiTile, 1, 8);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiTile = 1;
+          app.uiTile = 1;
         ImGui::SetItemTooltip("NxN repeat (1 = off)");
 
-        ImGui::SliderFloat("Twirl", &uiTwirl, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Twirl", &app.uiTwirl, -1.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiTwirl = 0.0f;
+          app.uiTwirl = 0.0f;
         ImGui::SetItemTooltip("Swirl distortion");
 
-        ImGui::SliderFloat("Hue Shift", &uiHueShift, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Hue Shift", &app.uiHueShift, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiHueShift = 0.0f;
+          app.uiHueShift = 0.0f;
         ImGui::SetItemTooltip("Rotate all colours");
 
-        ImGui::SliderFloat("Strobe", &uiStrobe, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Strobe", &app.uiStrobe, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiStrobe = 0.0f;
+          app.uiStrobe = 0.0f;
         ImGui::SetItemTooltip("Beat-reactive flash");
 
-        ImGui::SliderFloat("Invert", &uiInvert, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Invert", &app.uiInvert, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiInvert = 0.0f;
+          app.uiInvert = 0.0f;
         ImGui::SetItemTooltip("Colour invert mix");
 
-        ImGui::SliderInt("Posterize", &uiPosterize, 0, 16);
+        ImGui::SliderInt("Posterize", &app.uiPosterize, 0, 16);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiPosterize = 0;
+          app.uiPosterize = 0;
         ImGui::SetItemTooltip("Quantize colours (0 = off)");
 
-        ImGui::SliderFloat("Blur", &uiBlur, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Blur", &app.uiBlur, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          uiBlur = 0.0f;
+          app.uiBlur = 0.0f;
         ImGui::SetItemTooltip("Multi-pass Gaussian blur (ping-pong HDR)");
         ImGui::Unindent();
       }
@@ -1178,7 +1105,7 @@ int main() {
       if (ImGui::CollapsingHeader("DEBUG GPU",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::Text("dt: %f | Particles: %d", dt, uiParticleCount);
+        ImGui::Text("dt: %f | Particles: %d", dt, app.uiParticleCount);
         ImGui::Text("Total Amplitude: %.3f", synth.totalAmplitude());
 
         ImGui::Unindent();
@@ -1187,98 +1114,98 @@ int main() {
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::TextDisabled("FPS: %.1f | Particles: %dk",
-                          ImGui::GetIO().Framerate, uiParticleCount / 1000);
+                          ImGui::GetIO().Framerate, app.uiParticleCount / 1000);
       ImGui::End();
     } // if (showHUD)
 
     // ── Apply Audio-Visual Macros ─────────────────────────────────────
     // Calculate effective values
-    float effectiveSize = uiParticleSize;
+    float effectiveSize = app.uiParticleSize;
     float effectiveDrive = synth.drive();
     float effectiveJitterMultiplier = 1.0f;
 
     // Push volatile settings back into synth
-    synth.setJitter(uiJitter * effectiveJitterMultiplier);
+    synth.setJitter(app.uiJitter * effectiveJitterMultiplier);
     synth.setDrive(effectiveDrive);
 
     // Update Global LFO
-    uiLFOPhase =
-        std::fmod(uiLFOPhase + dt * uiLFORate * M_PI_F * 2.0f, M_PI_F * 2.0f);
-    float lfoVal = sin(uiLFOPhase) * uiLFODepth;
+    app.uiLFOPhase =
+        std::fmod(app.uiLFOPhase + dt * app.uiLFORate * M_PI_F * 2.0f, M_PI_F * 2.0f);
+    float lfoVal = sin(app.uiLFOPhase) * app.uiLFODepth;
 
     config.particleSize = effectiveSize * (1.0f + lfoVal * 0.2f);
-    config.plateRadius = uiScale * (1.0f + lfoVal * 0.1f);
+    config.plateRadius = app.uiScale * (1.0f + lfoVal * 0.1f);
     config.cameraRho = camera.getRho();
     config.cameraPos[0] = camera.getX();
     config.cameraPos[1] = camera.getY();
     config.cameraPos[2] = camera.getZ();
     config.jitterFactor =
-        uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
-    config.orthoMode = uiOrthoMode;
-    config.phaseViz = uiPhaseViz;
-    config.shadowRadius = uiShadowRadius;
+        app.uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
+    config.orthoMode = app.uiOrthoMode;
+    config.phaseViz = app.uiPhaseViz;
+    config.shadowRadius = app.uiShadowRadius;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────
-    synth.envelopeParams().attack = uiAttack / 1000.0f;
-    synth.envelopeParams().release = uiRelease / 1000.0f;
+    synth.envelopeParams().attack = app.uiAttack / 1000.0f;
+    synth.envelopeParams().release = app.uiRelease / 1000.0f;
     // Supernova adds on top of user slider values
-    config.bloomIntensity = uiBloom;
-    config.trailDecay = uiTrailDecay;
-    config.chromaticAmount = uiChromatic;
+    config.bloomIntensity = app.uiBloom;
+    config.trailDecay = app.uiTrailDecay;
+    config.chromaticAmount = app.uiChromatic;
     // Creative FX + beat reactivity
-    uiFxTime += dt;
-    config.glitchAmount = uiGlitch;
-    config.scanlineAmount = uiScanlines;
-    config.neonGrade = uiNeonGrade;
-    config.vignette = uiVignette;
-    config.fxTime = uiFxTime;
+    app.uiFxTime += dt;
+    config.glitchAmount = app.uiGlitch;
+    config.scanlineAmount = app.uiScanlines;
+    config.neonGrade = app.uiNeonGrade;
+    config.vignette = app.uiVignette;
+    config.fxTime = app.uiFxTime;
     config.audioLevel = std::min(1.0f, synth.totalAmplitude());
     // VJ FX
-    config.mirrorMode = (float)uiMirrorMode;
-    config.kaleidoSegments = (float)uiKaleido;
-    config.tileCount = (float)uiTile;
-    config.twirl = uiTwirl;
-    config.hueShift = uiHueShift;
-    config.strobe = uiStrobe;
-    config.invert = uiInvert;
-    config.posterize = (float)uiPosterize;
-    config.blurAmount = uiBlur;
+    config.mirrorMode = (float)app.uiMirrorMode;
+    config.kaleidoSegments = (float)app.uiKaleido;
+    config.tileCount = (float)app.uiTile;
+    config.twirl = app.uiTwirl;
+    config.hueShift = app.uiHueShift;
+    config.strobe = app.uiStrobe;
+    config.invert = app.uiInvert;
+    config.posterize = (float)app.uiPosterize;
+    config.blurAmount = app.uiBlur;
 
     // ── Update ADSR ────────────────────────────────────────────────
-    synth.envelopeParams().attack = uiAttack / 1000.0f;
-    synth.envelopeParams().release = uiRelease / 1000.0f;
+    synth.envelopeParams().attack = app.uiAttack / 1000.0f;
+    synth.envelopeParams().release = app.uiRelease / 1000.0f;
 
     // ── Update Physics ──────────────────────────────────────────────
-    renderer.setActiveParticleCount(uiParticleCount);
+    renderer.setActiveParticleCount(app.uiParticleCount);
 
     // Build Debug Flags bitmask
     uint32_t debugFlags = 0;
-    if (uiSoloEField)
+    if (app.uiSoloEField)
       debugFlags |= DEBUG_E_FIELD;
-    if (uiSoloBField)
+    if (app.uiSoloBField)
       debugFlags |= DEBUG_B_FIELD;
-    if (uiSoloGravity)
+    if (app.uiSoloGravity)
       debugFlags |= DEBUG_GRAVITY;
-    if (uiSoloStrings)
+    if (app.uiSoloStrings)
       debugFlags |= DEBUG_STRINGS;
-    if (uiSoloJitter)
+    if (app.uiSoloJitter)
       debugFlags |= DEBUG_JITTER;
-    if (uiSoloCollisions)
+    if (app.uiSoloCollisions)
       debugFlags |= DEBUG_COLLISIONS;
-    if (uiFixedTimestep)
+    if (app.uiFixedTimestep)
       debugFlags |= DEBUG_FIXED_DT;
-    if (uiQuantumEntangle)
+    if (app.uiQuantumEntangle)
       debugFlags |= DEBUG_ODS01;
-    if (uiBlackHoles)
+    if (app.uiBlackHoles)
       debugFlags |= DEBUG_ODS06;
 
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
     auto stats = renderer.getPhysicsStats();
-    if (uiAutoMode && stats.errorState > 0) {
+    if (app.uiAutoMode && stats.errorState > 0) {
       // Step 1: Immediate parameter mitigation (dial down stress)
-      uiEField *= 0.5f;
-      uiBField *= 0.5f;
-      uiGravity *= 0.8f;
+      app.uiEField *= 0.5f;
+      app.uiBField *= 0.5f;
+      app.uiGravity *= 0.8f;
 
       // Step 2: If we have NaNs, we MUST reset the hardware state
       if (stats.errorState == 1) {
@@ -1294,7 +1221,7 @@ int main() {
 
     // VJ mode: if VJ bands are driving voices but synth is silent,
     // override envelope to sustain so GPU doesn't gate forces
-    if (uiVJMode && envState.phase < 0.5f && !voiceData.empty()) {
+    if (app.uiVJMode && envState.phase < 0.5f && !voiceData.empty()) {
         float vjMaxAmp = 0.0f;
         for (const auto& vd : voiceData) vjMaxAmp = std::max(vjMaxAmp, vd.amplitude);
         envState.phase = 3.0f;     // Sustain
@@ -1310,7 +1237,7 @@ int main() {
     config.envelopeProgress = envState.progress;
 
     float effectiveTotalAmp = synth.totalAmplitude();
-    if (uiVJMode) {
+    if (app.uiVJMode) {
         for (const auto& vd : voiceData) effectiveTotalAmp += vd.amplitude;
     }
 
@@ -1324,10 +1251,10 @@ int main() {
         smoothedAmp = decay * effectiveTotalAmp + (1.0f - decay) * smoothedAmp;
 
     renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
-                         smoothedAmp, uiWaveDepth,
-                         uiJitter * effectiveJitterMultiplier, effectiveDrive,
-                         uiEField, uiBField, uiGravity, uiStringStiffness,
-                         uiRestLength, debugFlags);
+                         smoothedAmp, app.uiWaveDepth,
+                         app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
+                         app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,
+                         app.uiRestLength, debugFlags);
 
     renderer.render(config, viewProj);
 
@@ -1346,13 +1273,13 @@ int main() {
       if (vc > 0) {
         char buf[256];
         snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Voices: %d | Amp: %.2f", 
-                 fps, uiParticleCount / 1000, vc, synth.totalAmplitude());
+                 fps, app.uiParticleCount / 1000, vc, synth.totalAmplitude());
         Logger::log(buf);
         printf("\n%s    ", buf);
       } else {
         char buf[256];
         snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Ready", 
-                 fps, uiParticleCount / 1000);
+                 fps, app.uiParticleCount / 1000);
         Logger::log(buf);
         printf("\n%s    ", buf);
       }

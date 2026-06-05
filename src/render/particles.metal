@@ -12,7 +12,7 @@ static inline float decodePhase(float packed) {
     return ((float)phaseBits / (float)0x1FFFFFFFu) * (2.0f * M_PI_F) - M_PI_F;
 }
 
-// GPU particle state — matches GPUParticle struct in C++ (64 bytes)
+// GPU particle state — matches GPUParticle struct in C++ (80 bytes)
 struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase

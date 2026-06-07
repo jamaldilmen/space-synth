@@ -604,6 +604,8 @@ void Renderer::render(const RenderConfig &config) {
             : 0.0f;
     cam.aspect = aspect;
   }
+  cam.sharpness = config.sharpness;
+  cam.grainAlpha = config.grainAlpha;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -686,6 +688,8 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
             : 0.0f;
     cam.aspect = (float)impl_->width / (float)impl_->height;
   }
+  cam.sharpness = config.sharpness;
+  cam.grainAlpha = config.grainAlpha;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -1320,6 +1324,10 @@ void Renderer::setEnvelopeState(float phase, float progress, float intensity) {
   impl_->envPhase = phase;
   impl_->envProgress = progress;
   impl_->envIntensity = intensity;
+}
+
+void Renderer::setDiskThickness(float t) {
+  impl_->physicsUniforms.diskThickness = t;
 }
 
 PhysicsStats Renderer::getPhysicsStats() const { return impl_->latestStats; }

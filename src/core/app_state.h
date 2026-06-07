@@ -10,8 +10,11 @@ namespace space {
 struct AppState {
   // ── Simulation ──
   float uiParticleSize = 2.0f;
-  int   uiParticleCount = 5000000;
+  int   uiParticleCount = 2000000;
+  float uiSharpness = 5.0f;    // particle Gaussian falloff (live render dial)
+  float uiGrainAlpha = 0.08f;  // per-particle base alpha (live render dial)
   float uiShadowRadius = 2.4f; // BH shadow radius (sim coords)
+  float uiDiskThickness = 0.15f; // accretion-disk vertical thickness
   float uiJitter = 0.1f;       // not properly linked yet (kept, flagged in UI)
   float uiScale = 100.0f;      // shared: Space Scale + audio Drive
   float uiWaveDepth = 20.0f;

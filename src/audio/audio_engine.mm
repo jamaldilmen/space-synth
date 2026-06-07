@@ -226,8 +226,11 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   impl_->fft = std::make_unique<FFTAnalyzer>(2048, sampleRate);
   impl_->inputScratchBuffer.resize(8192, 0.0f);
 
-  // Use VoiceProcessingIO but disable system ducking and AGC
-  OSType subType = kAudioUnitSubType_VoiceProcessingIO;
+  // Plain HAL output unit (NOT VoiceProcessingIO). VoiceProcessingIO puts
+  // CoreAudio into voice-call mode, which ducks/silences every other app on the
+  // system — even with DuckNonVoiceAudio=0. HALOutput drives synth output
+  // (bus 0) and still allows optional mic input (bus 1) without any ducking.
+  OSType subType = kAudioUnitSubType_HALOutput;
 
   AudioComponentDescription desc = {kAudioUnitType_Output, subType,
                                     kAudioUnitManufacturer_Apple, 0, 0};
@@ -255,28 +258,6 @@ bool AudioEngine::start(uint32_t deviceId, int sampleRate) {
   err = AudioUnitSetProperty(
       impl_->audioUnit, kAudioOutputUnitProperty_EnableIO,
       kAudioUnitScope_Output, 0, &enableIO, sizeof(enableIO));
-
-  // Disable VoiceProcessing AGC and Ducking globally
-  UInt32 disable = 0;
-  AudioUnitSetProperty(impl_->audioUnit,
-                       2101 /* kAUVoiceIOProperty_VoiceProcessingEnableAGC */,
-                       kAudioUnitScope_Global, 0, &disable, sizeof(disable));
-
-  // Set ducking to 0 on BUS 0 (Output)
-  AudioUnitSetProperty(impl_->audioUnit,
-                       2102 /* kAUVoiceIOProperty_DuckNonVoiceAudio */,
-                       kAudioUnitScope_Global, 0, &disable, sizeof(disable));
-
-  // Set ducking to 0 on BUS 1 (Input) specifically (some Mac versions need
-  // this)
-  AudioUnitSetProperty(impl_->audioUnit,
-                       2102 /* kAUVoiceIOProperty_DuckNonVoiceAudio */,
-                       kAudioUnitScope_Global, 1, &disable, sizeof(disable));
-
-  UInt32 enableBypass = 1;
-  AudioUnitSetProperty(
-      impl_->audioUnit, 2100 /* kAUVoiceIOProperty_BypassVoiceProcessing */,
-      kAudioUnitScope_Global, 0, &enableBypass, sizeof(enableBypass));
 
   // Set Output Callback
   AURenderCallbackStruct outCallback;

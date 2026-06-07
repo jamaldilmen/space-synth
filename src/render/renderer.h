@@ -10,6 +10,8 @@ struct RenderConfig {
   int height = 1080;
   float particleSize = 2.0f;
   float plateRadius = 400.0f;
+  float sharpness = 5.0f;   // particle Gaussian falloff (live-tunable)
+  float grainAlpha = 0.08f; // per-particle base alpha (live-tunable)
 
   // Post-FX
   float bloomIntensity = 0.0f;
@@ -118,6 +120,8 @@ struct CameraUniforms {
   float orthoMode;
   float bhShadowNdcRadius; // shadow's on-screen radius = lens Einstein radius
   float aspect;            // width/height, to make the lens screen-isotropic
+  float sharpness;         // particle Gaussian falloff exponent (live-tunable)
+  float grainAlpha;        // per-particle base alpha (live-tunable)
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)
@@ -164,6 +168,7 @@ struct PhysicsUniforms {
   float envelopeProgress; // 0.0→1.0 within current phase
   float lifecycleIntensity; // Combined amplitude measure
   float lifecyclePad;       // Alignment padding
+  float diskThickness;      // accretion-disk vertical thickness (UI)
 };
 
 // Spatial hash uniforms for collision grid
@@ -223,6 +228,9 @@ public:
 
   // Phase 17: Set ADSR lifecycle state for black hole dynamics
   void setEnvelopeState(float phase, float progress, float intensity);
+
+  // Accretion-disk vertical thickness (UI-tunable)
+  void setDiskThickness(float t);
 
   // Physics stats (1-frame latency)
   PhysicsStats getPhysicsStats() const;

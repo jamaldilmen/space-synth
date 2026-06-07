@@ -63,6 +63,7 @@ struct PhysicsUniforms {
     float envelopeProgress;      // 84: 0.0→1.0 within current phase
     float lifecycleIntensity;    // 88: master intensity multiplier
     float lifecyclePad;          // 92: alignment
+    float diskThickness;         // 96: accretion-disk vertical thickness (UI)
 };
 
 struct SpatialHashUniforms {
@@ -221,7 +222,7 @@ kernel void compute_physics(
 
             // ═══ ACCRETION DISK GEOMETRY ═══
             float diskRadius = 0.45f;      // Disk inner-to-outer span
-            float diskThickness = 0.15f;   // Vertical thickness
+            float diskThickness = u.diskThickness; // Vertical thickness (UI)
 
             // Project position onto disk plane
             float rXY = sqrt(px * px + py * py);  // Radial in disk plane
@@ -247,11 +248,12 @@ kernel void compute_physics(
             shiftVy -= dir.y * gMag * dt;
             shiftVz -= dir.z * gMag * dt;
 
-            // 1b. Z-PLANE DAMPING. Active pull toward z=0 so the disk
-            // stays flat. Voice perturbations push particles in 3D; without
-            // this, the disk puffs into a 3D ball. Strength tuned so it
-            // doesn't fight orbital motion in the xy plane.
-            shiftVz -= pz * 5.0f * dt;
+            // 1b. Z-PLANE DAMPING. Active pull toward z=0 so the disk stays flat.
+            // Strength is now driven by the Disk Thickness fader: weaker damping
+            // = fatter disk. zDamp = 0.75/thickness → at the 0.15 default this is
+            // 5.0 (the original), at 0.30 it's 2.5 (thicker), etc.
+            float zDamp = 0.75f / max(u.diskThickness, 0.02f);
+            shiftVz -= pz * zDamp * dt;
 
             // 2. DISK CONFINEMENT — TEMP DISABLED.
             // Was a hardcoded spring force pulling every particle to a
@@ -861,9 +863,18 @@ kernel void compute_physics(
     // Release: kill momentum so collapse tracks the envelope fade
     // Sustain: let it breathe — no damping
     if (u.envelopePhase > 3.5f) {
+        // Release: kill momentum so collapse tracks the envelope fade
         vpx *= 0.15f;
         vpy *= 0.15f;
         vpz *= 0.15f;
+    } else if (u.envelopePhase > 2.5f) {
+        // Sustain: HARDEN over hold time. envelopeProgress ramps 0→1 the longer
+        // the note is held → damp velocity increasingly so motion slows, the
+        // light trails shorten, and the shape sets/crisps in place.
+        float harden = mix(1.0f, 0.80f, clamp(u.envelopeProgress, 0.0f, 1.0f));
+        vpx *= harden;
+        vpy *= harden;
+        vpz *= harden;
     }
 
     // ── VJ Silence Damping ──────────────────────────────────────────────
@@ -883,6 +894,15 @@ kernel void compute_physics(
     float speed = length(finalV);
     if (speed > u.speedCap) {
         finalV = (finalV / max(speed, 0.0001f)) * u.speedCap;
+    }
+
+    // Jitter (UI slider — now wired). Per-particle Brownian shimmer added as a
+    // small position delta. u.jitterFactor was uploaded all along but never read.
+    if (u.jitterFactor > 0.0001f) {
+        float3 jit = float3(noise(id, u.frameCounter + 11u),
+                            noise(id + 7919u, u.frameCounter + 23u),
+                            noise(id + 104729u, u.frameCounter + 37u));
+        finalV += jit * (u.jitterFactor * 0.02f);
     }
 
     // Final position integration

@@ -20,6 +20,8 @@ struct CameraUniforms {
     float orthoMode;
     float bhShadowNdcRadius; // shadow's on-screen radius = lens Einstein radius
     float aspect;            // width/height, to make the lens screen-isotropic
+    float sharpness;         // particle Gaussian falloff exponent (live-tunable)
+    float grainAlpha;        // per-particle base alpha (live-tunable)
 };
 
 // (safe_normalize removed to fix unused warning)
@@ -33,6 +35,8 @@ struct VertexOut {
     float originDist;  // Distance from universe origin (0,0,0) for event horizon
     float2 velDir2D;   // Phase 11: Screen-space velocity direction for string elongation
     float2 strDir2D;   // Partner string connection vector
+    float sharpness;   // live render control (Gaussian falloff exponent)
+    float grainAlpha;  // live render control (per-particle base alpha)
 };
 
 // Decode packed phase + band ID from velW.w
@@ -90,6 +94,8 @@ vertex VertexOut particle_vertex(
         out.dist = 1.0f;
         out.velDir2D = float2(0);
         out.strDir2D = float2(0);
+        out.sharpness = 5.0f;
+        out.grainAlpha = 0.08f;
         return out;
     }
 
@@ -205,7 +211,7 @@ vertex VertexOut particle_vertex(
     // disk. The 1.275 = 2^0.35 anchors the formula so that at distRatio=2.0
     // (default zoom) sizeScale=2.0, identical to the old linear behavior.
     float temp = in.prevW.w;
-    float heatSizeBoost = 2.5f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 2.5x → 4.0x
+    float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 1x → 2.5x (crisp points, pre-impostor)
     float distRatio = 800.0f / max(0.0001f, dist);
     float sizeScale = pow(distRatio, 0.65f) * 1.275f;
     float rawSize = cam.particleSize * heatSizeBoost * sizeScale;
@@ -272,6 +278,9 @@ vertex VertexOut particle_vertex(
     // RS_CULL = unified BH horizon. Must match BH_HORIZON in
     // particles.metal and `M + sqrt(M²-a²)` in blackhole.metal. With
     // M=0.5, a=0.99M → horizon ≈ 0.57 sim coords.
+    out.sharpness = cam.sharpness;
+    out.grainAlpha = cam.grainAlpha;
+
     float RS_CULL = 0.57f;
     if (originR < RS_CULL) {
         out.position = float4(0, 0, -2, 1);
@@ -282,6 +291,8 @@ vertex VertexOut particle_vertex(
         out.dist = 1.0f;
         out.velDir2D = float2(0);
         out.strDir2D = float2(0);
+        out.sharpness = 5.0f;
+        out.grainAlpha = 0.08f;
         return out;
     }
 
@@ -338,17 +349,23 @@ fragment float4 particle_fragment(
     // instead of looking like individual chunks. The continuous-band
     // appearance comes from particle DENSITY (overlap), not from each
     // sprite's individual falloff being soft.
-    float glow = exp(-r2 * 5.0f);
+    float glow = exp(-r2 * in.sharpness);
+    // Crisp bright CORE — restored from the pre-impostor render. This sharp
+    // center is what makes each particle read as a crisp point instead of a
+    // soft sprite-ball. Tinted by the particle color (not pure white) so dense
+    // additive regions don't bleach out. Scales with Sharpness too.
+    float dCore = sqrt(r2);
+    float core = pow(max(0.0f, 1.0f - dCore), 3.0f);
 
     // Emission multiplier reduced 1.8 → 0.5. With G=20 gravity, particles
     // orbit fast and the velocity-aligned streaks pile up under additive
     // blending → field saturated to white everywhere. Lower per-particle
     // emission lets dense regions glow bright but sparse stay dim, so the
     // BH void and disk structure remain visible against the field.
-    float3 emission = in.color * in.luminance * glow * 0.5f;
+    float3 emission = in.color * in.luminance * (glow * 0.5f + core);
 
-    float baseAlpha = 0.08f + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.06f;
-    float alpha = glow * baseAlpha;
+    float baseAlpha = in.grainAlpha + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.06f;
+    float alpha = (glow * 0.5f + core) * baseAlpha;
 
     float fadeDistance = 6.0f;
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));

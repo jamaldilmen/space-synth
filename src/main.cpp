@@ -24,6 +24,51 @@
 
 using namespace space;
 
+// ── Typable sliders ────────────────────────────────────────────────────────
+// Drop-in replacements for ImGui::SliderFloat/Int that turn into a text input
+// box on DOUBLE-CLICK (ImGui natively only allows Ctrl+Click). Same signature
+// + defaults as the ImGui versions, so call sites are unchanged.
+static ImGuiID g_uiEditId = 0;
+static bool g_uiEditFocus = false;
+
+static bool UiSliderFloat(const char *label, float *v, float v_min, float v_max,
+                          const char *fmt = "%.3f", ImGuiSliderFlags flags = 0) {
+  ImGuiID id = ImGui::GetID(label);
+  if (g_uiEditId == id) {
+    if (g_uiEditFocus) { ImGui::SetKeyboardFocusHere(); g_uiEditFocus = false; }
+    bool done = ImGui::InputFloat(label, v, 0.0f, 0.0f, fmt,
+                                  ImGuiInputTextFlags_EnterReturnsTrue |
+                                      ImGuiInputTextFlags_AutoSelectAll);
+    if (done || ImGui::IsItemDeactivated()) g_uiEditId = 0;
+    return done;
+  }
+  bool changed = ImGui::SliderFloat(label, v, v_min, v_max, fmt, flags);
+  if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    g_uiEditId = id;
+    g_uiEditFocus = true;
+  }
+  return changed;
+}
+
+static bool UiSliderInt(const char *label, int *v, int v_min, int v_max,
+                        const char *fmt = "%d", ImGuiSliderFlags flags = 0) {
+  ImGuiID id = ImGui::GetID(label);
+  if (g_uiEditId == id) {
+    if (g_uiEditFocus) { ImGui::SetKeyboardFocusHere(); g_uiEditFocus = false; }
+    bool done = ImGui::InputInt(label, v, 0, 0,
+                                ImGuiInputTextFlags_EnterReturnsTrue |
+                                    ImGuiInputTextFlags_AutoSelectAll);
+    if (done || ImGui::IsItemDeactivated()) g_uiEditId = 0;
+    return done;
+  }
+  bool changed = ImGui::SliderInt(label, v, v_min, v_max, fmt, flags);
+  if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    g_uiEditId = id;
+    g_uiEditFocus = true;
+  }
+  return changed;
+}
+
 static void ensureSingleInstance() {
   const char *pidFilePath = "/tmp/SpaceSynth.pid";
   int fd = open(pidFilePath, O_RDWR | O_CREAT, 0666);
@@ -569,7 +614,7 @@ int main() {
       ImGui::PopStyleColor();
 
       float currentVol = synth.masterVolume();
-      if (ImGui::SliderFloat("##MasterVol", &currentVol, 0.0f, 1.0f, "%.2f")) {
+      if (UiSliderFloat("##MasterVol", &currentVol, 0.0f, 1.0f, "%.2f")) {
         synth.setMasterVolume(currentVol);
       }
 
@@ -678,23 +723,37 @@ int main() {
         ImGui::SetItemTooltip(
             "Toggle between Orthographic (HTML vibe) and Perspective");
 
-        ImGui::SliderFloat("Size", &app.uiParticleSize, 0.5f, 10.0f, "%.2f");
+        UiSliderFloat("Size", &app.uiParticleSize, 0.5f, 10.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiParticleSize = 2.0f;
         ImGui::SetItemTooltip("Physical radius of each particle");
 
-        ImGui::SliderInt("Amount", &app.uiParticleCount, 0, 10000000);
+        UiSliderInt("Amount", &app.uiParticleCount, 0, 10000000);
         if (ImGui::Button("Reset to Default")) {
-          app.uiParticleCount = 5000000;
+          app.uiParticleCount = 2000000;
         }
         ImGui::SetItemTooltip("Active number of particles");
 
-        ImGui::SliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
+        UiSliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiShadowRadius = 2.4f;
         ImGui::SetItemTooltip(
             "Black-hole shadow radius (sim coords). Physical value ~2.6; "
             "lower reads proportional to the disk.");
+
+        UiSliderFloat("Sharpness", &app.uiSharpness, 1.0f, 40.0f, "%.1f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          app.uiSharpness = 5.0f;
+        ImGui::SetItemTooltip(
+            "Particle grain sharpness (Gaussian falloff). Low = soft/blurry, "
+            "high = crisp/tight. Live.");
+
+        UiSliderFloat("Grain", &app.uiGrainAlpha, 0.01f, 1.0f, "%.3f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          app.uiGrainAlpha = 0.08f;
+        ImGui::SetItemTooltip(
+            "Per-particle opacity. Higher = each grain reads solid; lower = "
+            "fainter, blends more. Live.");
 
         ImGui::Unindent();
       }
@@ -770,7 +829,7 @@ int main() {
                               "16-band FFT harmonic sculpting");
 
         if (app.uiVJMode) {
-          if (ImGui::SliderFloat("Input Gain", &app.uiInputGain, 0.1f, 10.0f,
+          if (UiSliderFloat("Input Gain", &app.uiInputGain, 0.1f, 10.0f,
                                  "%.2f x")) {
             audio.setVJInputGain(app.uiInputGain);
           }
@@ -809,7 +868,7 @@ int main() {
         }
         ImGui::SetItemTooltip("Oscillator waveform type");
 
-        if (ImGui::SliderFloat("Drive", &app.uiScale, 1.0f, 10.0f, "%.1f")) {
+        if (UiSliderFloat("Drive", &app.uiScale, 1.0f, 10.0f, "%.1f")) {
           // This was previously mislabeled as
           // 'Scale' in one place and 'Drive' in
           // another. Let's use it for Scale (as
@@ -828,39 +887,39 @@ int main() {
         if (app.uiChorus) {
           ImGui::Indent();
           float cRate = synth.chorus().rate();
-          if (ImGui::SliderFloat("LFO Rate##Chorus", &cRate, 0.1f, 10.0f, "%.2f Hz")) {
+          if (UiSliderFloat("LFO Rate##Chorus", &cRate, 0.1f, 10.0f, "%.2f Hz")) {
             synth.chorus().setRate(cRate);
           }
           float cDepth = synth.chorus().depth();
-          if (ImGui::SliderFloat("LFO Depth##Chorus", &cDepth, 0.0f, 10.0f, "%.2f ms")) {
+          if (UiSliderFloat("LFO Depth##Chorus", &cDepth, 0.0f, 10.0f, "%.2f ms")) {
             synth.chorus().setDepth(cDepth);
           }
           float cMix = synth.chorus().mix();
-          if (ImGui::SliderFloat("Chorus Mix", &cMix, 0.0f, 1.0f, "%.2f")) {
+          if (UiSliderFloat("Chorus Mix", &cMix, 0.0f, 1.0f, "%.2f")) {
             synth.chorus().setMix(cMix);
           }
           ImGui::Unindent();
         }
 
-        ImGui::SliderFloat("Attack", &app.uiAttack, 5.0f, 500.0f, "%.0f ms");
+        UiSliderFloat("Attack", &app.uiAttack, 5.0f, 500.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiAttack = 20.0f;
         ImGui::SetItemTooltip("Envelope attack duration");
         synth.envelopeParams().attack = app.uiAttack / 1000.0f;
 
-        ImGui::SliderFloat("Decay", &app.uiDecay, 5.0f, 1000.0f, "%.0f ms");
+        UiSliderFloat("Decay", &app.uiDecay, 5.0f, 1000.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiDecay = 100.0f;
         ImGui::SetItemTooltip("Envelope decay duration");
         synth.envelopeParams().decay = app.uiDecay / 1000.0f;
 
-        ImGui::SliderFloat("Sustain", &app.uiSustain, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Sustain", &app.uiSustain, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiSustain = 0.7f;
         ImGui::SetItemTooltip("Sustain level — controls visual expansion size");
         synth.envelopeParams().sustain = app.uiSustain;
 
-        ImGui::SliderFloat("Release", &app.uiRelease, 1.0f, 2000.0f, "%.0f ms");
+        UiSliderFloat("Release", &app.uiRelease, 1.0f, 2000.0f, "%.0f ms");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiRelease = 400.0f;
         ImGui::SetItemTooltip("Envelope release duration");
@@ -880,7 +939,7 @@ int main() {
 
       if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::SliderFloat("Jitter (not linked)", &app.uiJitter, 0.0f, 5.0f, "%.2f");
+        UiSliderFloat("Jitter (not linked)", &app.uiJitter, 0.0f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiJitter = 1.0f;
         ImGui::SetItemTooltip("WARNING: not properly linked yet — no reliable "
@@ -888,8 +947,8 @@ int main() {
 
         ImGui::Separator();
         ImGui::Text("GLOBAL LFO");
-        ImGui::SliderFloat("LFO Rate", &app.uiLFORate, 0.01f, 10.0f, "%.2f Hz");
-        ImGui::SliderFloat("LFO Depth", &app.uiLFODepth, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("LFO Rate", &app.uiLFORate, 0.01f, 10.0f, "%.2f Hz");
+        UiSliderFloat("LFO Depth", &app.uiLFODepth, 0.0f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Modulates Jitter, Size, and Scale over time");
 
         ImGui::Unindent();
@@ -897,7 +956,7 @@ int main() {
 
       if (ImGui::CollapsingHeader("GEOMETRY", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        if (ImGui::SliderFloat("Space Scale", &app.uiScale, 10.0f, 2000.0f,
+        if (UiSliderFloat("Space Scale", &app.uiScale, 10.0f, 2000.0f,
                                "%.0f")) {
           renderer.setScale(app.uiScale);
         }
@@ -908,7 +967,7 @@ int main() {
         ImGui::SetItemTooltip("Global cosmic scale "
                               "(Expansion/Contraction)");
 
-        ImGui::SliderFloat("Wave Depth", &app.uiWaveDepth, 5.0f, 100.0f, "%.1f");
+        UiSliderFloat("Wave Depth", &app.uiWaveDepth, 5.0f, 100.0f, "%.1f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiWaveDepth = 20.0f;
         ImGui::SetItemTooltip("Vibrational displacement intensity");
@@ -938,39 +997,39 @@ int main() {
 
       if (ImGui::CollapsingHeader("POST-FX", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
-        ImGui::SliderFloat("Bloom", &app.uiBloom, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Bloom", &app.uiBloom, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiBloom = 0.0f;
         ImGui::SetItemTooltip("Cross-shaped bright-pass glow");
 
-        ImGui::SliderFloat("Fluidity", &app.uiTrailDecay, 0.0f, 0.99f, "%.2f");
+        UiSliderFloat("Fluidity", &app.uiTrailDecay, 0.0f, 0.99f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiTrailDecay = 0.0f;
         ImGui::SetItemTooltip("Motion trails (Feedback factor)");
 
-        ImGui::SliderFloat("Chromatic", &app.uiChromatic, 0.0f, 0.02f, "%.3f");
+        UiSliderFloat("Chromatic", &app.uiChromatic, 0.0f, 0.02f, "%.3f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiChromatic = 0.0f;
         ImGui::SetItemTooltip("RGB split lens effect");
 
         ImGui::SeparatorText("CYBERPUNK / TECHNO");
 
-        ImGui::SliderFloat("Glitch", &app.uiGlitch, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Glitch", &app.uiGlitch, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiGlitch = 0.0f;
         ImGui::SetItemTooltip("Datamosh RGB block tear (beat-reactive)");
 
-        ImGui::SliderFloat("Scanlines", &app.uiScanlines, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Scanlines", &app.uiScanlines, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiScanlines = 0.0f;
         ImGui::SetItemTooltip("CRT scanlines");
 
-        ImGui::SliderFloat("Neon Grade", &app.uiNeonGrade, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Neon Grade", &app.uiNeonGrade, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiNeonGrade = 0.0f;
         ImGui::SetItemTooltip("Cyberpunk color grade (indigo/magenta/cyan)");
 
-        ImGui::SliderFloat("Vignette", &app.uiVignette, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Vignette", &app.uiVignette, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiVignette = 0.0f;
         ImGui::SetItemTooltip("Cinematic edge darkening");
@@ -984,42 +1043,42 @@ int main() {
         ImGui::Combo("Mirror", &app.uiMirrorMode, mirrorNames, 4);
         ImGui::SetItemTooltip("Fold the image onto itself");
 
-        ImGui::SliderInt("Kaleidoscope", &app.uiKaleido, 0, 16);
+        UiSliderInt("Kaleidoscope", &app.uiKaleido, 0, 16);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiKaleido = 0;
         ImGui::SetItemTooltip("Radial segments (0 = off)");
 
-        ImGui::SliderInt("Tile", &app.uiTile, 1, 8);
+        UiSliderInt("Tile", &app.uiTile, 1, 8);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiTile = 1;
         ImGui::SetItemTooltip("NxN repeat (1 = off)");
 
-        ImGui::SliderFloat("Twirl", &app.uiTwirl, -1.0f, 1.0f, "%.2f");
+        UiSliderFloat("Twirl", &app.uiTwirl, -1.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiTwirl = 0.0f;
         ImGui::SetItemTooltip("Swirl distortion");
 
-        ImGui::SliderFloat("Hue Shift", &app.uiHueShift, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Hue Shift", &app.uiHueShift, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiHueShift = 0.0f;
         ImGui::SetItemTooltip("Rotate all colours");
 
-        ImGui::SliderFloat("Strobe", &app.uiStrobe, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Strobe", &app.uiStrobe, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiStrobe = 0.0f;
         ImGui::SetItemTooltip("Beat-reactive flash");
 
-        ImGui::SliderFloat("Invert", &app.uiInvert, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Invert", &app.uiInvert, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiInvert = 0.0f;
         ImGui::SetItemTooltip("Colour invert mix");
 
-        ImGui::SliderInt("Posterize", &app.uiPosterize, 0, 16);
+        UiSliderInt("Posterize", &app.uiPosterize, 0, 16);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiPosterize = 0;
         ImGui::SetItemTooltip("Quantize colours (0 = off)");
 
-        ImGui::SliderFloat("Blur", &app.uiBlur, 0.0f, 1.0f, "%.2f");
+        UiSliderFloat("Blur", &app.uiBlur, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiBlur = 0.0f;
         ImGui::SetItemTooltip("Multi-pass Gaussian blur (ping-pong HDR)");
@@ -1118,6 +1177,54 @@ int main() {
       ImGui::End();
     } // if (showHUD)
 
+    // ── MASTER PATCH — every valuable fader in one window, for dialing the
+    // default patch. Double-click any value to type it exactly. ──────────
+    if (showHUD) {
+      ImGui::SetNextWindowPos(ImVec2(390, 30), ImGuiCond_FirstUseEver);
+      ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
+      ImGui::Begin("MASTER PATCH");
+
+      ImGui::SeparatorText("Particles");
+      UiSliderFloat("Size##mp", &app.uiParticleSize, 0.5f, 10.0f, "%.2f");
+      UiSliderInt("Amount##mp", &app.uiParticleCount, 0, 10000000);
+      UiSliderFloat("Sharpness##mp", &app.uiSharpness, 1.0f, 40.0f, "%.1f");
+      UiSliderFloat("Grain##mp", &app.uiGrainAlpha, 0.01f, 1.0f, "%.3f");
+      UiSliderFloat("Jitter##mp", &app.uiJitter, 0.0f, 5.0f, "%.2f");
+
+      ImGui::SeparatorText("Black Hole");
+      UiSliderFloat("BH Size##mp", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
+      UiSliderFloat("Disk Thickness##mp", &app.uiDiskThickness, 0.02f, 1.0f, "%.3f");
+
+      ImGui::SeparatorText("Motion");
+      if (UiSliderFloat("Space Scale##mp", &app.uiScale, 10.0f, 2000.0f, "%.0f"))
+        renderer.setScale(app.uiScale);
+      UiSliderFloat("Wave Depth##mp", &app.uiWaveDepth, 5.0f, 100.0f, "%.1f");
+      UiSliderFloat("LFO Rate##mp", &app.uiLFORate, 0.01f, 10.0f, "%.2f");
+      UiSliderFloat("LFO Depth##mp", &app.uiLFODepth, 0.0f, 1.0f, "%.2f");
+
+      ImGui::SeparatorText("Look");
+      UiSliderFloat("Bloom##mp", &app.uiBloom, 0.0f, 1.0f, "%.2f");
+      UiSliderFloat("Fluidity##mp", &app.uiTrailDecay, 0.0f, 0.99f, "%.2f");
+      UiSliderFloat("Chromatic##mp", &app.uiChromatic, 0.0f, 0.02f, "%.3f");
+      UiSliderFloat("Vignette##mp", &app.uiVignette, 0.0f, 1.0f, "%.2f");
+
+      ImGui::Separator();
+      if (ImGui::Button("Print Values to Log")) {
+        printf("[PATCH] size=%.2f count=%d sharp=%.1f grain=%.3f jitter=%.2f "
+               "bhSize=%.2f disk=%.3f scale=%.0f wave=%.1f lfoRate=%.2f "
+               "lfoDepth=%.2f bloom=%.2f fluidity=%.2f chroma=%.3f vign=%.2f\n",
+               app.uiParticleSize, app.uiParticleCount, app.uiSharpness,
+               app.uiGrainAlpha, app.uiJitter, app.uiShadowRadius,
+               app.uiDiskThickness, app.uiScale, app.uiWaveDepth, app.uiLFORate,
+               app.uiLFODepth, app.uiBloom, app.uiTrailDecay, app.uiChromatic,
+               app.uiVignette);
+      }
+      ImGui::SetItemTooltip("Dump all current fader values to the console/log "
+                            "so they can be baked in as defaults.");
+
+      ImGui::End();
+    }
+
     // ── Apply Audio-Visual Macros ─────────────────────────────────────
     // Calculate effective values
     float effectiveSize = app.uiParticleSize;
@@ -1151,6 +1258,8 @@ int main() {
     // Supernova adds on top of user slider values
     config.bloomIntensity = app.uiBloom;
     config.trailDecay = app.uiTrailDecay;
+    config.sharpness = app.uiSharpness;
+    config.grainAlpha = app.uiGrainAlpha;
     config.chromaticAmount = app.uiChromatic;
     // Creative FX + beat reactivity
     app.uiFxTime += dt;
@@ -1231,6 +1340,7 @@ int main() {
 
     renderer.setEnvelopeState(envState.phase, envState.progress,
                               envState.intensity);
+    renderer.setDiskThickness(app.uiDiskThickness);
 
     // Pass envelope state to config for shaders
     config.envelopePhase = envState.phase;

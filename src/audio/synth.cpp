@@ -363,7 +363,10 @@ Synth::EnvelopeState Synth::getDominantEnvelope() const {
   }
   case EnvPhase::Sustain: {
     state.phase = 3.0f;
-    state.progress = 0.5f; // Sustain has no time progression
+    // Hold-time ramp (0→1 over ~1s) so the GPU can progressively HARDEN the
+    // shape the longer the note is sustained (motion slows, trails shorten).
+    const float HARDEN_TIME = 1.0f; // seconds to fully harden
+    state.progress = std::min(1.0f, dominant->envelope.envTime / HARDEN_TIME);
     break;
   }
   case EnvPhase::Release: {

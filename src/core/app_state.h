@@ -46,7 +46,7 @@ struct AppState {
   float uiRelease = 400.0f; // ms
 
   // ── Post-FX ──
-  float uiBloom = 0.0f;
+  float uiBloom = 0.45f; // dynamic HDR glow on (audio-reactive); tune in MASTER PATCH
   float uiTrailDecay = 0.05f; // "Fluidity"
   float uiChromatic = 0.0f;
   float uiGlitch = 0.0f;

@@ -114,6 +114,11 @@ struct Renderer::Impl {
   float envPhase = 0.0f;
   float envProgress = 0.0f;
   float envIntensity = 0.0f;
+  // State that lives across computeStep's `physicsUniforms = {}` reset (set via
+  // setters, copied into the uniform inside computeStep — like the envelope).
+  float diskThicknessVal = 0.15f;
+  float spinXVal = 0.0f;
+  float spinYVal = 0.0f;
 
   float prevViewProj[16];
 
@@ -533,6 +538,10 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.envelopePhase = impl_->envPhase;
   impl_->physicsUniforms.envelopeProgress = impl_->envProgress;
   impl_->physicsUniforms.lifecycleIntensity = impl_->envIntensity;
+  // Survive the struct reset above (set via setters each frame).
+  impl_->physicsUniforms.diskThickness = impl_->diskThicknessVal;
+  impl_->physicsUniforms.spinX = impl_->spinXVal;
+  impl_->physicsUniforms.spinY = impl_->spinYVal;
 
   static float accumulatedTime = 0.0f;
   accumulatedTime += dt;
@@ -1328,8 +1337,11 @@ void Renderer::setEnvelopeState(float phase, float progress, float intensity) {
   impl_->envIntensity = intensity;
 }
 
-void Renderer::setDiskThickness(float t) {
-  impl_->physicsUniforms.diskThickness = t;
+void Renderer::setDiskThickness(float t) { impl_->diskThicknessVal = t; }
+
+void Renderer::setSpin(float x, float y) {
+  impl_->spinXVal = x;
+  impl_->spinYVal = y;
 }
 
 PhysicsStats Renderer::getPhysicsStats() const { return impl_->latestStats; }

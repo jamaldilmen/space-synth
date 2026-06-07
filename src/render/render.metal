@@ -335,9 +335,12 @@ fragment float4 particle_fragment(
     //   high speed           → elongated streak along motion direction
     // Cap at 0.85 so the streak never collapses to a 1D line — keeps
     // some perpendicular thickness for visual softness.
-    float elong  = clamp(speed * 0.6f, 0.0f, 0.85f);
-    float widthY = mix(1.0f, 0.20f, elong);          // shrink across
-    float lengthX = mix(1.0f, 1.6f,  elong);          // expand along
+    // Speed → long light-trails. Boosted so fast particles (the spinning disk)
+    // streak dramatically — the same trail feel as whipping the camera in
+    // perspective. Slow particles stay round dots; fast ones stretch long+thin.
+    float elong  = clamp(speed * 1.4f, 0.0f, 1.0f);
+    float widthY = mix(1.0f, 0.12f, elong);          // thinner across when fast
+    float lengthX = mix(1.0f, 5.0f,  elong);          // much longer along
 
     // Distance in the warped frame (anisotropic Gaussian).
     float2 warped = float2(along / lengthX, across / widthY);

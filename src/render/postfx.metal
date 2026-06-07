@@ -157,7 +157,23 @@ fragment float4 postfx_fragment(
     // top scaled by the display's EDR headroom so highlights punch ABOVE white
     // into HDR range (paper-white = 1.0, peaks up to edrHeadroom×). On an SDR
     // display headroom = 1.0, so this degrades gracefully to a normal add.
-    color.rgb = acesTonemap(color.rgb);
+    // Tonemap into the display's HDR range, not flat SDR. Dividing by the EDR
+    // headroom before ACES and multiplying after maps bright cores into [1,
+    // headroom]× (genuine HDR above paper-white) WITH the ACES shoulder keeping
+    // definition — instead of everything hot clipping to featureless white.
+    // On SDR (headroom=1) this is identical to plain ACES.
+    float hdrPeak = max(1.0f, u.edrHeadroom);
+    // HUE-PRESERVING tonemap. Per-channel ACES desaturates every highlight to
+    // white — so dense particle clusters blew out to flat white instead of
+    // reading as hot PLASMA. Instead: tonemap the LUMINANCE into the HDR range,
+    // then rescale RGB by the same factor so the blackbody colour survives at
+    // high brightness. A small per-channel ACES blend at the very top tames
+    // single-channel clipping without killing the hue.
+    float lum = max(dot(color.rgb, float3(0.2126f, 0.7152f, 0.0722f)), 1e-4f);
+    float tonedLum = acesTonemap(float3(lum / hdrPeak)).x * hdrPeak;
+    float3 huePreserved = color.rgb * (tonedLum / lum);
+    float3 perChannel = acesTonemap(color.rgb / hdrPeak) * hdrPeak;
+    color.rgb = mix(huePreserved, perChannel, 0.2f); // mostly hue, slight desat top
 
     // ── HDR glow — composite the pre-blurred bright-pass into headroom ────
     // The glow is built in dedicated passes: a bright-pass extracts HDR pixels

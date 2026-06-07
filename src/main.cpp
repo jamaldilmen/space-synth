@@ -222,6 +222,12 @@ int main() {
   static bool showHUD = true;
   static space::AppState app;
 
+  // Arrow-key PHYSICAL spin: hold to ramp torque on the particle body up to
+  // extreme (solid swept shape), with momentum/drag.
+  static bool arrowL = false, arrowR = false, arrowU = false, arrowD = false;
+  static float spinHold = 0.0f;
+  static float spinVelX = 0.0f, spinVelY = 0.0f; // current spin rate (rad/s)
+
   // ── Sequencer State (Phase 12) ───────────────────────────────────
   struct SeqNote {
     int midi;
@@ -254,14 +260,25 @@ int main() {
     // friction and soft-locks to the nearest 90° quadrant when the
     // user lets go.
     //   123=Left  124=Right  125=Down  126=Up
-    if (e.isDown) {
-      constexpr float ARROW_STEP = 0.035f; // ≈ 2°/tick
-      switch (e.keyCode) {
-      case 123: camera.rotateKey(+ARROW_STEP, 0.0f); return;
-      case 124: camera.rotateKey(-ARROW_STEP, 0.0f); return;
-      case 126: camera.rotateKey(0.0f, +ARROW_STEP); return;
-      case 125: camera.rotateKey(0.0f, -ARROW_STEP); return;
+    // Hold to RAMP the spin up to extreme (light-trail territory). Track held
+    // state for down AND up; the per-frame ramp lives in the render loop.
+    if (e.keyCode == 123 || e.keyCode == 124 || e.keyCode == 125 ||
+        e.keyCode == 126) {
+      bool d = e.isDown;
+      // TAP (quick press+release, under the threshold → spin never engaged) =
+      // the old snapped-camera quadrant rotate. HOLD = the physical spin.
+      if (!d && spinHold < 0.18f) {
+        constexpr float TAP_STEP = 0.06f; // enough to soft-lock to next 90°
+        if (e.keyCode == 123)      camera.rotateKey(+TAP_STEP, 0.0f);
+        else if (e.keyCode == 124) camera.rotateKey(-TAP_STEP, 0.0f);
+        else if (e.keyCode == 126) camera.rotateKey(0.0f, +TAP_STEP);
+        else if (e.keyCode == 125) camera.rotateKey(0.0f, -TAP_STEP);
       }
+      if (e.keyCode == 123)      arrowL = d;
+      else if (e.keyCode == 124) arrowR = d;
+      else if (e.keyCode == 126) arrowU = d;
+      else if (e.keyCode == 125) arrowD = d;
+      return;
     }
 
     if (e.isRepeat)
@@ -540,6 +557,34 @@ int main() {
     for (auto v : vjVoices) { v.amplitude *= vjW; voiceData.push_back(v); }
     if (voiceData.size() > MAX_EMITTERS) voiceData.resize(MAX_EMITTERS);
 
+    // Arrow-hold → physically SPIN the particle body (torque on the sim, not
+    // the camera). Ramps HARD and carries momentum, so holding rips it up to
+    // where the trails merge into a solid swept shape. Left/right → spin around
+    // Y; up/down → spin around X.
+    {
+      float dirY = (arrowL ? 1.0f : 0.0f) - (arrowR ? 1.0f : 0.0f);
+      float dirX = (arrowU ? 1.0f : 0.0f) - (arrowD ? 1.0f : 0.0f);
+      if (dirX != 0.0f || dirY != 0.0f) {
+        spinHold += dt;
+        if (spinHold > 0.18f) { // past tap threshold → engage the spin
+          float accel = 6.0f + spinHold * spinHold * 30.0f; // ramp hard
+          spinVelY += dirY * accel * dt;
+          spinVelX += dirX * accel * dt;
+        }
+      } else {
+        spinHold = 0.0f;
+      }
+      // Momentum drag: coasts to a stop in ~2s after release (heavy flywheel,
+      // not frictionless). Stronger drag while NOT actively driving.
+      float dragRate = (dirX != 0.0f || dirY != 0.0f) ? 0.3f : 2.5f;
+      float spinDrag = std::max(0.0f, 1.0f - dt * dragRate);
+      spinVelX *= spinDrag;
+      spinVelY *= spinDrag;
+      // Clean ceiling at 120fps refresh (~188 rad/s before rotation aliases).
+      spinVelX = std::clamp(spinVelX, -188.0f, 188.0f);
+      spinVelY = std::clamp(spinVelY, -188.0f, 188.0f);
+      renderer.setSpin(spinVelX, spinVelY);
+    }
     camera.update(dt);
     float view[16], proj[16], viewProj[16];
     camera.buildViewMatrix(view);
@@ -1184,6 +1229,19 @@ int main() {
       ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
       ImGui::Begin("MASTER PATCH");
 
+      // ── Tempometer: live spin speed ──────────────────────────────────
+      {
+        float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
+        float hz = spinMag / 6.28319f; // rad/s → Hz (revolutions/sec)
+        float frac = spinMag / 188.0f;
+        ImGui::TextColored(ImVec4(0.5f, 0.85f, 1.0f, 1.0f),
+                           "%s  %.1f Hz   %.0f rad/s",
+                           frac > 0.98f ? "⟳ LOCKED" : "⟳ SPIN", hz, spinMag);
+        char ov[32];
+        snprintf(ov, sizeof(ov), "%.0f%%", frac * 100.0f);
+        ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), ov);
+      }
+
       ImGui::SeparatorText("Particles");
       UiSliderFloat("Size##mp", &app.uiParticleSize, 0.5f, 10.0f, "%.2f");
       UiSliderInt("Amount##mp", &app.uiParticleCount, 0, 10000000);
@@ -1257,7 +1315,9 @@ int main() {
     synth.envelopeParams().release = app.uiRelease / 1000.0f;
     // Supernova adds on top of user slider values
     config.bloomIntensity = app.uiBloom;
-    config.trailDecay = app.uiTrailDecay;
+    // Spin blurs into a solid disk at high RPM: boost the motion-blur feedback
+    // with spin speed so fast rotation smears instead of strobing.
+    config.trailDecay = app.uiTrailDecay; // no spin smear — oscilloscope is a crisp path, not blur
     config.sharpness = app.uiSharpness;
     config.grainAlpha = app.uiGrainAlpha;
     config.chromaticAmount = app.uiChromatic;

@@ -82,6 +82,18 @@ public:
 
   void zoom(float dRho) { velRho -= dRho; }
 
+  // Continuous arrow-HOLD spin: drive angular velocity directly each frame
+  // (free-form, no soft-lock) so holding the key ramps the spin up as fast as
+  // commanded — light-trail territory. update()'s friction still nudges it, but
+  // we re-set every frame, so the net is the commanded speed.
+  void driveSpin(float vPhi, float vTheta) {
+    velPhi = vPhi;
+    velTheta = vTheta;
+    snapNextSettle = false;
+  }
+  // Arm the 90° settle-snap (call once on key release so it eases onto an axis).
+  void armSnap() { snapNextSettle = true; }
+
   // Snap directly to a target angle (skips inertia). Used by quick-snap
   // shortcuts like number-key presets if we ever wire them.
   void setAngles(float newPhi, float newTheta) {

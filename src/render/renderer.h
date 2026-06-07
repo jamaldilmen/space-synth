@@ -170,6 +170,8 @@ struct PhysicsUniforms {
   float lifecycleIntensity; // Combined amplitude measure
   float lifecyclePad;       // Alignment padding
   float diskThickness;      // accretion-disk vertical thickness (UI)
+  float spinX;              // user spin torque around X axis (rad/s)
+  float spinY;              // user spin torque around Y axis (rad/s)
 };
 
 // Spatial hash uniforms for collision grid
@@ -232,6 +234,10 @@ public:
 
   // Accretion-disk vertical thickness (UI-tunable)
   void setDiskThickness(float t);
+
+  // User spin torque (rad/s) around X and Y — drives the physical spin of the
+  // whole particle body (arrow-key hold ramps this with momentum/drag).
+  void setSpin(float x, float y);
 
   // Physics stats (1-frame latency)
   PhysicsStats getPhysicsStats() const;

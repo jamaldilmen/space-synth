@@ -64,6 +64,8 @@ struct PhysicsUniforms {
     float lifecycleIntensity;    // 88: master intensity multiplier
     float lifecyclePad;          // 92: alignment
     float diskThickness;         // 96: accretion-disk vertical thickness (UI)
+    float spinX;                 // 100: user spin torque around X axis (rad/s)
+    float spinY;                 // 104: user spin torque around Y axis (rad/s)
 };
 
 struct SpatialHashUniforms {
@@ -203,6 +205,10 @@ kernel void compute_physics(
     float lcI = max(u.lifecycleIntensity, 0.001f); // Prevent division by zero
     bool collapsed = false; // Tracks if particle has been force-collapsed into singularity
     bool isSilence = (u.envelopePhase < 0.5f); // Gate for force immunity
+    // While the user is spinning the body, the BH lifecycle pulls (gravity,
+    // z-damping) yield so the spin is the dominant, clean force — otherwise the
+    // competing pulls make it feel like a tug-of-war.
+    float spinSuppress = 1.0f - clamp((abs(u.spinX) + abs(u.spinY)) * 0.3f, 0.0f, 1.0f);
 
     float globalTargetRadius = 0.75f;
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) {
@@ -249,7 +255,7 @@ kernel void compute_physics(
             // MUST match the spawn velocity formula in particles.cpp.
             float G = 100.0f;
             float r0 = 0.1f;
-            float gMag = G / (rLen + r0);
+            float gMag = (G / (rLen + r0)) * spinSuppress; // yields while spinning
             shiftVx -= dir.x * gMag * dt;
             shiftVy -= dir.y * gMag * dt;
             shiftVz -= dir.z * gMag * dt;
@@ -258,7 +264,7 @@ kernel void compute_physics(
             // Strength is now driven by the Disk Thickness fader: weaker damping
             // = fatter disk. zDamp = 0.75/thickness → at the 0.15 default this is
             // 5.0 (the original), at 0.30 it's 2.5 (thicker), etc.
-            float zDamp = 0.75f / max(u.diskThickness, 0.02f);
+            float zDamp = (0.75f / max(u.diskThickness, 0.02f)) * spinSuppress;
             shiftVz -= pz * zDamp * dt;
 
             // 2. DISK CONFINEMENT — TEMP DISABLED.
@@ -488,6 +494,11 @@ kernel void compute_physics(
     float bestForce = 0.0f;
 
     if (numVoices > 0 && baseMass < 1000.0f) {
+        // Polyphony normalizer (the proven 1/sqrt(voiceCount)). Without it a
+        // chord stacks every voice's sculpt force N× → particles over-cluster
+        // onto the shared nodal lines and blow out to white. This makes total
+        // shape force grow as sqrt(N), not N. Single notes (N=1) → 1.0, no change.
+        float polyNorm = rsqrt(float(numVoices));
         float massAdd = 0.0f;
         float jitterTotal = 0.0f;
         float Y_total = 0.0f;
@@ -569,7 +580,7 @@ kernel void compute_physics(
             
             float acMod = 1.0f + 0.3f * sin(voices[vi].frequency * u.time * 0.1f + voices[vi].phase);
             float visualAmp = pow(amp, 0.4f); 
-            float sculptStrength = visualAmp * voices[vi].alpha * 25.0f * acMod;
+            float sculptStrength = visualAmp * voices[vi].alpha * 25.0f * acMod * polyNorm;
             
             shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
             shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
@@ -583,7 +594,7 @@ kernel void compute_physics(
             }
 
             // Radial breathing
-            float radialForce = visualAmp * Y_here * 12.0f;
+            float radialForce = visualAmp * Y_here * 12.0f * polyNorm;
             float3 centerVec = float3(px, py, pz);
             float cLen = length(centerVec);
             if (cLen > 0.0001f) {
@@ -619,7 +630,7 @@ kernel void compute_physics(
             float phi_global = acos(clamp(pz / max(r_center, 0.0001f), -1.0f, 1.0f));
             float3 phiDir = float3(cos(atan2(py, px))*cos(phi_global), sin(atan2(py, px))*cos(phi_global), -sin(phi_global));
             
-            float webStrength = 60.0f; 
+            float webStrength = 60.0f * polyNorm; 
             shiftVx += (cross_dYdth * thetaDir.x + cross_dYdphi * phiDir.x) * webStrength;
             shiftVy += (cross_dYdth * thetaDir.y + cross_dYdphi * phiDir.y) * webStrength;
             shiftVz += (cross_dYdth * thetaDir.z + cross_dYdphi * phiDir.z) * webStrength;
@@ -946,6 +957,9 @@ kernel void compute_physics(
             float toHome = 1.0f - voiceMute;
             float conv = smoothstep(0.6f, 1.0f, toHome); // 0 in play → 1 at rest
             float alpha = max(0.5f * toHome * dt, conv);
+            // Spin yields the home-orbit pull: ~0 while spinning, ramping back as
+            // the spin coasts down → smooth re-engage (no snap from spin to rest).
+            alpha *= spinSuppress;
             nextPos = mix(nextPos, target, alpha);
         }
     }
@@ -994,6 +1008,9 @@ kernel void compute_physics(
         else if (ph < 3.5f)   cap_t = 1.0f;                                  // decay/sustain
         else                  cap_t = 1.0f - clamp(u.envelopeProgress, 0.0f, 1.0f); // release: ramp CHLADNI→BH (ph is a constant 4.0, so use progress, not ph-3.5)
         float dynamic_cap = mix(ORBIT_R_BH, ORBIT_R_CHLADNI, cap_t);
+        // Yield the cap while spinning — otherwise the tumbling body periodically
+        // hits the XY cap and gets yanked, flickering between two states.
+        dynamic_cap += (1.0f - spinSuppress) * 8.0f;
         float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
         if (rXY2 > dynamic_cap * dynamic_cap) {
             float rXY = sqrt(rXY2);
@@ -1039,6 +1056,31 @@ kernel void compute_physics(
                 newPhase = mix(newPhase, decodePhase(prevParticles[partnerID].velW.w), 0.1f * dt); // Phase sync
             }
         }
+    }
+
+    // ── USER SPIN: rotate the whole body by the spin torque (radius-preserving
+    // so it stays a solid shape at any RPM). prevW stays the pre-spin position,
+    // so the velocity proxy carries the rotation → light trails show the spin.
+    {
+        float3 preRot = nextPos;
+        float aY = u.spinY * dt;            // around Y (left/right)
+        if (aY != 0.0f) {
+            float c = cos(aY), s = sin(aY);
+            float nx =  nextPos.x * c + nextPos.z * s;
+            float nz = -nextPos.x * s + nextPos.z * c;
+            nextPos.x = nx; nextPos.z = nz;
+        }
+        float aX = u.spinX * dt;            // around X (up/down)
+        if (aX != 0.0f) {
+            float c = cos(aX), s = sin(aX);
+            float ny = nextPos.y * c - nextPos.z * s;
+            float nz = nextPos.y * s + nextPos.z * c;
+            nextPos.y = ny; nextPos.z = nz;
+        }
+        // Fold the rotational displacement into the stored velocity so the
+        // per-particle light trails (velDir2D) show the SPIN — otherwise it's a
+        // rigid rotation with no trails and reads like a stuck camera.
+        finalV += (nextPos - preRot);
     }
 
     // ── Write back ───────────────────────────────────────────────────

@@ -14,6 +14,7 @@ void Envelope::noteOn(float velocity) {
 void Envelope::noteOff() {
   if (phase == EnvPhase::Off)
     return;
+  sustainHeld = envTime; // capture hold time before reset → scales the collapse
   phase = EnvPhase::Release;
   envTime = 0.0f;
   envStart = amplitude;
@@ -54,9 +55,12 @@ float Envelope::update(float dt, const EnvelopeParams &params) {
     break;
   }
   case EnvPhase::Release: {
-    float k = 5.0f / std::max(0.001f, params.release);
+    // Collapse duration scales with how long the note was held: a quick tap
+    // releases fast, a long hold takes up to ~1.5s to fall back into the BH.
+    float relDur = std::clamp(sustainHeld, params.release, 1.5f);
+    float k = 5.0f / std::max(0.001f, relDur);
     amplitude = envStart * std::exp(-k * envTime);
-    if (envTime >= params.release || amplitude < 0.0001f) {
+    if (envTime >= relDur || amplitude < 0.0001f) {
       phase = EnvPhase::Off;
       amplitude = 0.0f;
     }

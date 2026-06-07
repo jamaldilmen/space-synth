@@ -26,6 +26,7 @@ struct Envelope {
     float targetAmp = 0.0f;
     float envTime = 0.0f;
     float envStart = 0.0f;
+    float sustainHeld = 0.0f; // elapsed when noteOff fired → scales release collapse
 
     // Trigger attack phase
     void noteOn(float velocity = 1.0f);

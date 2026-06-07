@@ -211,7 +211,13 @@ kernel void compute_physics(
         // Linear limit bumped up "a notch" (2.0x instead of 0.9x) to give chords breathing room 
         globalTargetRadius = max(0.75f, lcI * 2.0f);
     } else if (u.envelopePhase >= 3.5f) {
-        globalTargetRadius = max(0.01f, r_curr * (1.0f - t));
+        // Release: ease the target radius DOWN to the silence REST radius
+        // (0.75) — NOT to 0. Collapsing to ~0 then snapping back to the rest
+        // radius at the silence switch was the "disk → ring" pop. Easing to the
+        // rest value makes release land exactly on the existing rest state →
+        // one continuous draw-in. Rest state itself is unchanged.
+        float sustainR = max(0.75f, lcI * 2.0f);
+        globalTargetRadius = mix(sustainR, 0.75f, t);
     }
 
     // ─── PHASE 0: SILENCE → BLACK HOLE WITH ACCRETION DISK ───────────────
@@ -430,31 +436,32 @@ kernel void compute_physics(
     else {
         if (r_curr > 0.001f) {
             float3 dir = pvec / r_curr;
-            // Collapse: strong from the start, minimum floor so it always pulls
-            float collapseBase = max(50.0f * lcI, 30.0f);
-            float progressFactor = 1.0f + t * t * 8.0f;
-            float gamma2 = 1.0f / max(0.01f, 1.0f - (SCHWARZSCHILD_RS * t) / r_curr);
-            float collapsePull = collapseBase * progressFactor * gamma2;
+            // SEAMLESS HAND-OFF to silence. The old code yanked everything to a
+            // point at r=0 (and froze velocity), but the silence state wants an
+            // accretion DISK — so the 4→0 phase switch popped. Instead, ramp in
+            // the SAME forces the silence BH state uses (gravity G/(r+r0) +
+            // z-plane damping), scaled by release progress t. By t=1 the
+            // particles are already under silence-strength gravity, so entering
+            // silence is continuous: they get drawn into the BH, not snapped.
+            float G  = 100.0f;
+            float r0 = 0.1f;
+            float gMag = (G / (r_curr + r0)) * t; // ramp 0→full over the collapse
+            shiftVx -= dir.x * gMag * dt;
+            shiftVy -= dir.y * gMag * dt;
+            shiftVz -= dir.z * gMag * dt;
 
-            shiftVx -= dir.x * collapsePull * dt;
-            shiftVy -= dir.y * collapsePull * dt;
-            shiftVz -= dir.z * collapsePull * dt;
+            // Match silence's z-plane damping (ramped) so the disk flattens into
+            // place rather than popping flat at the switch.
+            shiftVz -= pz * (0.75f / max(u.diskThickness, 0.02f)) * t * dt;
 
-            // Kerr frame-dragging (accretion disk spiral)
+            // Gentle Kerr spiral for the spiral-in look (scaled with gravity).
             float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f));
             float3 spinForce = cross(galacticUp, dir);
-            float dragStrength = collapsePull * t * (2.0f / (r_curr + 0.5f));
-            shiftVx += spinForce.x * dragStrength * dt;
-            shiftVy += spinForce.y * dragStrength * dt;
-            shiftVz += spinForce.z * dragStrength * dt;
+            shiftVx += spinForce.x * gMag * 0.3f * dt;
+            shiftVy += spinForce.y * gMag * 0.3f * dt;
+            shiftVz += spinForce.z * gMag * 0.3f * dt;
 
             currentTemp *= (1.0f - t * 0.05f);
-
-            // Event horizon capture
-            if (t > 0.8f && r_curr < SCHWARZSCHILD_RS * 2.0f) {
-                vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
-                shiftVx *= 0.1f; shiftVy *= 0.1f; shiftVz *= 0.1f;
-            }
         }
     }
 
@@ -929,16 +936,17 @@ kernel void compute_physics(
                                    0.0f);
 
             float voiceMute = clamp(u.totalAmplitude, 0.0f, 1.0f);
-            if (voiceMute < 0.01f) {
-                // Pure rest — position IS the analytic orbit. No lerp,
-                // no integration noise. Eliminates "pulsing" from the
-                // tug-of-war between integrator and lerp.
-                nextPos = target;
-            } else {
-                // Play — voice forces dominate, weak pull toward home.
-                float alpha = clamp(0.5f * (1.0f - voiceMute) * dt, 0.0f, 1.0f);
-                nextPos = mix(nextPos, target, alpha);
-            }
+            // Blend toward the analytic home orbit. The OLD code SNAPPED
+            // (nextPos = target) the instant amplitude crossed 0.01 — that hard
+            // switch was the release "pop" (shape → disk → ring). Now the weight
+            // eases CONTINUOUSLY: ~0 during play (voice forces make the shape),
+            // then smoothstep up to 1 as the note fades, so particles draw
+            // smoothly onto the rest orbits and land exactly at rest (alpha→1,
+            // pure analytic, no tug/pulse).
+            float toHome = 1.0f - voiceMute;
+            float conv = smoothstep(0.6f, 1.0f, toHome); // 0 in play → 1 at rest
+            float alpha = max(0.5f * toHome * dt, conv);
+            nextPos = mix(nextPos, target, alpha);
         }
     }
 
@@ -984,7 +992,7 @@ kernel void compute_physics(
         if (ph < 0.5f)        cap_t = 0.0f;                                  // silence
         else if (ph < 1.5f)   cap_t = ph - 0.5f;                             // attack
         else if (ph < 3.5f)   cap_t = 1.0f;                                  // decay/sustain
-        else                  cap_t = clamp(1.0f - (ph - 3.5f), 0.0f, 1.0f); // release
+        else                  cap_t = 1.0f - clamp(u.envelopeProgress, 0.0f, 1.0f); // release: ramp CHLADNI→BH (ph is a constant 4.0, so use progress, not ph-3.5)
         float dynamic_cap = mix(ORBIT_R_BH, ORBIT_R_CHLADNI, cap_t);
         float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
         if (rXY2 > dynamic_cap * dynamic_cap) {

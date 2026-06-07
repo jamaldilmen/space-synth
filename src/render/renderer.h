@@ -117,6 +117,7 @@ struct CameraUniforms {
   float phaseViz; // 1.0 = phase coloring, 0.0 = default
   float waveDepth;
   float envelopePhase; // 0=silence(black hole), 1-4=ADSR
+  float envelopeProgress; // 0→1 within phase (ramps the lens in over release)
   float orthoMode;
   float bhShadowNdcRadius; // shadow's on-screen radius = lens Einstein radius
   float aspect;            // width/height, to make the lens screen-isotropic

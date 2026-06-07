@@ -595,6 +595,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.waveDepth = config.modeP * 20.0f; // Using modeP to scale depth
   cam.envelopePhase = config.envelopePhase;
+  cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   {
     float frustum = config.cameraRho * 1.2f;
@@ -674,6 +675,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.plateRadius = config.plateRadius;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.envelopePhase = config.envelopePhase;
+  cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   // Lens Einstein radius = the shadow's on-screen radius, so the lensed
   // particle ring lands exactly on the raytraced shadow edge (ring radius ==

@@ -17,6 +17,7 @@ struct CameraUniforms {
     float phaseViz;    // 1.0 = phase coloring, 0.0 = default
     float waveDepth;
     float envelopePhase; // 0=silence(black hole), 1-4=ADSR
+    float envelopeProgress; // 0→1 within phase (ramps the lens in over release)
     float orthoMode;
     float bhShadowNdcRadius; // shadow's on-screen radius = lens Einstein radius
     float aspect;            // width/height, to make the lens screen-isotropic
@@ -130,9 +131,16 @@ vertex VertexOut particle_vertex(
     // (cam.bhShadowNdcRadius), so the lensed ring sits exactly on the shadow
     // edge — ring radius == hole radius, which is what makes it a black hole.
     //
-    // Gated to the silence phase: the lens belongs with the visible shadow,
-    // and this keeps it from distorting the Chladni shapes during play.
-    if (cam.bhShadowNdcRadius > 1e-4f && cam.envelopePhase < 0.5f) {
+    // Lens strength ramps in over RELEASE then holds full at silence — so the
+    // bend grows continuously as the note collapses instead of snapping ON at
+    // the silence switch (that snap was the release "2D-orbit → bending-BH"
+    // jump). 0 during play (no distortion of the Chladni shape).
+    float lensRamp = 0.0f;
+    if (cam.envelopePhase < 0.5f)
+        lensRamp = 1.0f;                       // silence: full bend
+    else if (cam.envelopePhase > 3.5f)
+        lensRamp = cam.envelopeProgress;       // release: ramp 0→1 as it fades
+    if (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f) {
         float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
         if (bhClip.w > 0.001f && out.position.w > 0.001f) {
             float2 ndcP  = out.position.xy / out.position.w;
@@ -154,7 +162,7 @@ vertex VertexOut particle_vertex(
                 // radius (3D preserved, rotates correctly) while still pulling
                 // the inner material toward a photon-ring brightening at the
                 // shadow edge. Cheap too — no per-particle tanh across 5M.
-                float theta = mix(beta, thetaFull, 0.4f);
+                float theta = mix(beta, thetaFull, 0.4f * lensRamp);
                 float2 lensed = (d / beta) * theta; // image offset, isotropic
                 lensed.x /= asp;                    // back to raw NDC
                 float2 lensedP = ndcBH + lensed;

@@ -371,11 +371,10 @@ Synth::EnvelopeState Synth::getDominantEnvelope() const {
   }
   case EnvPhase::Release: {
     state.phase = 4.0f;
-    float releaseTime = envParams_.release;
-    state.progress =
-        (releaseTime > 0.0f)
-            ? std::min(1.0f, dominant->envelope.envTime / releaseTime)
-            : 1.0f;
+    // Match envelope.cpp: collapse duration scales with how long it was held.
+    float relDur =
+        std::clamp(dominant->envelope.sustainHeld, envParams_.release, 1.5f);
+    state.progress = std::min(1.0f, dominant->envelope.envTime / relDur);
     break;
   }
   case EnvPhase::Off:

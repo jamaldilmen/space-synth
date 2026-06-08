@@ -130,7 +130,12 @@ constant float SCHWARZSCHILD_RS = BH_HORIZON; // legacy alias (existing gates)
 // totalAmplitude drives the blend: 0 → BH cap, > ~0.5 → CHLADNI cap.
 // Result: "explodes out of the BH on note attack, sucked back in on
 // release."
-constant float ORBIT_R_BH      = 1.0f;
+constant float ORBIT_R_BH      = 2.0f; // widened from 1.0: the rest disk now has
+                                       // RADIAL WIDTH [0.75→2.0] instead of a thin
+                                       // 1-radius ring, so the Shakura–Sunyaev
+                                       // temperature gradient (hot inner → cool
+                                       // outer) is visible. Still breathes out to
+                                       // ORBIT_R_CHLADNI on play.
 constant float ORBIT_R_CHLADNI = 3.0f;
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
@@ -1081,6 +1086,24 @@ kernel void compute_physics(
         // per-particle light trails (velDir2D) show the SPIN — otherwise it's a
         // rigid rotation with no trails and reads like a stuck camera.
         finalV += (nextPos - preRot);
+
+        // RADIUS-SHELL LOCK while spinning. The fold above is re-integrated as
+        // translation next frame, which pushes each particle off its circle
+        // onto a slightly larger radius every frame → an outward tangent-drift
+        // spiral that piles up against the cap (~11) → the "square brick wall"
+        // clipped by the viewport at high RPM. Locking each particle back to
+        // its own radius (the pre-integration distance) makes the whole body
+        // rotate as a RIGID geometric shape — consistent at any speed.
+        // Gated on spin: 0 at rest (no change), full at high RPM.
+        float spinLock = 1.0f - spinSuppress;
+        if (spinLock > 0.001f) {
+            float r0 = length(float3(px, py, pz));
+            float rN = length(nextPos);
+            if (rN > 1e-4f) {
+                float3 locked = nextPos * (r0 / rN);
+                nextPos = mix(nextPos, locked, spinLock);
+            }
+        }
     }
 
     // ── Write back ───────────────────────────────────────────────────
@@ -1107,6 +1130,10 @@ struct PartialStats {
     float momentumX;
     float momentumY;
     float pad;
+    float sumTemp;   // Σ temperature (→ avg)
+    float maxTemp;   // max temperature
+    float sumSpeed;  // Σ |v| (→ avg)
+    float maxSpeed;  // max |v|
 };
 
 kernel void reduce_stats(
@@ -1121,8 +1148,14 @@ kernel void reduce_stats(
     threadgroup float sharedKE[256];
     threadgroup float sharedMX[256];
     threadgroup float sharedMY[256];
+    threadgroup float sharedST[256];  // sum temp
+    threadgroup float sharedMT[256];  // max temp
+    threadgroup float sharedSS[256];  // sum speed
+    threadgroup float sharedMS[256];  // max speed
 
     float ke = 0.0f, mx = 0.0f, my = 0.0f;
+    float temp = 0.0f, speed = 0.0f;
+    bool real = false;
 
     if (int(id) < u.particleCount) {
         float mass = particles[id].posW.w;
@@ -1132,11 +1165,20 @@ kernel void reduce_stats(
         ke = 0.5f * mass * (vx * vx + vy * vy + vz * vz);
         mx = mass * vx;
         my = mass * vy;
+        if (mass > 0.001f) {                 // skip wall particles
+            temp  = particles[id].prevW.w;   // temperature field
+            speed = sqrt(vx*vx + vy*vy + vz*vz);
+            real  = true;
+        }
     }
 
     sharedKE[tid] = ke;
     sharedMX[tid] = mx;
     sharedMY[tid] = my;
+    sharedST[tid] = real ? temp : 0.0f;
+    sharedMT[tid] = real ? temp : -1e9f;
+    sharedSS[tid] = real ? speed : 0.0f;
+    sharedMS[tid] = real ? speed : -1e9f;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
@@ -1144,6 +1186,10 @@ kernel void reduce_stats(
             sharedKE[tid] += sharedKE[tid + stride];
             sharedMX[tid] += sharedMX[tid + stride];
             sharedMY[tid] += sharedMY[tid + stride];
+            sharedST[tid] += sharedST[tid + stride];
+            sharedSS[tid] += sharedSS[tid + stride];
+            sharedMT[tid]  = max(sharedMT[tid], sharedMT[tid + stride]);
+            sharedMS[tid]  = max(sharedMS[tid], sharedMS[tid + stride]);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
@@ -1152,5 +1198,9 @@ kernel void reduce_stats(
         partialSums[tgId].kineticEnergy = sharedKE[0];
         partialSums[tgId].momentumX = sharedMX[0];
         partialSums[tgId].momentumY = sharedMY[0];
+        partialSums[tgId].sumTemp  = sharedST[0];
+        partialSums[tgId].maxTemp  = sharedMT[0];
+        partialSums[tgId].sumSpeed = sharedSS[0];
+        partialSums[tgId].maxSpeed = sharedMS[0];
     }
 }

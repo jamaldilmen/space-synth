@@ -222,8 +222,15 @@ int main() {
   static bool showHUD = true;
   static space::AppState app;
 
-  // Arrow-key PHYSICAL spin: hold to ramp torque on the particle body up to
-  // extreme (solid swept shape), with momentum/drag.
+  // Arrow-key PHYSICAL spin: hold to ramp torque on the particle body, with
+  // momentum/drag. The max is PHYSICAL, not arbitrary: M87*'s real Kerr horizon
+  // angular velocity Ω_H = a/(r₊²+a²)·c = 9.79e-6 rad/s (one rotation ≈ 7.43
+  // days), time-lapsed ×6.42e5 so the hole turns once per second on screen —
+  // smooth at 120fps (~3°/frame, no aliasing; the old 188 rad/s = 90°/frame =
+  // the strobing/shaking). You cannot out-spin the black hole.
+  static constexpr float kBHOmegaReal = 9.787e-6f; // M87* Ω_H (rad/s)
+  static constexpr float kBHTimeLapse = 6.42e5f;   // time compression
+  static constexpr float kSpinMax = kBHOmegaReal * kBHTimeLapse; // ≈6.28 rad/s
   static bool arrowL = false, arrowR = false, arrowU = false, arrowD = false;
   static float spinHold = 0.0f;
   static float spinVelX = 0.0f, spinVelY = 0.0f; // current spin rate (rad/s)
@@ -567,7 +574,9 @@ int main() {
       if (dirX != 0.0f || dirY != 0.0f) {
         spinHold += dt;
         if (spinHold > 0.18f) { // past tap threshold → engage the spin
-          float accel = 6.0f + spinHold * spinHold * 30.0f; // ramp hard
+          // Curvy ease-in: gentle creep at first, accelerating hard toward the
+          // end (cubic). Slower overall so reaching M87 max takes a few seconds.
+          float accel = 0.4f + spinHold * spinHold * spinHold * 1.6f;
           spinVelY += dirY * accel * dt;
           spinVelX += dirX * accel * dt;
         }
@@ -580,9 +589,10 @@ int main() {
       float spinDrag = std::max(0.0f, 1.0f - dt * dragRate);
       spinVelX *= spinDrag;
       spinVelY *= spinDrag;
-      // Clean ceiling at 120fps refresh (~188 rad/s before rotation aliases).
-      spinVelX = std::clamp(spinVelX, -188.0f, 188.0f);
-      spinVelY = std::clamp(spinVelY, -188.0f, 188.0f);
+      // Physical ceiling = M87*'s real horizon spin (time-lapsed). Smooth at
+      // 120fps; you cannot out-spin the black hole.
+      spinVelX = std::clamp(spinVelX, -kSpinMax, kSpinMax);
+      spinVelY = std::clamp(spinVelY, -kSpinMax, kSpinMax);
       renderer.setSpin(spinVelX, spinVelY);
     }
     camera.update(dt);
@@ -1232,11 +1242,12 @@ int main() {
       // ── Tempometer: live spin speed ──────────────────────────────────
       {
         float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
-        float hz = spinMag / 6.28319f; // rad/s → Hz (revolutions/sec)
-        float frac = spinMag / 188.0f;
+        float revs = spinMag / 6.28319f;     // rad/s → rev/s (on screen)
+        float frac = spinMag / kSpinMax;     // fraction of M87*'s real spin
         ImGui::TextColored(ImVec4(0.5f, 0.85f, 1.0f, 1.0f),
-                           "%s  %.1f Hz   %.0f rad/s",
-                           frac > 0.98f ? "⟳ LOCKED" : "⟳ SPIN", hz, spinMag);
+                           "%s  %.0f%% of M87*  ·  %.2f rev/s  (1 turn = 7.4 days real)",
+                           frac > 0.98f ? "⟳ MAX = BH spin" : "⟳ SPIN",
+                           frac * 100.0f, revs);
         char ov[32];
         snprintf(ov, sizeof(ov), "%.0f%%", frac * 100.0f);
         ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), ov);
@@ -1318,6 +1329,15 @@ int main() {
     // Spin blurs into a solid disk at high RPM: boost the motion-blur feedback
     // with spin speed so fast rotation smears instead of strobing.
     config.trailDecay = app.uiTrailDecay; // no spin smear — oscilloscope is a crisp path, not blur
+    // Scope-line gate: spin magnitude (0→cap) drives the oscilloscope beams.
+    // 0 when at rest → pure points; ramps to 1 at the clean-120fps spin cap.
+    {
+      float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
+      config.oscAmount = std::clamp(spinMag / kSpinMax, 0.0f, 1.0f);
+      // Spin axis for the scope-line flow field (omega × r in the shader).
+      config.spinX = spinVelX;
+      config.spinY = spinVelY;
+    }
     config.sharpness = app.uiSharpness;
     config.grainAlpha = app.uiGrainAlpha;
     config.chromaticAmount = app.uiChromatic;
@@ -1452,6 +1472,28 @@ int main() {
                  fps, app.uiParticleCount / 1000);
         Logger::log(buf);
         printf("\n%s    ", buf);
+      }
+
+      // ── TEMP/SPEED cluster log (colour calibration data) ──────────────
+      // Tagged by state so a test run (SILENCE / NOTE / CHORD, ±SPIN) can be
+      // read straight from the log: does temp actually rise on play? does
+      // speed rise on spin? what Kelvin/colour do those map to?
+      {
+        PhysicsStats st = renderer.getPhysicsStats();
+        float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
+        const char *state = (vc == 0) ? "SILENCE" : (vc == 1 ? "NOTE" : "CHORD");
+        const char *spinTag = (spinMag > 0.05f) ? " +SPIN" : "";
+        // sim temp → shader display Kelvin: kelvin ≈ (3675 + temp*3000); °C = K-273
+        float maxK = 3675.0f + st.maxTemp * 3000.0f;
+        char tbuf[320];
+        snprintf(tbuf, sizeof(tbuf),
+                 "[CLUSTER] %s%s | temp avg %.2f max %.2f (max~%.0fK %.0fC) | "
+                 "speed avg %.3f max %.3f | spin %.0f%% | amp %.2f",
+                 state, spinTag, st.avgTemp, st.maxTemp, maxK, maxK - 273.0f,
+                 st.avgSpeed, st.maxSpeed, (spinMag / kSpinMax) * 100.0f,
+                 synth.totalAmplitude());
+        Logger::log(tbuf);
+        printf("\n%s", tbuf);
       }
 
       // ── Auto GPU Readback Probe — sample 1000, classify ──

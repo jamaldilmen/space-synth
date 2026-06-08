@@ -169,11 +169,18 @@ fragment float4 postfx_fragment(
     // then rescale RGB by the same factor so the blackbody colour survives at
     // high brightness. A small per-channel ACES blend at the very top tames
     // single-channel clipping without killing the hue.
-    float lum = max(dot(color.rgb, float3(0.2126f, 0.7152f, 0.0722f)), 1e-4f);
-    float tonedLum = acesTonemap(float3(lum / hdrPeak)).x * hdrPeak;
-    float3 huePreserved = color.rgb * (tonedLum / lum);
-    float3 perChannel = acesTonemap(color.rgb / hdrPeak) * hdrPeak;
-    color.rgb = mix(huePreserved, perChannel, 0.2f); // mostly hue, slight desat top
+    // MAX-CHANNEL hue-preserving tonemap. The old luminance-normalised version
+    // scaled RGB until the brightest channel exceeded 1.0 and CLIPPED — which
+    // desaturated every bright colour back to white (the "ugly white" disk &
+    // chords). A saturated orange can't also be max-luminance. Instead tonemap
+    // the MAX channel into range and scale the others by the SAME factor: the
+    // brightest channel lands at ≤hdrPeak (never clips), the hue ratio is exact.
+    // A genuinely white-hot (high-T blackbody) colour is already ~(1,1,1) so it
+    // still reads white — but an orange disk now stays orange at full brightness.
+    float maxc = max(max(color.r, color.g), color.b);
+    maxc = max(maxc, 1e-4f);
+    float tonedMax = acesTonemap(float3(maxc / hdrPeak)).x * hdrPeak;
+    color.rgb = color.rgb * (tonedMax / maxc);
 
     // ── HDR glow — composite the pre-blurred bright-pass into headroom ────
     // The glow is built in dedicated passes: a bright-pass extracts HDR pixels
@@ -241,7 +248,10 @@ fragment float4 postfx_fragment(
 
     // 4. Streak only the very brightest core pixels (reduced from 8 to 4 samples, HDR-gated)
     float velLen = length(velocity);
-    if (velLen > 0.002) {
+    // DISABLED: this camera motion-blur averaged the HDR glow with tonemapped
+    // (SDR, dimmer) samples and /4, so moving the camera DIMMED the glow — the
+    // "FX bug out / glow turns off when I move the camera" bug. FX stay stable now.
+    if (false && velLen > 0.002) {
         // Only blur pixels that are actually bright (HDR luminance gate)
         float luma = dot(color.rgb, float3(0.299, 0.587, 0.114));
         if (luma > 0.3) {

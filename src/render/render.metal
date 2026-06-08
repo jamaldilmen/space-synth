@@ -23,6 +23,9 @@ struct CameraUniforms {
     float aspect;            // width/height, to make the lens screen-isotropic
     float sharpness;         // particle Gaussian falloff exponent (live-tunable)
     float grainAlpha;        // per-particle base alpha (live-tunable)
+    float oscAmount;         // oscilloscope scope-line gate (0 = off → no lines)
+    float spinX;             // spin rate around X (rad/s) — scope-line flow field
+    float spinY;             // spin rate around Y (rad/s) — scope-line flow field
 };
 
 // (safe_normalize removed to fix unused warning)
@@ -73,6 +76,105 @@ static float3 hsv2rgb(float h, float s, float v) {
     float m = v - c;
     return rgb + float3(m, m, m);
 }
+
+// ── Real blackbody colour: Tanner Helland K→RGB (T in Kelvin) ──────────────
+// Physically-grounded Planckian-locus approximation (no hand-tuned ramp).
+// 1000K deep red → 3000K orange → ~4500K yellow → 6500K white → >8000K blue.
+static float3 blackbodyRGB(float kelvin) {
+    float t = clamp(kelvin, 1000.0f, 40000.0f) / 100.0f;
+    float r, g, b;
+    if (t <= 66.0f) r = 255.0f;
+    else            r = clamp(329.698727446f * pow(t - 60.0f, -0.1332047592f), 0.0f, 255.0f);
+    if (t <= 66.0f) g = clamp(99.4708025861f * log(t) - 161.1195681661f, 0.0f, 255.0f);
+    else            g = clamp(288.1221695283f * pow(t - 60.0f, -0.0755148492f), 0.0f, 255.0f);
+    if (t >= 66.0f) b = 255.0f;
+    else if (t <= 19.0f) b = 0.0f;
+    else            b = clamp(138.5177312231f * log(t - 10.0f) - 305.0447927307f, 0.0f, 255.0f);
+    return float3(r, g, b) / 255.0f;
+}
+
+// ── Artistic temperature ramp — WHITE IS RARE ──────────────────────────────
+// Rich red→orange→yellow→white→blue, with white & blue compressed into the top
+// ~15% (white only near peak temperature), so the field stays COLOURFUL instead
+// of washing to white the moment anything gets hot. t is the physical
+// temperature normalised to PEAK_KELVIN. (The literal blackbody curve whites
+// out at ~6500K — true physics, dead picture; this keeps the colour dynamic.)
+static float3 heatRamp(float t) {
+    t = clamp(t, 0.0f, 1.0f);
+    if (t < 0.35f)      return mix(float3(0.45,0.02,0.0), float3(1.0,0.35,0.02), t / 0.35f);
+    else if (t < 0.65f) return mix(float3(1.0,0.35,0.02), float3(1.0,0.82,0.20), (t-0.35f)/0.30f);
+    else if (t < 0.86f) return mix(float3(1.0,0.82,0.20), float3(1.0,0.98,0.95), (t-0.65f)/0.21f);
+    else                return mix(float3(1.0,0.98,0.95), float3(0.55,0.72,1.0), (t-0.86f)/0.14f);
+}
+
+// ── SUPERNOVA emission-line palette (NASA physics, NOT blackbody) ───────────
+// A supernova remnant emits discrete shock-ionization EMISSION LINES, not a
+// thermal continuum. By increasing shock temperature / ionization:
+//   cool recombination  Hα 656 / [SII] 672 / [NII] 658  → RED
+//   faster shock >100km/s  [OIII] 501                    → GREEN-TEAL (the tell;
+//                                                          a blackbody is never green)
+//   high ionization     Hβ 486 / He II                   → CYAN
+//   hot X-ray plasma (10^6–10^7 K) / synchrotron         → BLUE-WHITE
+// This is what makes the played "supernova" state look different from the
+// thermal black-hole disk. t = sim temperature normalised to SN_TEMP_PEAK.
+static float3 supernovaRamp(float t) {
+    t = clamp(t, 0.0f, 1.0f);
+    float3 cRed    = float3(0.85, 0.06, 0.05);  // Hα / [SII]  656–672nm
+    float3 cOrange = float3(1.00, 0.45, 0.08);  // [OI]        630nm
+    float3 cGreen  = float3(0.10, 0.90, 0.45);  // [OIII]      501nm  ← signature
+    float3 cCyan   = float3(0.10, 0.75, 1.00);  // Hβ          486nm
+    float3 cBlue   = float3(0.72, 0.86, 1.00);  // X-ray / synchrotron
+    if (t < 0.22f)      return mix(float3(0.45,0.02,0.05), cRed, t / 0.22f);
+    else if (t < 0.45f) return mix(cRed,    cOrange, (t-0.22f)/0.23f);
+    else if (t < 0.65f) return mix(cOrange, cGreen,  (t-0.45f)/0.20f);
+    else if (t < 0.85f) return mix(cGreen,  cCyan,   (t-0.65f)/0.20f);
+    else                return mix(cCyan,   cBlue,   (t-0.85f)/0.15f);
+}
+
+// ── Shakura–Sunyaev thin-disk temperature shape (relative, r in sim units) ──
+// T(r) ∝ (r_in/r)^(3/4) · (1 − √(r_in/r))^(1/4): the real thin-disk profile —
+// peaks just outside the inner edge, falls as r^(−3/4). Zero inside r_in.
+static float ssDiskTempShape(float rSim, float rIn) {
+    if (rSim <= rIn) return 0.0f;
+    float x = rIn / rSim;
+    return pow(x, 0.75f) * pow(max(0.0f, 1.0f - sqrt(x)), 0.25f);
+}
+
+// M87* anchor (see blackhole physics plan). Disk inner edge = the horizon cull.
+constant float BH_R_IN_SIM   = 0.57f;     // disk inner edge (= RS_CULL)
+constant float DISK_T_STAR_K = 7500.0f;   // S–S temperature scale (∝ accretion
+                                          // rate Ṁ). M87* is an underfed low-Ṁ
+                                          // AGN → COOL disk: rest ring ≈ 3500K
+                                          // (orange), outer ≈ 1900K (deep red).
+                                          // Play-heat drives it up to white→blue.
+                                          // Tunable = the disk Ṁ.
+constant float HEAT_K_PER_T  = 3000.0f;   // shock/play heat → Kelvin (sim temp
+                                          // 0–5 adds 0–15000K → blue-white shapes)
+constant float PEAK_KELVIN   = 25000.0f;  // temperature that maps to the ramp's
+                                          // peak (white/blue). High → white rare.
+constant float SN_TEMP_PEAK  = 6.0f;      // sim temp → supernova ramp peak. From
+                                          // the logged data: NOTE~0.85 (red),
+                                          // CHORD~3.4 (green [OIII]), spin spikes
+                                          // (blue-white X-ray).
+
+// ── Interstellar/DNGR disk maths (applied to particles, not a raytracer) ────
+constant float KERR_A    = 0.5f;   // BH spin in the Ω(r)=1/(r^1.5+a) speed law
+// Doppler is split into COLOUR shift and BEAMING intensity so we can have a
+// strong colour swing (blue approaching / red receding) WITHOUT the beaming
+// blowing one side away (the "half black hole").
+constant float DOPPLER_K_COLOR = 10.0f; // colour frequency shift — STRONG: the
+                                        // disk sweeps blue (approaching) → orange
+                                        // (sides) → red (receding) around the ring,
+                                        // the real relativistic iridescence. Beaming
+                                        // stays gentle (DOPPLER_K_BEAM) so the whole
+                                        // disk is visible, not half.
+constant float DOPPLER_K_BEAM  = 0.8f; // beaming intensity — gentle (whole disk)
+constant float DOPPLER_EXP     = 1.4f; // beaming exponent
+constant float SPIN_VEL_SCALE  = 0.08f;// brings spin (rad/s) into orbital-velocity
+                                       // scale so spinning drives the colour shift
+constant float STREAK_EXPOSURE = 0.05f; // motion-blur length (SHORT → crisp
+                                        // particles, not soft smears)
+constant float STREAK_GAIN     = 3.0f;  // screen-space streak amplification (low)
 
 vertex VertexOut particle_vertex(
     uint vid [[vertex_id]],
@@ -173,13 +275,23 @@ vertex VertexOut particle_vertex(
 
     // out.position already set at line 102, modified by lensing block above.
 
-    // Phase 11: Project velocity into screen-space for string elongation
-    float3 velWorld = in.velW.xyz * R;
-    float4 endClip = cam.viewProjection * float4(worldPos + velWorld * 0.5f, 1.0);
+    // ── Light-sample motion streak (ONE entity, no second trail layer) ──
+    // A glowing particle moving fast IS a light streak — motion blur of a light
+    // source. Stretch the sprite along its REAL velocity = Kerr orbital
+    // (Ω(r)=1/(r^1.5+a), inner-fast) + body spin (ω×r). velW was ~0 at rest
+    // (analytic orbit) → no streak; the analytic velocity fixes that, so the
+    // resting disk swirls into streaks and spin stretches them further. Slow →
+    // a dot, fast → a streak. Same sprite, same colour. Speeds only get high at
+    // rest (inner orbit) and under arrow-spin — exactly where streaks belong.
+    float rXYv   = max(length(in.posW.xy), 1e-3f);
+    float omegaV = 1.0f / (pow(rXYv, 1.5f) + KERR_A);
+    float3 vOrb  = float3(-in.posW.y, in.posW.x, 0.0f) / rXYv * (omegaV * rXYv);
+    float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), in.posW.xyz);
+    float3 velWorld = (vOrb + vSpin) * R;
+    float4 endClip = cam.viewProjection * float4(worldPos + velWorld * STREAK_EXPOSURE, 1.0);
     float2 v1_screen = out.position.xy / out.position.w;
     float2 v2_screen = endClip.xy / endClip.w;
-    
-    out.velDir2D = (v2_screen - v1_screen) * 5.0f; // Pass raw screen-space velocity for dynamic elongation
+    out.velDir2D = (v2_screen - v1_screen) * STREAK_GAIN;
 
     // ── Phase 18: Chord Connections (Entanglement Webbing) ──
     out.strDir2D = float2(0.0f);
@@ -235,6 +347,41 @@ vertex VertexOut particle_vertex(
     // void, it does not replace the particles.
     out.luminance = 1.0f + max(0.0f, temp) * 2.0f;
 
+    // ── Relativistic Doppler factor from the analytic Kerr orbital velocity ──
+    // δ = 1 + β_los, β_los = line-of-sight component of the prograde orbital
+    // velocity (Ω(r)=1/(r^1.5+a), inner-fast/outer-slow). Drives BOTH the
+    // beaming (intensity ∝ δ^~3 → the asymmetric Gargantua glow) AND the colour
+    // frequency shift (a blackbody under a shift just rescales temperature → the
+    // approaching side goes bluer/hotter, the receding side redder). Computed
+    // analytically so it works at rest where velW≈0. From the DNGR paper, per
+    // particle, no raytracer. Maximal edge-on, ~0 face-on (correct physics).
+    float dopplerColor = 1.0f;
+    {
+        float rXY = length(in.posW.xy);
+        if (rXY > 1e-3f) {
+            float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);   // Kerr Ω(r)
+            float3 tang = float3(-in.posW.y, in.posW.x, 0.0f) / rXY; // prograde
+            float3 vOrbit = tang * (omega * rXY);             // orbital |v|=Ω·r
+            float3 vSpin  = cross(float3(cam.spinX, cam.spinY, 0.0f),
+                                  in.posW.xyz) * SPIN_VEL_SCALE; // spin motion
+            float3 vTot  = vOrbit + vSpin;                    // FULL motion
+            float3 toCam = normalize(cam.cameraPos.xyz - worldPos);
+            float vLos   = dot(vTot, toCam);                  // + toward camera
+            // COLOUR shift (strong): blue toward camera, red away. Driven by the
+            // full motion, so SPINNING fast pushes the disk through red→blue.
+            dopplerColor = max(0.1f, 1.0f + DOPPLER_K_COLOR * vLos);
+            // BEAMING (gentle): subtle bright/dim asymmetry, whole disk stays.
+            float beam   = max(0.2f, 1.0f + DOPPLER_K_BEAM * vLos);
+            out.luminance *= pow(beam, DOPPLER_EXP);
+        }
+    }
+    // Gravitational redshift T_obs = T·√(1 − r_h/r): inner edge reddens. Kept
+    // MILD (blended mostly toward 1) — at full strength it halved the kelvin at
+    // the inner edge and cancelled the Doppler BLUE exactly where it should be
+    // bluest, so nothing but white/orange ever showed.
+    float gravShift = mix(1.0f, sqrt(max(0.05f,
+        1.0f - BH_R_IN_SIM / max(length(in.posW.xyz), BH_R_IN_SIM + 1e-3f))), 0.3f);
+
     // Decode packed phase + band ID
     float phase; int bandId;
     decodePhaseAndBand(in.velW.w, phase, bandId);
@@ -248,23 +395,31 @@ vertex VertexOut particle_vertex(
         float value = 0.5f + clamp(speed * 3.0f, 0.0f, 0.5f);
         out.color = hsv2rgb(hue, saturation, value);
     } else {
-        // ── Blackbody temperature coloring (Interstellar Gargantua aesthetic) ──
-        // Temperature is stored in prevW.w by the compute shader.
-        // Inner disk is hot (white/blue), outer disk is cool (orange/red).
-        float T = clamp(temp, 0.0f, 5.0f); // temp range from compute shader
-        float tNorm = clamp(T / 5.0f, 0.0f, 1.0f); // 0 = cold, 1 = hottest
-
-        // Blackbody ramp: deep red → orange → white → blue-white
-        float3 bbColor;
-        if (tNorm < 0.25f) {
-            bbColor = mix(float3(0.6, 0.15, 0.02), float3(1.0, 0.4, 0.05), tNorm * 4.0f);
-        } else if (tNorm < 0.5f) {
-            bbColor = mix(float3(1.0, 0.4, 0.05), float3(1.0, 0.75, 0.4), (tNorm - 0.25f) * 4.0f);
-        } else if (tNorm < 0.75f) {
-            bbColor = mix(float3(1.0, 0.75, 0.4), float3(1.0, 0.95, 0.9), (tNorm - 0.5f) * 4.0f);
-        } else {
-            bbColor = mix(float3(1.0, 0.95, 0.9), float3(0.8, 0.85, 1.0), (tNorm - 0.75f) * 4.0f);
-        }
+        // ── REAL blackbody temperature colour (M87* scale, Shakura–Sunyaev) ──
+        // Display temperature in KELVIN = a real radial disk profile (orange
+        // outer → white inner) PLUS shock/play heat (→ blue-white when hot).
+        // Coloured by the physical Tanner-Helland blackbody function. This is
+        // the orange→yellow→white→blue of real incandescent matter, not a ramp.
+        float rSim    = length(in.posW.xyz);
+        float diskK   = ssDiskTempShape(rSim, BH_R_IN_SIM) * DISK_T_STAR_K;
+        float heatK   = clamp(temp, 0.0f, 5.0f) * HEAT_K_PER_T;
+        // Frequency-shift colour: Doppler (approaching→bluer/hotter, receding→
+        // redder) × gravitational redshift (inner edge redder). Exact for a
+        // blackbody — the observed temperature just rescales by the shift.
+        float kelvin  = max(1000.0f, (diskK + heatK) * dopplerColor * gravShift);
+        // THERMAL black-hole disk (rest): the AUTHENTIC Interstellar/DNGR
+        // palette (Thorne et al.) — dark-red → orange → warm-gold-white, white
+        // only at pow(t,2) so it stays rare and WARM (no blue; Gargantua's disk
+        // is warm — blue lives in the supernova). colWhite is HDR for the glow.
+        float thT = clamp((kelvin - 1000.0f) / (PEAK_KELVIN - 1000.0f), 0.0f, 1.0f);
+        float3 thermalCol = mix(mix(float3(0.5, 0.05, 0.0),
+                                    float3(1.1, 0.4, 0.05), thT),
+                                float3(1.5, 1.2, 0.9), pow(thT, 2.0f));
+        // SUPERNOVA (played): emission-line ramp (the green [OIII] tell).
+        float3 snCol = supernovaRamp(temp / SN_TEMP_PEAK);
+        // Cross-fade by envelope: SILENCE → thermal disk, PLAYING → supernova.
+        float playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
+        float3 bbColor = mix(thermalCol, snCol, playMix);
 
         // Blend with per-band color when voices are active (bandId > 0)
         float3 bandColor = kBandColors[bClamped];
@@ -382,4 +537,87 @@ fragment float4 particle_fragment(
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));
 
     return float4(emission * alpha * fadeAmount, alpha * fadeAmount);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Orbital-arc light-trail pass (ISOLATED — drawn AFTER the points). Each
+// particle draws its REAL orbital PATH as a fine multi-segment line: a clean
+// long-exposure light streak that follows the Kerr orbit Ω(r)=1/(r^1.5+a),
+// not a screen-space smear. Inner particles (fast Ω) draw longer arcs than the
+// outer disk → the differential swirl of the Interstellar/Garganty disk. The
+// arc is generated by rotating the current position BACKWARD around the spin
+// axis (analytic, exact), so it traces where the particle came from.
+// ─────────────────────────────────────────────────────────────────────────
+constant int   TRAIL_SEG      = 12;    // points along each arc (SEG-1 segments)
+constant float TRAIL_EXPOSURE = 0.45f; // arc length scale (SHORT — subtle streak,
+                                       // not full loops that form inner rings)
+
+struct TrajOut {
+    float4 position [[position]];
+    float3 color;
+    float intensity;   // bright at the head (particle) → fades along the trail
+};
+
+vertex TrajOut trajectory_vertex(
+    uint vid [[vertex_id]],
+    device const Particle* particlesIn [[buffer(0)]],
+    constant CameraUniforms& cam [[buffer(1)]])
+{
+    TrajOut out;
+    // Line list: 2*(SEG-1) verts per particle. Decode particle + arc point.
+    uint vpp   = (uint)(2 * (TRAIL_SEG - 1));
+    uint pid   = vid / vpp;
+    uint local = vid - pid * vpp;
+    uint k     = (local >> 1) + (local & 1u);   // point index 0..SEG-1
+    Particle in = particlesIn[pid];
+    float R     = cam.plateRadius;
+    float mass  = in.posW.w;
+    float originR = length(in.posW.xyz);
+
+    // Same masks as the points — never trail out of a wall particle (mass 0)
+    // or anything culled inside the event horizon.
+    if (mass < 0.001f || originR < 0.57f) {
+        out.position  = float4(0, 0, -2, 1);
+        out.color     = float3(0);
+        out.intensity = 0.0f;
+        return out;
+    }
+
+    // Backward orbital rotation: total arc = Ω(r)·exposure (inner-fast/outer-
+    // slow → differential streaks). Prograde orbit is +Z; the trail goes back
+    // (−Z). Spin lengthens the exposure so spinning draws longer ribbons.
+    float rXY   = max(length(in.posW.xy), 1e-3f);
+    float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);
+    float spinMag = length(float2(cam.spinX, cam.spinY));
+    float exposure = TRAIL_EXPOSURE * (1.0f + 4.0f * cam.oscAmount);
+    float totalPhi = omega * exposure + spinMag * 0.05f;
+    float ang = -totalPhi * ((float)k / float(TRAIL_SEG - 1)); // 0 at head
+
+    float c = cos(ang), s = sin(ang);
+    float3 pos = in.posW.xyz;
+    float3 rot = float3(pos.x * c - pos.y * s, pos.x * s + pos.y * c, pos.z);
+    out.position = cam.viewProjection * float4(rot * R, 1.0);
+
+    // Blackbody colour from temperature — matches the disk palette.
+    float temp  = in.prevW.w;
+    float tNorm = clamp(temp / 5.0f, 0.0f, 1.0f);
+    float3 bb;
+    if (tNorm < 0.25f)      bb = mix(float3(0.6,0.15,0.02), float3(1.0,0.4,0.05),  tNorm*4.0f);
+    else if (tNorm < 0.5f)  bb = mix(float3(1.0,0.4,0.05),  float3(1.0,0.75,0.4), (tNorm-0.25f)*4.0f);
+    else if (tNorm < 0.75f) bb = mix(float3(1.0,0.75,0.4),  float3(1.0,0.95,0.9), (tNorm-0.5f)*4.0f);
+    else                    bb = mix(float3(1.0,0.95,0.9),  float3(0.8,0.85,1.0), (tNorm-0.75f)*4.0f);
+    out.color     = bb;
+    // Fade along the trail: bright at the particle, fading down the arc.
+    out.intensity = 1.0f - (float)k / float(TRAIL_SEG - 1);
+    return out;
+}
+
+fragment float4 trajectory_fragment(TrajOut in [[stage_in]])
+{
+    // Additive light-streak. LOW per-line gain so many overlapping arcs SUM
+    // into a smooth gradient curtain instead of blowing to white (the max-
+    // channel tonemap then preserves the hue).
+    float a = in.intensity;
+    float3 emission = in.color * a * 0.18f;
+    return float4(emission, a * 0.12f);
 }

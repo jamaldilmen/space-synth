@@ -12,6 +12,9 @@ struct RenderConfig {
   float plateRadius = 400.0f;
   float sharpness = 5.0f;   // particle Gaussian falloff (live-tunable)
   float grainAlpha = 0.08f; // per-particle base alpha (live-tunable)
+  float oscAmount = 0.0f;   // oscilloscope scope-line gate (driven by spin)
+  float spinX = 0.0f;       // live spin rate around X (rad/s) → scope-line flow
+  float spinY = 0.0f;       // live spin rate around Y (rad/s) → scope-line flow
 
   // Post-FX
   float bloomIntensity = 0.0f;
@@ -123,6 +126,9 @@ struct CameraUniforms {
   float aspect;            // width/height, to make the lens screen-isotropic
   float sharpness;         // particle Gaussian falloff exponent (live-tunable)
   float grainAlpha;        // per-particle base alpha (live-tunable)
+  float oscAmount;         // oscilloscope scope-line gate (0 = off → no lines)
+  float spinX;             // spin rate around X (rad/s) — scope-line flow field
+  float spinY;             // spin rate around Y (rad/s) — scope-line flow field
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)
@@ -191,6 +197,10 @@ struct PhysicsStats {
   float momentumY;
   int collisionCount;
   int errorState; // 0 = OK, 1 = NaN detected, 2 = Explosion detected
+  float avgTemp;  // mean particle temperature (sim units)
+  float maxTemp;  // max particle temperature
+  float avgSpeed; // mean particle speed |v|
+  float maxSpeed; // max particle speed
 };
 
 class Renderer {

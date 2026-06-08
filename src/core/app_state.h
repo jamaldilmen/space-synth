@@ -47,7 +47,7 @@ struct AppState {
 
   // ── Post-FX ──
   float uiBloom = 0.45f; // dynamic HDR glow on (audio-reactive); tune in MASTER PATCH
-  float uiTrailDecay = 0.05f; // "Fluidity"
+  float uiTrailDecay = 0.05f; // "Fluidity" (screen persistence — NOT the trails)
   float uiChromatic = 0.0f;
   float uiGlitch = 0.0f;
   float uiScanlines = 0.0f;

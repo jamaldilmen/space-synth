@@ -25,6 +25,7 @@ struct Renderer::Impl {
 
   id<MTLComputePipelineState> physicsPipeline = nil;
   id<MTLRenderPipelineState> particlePipeline = nil;
+  id<MTLRenderPipelineState> trajectoryPipeline = nil; // scope-line beams
   id<MTLRenderPipelineState> postPipeline = nil;
   // Ping-pong HDR pool for multi-pass effects (blur/echo/feedback)
   id<MTLRenderPipelineState> blurPipeline = nil;
@@ -261,6 +262,39 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
           fragmentFunc);
   }
 
+  // ── Trajectory (oscilloscope scope-line) pipeline ───────────────────
+  // ISOLATED additive LINE pipeline, drawn AFTER the points so it can never
+  // break the particle render. Crisp 1px beams (Metal line primitive), same
+  // HDR format + additive blend as the particles.
+  {
+    id<MTLFunction> trajVertexFunc =
+        [impl_->library newFunctionWithName:@"trajectory_vertex"];
+    id<MTLFunction> trajFragmentFunc =
+        [impl_->library newFunctionWithName:@"trajectory_fragment"];
+    if (trajVertexFunc && trajFragmentFunc) {
+      MTLRenderPipelineDescriptor *desc =
+          [[MTLRenderPipelineDescriptor alloc] init];
+      desc.vertexFunction = trajVertexFunc;
+      desc.fragmentFunction = trajFragmentFunc;
+      desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      desc.colorAttachments[0].blendingEnabled = YES;
+      desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+      desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+      desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+      desc.colorAttachments[0].destinationAlphaBlendFactor =
+          MTLBlendFactorOneMinusSourceAlpha;
+      desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->trajectoryPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:desc
+                                                        error:&error];
+      if (error)
+        NSLog(@"Trajectory pipeline error: %@", error);
+    } else {
+      NSLog(@"Missing trajectory shader functions: vertex=%@, fragment=%@",
+            trajVertexFunc, trajFragmentFunc);
+    }
+  }
+
   // ── Post-FX pipeline ────────────────────────────────────────────────
   id<MTLFunction> postVertexFunc =
       [impl_->library newFunctionWithName:@"postfx_vertex"];
@@ -424,8 +458,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
 
   // Partial sums buffer for reduction: 1 per threadgroup (800k/256 = 3125)
   impl_->numThreadgroups = (count + 255) / 256;
-  // Each partial sum: 4 floats (KE, MX, MY, pad) = 16 bytes
-  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 16);
+  // Each partial sum: 8 floats (KE, MX, MY, pad, sumTemp, maxTemp, sumSpeed,
+  // maxSpeed) = 32 bytes
+  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 32);
 }
 
 void Renderer::resetParticles() {
@@ -616,6 +651,9 @@ void Renderer::render(const RenderConfig &config) {
   }
   cam.sharpness = config.sharpness;
   cam.grainAlpha = config.grainAlpha;
+  cam.oscAmount = config.oscAmount;
+  cam.spinX = config.spinX;
+  cam.spinY = config.spinY;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -701,6 +739,9 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   }
   cam.sharpness = config.sharpness;
   cam.grainAlpha = config.grainAlpha;
+  cam.oscAmount = config.oscAmount;
+  cam.spinX = config.spinX;
+  cam.spinY = config.spinY;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -928,19 +969,31 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       if (numThreadgroups > 0) {
         struct PartialStats {
           float ke, mx, my, pad;
+          float sumTemp, maxTemp, sumSpeed, maxSpeed;
         };
         const PartialStats *sums =
             (const PartialStats *)partialSumsBuffer.contents;
         float totalKE = 0, totalMX = 0, totalMY = 0;
+        float totalSumTemp = 0, totalSumSpeed = 0;
+        float gMaxTemp = -1e9f, gMaxSpeed = -1e9f;
         for (int i = 0; i < numThreadgroups; i++) {
           totalKE += sums[i].ke;
           totalMX += sums[i].mx;
           totalMY += sums[i].my;
+          totalSumTemp += sums[i].sumTemp;
+          totalSumSpeed += sums[i].sumSpeed;
+          if (sums[i].maxTemp > gMaxTemp) gMaxTemp = sums[i].maxTemp;
+          if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
         }
         latestStats.kineticEnergy = totalKE;
         latestStats.momentumX = totalMX;
         latestStats.momentumY = totalMY;
         latestStats.collisionCount = 0;
+        float invN = (particleCount > 0) ? 1.0f / (float)particleCount : 0.0f;
+        latestStats.avgTemp = totalSumTemp * invN;
+        latestStats.avgSpeed = totalSumSpeed * invN;
+        latestStats.maxTemp = gMaxTemp;
+        latestStats.maxSpeed = gMaxSpeed;
 
         // Physical Assert: Check for NaNs or Infinity (Energy Explosion)
         if (std::isnan(totalKE) || std::isinf(totalKE) || totalKE > 1e12f) {
@@ -1044,6 +1097,23 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc drawPrimitives:MTLPrimitiveTypePoint
           vertexStart:0
           vertexCount:particleCount];
+
+  // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
+  // Only encoded when oscillation (spin) is active; the vertex shader also
+  // collapses every line to a point when oscAmount≈0, but skipping the draw
+  // entirely saves the 2×N vertex work when there's nothing to show. Two
+  // verts per particle (head + tail) → line primitive.
+  // Orbital-arc trail pass DISABLED — it spawned a second ring inside the
+  // black hole. One black hole only. (Pipeline kept for later; not drawn.)
+  if (false && trajectoryPipeline) {
+    [enc setRenderPipelineState:trajectoryPipeline];
+    [enc setDepthStencilState:depthState];
+    [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
+    [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    [enc drawPrimitives:MTLPrimitiveTypeLine
+            vertexStart:0
+            vertexCount:(NSUInteger)particleCount * 22];
+  }
   [enc endEncoding];
 
   // ── Multi-pass Gaussian blur via ping-pong HDR pool ───────────────

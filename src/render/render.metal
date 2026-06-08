@@ -162,12 +162,12 @@ constant float KERR_A    = 0.5f;   // BH spin in the Ω(r)=1/(r^1.5+a) speed law
 // Doppler is split into COLOUR shift and BEAMING intensity so we can have a
 // strong colour swing (blue approaching / red receding) WITHOUT the beaming
 // blowing one side away (the "half black hole").
-constant float DOPPLER_K_COLOR = 10.0f; // colour frequency shift — STRONG: the
-                                        // disk sweeps blue (approaching) → orange
-                                        // (sides) → red (receding) around the ring,
-                                        // the real relativistic iridescence. Beaming
-                                        // stays gentle (DOPPLER_K_BEAM) so the whole
-                                        // disk is visible, not half.
+constant float DOPPLER_K_COLOR = 5.0f;  // colour frequency shift — MODERATE: a
+                                        // warm lopsidedness (bright gold-white
+                                        // approaching → amber receding), toward the
+                                        // movie's mostly-symmetric warm disk rather
+                                        // than crashing the far side to the red
+                                        // floor. Beaming stays gentle (whole disk).
 constant float DOPPLER_K_BEAM  = 0.8f; // beaming intensity — gentle (whole disk)
 constant float DOPPLER_EXP     = 1.4f; // beaming exponent
 constant float SPIN_VEL_SCALE  = 0.08f;// brings spin (rad/s) into orbital-velocity
@@ -412,9 +412,14 @@ vertex VertexOut particle_vertex(
         // only at pow(t,2) so it stays rare and WARM (no blue; Gargantua's disk
         // is warm — blue lives in the supernova). colWhite is HDR for the glow.
         float thT = clamp((kelvin - 1000.0f) / (PEAK_KELVIN - 1000.0f), 0.0f, 1.0f);
-        float3 thermalCol = mix(mix(float3(0.5, 0.05, 0.0),
-                                    float3(1.1, 0.4, 0.05), thT),
-                                float3(1.5, 1.2, 0.9), pow(thT, 2.0f));
+        // Interstellar Gargantua tones (movie reference): WARM throughout —
+        // amber-brown → amber-gold → pale yellow-white. No red (the movie's
+        // coolest is amber, not red), no blue (Doppler lopsidedness was removed
+        // for the film). White rare via pow(t,2). colHot is HDR for the glow.
+        float3 colCool = float3(0.55, 0.20, 0.04);  // amber-brown (outer/receding)
+        float3 colMid  = float3(1.00, 0.55, 0.15);  // amber-gold (body)
+        float3 colHot  = float3(1.60, 1.35, 1.00);  // pale yellow-white (brightest)
+        float3 thermalCol = mix(mix(colCool, colMid, thT), colHot, pow(thT, 2.0f));
         // SUPERNOVA (played): emission-line ramp (the green [OIII] tell).
         float3 snCol = supernovaRamp(temp / SN_TEMP_PEAK);
         // Cross-fade by envelope: SILENCE → thermal disk, PLAYING → supernova.
@@ -444,8 +449,14 @@ vertex VertexOut particle_vertex(
     out.sharpness = cam.sharpness;
     out.grainAlpha = cam.grainAlpha;
 
+    // Cull the horizon SPHERE and the polar CYLINDER: any particle whose XY
+    // radius is inside the horizon (drifted onto the spin axis) is unphysical
+    // disk material and projects as a bright vertical SPIKE through the shadow
+    // when zoomed in / edge-on. The disk lives at XY-radius ≥ 0.75, so this
+    // only removes on-axis strays.
     float RS_CULL = 0.57f;
-    if (originR < RS_CULL) {
+    float rXYcull = length(in.posW.xy);
+    if (originR < RS_CULL || rXYcull < RS_CULL) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);

@@ -228,11 +228,14 @@ int main() {
   // days), time-lapsed ×6.42e5 so the hole turns once per second on screen —
   // smooth at 120fps (~3°/frame, no aliasing; the old 188 rad/s = 90°/frame =
   // the strobing/shaking). You cannot out-spin the black hole.
-  static constexpr float kBHOmegaReal = 9.787e-6f; // M87* Ω_H (rad/s)
-  static constexpr float kBHTimeLapse = 1.5e7f;    // time compression — top ≈23
-                                                   // rev/s on screen (fast, like
-                                                   // before; M87's spin played fast)
-  static constexpr float kSpinMax = kBHOmegaReal * kBHTimeLapse; // ≈147 rad/s
+  // Top speed anchored to the UNIVERSAL MAX — matter orbiting at the speed of
+  // light c near the photon sphere (1.5 r_g of M87*): Ω_c = c/(1.5 r_g) =
+  // 3e8 / (1.5 · 9.6e12) ≈ 2.08e-5 rad/s. Nothing can spin faster than this.
+  // Time-lapsed for a visible, fast on-screen rotation; the tangential pixel-
+  // stretch fuse bridges the per-frame gap so it doesn't strobe.
+  static constexpr float kOmegaLightReal = 2.08e-5f; // c at the photon sphere (rad/s)
+  static constexpr float kBHTimeLapse    = 2.1e7f;   // time compression
+  static constexpr float kSpinMax = kOmegaLightReal * kBHTimeLapse; // ≈437 rad/s (~70 rev/s)
   static bool arrowL = false, arrowR = false, arrowU = false, arrowD = false;
   static float spinHold = 0.0f;
   static float spinVelX = 0.0f, spinVelY = 0.0f; // current spin rate (rad/s)
@@ -1258,10 +1261,10 @@ int main() {
       {
         float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
         float revs = spinMag / 6.28319f;     // rad/s → rev/s (on screen)
-        float frac = spinMag / kSpinMax;     // fraction of M87*'s real spin
+        float frac = spinMag / kSpinMax;     // fraction of light-speed orbit
         ImGui::TextColored(ImVec4(0.5f, 0.85f, 1.0f, 1.0f),
-                           "%s  %.0f%% of M87*  ·  %.2f rev/s  (1 turn = 7.4 days real)",
-                           frac > 0.98f ? "⟳ MAX = BH spin" : "⟳ SPIN",
+                           "%s  %.0f%% of light-speed  ·  %.1f rev/s",
+                           frac > 0.98f ? "⟳ MAX = c (light speed)" : "⟳ SPIN",
                            frac * 100.0f, revs);
         char ov[32];
         snprintf(ov, sizeof(ov), "%.0f%%", frac * 100.0f);
@@ -1359,10 +1362,11 @@ int main() {
       config.spinY = spinVelY;
       config.spinAngleX = spinAngleX;
       config.spinAngleY = spinAngleY;
-      // No radial pixel-stretch: it smeared the bounded shape into "globby huge
-      // shapes" bigger than the BH/SN. The rigid render-rotation of the real
-      // particles is what makes the fine crisp lines — keep stretch off.
-      config.pixelStretch = 0.0f;
+      // TANGENTIAL pixel-stretch (driven by spin): smear bright pixels along
+      // concentric CIRCLES (not radially out), so they stay on their radius —
+      // bounded to the BH/SN, never globby — and the spinning bright side fuses
+      // into fine concentric "5D" trails. 0 at rest, ramps to 1 at top spin.
+      config.pixelStretch = std::clamp(spinMag / kSpinMax, 0.0f, 1.0f);
     }
     config.sharpness = app.uiSharpness;
     config.grainAlpha = app.uiGrainAlpha;

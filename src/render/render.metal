@@ -224,7 +224,19 @@ vertex VertexOut particle_vertex(
     // is spin-free, so nothing fights (no rest-scatter, no note-pinning). Cull
     // and colour use length() (rotation-invariant); the trail/Doppler velocity
     // uses spinPos so the rotation drives them.
-    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX, cam.spinAngleY);
+    // GRAVITATIONAL TIME DILATION on the spin. A clock on a circular orbit at
+    // radius r runs slow vs infinity by dτ/dt = √(1 − 1.5·r_s/r) (gravitational
+    // + orbital-velocity dilation; → 0 at the photon sphere where v=c). So the
+    // inner edge's clock is slow → it rotates LESS than the outer → the spinning
+    // shape WINDS into a relativistic spiral, and the inner edge nearly FREEZES.
+    // That's the black hole altering time, made visible — not just speed.
+    // Gentle gravitational dilation (√(1−r_s/r), floor 0.4) — the OUTER disk
+    // stays fast (the trails live there) and only the INNER edge lags, so it
+    // winds subtly without freezing. (The 1.5·r_s/r circular-orbit form froze
+    // the whole inner disk inside the photon sphere → "not moving fast enough".)
+    float rDil  = length(in.posW.xyz);
+    float tDilate = sqrt(max(0.4f, 1.0f - BH_R_IN_SIM / max(rDil, BH_R_IN_SIM + 1e-3f)));
+    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate);
     float3 worldPos = spinPos * R;
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);

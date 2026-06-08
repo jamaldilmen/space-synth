@@ -24,9 +24,23 @@ struct CameraUniforms {
     float sharpness;         // particle Gaussian falloff exponent (live-tunable)
     float grainAlpha;        // per-particle base alpha (live-tunable)
     float oscAmount;         // oscilloscope scope-line gate (0 = off → no lines)
-    float spinX;             // spin rate around X (rad/s) — scope-line flow field
-    float spinY;             // spin rate around Y (rad/s) — scope-line flow field
+    float spinX;             // spin rate around X (rad/s) — trail/Doppler velocity
+    float spinY;             // spin rate around Y (rad/s) — trail/Doppler velocity
+    float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
+    float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
 };
+
+// Rigid-body spin: rotate a sim-space position by the accumulated spin angle
+// (around Y then X). The whole shape rotates as one solid body in the render —
+// physics stays spin-free, so there's no force-fighting (no rest-scatter, no
+// note-pinning). Rotation preserves length, so the horizon/colour radius is
+// unchanged.
+static float3 applySpin(float3 p, float ax, float ay) {
+    float cy = cos(ay), sy = sin(ay);
+    float3 r = float3(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
+    float cx = cos(ax), sx = sin(ax);
+    return float3(r.x, r.y * cx - r.z * sx, r.y * sx + r.z * cx);
+}
 
 // (safe_normalize removed to fix unused warning)
 
@@ -122,8 +136,10 @@ static float3 supernovaRamp(float t) {
     float3 cRed    = float3(0.85, 0.06, 0.05);  // Hα / [SII]  656–672nm
     float3 cOrange = float3(1.00, 0.45, 0.08);  // [OI]        630nm
     float3 cGreen  = float3(0.10, 0.90, 0.45);  // [OIII]      501nm  ← signature
-    float3 cCyan   = float3(0.10, 0.75, 1.00);  // Hβ          486nm
-    float3 cBlue   = float3(0.72, 0.86, 1.00);  // X-ray / synchrotron
+    float3 cCyan   = float3(0.05, 0.65, 1.00);  // Hβ          486nm
+    float3 cBlue   = float3(0.25, 0.45, 1.00);  // X-ray / synchrotron — SATURATED
+                                                // blue plasma (not blue-white), so
+                                                // the hottest core stays coloured
     if (t < 0.22f)      return mix(float3(0.45,0.02,0.05), cRed, t / 0.22f);
     else if (t < 0.45f) return mix(cRed,    cOrange, (t-0.22f)/0.23f);
     else if (t < 0.65f) return mix(cOrange, cGreen,  (t-0.45f)/0.20f);
@@ -203,7 +219,13 @@ vertex VertexOut particle_vertex(
     }
 
     // Map normalized plate coords to world: scale all axes by R for isotropic 3D
-    float3 worldPos = in.posW.xyz * R;
+    // RIGID-FRAME SPIN: rotate the sim position by the accumulated spin angle.
+    // The whole shape rotates as one solid body here in the render; the physics
+    // is spin-free, so nothing fights (no rest-scatter, no note-pinning). Cull
+    // and colour use length() (rotation-invariant); the trail/Doppler velocity
+    // uses spinPos so the rotation drives them.
+    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX, cam.spinAngleY);
+    float3 worldPos = spinPos * R;
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
 
@@ -283,10 +305,10 @@ vertex VertexOut particle_vertex(
     // resting disk swirls into streaks and spin stretches them further. Slow →
     // a dot, fast → a streak. Same sprite, same colour. Speeds only get high at
     // rest (inner orbit) and under arrow-spin — exactly where streaks belong.
-    float rXYv   = max(length(in.posW.xy), 1e-3f);
+    float rXYv   = max(length(spinPos.xy), 1e-3f);
     float omegaV = 1.0f / (pow(rXYv, 1.5f) + KERR_A);
-    float3 vOrb  = float3(-in.posW.y, in.posW.x, 0.0f) / rXYv * (omegaV * rXYv);
-    float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), in.posW.xyz);
+    float3 vOrb  = float3(-spinPos.y, spinPos.x, 0.0f) / rXYv * (omegaV * rXYv);
+    float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), spinPos);
     float3 velWorld = (vOrb + vSpin) * R;
     float4 endClip = cam.viewProjection * float4(worldPos + velWorld * STREAK_EXPOSURE, 1.0);
     float2 v1_screen = out.position.xy / out.position.w;
@@ -345,7 +367,10 @@ vertex VertexOut particle_vertex(
     // orbital spin → light trails → accretion disk) and on play (Chladni
     // shapes). No multiplex dimming; the raytracer only draws the dark
     // void, it does not replace the particles.
-    out.luminance = 1.0f + max(0.0f, temp) * 2.0f;
+    // Brightness from temperature, but the temp driving BRIGHTNESS is capped so
+    // the densest/hottest core can't blow out to white (the COLOUR still uses
+    // the full temp, so it stays a saturated hot plasma instead of going white).
+    out.luminance = 1.0f + min(max(0.0f, temp), 2.5f) * 2.0f;
 
     // ── Relativistic Doppler factor from the analytic Kerr orbital velocity ──
     // δ = 1 + β_los, β_los = line-of-sight component of the prograde orbital
@@ -357,21 +382,23 @@ vertex VertexOut particle_vertex(
     // particle, no raytracer. Maximal edge-on, ~0 face-on (correct physics).
     float dopplerColor = 1.0f;
     {
-        float rXY = length(in.posW.xy);
+        float rXY = length(spinPos.xy);
         if (rXY > 1e-3f) {
             float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);   // Kerr Ω(r)
-            float3 tang = float3(-in.posW.y, in.posW.x, 0.0f) / rXY; // prograde
-            float3 vOrbit = tang * (omega * rXY);             // orbital |v|=Ω·r
-            float3 vSpin  = cross(float3(cam.spinX, cam.spinY, 0.0f),
-                                  in.posW.xyz) * SPIN_VEL_SCALE; // spin motion
-            float3 vTot  = vOrbit + vSpin;                    // FULL motion
+            float3 tang = float3(-spinPos.y, spinPos.x, 0.0f) / rXY; // prograde
+            float3 vOrbit = tang * (omega * rXY);             // REAL orbital β
+            // Doppler from the REAL orbital velocity ONLY — NOT the spin. The
+            // spin is a time-lapse PLAYBACK rate (~150 rad/s); feeding it here
+            // made 1+K·vLos explode to ~176 on one half and floor on the other
+            // → the hard light/dark SEAM. vOrbit is taken at the SPUN position,
+            // so the bright side still sweeps around smoothly as you spin —
+            // bounded to the real ~0.6c asymmetry, a cosine gradient, no seam.
             float3 toCam = normalize(cam.cameraPos.xyz - worldPos);
-            float vLos   = dot(vTot, toCam);                  // + toward camera
-            // COLOUR shift (strong): blue toward camera, red away. Driven by the
-            // full motion, so SPINNING fast pushes the disk through red→blue.
-            dopplerColor = max(0.1f, 1.0f + DOPPLER_K_COLOR * vLos);
-            // BEAMING (gentle): subtle bright/dim asymmetry, whole disk stays.
-            float beam   = max(0.2f, 1.0f + DOPPLER_K_BEAM * vLos);
+            float vLos   = dot(vOrbit, toCam);                // + toward camera
+            // Soft floors (0.25 / 0.35) so the receding side fades SMOOTHLY
+            // instead of hard-clamping to black → no seam.
+            dopplerColor = max(0.25f, 1.0f + DOPPLER_K_COLOR * vLos);
+            float beam   = max(0.35f, 1.0f + DOPPLER_K_BEAM * vLos);
             out.luminance *= pow(beam, DOPPLER_EXP);
         }
     }

@@ -138,6 +138,15 @@ constant float ORBIT_R_BH      = 2.0f; // widened from 1.0: the rest disk now ha
                                        // ORBIT_R_CHLADNI on play.
 constant float ORBIT_R_CHLADNI = 3.0f;
 
+// ── ERUPTIONS in the hardened areas (magnetic-reconnection / solar-flare) ──
+// Where the Chladni pattern hardens (dense nodes), stress builds; past a
+// threshold the node ERUPTS — a sudden outward plasma burst + heat flash. See
+// [[space-synth-tube-supernova-vision]].
+constant uint  ERUPT_DENSITY   = 20u;   // cell particle count = a "hardened" node
+constant float ERUPT_THRESHOLD = 0.80f; // intermittency gate (per-cell flare clock)
+constant float ERUPT_FORCE     = 80.0f; // outward burst velocity scale
+constant float ERUPT_TEMP      = 4.0f;  // flash temperature (hot plasma)
+
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
 kernel void compute_physics(
@@ -482,6 +491,37 @@ kernel void compute_physics(
     }
     pvec = float3(px, py, pz);
     r_curr = length(pvec);
+
+    // ── ERUPTIONS in the hardened areas (magnetic-reconnection / solar-flare) ──
+    // Where the Chladni pattern HARDENS (dense nodes), stress builds; past a
+    // threshold the node ERUPTS — a sudden outward plasma burst + heat flash,
+    // bursting from the dense NODE centre (local splash). A slow per-cell noise
+    // clock makes flares INTERMITTENT (pop at different nodes over time, like the
+    // sun), not all at once. Only during play (decay/sustain), where it hardens.
+    if (su.gridSize > 0 && u.envelopePhase >= 1.5f && u.envelopePhase < 3.5f) {
+        int ecx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int ecy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int ecz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        uint ecID = uint((ecz * su.gridSize + ecy) * su.gridSize + ecx);
+        uint ecount = cellCounts[ecID];
+        if (ecount > ERUPT_DENSITY) {
+            float stress = log2(float(ecount) / float(ERUPT_DENSITY)); // 0..~3
+            // Intermittent per-cell flare clock (changes a few times/sec).
+            float flare = noise(ecID * 2654435761u + 7u, uint(u.time * 2.0f));
+            if (flare * stress > ERUPT_THRESHOLD) {
+                float ccx = (float(ecx) + 0.5f) * su.cellSize - su.halfExtent;
+                float ccy = (float(ecy) + 0.5f) * su.cellSize - su.halfExtent;
+                float ccz = (float(ecz) + 0.5f) * su.cellSize - su.halfExtent;
+                float3 outward = float3(px - ccx, py - ccy, pz - ccz);
+                outward = outward / (length(outward) + 1e-4f);
+                float burst = ERUPT_FORCE * stress;
+                shiftVx += outward.x * burst * dt;
+                shiftVy += outward.y * burst * dt;
+                shiftVz += outward.z * burst * dt;
+                currentTemp = max(currentTemp, ERUPT_TEMP * stress); // flash hot plasma
+            }
+        }
+    }
 
     // Save lifecycle-only shifts before the force pipeline contaminates them
     float3 lifecycleShiftV = float3(shiftVx, shiftVy, shiftVz);

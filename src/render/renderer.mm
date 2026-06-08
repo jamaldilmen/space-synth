@@ -654,6 +654,8 @@ void Renderer::render(const RenderConfig &config) {
   cam.oscAmount = config.oscAmount;
   cam.spinX = config.spinX;
   cam.spinY = config.spinY;
+  cam.spinAngleX = config.spinAngleX;
+  cam.spinAngleY = config.spinAngleY;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -742,6 +744,8 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.oscAmount = config.oscAmount;
   cam.spinX = config.spinX;
   cam.spinY = config.spinY;
+  cam.spinAngleX = config.spinAngleX;
+  cam.spinAngleY = config.spinAngleY;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -777,9 +781,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Spatial hash build (4 phases) ──────────────────────────────
-    // Only build when collisions are on OR during silence/release (raytracer needs density)
+    // Build when collisions are on, during silence/release (raytracer needs
+    // density), OR during decay/sustain (the ERUPTIONS read cellCounts to find
+    // hardened nodes). It's the cheap O(N) hash BUILD, not the collision scan.
     bool needSpatialHash = collisionsEnabled ||
-        (physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f);
+        physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f ||
+        (physicsUniforms.envelopePhase >= 1.5f && physicsUniforms.envelopePhase < 3.5f);
     if (needSpatialHash && assignCellsPipeline && countCellsPipeline &&
         prefixSumLocalPipeline && prefixSumBlocksPipeline &&
         prefixSumAddPipeline && scatterPipeline) {
@@ -1261,6 +1268,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.strobe = config.strobe;
   post.invert = config.invert;
   post.posterize = config.posterize;
+  post.pixelStretch = config.pixelStretch; // "5D look" radial pixel-stretch (spin)
   // EDR headroom: how far above SDR white this display can currently go
   // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
   // Drives how hard the HDR glow punches past white. Queried live because it

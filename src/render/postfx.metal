@@ -24,6 +24,7 @@ struct PostFXUniforms {
     float invert;           // 0-1 colour invert mix
     float posterize;        // 0 off, else colour levels (2-16)
     float edrHeadroom;      // display EDR headroom (1.0 = SDR), drives HDR glow
+    float pixelStretch;     // 0-1 "5D look" radial pixel-stretch (driven by spin)
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
@@ -151,6 +152,34 @@ fragment float4 postfx_fragment(
     float g = currentFrame.sample(s, guv).g;
     float b = currentFrame.sample(s, guv - offset).b;
     float4 color = float4(r, g, b, 1.0);
+
+    // ── PIXEL STRETCH — the "5D look" (Sapphire/aescripts pixel-stretch) ──────
+    // Screen-space: smear the BRIGHTEST pixels radially OUTWARD from centre,
+    // threshold-gated (dark background stays sharp), cumulative max with falloff.
+    // Defined filter, real knobs: STRETCH_THRESHOLD (only highlights streak),
+    // STRETCH_LEN (how far, in UV), STRETCH_FALLOFF (decay). Gated by
+    // u.pixelStretch (driven by spin) so it's the energy/trail look, not always on.
+    if (u.pixelStretch > 0.001) {
+        const int   STRETCH_SAMPLES   = 24;
+        const float STRETCH_THRESHOLD = 0.45;  // luminance gate (HDR scene)
+        const float STRETCH_FALLOFF   = 0.90;  // decay per step
+        float STRETCH_LEN = 0.55 * u.pixelStretch; // smear distance (UV)
+        float aspectR = u.resolution.x / u.resolution.y;
+        float2 c2 = uv - 0.5; c2.x *= aspectR;
+        float2 inward = (length(c2) > 1e-5) ? -normalize(c2) : float2(0.0);
+        inward.x /= aspectR;                    // back to UV space
+        float3 streak = color.rgb;
+        float w = 1.0;
+        for (int i = 1; i <= STRETCH_SAMPLES; i++) {
+            float2 suv = uv + inward * (STRETCH_LEN * float(i) / float(STRETCH_SAMPLES));
+            float3 sc = currentFrame.sample(s, suv).rgb;
+            w *= STRETCH_FALLOFF;
+            if (dot(sc, float3(0.299, 0.587, 0.114)) > STRETCH_THRESHOLD) {
+                streak = max(streak, sc * w);   // bright inner pixels stream outward
+            }
+        }
+        color.rgb = mix(color.rgb, streak, u.pixelStretch);
+    }
 
     // ── ACES Tonemapping (HDR scene → SDR base) ─────────────────────────
     // Tonemap the scene to a clean SDR [0,1] base FIRST, then add the glow on

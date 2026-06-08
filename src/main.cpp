@@ -229,11 +229,14 @@ int main() {
   // smooth at 120fps (~3°/frame, no aliasing; the old 188 rad/s = 90°/frame =
   // the strobing/shaking). You cannot out-spin the black hole.
   static constexpr float kBHOmegaReal = 9.787e-6f; // M87* Ω_H (rad/s)
-  static constexpr float kBHTimeLapse = 6.42e5f;   // time compression
-  static constexpr float kSpinMax = kBHOmegaReal * kBHTimeLapse; // ≈6.28 rad/s
+  static constexpr float kBHTimeLapse = 1.5e7f;    // time compression — top ≈23
+                                                   // rev/s on screen (fast, like
+                                                   // before; M87's spin played fast)
+  static constexpr float kSpinMax = kBHOmegaReal * kBHTimeLapse; // ≈147 rad/s
   static bool arrowL = false, arrowR = false, arrowU = false, arrowD = false;
   static float spinHold = 0.0f;
   static float spinVelX = 0.0f, spinVelY = 0.0f; // current spin rate (rad/s)
+  static float spinAngleX = 0.0f, spinAngleY = 0.0f; // accumulated spin angle (rad)
 
   // ── Sequencer State (Phase 12) ───────────────────────────────────
   struct SeqNote {
@@ -301,9 +304,14 @@ int main() {
       return;
     }
 
-    // R = reset camera
+    // R = reset camera AND the rigid spin (angle + velocity), so reset returns
+    // to the true default orientation instead of staying stuck at the
+    // accumulated spin rotation.
     if (e.keyCode == 15 && e.isDown) {
       camera.reset();
+      spinVelX = spinVelY = 0.0f;
+      spinAngleX = spinAngleY = 0.0f;
+      spinHold = 0.0f;
       return;
     }
 
@@ -573,13 +581,12 @@ int main() {
       float dirX = (arrowU ? 1.0f : 0.0f) - (arrowD ? 1.0f : 0.0f);
       if (dirX != 0.0f || dirY != 0.0f) {
         spinHold += dt;
-        if (spinHold > 0.18f) { // past tap threshold → engage the spin
-          // Curvy ease-in: gentle creep at first, accelerating hard toward the
-          // end (cubic). Slower overall so reaching M87 max takes a few seconds.
-          float accel = 0.4f + spinHold * spinHold * spinHold * 1.6f;
-          spinVelY += dirY * accel * dt;
-          spinVelX += dirX * accel * dt;
-        }
+        // Engages IMMEDIATELY — even a tap nudges the spin a bit; holding ramps
+        // it up HARD (accel grows with hold time) to a fast top in ~3 s, and
+        // momentum carries it after release. No dead zone, no 9-second crawl.
+        float accel = 8.0f + spinHold * spinHold * 25.0f;
+        spinVelY += dirY * accel * dt;
+        spinVelX += dirX * accel * dt;
       } else {
         spinHold = 0.0f;
       }
@@ -593,7 +600,15 @@ int main() {
       // 120fps; you cannot out-spin the black hole.
       spinVelX = std::clamp(spinVelX, -kSpinMax, kSpinMax);
       spinVelY = std::clamp(spinVelY, -kSpinMax, kSpinMax);
-      renderer.setSpin(spinVelX, spinVelY);
+      // RIGID-FRAME SPIN: the spin is a rigid rotation applied in the RENDER,
+      // not in the physics — so the disk/Chladni shape rotates as one solid
+      // body (no force-fighting → no rest-scatter, no note-pinning, no jump to
+      // FTL). Physics stays spin-free (setSpin 0). We accumulate the ANGLE for
+      // the render rotation; spinVel is still passed (config.spinX/Y) for the
+      // analytic trail/Doppler velocity.
+      spinAngleX += spinVelX * dt;
+      spinAngleY += spinVelY * dt;
+      renderer.setSpin(0.0f, 0.0f);
     }
     camera.update(dt);
     float view[16], proj[16], viewProj[16];
@@ -1328,15 +1343,26 @@ int main() {
     config.bloomIntensity = app.uiBloom;
     // Spin blurs into a solid disk at high RPM: boost the motion-blur feedback
     // with spin speed so fast rotation smears instead of strobing.
-    config.trailDecay = app.uiTrailDecay; // no spin smear — oscilloscope is a crisp path, not blur
+    // Trails are the user's Fluidity slider ONLY. The spin must stay a CRISP
+    // rigid rotation of the real particles — no persistence smear. (The 0.96
+    // spin-driven feedback fused the rotating shape into a blurry squashy comet
+    // with a leading/lagging half. Killed.)
+    config.trailDecay = app.uiTrailDecay;
     // Scope-line gate: spin magnitude (0→cap) drives the oscilloscope beams.
     // 0 when at rest → pure points; ramps to 1 at the clean-120fps spin cap.
     {
       float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
       config.oscAmount = std::clamp(spinMag / kSpinMax, 0.0f, 1.0f);
-      // Spin axis for the scope-line flow field (omega × r in the shader).
+      // Spin velocity (for analytic trail/Doppler) + accumulated angle (for the
+      // render-side rigid rotation of the whole shape).
       config.spinX = spinVelX;
       config.spinY = spinVelY;
+      config.spinAngleX = spinAngleX;
+      config.spinAngleY = spinAngleY;
+      // No radial pixel-stretch: it smeared the bounded shape into "globby huge
+      // shapes" bigger than the BH/SN. The rigid render-rotation of the real
+      // particles is what makes the fine crisp lines — keep stretch off.
+      config.pixelStretch = 0.0f;
     }
     config.sharpness = app.uiSharpness;
     config.grainAlpha = app.uiGrainAlpha;

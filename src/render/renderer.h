@@ -13,8 +13,11 @@ struct RenderConfig {
   float sharpness = 5.0f;   // particle Gaussian falloff (live-tunable)
   float grainAlpha = 0.08f; // per-particle base alpha (live-tunable)
   float oscAmount = 0.0f;   // oscilloscope scope-line gate (driven by spin)
-  float spinX = 0.0f;       // live spin rate around X (rad/s) → scope-line flow
-  float spinY = 0.0f;       // live spin rate around Y (rad/s) → scope-line flow
+  float spinX = 0.0f;       // live spin rate around X (rad/s) → trail/Doppler vel
+  float spinY = 0.0f;       // live spin rate around Y (rad/s) → trail/Doppler vel
+  float spinAngleX = 0.0f;  // accumulated spin angle X (rad) → rigid render spin
+  float spinAngleY = 0.0f;  // accumulated spin angle Y (rad) → rigid render spin
+  float pixelStretch = 0.0f;// 0-1 "5D look" radial pixel-stretch (driven by spin)
 
   // Post-FX
   float bloomIntensity = 0.0f;
@@ -106,6 +109,7 @@ struct PostFXUniforms {
   float invert;          // 0-1
   float posterize;       // 0 off, else 2-16
   float edrHeadroom;   // display EDR headroom (1.0 = SDR); keeps 80-byte align
+  float pixelStretch;  // 0-1 "5D look" radial pixel-stretch (driven by spin)
   float inverseViewProj[16];
   float prevViewProj[16];
 };
@@ -127,8 +131,10 @@ struct CameraUniforms {
   float sharpness;         // particle Gaussian falloff exponent (live-tunable)
   float grainAlpha;        // per-particle base alpha (live-tunable)
   float oscAmount;         // oscilloscope scope-line gate (0 = off → no lines)
-  float spinX;             // spin rate around X (rad/s) — scope-line flow field
-  float spinY;             // spin rate around Y (rad/s) — scope-line flow field
+  float spinX;             // spin rate around X (rad/s) — trail/Doppler velocity
+  float spinY;             // spin rate around Y (rad/s) — trail/Doppler velocity
+  float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
+  float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

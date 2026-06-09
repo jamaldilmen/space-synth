@@ -13,7 +13,9 @@
 #include "core/logger.h"
 #include "core/resource_helper.h"
 #include "core/app_state.h"
+#include "core/physics_constants.h"
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -725,8 +727,65 @@ int main() {
       if (ImGui::CollapsingHeader("GLOBALS", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         ImGui::Text("Performance View");
-        ImGui::TextDisabled("FPS: %.1f | Mode: %s", ImGui::GetIO().Framerate, 
+        ImGui::TextDisabled("FPS: %.1f | Mode: %s", ImGui::GetIO().Framerate,
                             app.uiOrthoMode ? "Orthogonal" : "Perspective");
+        ImGui::Unindent();
+      }
+      ImGui::Spacing();
+
+      // ── REAL SCALE: the Milky Way unit system, derived from the Sgr A*
+      // anchor in physics_constants.h. Every number is sourced/computed, not
+      // arbitrary sim units — this is the maßstabsgetreu floor (see governing
+      // model). Pure readout; changes no behavior.
+      if (ImGui::CollapsingHeader("GALAXY / REAL SCALE", ImGuiTreeNodeFlags_DefaultOpen)) {
+        using namespace space::phys;
+        ImGui::Indent();
+        const auto &bh = BH_ANCHOR;
+        const double PI = 3.14159265358979;
+        double rg_AU      = bh.r_g_m / AU;
+        double scale_AU   = bh.m_per_sim / AU;       // 1 sim unit = 2 r_g
+        double a          = bh.spin_a;
+        double horizon_AU = (1.0 + std::sqrt(1.0 - a * a)) * rg_AU;
+        double fieldMass  = (double)app.uiParticleCount * (PARTICLE_MASS_UNIT / M_SUN); // M_sun
+        double fieldPct   = 100.0 * fieldMass / NSC_MASS_MSUN;
+        double isco_rg    = 6.0;                       // ~Schwarzschild ISCO (low spin)
+        double v_c        = std::sqrt(1.0 / isco_rg);  // v/c at the inner stable orbit
+        double GM         = G * bh.mass_Msun * M_SUN;
+        double r_isco     = isco_rg * bh.r_g_m;
+        double T_isco_min = 2.0 * PI * std::sqrt(r_isco * r_isco * r_isco / GM) / 60.0;
+
+        ImGui::Text("Anchor:   %s  (Milky Way center)", bh.name);
+        ImGui::Text("BH mass:  %.3e M_sun", bh.mass_Msun);
+        ImGui::Text("Spin a*:  %.2f", a);
+        ImGui::Text("r_g:      %.4f AU  (%.2e km)", rg_AU, bh.r_g_m / 1000.0);
+        ImGui::Text("Scale:    1 sim unit = %.4f AU", scale_AU);
+        ImGui::Text("Horizon:  %.4f AU", horizon_AU);
+        ImGui::Separator();
+        ImGui::Text("Particle: 1.00 M_sun  (1 star)");
+        ImGui::Text("Field:    %.2e stars = %.2e M_sun", (double)app.uiParticleCount, fieldMass);
+        ImGui::Text("          %.1f%% of the nuclear star cluster", fieldPct);
+        ImGui::Separator();
+        ImGui::Text("Inner orbit (ISCO ~6 r_g):");
+        ImGui::Text("  v = %.2f c  (%.2e km/s)", v_c, v_c * C / 1000.0);
+        ImGui::Text("  period = %.1f min  (real time)", T_isco_min);
+
+        // ── LIVE telemetry — the actual running sim, mapped to real units.
+        // Provisional calibration (see physics_constants.h); reacts on play.
+        auto s = renderer.getPhysicsStats();
+        double vmax_c = std::min(0.999, (double)s.maxSpeed * SIM_V_TO_FRAC_C);
+        double vavg_c = std::min(0.999, (double)s.avgSpeed * SIM_V_TO_FRAC_C);
+        double tref   = SIM_TEMP_REF > 0 ? SIM_TEMP_REF : 1.0;
+        double tmax_K = T_DISK_OUTER_K + std::min((double)s.maxTemp / tref, 1.0) * (T_DISK_INNER_K - T_DISK_OUTER_K);
+        double tavg_K = T_DISK_OUTER_K + std::min((double)s.avgTemp / tref, 1.0) * (T_DISK_INNER_K - T_DISK_OUTER_K);
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LIVE  (provisional calib.)");
+        ImGui::Text("  Max velocity: %.3f c", vmax_c);
+        ImGui::Text("  Avg velocity: %.3f c", vavg_c);
+        ImGui::Text("  Peak temp:    %6.0f K", tmax_K);
+        ImGui::Text("  Mean temp:    %6.0f K", tavg_K);
+        // DIAGNOSTIC: raw sim telemetry (to see if the stats move at all)
+        ImGui::TextDisabled("  [sim] spd max=%.4f avg=%.4f", s.maxSpeed, s.avgSpeed);
+        ImGui::TextDisabled("  [sim] tmp max=%.4f avg=%.4f  KE=%.2f", s.maxTemp, s.avgTemp, s.kineticEnergy);
         ImGui::Unindent();
       }
       ImGui::Spacing();

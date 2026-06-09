@@ -991,7 +991,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float totalKE = 0, totalMX = 0, totalMY = 0;
         float totalSumTemp = 0, totalSumSpeed = 0;
         float gMaxTemp = -1e9f, gMaxSpeed = -1e9f;
-        for (int i = 0; i < numThreadgroups; i++) {
+        // Only sum the threadgroups actually dispatched this frame. The kernel
+        // writes one partial per ceil(particleCount/tg) groups; numThreadgroups
+        // is the buffer-alloc size (capacity), so looping it summed STALE
+        // partials → averages inflated above the max (impossible). Bound it.
+        int dispatchedTGs = std::min(numThreadgroups,
+                                     (int)((particleCount + (int)tg - 1) / (int)tg));
+        for (int i = 0; i < dispatchedTGs; i++) {
           totalKE += sums[i].ke;
           totalMX += sums[i].mx;
           totalMY += sums[i].my;

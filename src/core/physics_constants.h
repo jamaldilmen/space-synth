@@ -120,5 +120,17 @@ constexpr double S2_PERIOD_YR     = 16.0518;  // orbital period [yr]
 constexpr double S2_PERICENTER_AU = 120.0;    // closest approach [AU] (17 light-hours)
 constexpr double S2_VMAX_FRAC_C   = 0.027;    // ~2.7% c at pericenter — validate our orbital speeds against this
 
+// ── PROVISIONAL sim→real calibration (HUD live readout only) ────────────────
+// The sim still integrates in arbitrary units; these map its LIVE telemetry
+// (maxSpeed/avgSpeed/maxTemp/avgTemp) to real units so the HUD reacts. Anchored
+// to real physics (inner-orbit speed ~0.5c; Shakura-Sunyaev thin-disk temps)
+// but PROVISIONAL — to be replaced when the sim integrates real velocities and
+// the KE→T step computes real Kelvin from collision energy. Clearly labeled in
+// the HUD so it's never mistaken for derived physics.
+constexpr double SIM_V_TO_FRAC_C = 0.42;    // sim speed≈1.2 (cap) → ~0.5c (inner disk)
+constexpr double T_DISK_OUTER_K  = 2000.0;  // SS thin-disk outer edge (visible red)
+constexpr double T_DISK_INNER_K  = 30000.0; // SS thin-disk inner edge (blue-white)
+constexpr double SIM_TEMP_REF    = 20.0;    // sim temperature that maps to T_DISK_INNER_K (max observed ~18.7)
+
 } // namespace phys
 } // namespace space

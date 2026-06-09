@@ -1052,6 +1052,18 @@ int main() {
         if (ImGui::Button("Snap Back (Reset)")) {
           renderer.triggerReset();
         }
+        // Reset STATE — re-forms the black hole after hyperdrive (unwinds the
+        // accumulated render-spin so it stops rendering warped, + re-seeds the
+        // particles) WITHOUT touching the camera, so your framing is kept.
+        if (ImGui::Button("Reset State (keep camera)")) {
+          spinVelX = spinVelY = 0.0f;
+          spinAngleX = spinAngleY = 0.0f;
+          spinHold = 0.0f;
+          renderer.triggerReset();
+        }
+        ImGui::SetItemTooltip(
+            "Re-form the black hole (unwind spin + re-seed) without moving the "
+            "camera. Use after hyperdrive when the BH comes back warped.");
         // Live camera angles. Arrow keys ←/→ rotate azimuth (φ),
         // ↑/↓ rotate elevation (θ). Soft-locks at 0°/90°/180°/270°.
         {

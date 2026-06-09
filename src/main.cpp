@@ -788,6 +788,13 @@ int main() {
         }
         ImGui::SetItemTooltip("Enable particle-particle elastic collisions");
 
+        if (ImGui::Checkbox("Bond Network", &app.uiBondNetwork)) {
+          renderer.setBondNetworkEnabled(app.uiBondNetwork);
+        }
+        ImGui::SetItemTooltip(
+            "Nervous-system-of-light: link adjacent particles in the "
+            "hardened (sustain) state");
+
         ImGui::Checkbox("Phase Viz", &app.uiPhaseViz);
         ImGui::SetItemTooltip(
             "Color particles by Feynman phase (action integral)");

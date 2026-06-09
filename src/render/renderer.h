@@ -184,6 +184,7 @@ struct PhysicsUniforms {
   float diskThickness;      // accretion-disk vertical thickness (UI)
   float spinX;              // user spin torque around X axis (rad/s)
   float spinY;              // user spin torque around Y axis (rad/s)
+  float bondNetworkOn;      // >0.5 = find nearest-neighbour bonds in sustain
 };
 
 // Spatial hash uniforms for collision grid
@@ -244,6 +245,8 @@ public:
   void triggerReset(); // Phase 12 stability: Force GPU re-seed
   void setCollisionsEnabled(bool enabled);
   bool collisionsEnabled() const;
+  void setBondNetworkEnabled(bool enabled);
+  bool bondNetworkEnabled() const;
 
   // Phase 17: Set ADSR lifecycle state for black hole dynamics
   void setEnvelopeState(float phase, float progress, float intensity);

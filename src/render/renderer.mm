@@ -76,6 +76,7 @@ struct Renderer::Impl {
   int numThreadgroups = 0;
   PhysicsStats latestStats = {};
   bool collisionsEnabled = false;
+  bool bondNetworkEnabled = false;
 
   // Noether symmetry breaking
   uint32_t prevVoiceHash = 0;
@@ -500,7 +501,9 @@ void Renderer::resetParticles() {
     gpuData[i].spinX = gpuData[i].spinY = gpuData[i].spinZ = 0.0f;
     gpuData[i].charge = (i % 2 == 0) ? 1.0f : -1.0f;
     gpuData[i].entanglementID = (uint32_t)rand() % impl_->particleCount;
-    gpuData[i].pad1 = gpuData[i].pad2 = gpuData[i].pad3 = 0;
+    gpuData[i].pad1 = 0;
+    gpuData[i].pad2 = 0xFFFFFFFFu;      // entanglement.z = bond target (none yet)
+    gpuData[i].pad3 = (uint32_t)i;      // entanglement.w = own original index
   }
 }
 
@@ -577,6 +580,7 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.diskThickness = impl_->diskThicknessVal;
   impl_->physicsUniforms.spinX = impl_->spinXVal;
   impl_->physicsUniforms.spinY = impl_->spinYVal;
+  impl_->physicsUniforms.bondNetworkOn = impl_->bondNetworkEnabled ? 1.0f : 0.0f;
 
   static float accumulatedTime = 0.0f;
   accumulatedTime += dt;
@@ -1408,6 +1412,12 @@ void Renderer::setCollisionsEnabled(bool enabled) {
 }
 
 bool Renderer::collisionsEnabled() const { return impl_->collisionsEnabled; }
+
+void Renderer::setBondNetworkEnabled(bool enabled) {
+  impl_->bondNetworkEnabled = enabled;
+}
+
+bool Renderer::bondNetworkEnabled() const { return impl_->bondNetworkEnabled; }
 
 void Renderer::setEnvelopeState(float phase, float progress, float intensity) {
   impl_->envPhase = phase;

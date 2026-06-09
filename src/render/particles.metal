@@ -66,6 +66,7 @@ struct PhysicsUniforms {
     float diskThickness;         // 96: accretion-disk vertical thickness (UI)
     float spinX;                 // 100: user spin torque around X axis (rad/s)
     float spinY;                 // 104: user spin torque around Y axis (rad/s)
+    float bondNetworkOn;         // 108: >0.5 = bond-find nearest neighbour in sustain
 };
 
 struct SpatialHashUniforms {
@@ -876,6 +877,47 @@ kernel void compute_physics(
         vpx += shiftVx;
         vpy += shiftVy;
         vpz += shiftVz;
+    }
+
+    // ── Bond-Network: nearest-neighbour link ("nervous system of light") ──
+    // Independent of the collisions toggle. In the hardened (sustain) state each
+    // particle finds its single closest physical neighbour via the same spatial
+    // hash and records that neighbour's ORIGINAL index (carried in .w) into
+    // entanglement.z. The render pass draws a 1px light-line self→bond so
+    // adjacent particles fuse into continuous matter, closing the micro-gaps.
+    // PURE DATA here — no force applied; quantum entanglement (.x) is untouched.
+    if (u.bondNetworkOn > 0.5f && su.gridSize > 0 && u.envelopePhase > 2.5f) {
+        int bcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int bcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int bcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+
+        // Adjacency scale: ~one cell → only truly touching neighbours bond.
+        float best2 = su.cellSize * su.cellSize;
+        uint bestOrig = 0xFFFFFFFFu;
+        uint selfOrig = p.entanglement.w;
+
+        for (int z = max(0, bcz - 1); z <= min(su.gridSize - 1, bcz + 1); z++) {
+            for (int y = max(0, bcy - 1); y <= min(su.gridSize - 1, bcy + 1); y++) {
+                for (int x = max(0, bcx - 1); x <= min(su.gridSize - 1, bcx + 1); x++) {
+                    uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                    uint count = min(cellCounts[cID], uint(MAX_PER_CELL));
+                    uint startIdx = cellStarts[cID];
+                    for (uint i = 0; i < count; i++) {
+                        Particle np = sortedParticles[startIdx + i];
+                        if (np.entanglement.w == selfOrig) continue; // skip self
+                        float dx = px - np.posW.x;
+                        float dy = py - np.posW.y;
+                        float dz = pz - np.posW.z;
+                        float d2 = dx * dx + dy * dy + dz * dz;
+                        if (d2 < best2 && d2 > 1e-12f) {
+                            best2 = d2;
+                            bestOrig = np.entanglement.w;
+                        }
+                    }
+                }
+            }
+        }
+        p.entanglement.z = bestOrig;
     }
 
     // ── Störmer-Verlet integration (damped) ──────────────────────────

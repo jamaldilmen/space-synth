@@ -37,6 +37,7 @@ struct AppState {
   bool  uiChorus = true;
   bool  uiOrthoMode = true;
   bool  uiCollisions = false;
+  bool  uiBondNetwork = false; // nervous-system-of-light bond lines (hardened state)
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

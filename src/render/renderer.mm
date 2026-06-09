@@ -773,8 +773,20 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
 
     NSUInteger tgSize = 256;
 
-    // ── Double-buffer: copy particles for collision reads ──────────
-    if (collisionsEnabled && particleBufferRead) {
+    // ── Spatial hash build (4 phases) ──────────────────────────────
+    // Build when collisions are on, during silence/release (raytracer needs
+    // density), OR during decay/sustain (ERUPTIONS + CRYSTALLIZATION read
+    // cellCounts to find/harden dense nodes). Cheap O(N) hash BUILD.
+    bool needSpatialHash = collisionsEnabled ||
+        physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f ||
+        (physicsUniforms.envelopePhase >= 1.5f && physicsUniforms.envelopePhase < 3.5f);
+
+    // ── Snapshot live particles → read buffer for the hash + collision reads.
+    // MUST happen whenever the hash is built (not only for collisions): the hash
+    // (assign_cells/scatter) reads particleBufferRead, so without this snapshot
+    // the hash / cellCounts / sortedParticles are STALE when collisions are off
+    // — which silently broke density-driven crystallization + cohesion + bonds.
+    if (needSpatialHash && particleBufferRead) {
       id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
       [blit copyFromBuffer:particleBuffer
                sourceOffset:0
@@ -783,14 +795,6 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                        size:particleCount * sizeof(GPUParticle)];
       [blit endEncoding];
     }
-
-    // ── Spatial hash build (4 phases) ──────────────────────────────
-    // Build when collisions are on, during silence/release (raytracer needs
-    // density), OR during decay/sustain (the ERUPTIONS read cellCounts to find
-    // hardened nodes). It's the cheap O(N) hash BUILD, not the collision scan.
-    bool needSpatialHash = collisionsEnabled ||
-        physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f ||
-        (physicsUniforms.envelopePhase >= 1.5f && physicsUniforms.envelopePhase < 3.5f);
     if (needSpatialHash && assignCellsPipeline && countCellsPipeline &&
         prefixSumLocalPipeline && prefixSumBlocksPipeline &&
         prefixSumAddPipeline && scatterPipeline) {

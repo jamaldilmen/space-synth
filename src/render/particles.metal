@@ -940,6 +940,48 @@ kernel void compute_physics(
     }
     p.entanglement.y = as_type<uint>(hardness);
 
+    // ── COHESION: at high hardness, a Hooke spring to a rest spacing binds
+    // nearby spatial-hash neighbours into a lattice. Beyond rest → ATTRACT
+    // (pulls gas in → CREATES density, the "not super dense" fix); below rest →
+    // repel (stable spacing). Self-contained, so hardening no longer needs the
+    // collisions toggle. Scaled by H so only crystallizing matter coheres, and
+    // gated by H so sparse gas pays no neighbour-scan cost. The gas→solid bond.
+    if (hardness > 0.02f && su.gridSize > 0) {
+        int ccx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int ccy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int ccz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+
+        float cohRad  = 2.0f * su.cellSize;   // within the 3×3×3 reach
+        float cohRest = 0.6f * su.cellSize;   // lattice spacing (denser than a cell)
+        float cohStiff = 4.0f;                // spring constant (tune)
+        float3 cohF = float3(0.0f);
+        int cohCount = 0;
+
+        for (int z = max(0, ccz - 1); z <= min(su.gridSize - 1, ccz + 1); z++) {
+            for (int y = max(0, ccy - 1); y <= min(su.gridSize - 1, ccy + 1); y++) {
+                for (int x = max(0, ccx - 1); x <= min(su.gridSize - 1, ccx + 1); x++) {
+                    uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                    uint cnt = min(cellCounts[cID], uint(MAX_PER_CELL));
+                    uint startIdx = cellStarts[cID];
+                    for (uint i = 0; i < cnt; i++) {
+                        Particle np = sortedParticles[startIdx + i];
+                        float3 rvec = float3(px - np.posW.x, py - np.posW.y, pz - np.posW.z);
+                        float d = length(rvec);
+                        if (d > 1e-5f && d < cohRad) {
+                            float strain = d - cohRest;       // + far → attract, − near → repel
+                            cohF += (-rvec / d) * strain;     // toward neighbour when far
+                            cohCount++;
+                        }
+                    }
+                }
+            }
+        }
+        if (cohCount > 0) {
+            float3 cf = (cohF / float(cohCount)) * (cohStiff * hardness * dt);
+            shiftVx += cf.x; shiftVy += cf.y; shiftVz += cf.z;
+        }
+    }
+
     // ── Störmer-Verlet integration (damped) ──────────────────────────
     // Restored natural damping without extra cosmic over-drag.
     // Jitter and collision forces are now visible again.

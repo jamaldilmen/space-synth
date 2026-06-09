@@ -45,6 +45,7 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> prefixSumBlocksPipeline = nil;
   id<MTLComputePipelineState> prefixSumAddPipeline = nil;
   id<MTLComputePipelineState> scatterPipeline = nil;
+  id<MTLComputePipelineState> centroidPipeline = nil; // per-cell centroid (cohesion)
 
   // Conservation law reduction
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
@@ -69,6 +70,7 @@ struct Renderer::Impl {
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
   id<MTLBuffer> sortedParticlesBuffer = nil; // particle data in cell order
+  id<MTLBuffer> cellCentroidsBuffer = nil;   // float4 per cell: xyz centroid, w count
   id<MTLBuffer> spatialHashUniformBuffer = nil;
 
   // Stats readback (partial sums from GPU reduction)
@@ -193,12 +195,14 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   // ── Spatial hash compute pipelines ──────────────────────────────────
   const char *spatialKernels[] = {"assign_cells",     "count_cells",
                                   "prefix_sum_local", "prefix_sum_blocks",
-                                  "prefix_sum_add",   "scatter_particles"};
+                                  "prefix_sum_add",   "scatter_particles",
+                                  "compute_cell_centroids"};
   id<MTLComputePipelineState> *spatialPipelines[] = {
       &impl_->assignCellsPipeline,    &impl_->countCellsPipeline,
       &impl_->prefixSumLocalPipeline, &impl_->prefixSumBlocksPipeline,
-      &impl_->prefixSumAddPipeline,   &impl_->scatterPipeline};
-  for (int i = 0; i < 6; i++) {
+      &impl_->prefixSumAddPipeline,   &impl_->scatterPipeline,
+      &impl_->centroidPipeline};
+  for (int i = 0; i < 7; i++) {
     id<MTLFunction> fn = [impl_->library
         newFunctionWithName:[NSString stringWithUTF8String:spatialKernels[i]]];
     if (fn) {
@@ -443,6 +447,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
   allocIfNeeded(impl_->cellOffsetsBuffer, cellSize);
   allocIfNeeded(impl_->sortedParticlesBuffer, size);
+  allocIfNeeded(impl_->cellCentroidsBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->spatialHashUniformBuffer, sizeof(SpatialHashUniforms));
 
   // Density heatmap texture (256x256 R/W)
@@ -922,6 +927,22 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
         [comp endEncoding];
       }
+
+      // Phase 5: per-cell centroids (the local mass centre, for O(N) cohesion)
+      if (centroidPipeline && cellCentroidsBuffer) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:centroidPipeline];
+        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:1];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:2];
+        [comp setBuffer:cellCentroidsBuffer offset:0 atIndex:3];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
+        NSUInteger tgC = std::min(
+            (NSUInteger)256, centroidPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgC, 1, 1)];
+        [comp endEncoding];
+      }
     }
 
     // ── Density heatmap (compute from cell counts) ─────────────────
@@ -955,6 +976,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellStartsBuffer offset:0 atIndex:5];
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:6];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];
+        [comp setBuffer:cellCentroidsBuffer offset:0 atIndex:8];
       }
 
       NSUInteger tg =

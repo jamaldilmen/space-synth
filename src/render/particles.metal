@@ -159,6 +159,7 @@ kernel void compute_physics(
     device const uint* cellStarts [[buffer(5)]],
     device const uint* cellCounts [[buffer(6)]],
     constant SpatialHashUniforms& su [[buffer(7)]],
+    device const float4* cellCentroids [[buffer(8)]],
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -940,49 +941,42 @@ kernel void compute_physics(
     }
     p.entanglement.y = as_type<uint>(hardness);
 
-    // ── COHESION: at high hardness, a Hooke spring to a rest spacing binds
-    // nearby spatial-hash neighbours into a lattice. Beyond rest → ATTRACT
-    // (pulls gas in → CREATES density, the "not super dense" fix); below rest →
-    // repel (stable spacing). Self-contained, so hardening no longer needs the
-    // collisions toggle. Scaled by H so only crystallizing matter coheres, and
-    // gated by H so sparse gas pays no neighbour-scan cost. The gas→solid bond.
-    // DISABLED 2026-06-10: this per-particle 3×3×3 neighbour scan hangs the GPU
-    // at ~2M particles on play (the "collision wall" cost, ~6.9B iters/frame) →
-    // GPU watchdog → freeze. Runs regardless of the collisions toggle. Re-add
-    // only with a hard perf cap (cap neighbours / particle-count gate).
-    if (false && hardness > 0.02f && su.gridSize > 0) {
+    // ── COHESION (grid-based, O(N·27) — can't hit the collision wall) ────────
+    // Pull each hardened particle toward its LOCAL MASS CENTRE: the count-
+    // weighted centroid of the 3×3×3 neighbouring cells (precomputed per-cell in
+    // compute_cell_centroids → just 27 cell lookups here, NO per-pair neighbour
+    // loop, so it can never blow up like the old O(N·27·128) scan that froze the
+    // GPU). Only particles beyond a rest radius are pulled in → it densifies
+    // into stable clusters (surface tension) without collapsing. Scaled by H,
+    // gated by H so sparse/non-hardened matter pays nothing. CREATES density →
+    // the "not super dense" fix, independent of the collisions toggle.
+    if (hardness > 0.02f && su.gridSize > 0) {
         int ccx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int ccy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int ccz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
 
-        float cohRad  = 2.0f * su.cellSize;   // within the 3×3×3 reach
-        float cohRest = 0.6f * su.cellSize;   // lattice spacing (denser than a cell)
-        float cohStiff = 4.0f;                // spring constant (tune)
-        float3 cohF = float3(0.0f);
-        int cohCount = 0;
-
+        float3 massSum = float3(0.0f);
+        float  wSum    = 0.0f;
         for (int z = max(0, ccz - 1); z <= min(su.gridSize - 1, ccz + 1); z++) {
             for (int y = max(0, ccy - 1); y <= min(su.gridSize - 1, ccy + 1); y++) {
                 for (int x = max(0, ccx - 1); x <= min(su.gridSize - 1, ccx + 1); x++) {
                     uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
-                    uint cnt = min(cellCounts[cID], uint(MAX_PER_CELL));
-                    uint startIdx = cellStarts[cID];
-                    for (uint i = 0; i < cnt; i++) {
-                        Particle np = sortedParticles[startIdx + i];
-                        float3 rvec = float3(px - np.posW.x, py - np.posW.y, pz - np.posW.z);
-                        float d = length(rvec);
-                        if (d > 1e-5f && d < cohRad) {
-                            float strain = d - cohRest;       // + far → attract, − near → repel
-                            cohF += (-rvec / d) * strain;     // toward neighbour when far
-                            cohCount++;
-                        }
-                    }
+                    float4 c = cellCentroids[cID];   // xyz = centroid, w = count
+                    massSum += c.xyz * c.w;
+                    wSum    += c.w;
                 }
             }
         }
-        if (cohCount > 0) {
-            float3 cf = (cohF / float(cohCount)) * (cohStiff * hardness * dt);
-            shiftVx += cf.x; shiftVy += cf.y; shiftVz += cf.z;
+        if (wSum > 1.5f) {                            // need real neighbours
+            float3 localCenter = massSum / wSum;
+            float3 toC = localCenter - float3(px, py, pz);
+            float  d   = length(toC);
+            float  rest = 3.0f * su.cellSize;         // stable cluster scale
+            if (d > rest) {                            // pull only the outliers in
+                float cohStiff = 6.0f;
+                float3 cf = (toC / d) * (d - rest) * (cohStiff * hardness * dt);
+                shiftVx += cf.x; shiftVy += cf.y; shiftVz += cf.z;
+            }
         }
     }
 

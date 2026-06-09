@@ -278,3 +278,30 @@ kernel void scatter_particles(
         }
     }
 }
+
+// ── Per-cell centroid (for O(N) grid-based cohesion) ────────────────────────
+// One thread per cell: average the positions of the cell's particles from the
+// sorted buffer. Total work = N (each particle visited once) → O(N), no
+// per-particle neighbour loop. Cohesion then reads the 3×3×3 neighbouring
+// centroids to find the local mass centre and pulls toward it — bounded cost,
+// can't hit the collision wall. w = particle count (the weight). Scatter caps
+// at 32 written per cell, so we only average those.
+kernel void compute_cell_centroids(
+    device const Particle* sortedParticles [[buffer(0)]],
+    device const uint* cellStarts [[buffer(1)]],
+    device const uint* cellCounts [[buffer(2)]],
+    device float4* cellCentroids [[buffer(3)]],
+    constant SpatialHashUniforms& u [[buffer(4)]],
+    uint cid [[thread_position_in_grid]])
+{
+    uint totalCells = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
+    if (cid >= totalCells) return;
+    uint count = min(cellCounts[cid], 32u);   // scatter writes ≤32 per cell
+    if (count == 0u) { cellCentroids[cid] = float4(0.0f); return; }
+    uint start = cellStarts[cid];
+    float3 sum = float3(0.0f);
+    for (uint i = 0u; i < count; i++) {
+        sum += sortedParticles[start + i].posW.xyz;
+    }
+    cellCentroids[cid] = float4(sum / float(count), float(count));
+}

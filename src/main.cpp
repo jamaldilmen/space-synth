@@ -776,18 +776,22 @@ int main() {
         // sqrt(0.5/r_sim) derived from the Sgr A* anchor (geometry, not a calib).
         double vmax_c = (double)s.maxSpeed;   // innermost particle's orbital speed
         double vavg_c = (double)s.avgSpeed;   // field-mean orbital speed (reactive)
-        double tref   = SIM_TEMP_REF > 0 ? SIM_TEMP_REF : 1.0;
-        double tmax_K = T_DISK_OUTER_K + std::min((double)s.maxTemp / tref, 1.0) * (T_DISK_INNER_K - T_DISK_OUTER_K);
-        double tavg_K = T_DISK_OUTER_K + std::min((double)s.avgTemp / tref, 1.0) * (T_DISK_INNER_K - T_DISK_OUTER_K);
+        double tmax_K = (double)s.maxTemp;   // real virial temperature [K]
+        double tavg_K = (double)s.avgTemp;
+        auto stateOf = [](double T) -> const char * {
+          if (T < T_PLASMA_LO) return "gas";
+          if (T < T_FUSION_H)  return "plasma";
+          if (T < T_IRON_CORE) return "fusion-hot";
+          if (T < T_QGP)       return "plasma (extreme)";
+          return "quark-gluon";
+        };
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LIVE");
-        ImGui::Text("  Orbital v (inner): %.3f c   [real]", vmax_c);
-        ImGui::Text("  Orbital v (mean):  %.3f c   [real]", vavg_c);
-        ImGui::TextDisabled("  Peak temp:  %6.0f K   (provisional)", tmax_K);
-        ImGui::TextDisabled("  Mean temp:  %6.0f K   (provisional)", tavg_K);
-        // DIAGNOSTIC: raw sim telemetry
-        ImGui::TextDisabled("  [sim] orbV max=%.4f avg=%.4f", s.maxSpeed, s.avgSpeed);
-        ImGui::TextDisabled("  [sim] tmp  max=%.4f avg=%.4f  KE=%.2f", s.maxTemp, s.avgTemp, s.kineticEnergy);
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LIVE  [all real]");
+        ImGui::Text("  Orbital v (inner): %.3f c", vmax_c);
+        ImGui::Text("  Orbital v (mean):  %.3f c", vavg_c);
+        ImGui::Text("  Plasma T (inner):  %.2e K  [%s]", tmax_K, stateOf(tmax_K));
+        ImGui::Text("  Plasma T (mean):   %.2e K  [%s]", tavg_K, stateOf(tavg_K));
+        ImGui::TextDisabled("  [sim] orbV max=%.4f avg=%.4f  KE=%.2f", s.maxSpeed, s.avgSpeed, s.kineticEnergy);
         ImGui::Unindent();
       }
       ImGui::Spacing();

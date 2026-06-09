@@ -1312,16 +1312,20 @@ kernel void reduce_stats(
         mx = mass * vx;
         my = mass * vy;
         if (mass > 0.001f) {                 // skip wall particles
-            temp  = particles[id].prevW.w;   // temperature field
-            // REAL orbital velocity as a fraction of c: v/c = sqrt(r_g/r), and
-            // 1 sim unit = 2 r_g ⇒ v/c = sqrt(0.5 / r_sim). Pure geometry from
-            // the Sgr A* anchor — the real Keplerian/Schwarzschild orbital speed
-            // at this radius (reactive: mean drops as the field expands on play).
             float px = particles[id].posW.x;
             float py = particles[id].posW.y;
             float pz = particles[id].posW.z;
             float r_sim = sqrt(px*px + py*py + pz*pz);
+            // REAL orbital velocity as a fraction of c: v/c = sqrt(r_g/r), and
+            // 1 sim unit = 2 r_g ⇒ v/c = sqrt(0.5 / r_sim). Pure geometry from
+            // the Sgr A* anchor — the real Keplerian/Schwarzschild orbital speed
+            // at this radius (reactive: mean drops as the field expands on play).
             speed = (r_sim > 1e-4f) ? min(0.999f, sqrt(0.5f / r_sim)) : 0.0f;
+            // REAL virial plasma temperature: T = μ·m_p·v²/(3·k_B), v = orbital
+            // speed. With v/c=sqrt(0.5/r_sim) it reduces to T[K] = 1.089e12/r_sim.
+            // (μ=0.6 ionized plasma, m_p=1.673e-27, k_B=1.381e-23, c²=8.988e16).
+            // The honest Sgr A* RIAF: ~10^11 K mean → ~10^12 K (quark-gluon) inner.
+            temp  = (r_sim > 1e-4f) ? (1.089e12f / r_sim) : 0.0f;
             real  = true;
         }
     }

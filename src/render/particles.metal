@@ -946,7 +946,11 @@ kernel void compute_physics(
     // repel (stable spacing). Self-contained, so hardening no longer needs the
     // collisions toggle. Scaled by H so only crystallizing matter coheres, and
     // gated by H so sparse gas pays no neighbour-scan cost. The gas→solid bond.
-    if (hardness > 0.02f && su.gridSize > 0) {
+    // DISABLED 2026-06-10: this per-particle 3×3×3 neighbour scan hangs the GPU
+    // at ~2M particles on play (the "collision wall" cost, ~6.9B iters/frame) →
+    // GPU watchdog → freeze. Runs regardless of the collisions toggle. Re-add
+    // only with a hard perf cap (cap neighbours / particle-count gate).
+    if (false && hardness > 0.02f && su.gridSize > 0) {
         int ccx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int ccy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int ccz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);

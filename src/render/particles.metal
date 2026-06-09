@@ -920,6 +920,26 @@ kernel void compute_physics(
         p.entanglement.z = bestOrig;
     }
 
+    // ── CRYSTALLIZATION: density-driven continuous hardness (US2 transition) ──
+    // Local density (cellCounts) + dwell (slow ramp) → per-particle hardness H,
+    // stored as float bits in entanglement.y. As H→1 a particle freezes its
+    // degrees of freedom (velocity locks below; jitter dies) so a dense region
+    // held over TIME crystallizes into a still solid instead of shimmering;
+    // sparse (gas) stays free. The continuous gas→solid rung below our
+    // critical-density black hole. See [[space-synth-tube-crystallization]].
+    float hardness = as_type<float>(p.entanglement.y);
+    if (su.gridSize > 0 && u.envelopePhase > 2.5f) {
+        int hcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int hcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int hcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        uint hcID = uint((hcz * su.gridSize + hcy) * su.gridSize + hcx);
+        float hTarget = smoothstep(8.0f, 48.0f, float(cellCounts[hcID]));
+        hardness += (hTarget - hardness) * min(1.0f, 1.2f * dt); // dwell ~1-2s
+    } else {
+        hardness += (0.0f - hardness) * min(1.0f, 3.0f * dt);    // relax to gas
+    }
+    p.entanglement.y = as_type<uint>(hardness);
+
     // ── Störmer-Verlet integration (damped) ──────────────────────────
     // Restored natural damping without extra cosmic over-drag.
     // Jitter and collision forces are now visible again.
@@ -973,16 +993,15 @@ kernel void compute_physics(
         vpy *= 0.15f;
         vpz *= 0.15f;
     } else if (u.envelopePhase > 2.5f) {
-        // Sustain: CRYSTALLIZE over hold time. envelopeProgress ramps 0→1 the
-        // longer the note is held → damp velocity HARD so the particles lock
-        // into a stable lattice and only vibrate slowly (like atoms in a solid),
-        // instead of drifting with moving gaps. The spin is a render rotation
-        // now, so this freezes the matter WITHOUT killing the spin trails.
-        // 0.40 = heavy settle (loses ~60%/frame) → "slowly vibrating mass".
-        float harden = mix(1.0f, 0.40f, clamp(u.envelopeProgress, 0.0f, 1.0f));
-        vpx *= harden;
-        vpy *= harden;
-        vpz *= harden;
+        // Sustain: CRYSTALLIZE by LOCAL hardness (density + dwell), not a global
+        // envelope ramp. A dense region held over time has H→1 and locks its
+        // velocity hard → it freezes into a still solid; sparse stays mobile
+        // (gas). lock = 0.05 at full hardness (loses ~95%/frame). The render
+        // spin is a rotation now, so this freezes matter WITHOUT killing trails.
+        float lock = mix(1.0f, 0.05f, hardness);
+        vpx *= lock;
+        vpy *= lock;
+        vpz *= lock;
     }
 
     // ── VJ Silence Damping ──────────────────────────────────────────────
@@ -1010,7 +1029,7 @@ kernel void compute_physics(
         float3 jit = float3(noise(id, u.frameCounter + 11u),
                             noise(id + 7919u, u.frameCounter + 23u),
                             noise(id + 104729u, u.frameCounter + 37u));
-        finalV += jit * (u.jitterFactor * 0.02f);
+        finalV += jit * (u.jitterFactor * 0.02f) * (1.0f - hardness); // crystallized matter stops shimmering
     }
 
     // Final position integration

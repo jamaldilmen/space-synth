@@ -931,10 +931,13 @@ kernel void compute_physics(
         vpy *= 0.15f;
         vpz *= 0.15f;
     } else if (u.envelopePhase > 2.5f) {
-        // Sustain: HARDEN over hold time. envelopeProgress ramps 0→1 the longer
-        // the note is held → damp velocity increasingly so motion slows, the
-        // light trails shorten, and the shape sets/crisps in place.
-        float harden = mix(1.0f, 0.80f, clamp(u.envelopeProgress, 0.0f, 1.0f));
+        // Sustain: CRYSTALLIZE over hold time. envelopeProgress ramps 0→1 the
+        // longer the note is held → damp velocity HARD so the particles lock
+        // into a stable lattice and only vibrate slowly (like atoms in a solid),
+        // instead of drifting with moving gaps. The spin is a render rotation
+        // now, so this freezes the matter WITHOUT killing the spin trails.
+        // 0.40 = heavy settle (loses ~60%/frame) → "slowly vibrating mass".
+        float harden = mix(1.0f, 0.40f, clamp(u.envelopeProgress, 0.0f, 1.0f));
         vpx *= harden;
         vpy *= harden;
         vpz *= harden;

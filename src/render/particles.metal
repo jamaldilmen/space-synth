@@ -1313,7 +1313,15 @@ kernel void reduce_stats(
         my = mass * vy;
         if (mass > 0.001f) {                 // skip wall particles
             temp  = particles[id].prevW.w;   // temperature field
-            speed = sqrt(vx*vx + vy*vy + vz*vz);
+            // REAL orbital velocity as a fraction of c: v/c = sqrt(r_g/r), and
+            // 1 sim unit = 2 r_g ⇒ v/c = sqrt(0.5 / r_sim). Pure geometry from
+            // the Sgr A* anchor — the real Keplerian/Schwarzschild orbital speed
+            // at this radius (reactive: mean drops as the field expands on play).
+            float px = particles[id].posW.x;
+            float py = particles[id].posW.y;
+            float pz = particles[id].posW.z;
+            float r_sim = sqrt(px*px + py*py + pz*pz);
+            speed = (r_sim > 1e-4f) ? min(0.999f, sqrt(0.5f / r_sim)) : 0.0f;
             real  = true;
         }
     }

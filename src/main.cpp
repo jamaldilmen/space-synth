@@ -772,20 +772,22 @@ int main() {
         // ── LIVE telemetry — the actual running sim, mapped to real units.
         // Provisional calibration (see physics_constants.h); reacts on play.
         auto s = renderer.getPhysicsStats();
-        double vmax_c = std::min(0.999, (double)s.maxSpeed * SIM_V_TO_FRAC_C);
-        double vavg_c = std::min(0.999, (double)s.avgSpeed * SIM_V_TO_FRAC_C);
+        // Velocity is now REAL: the stats "speed" field holds the orbital v/c =
+        // sqrt(0.5/r_sim) derived from the Sgr A* anchor (geometry, not a calib).
+        double vmax_c = (double)s.maxSpeed;   // innermost particle's orbital speed
+        double vavg_c = (double)s.avgSpeed;   // field-mean orbital speed (reactive)
         double tref   = SIM_TEMP_REF > 0 ? SIM_TEMP_REF : 1.0;
         double tmax_K = T_DISK_OUTER_K + std::min((double)s.maxTemp / tref, 1.0) * (T_DISK_INNER_K - T_DISK_OUTER_K);
         double tavg_K = T_DISK_OUTER_K + std::min((double)s.avgTemp / tref, 1.0) * (T_DISK_INNER_K - T_DISK_OUTER_K);
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LIVE  (provisional calib.)");
-        ImGui::Text("  Max velocity: %.3f c", vmax_c);
-        ImGui::Text("  Avg velocity: %.3f c", vavg_c);
-        ImGui::Text("  Peak temp:    %6.0f K", tmax_K);
-        ImGui::Text("  Mean temp:    %6.0f K", tavg_K);
-        // DIAGNOSTIC: raw sim telemetry (to see if the stats move at all)
-        ImGui::TextDisabled("  [sim] spd max=%.4f avg=%.4f", s.maxSpeed, s.avgSpeed);
-        ImGui::TextDisabled("  [sim] tmp max=%.4f avg=%.4f  KE=%.2f", s.maxTemp, s.avgTemp, s.kineticEnergy);
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LIVE");
+        ImGui::Text("  Orbital v (inner): %.3f c   [real]", vmax_c);
+        ImGui::Text("  Orbital v (mean):  %.3f c   [real]", vavg_c);
+        ImGui::TextDisabled("  Peak temp:  %6.0f K   (provisional)", tmax_K);
+        ImGui::TextDisabled("  Mean temp:  %6.0f K   (provisional)", tavg_K);
+        // DIAGNOSTIC: raw sim telemetry
+        ImGui::TextDisabled("  [sim] orbV max=%.4f avg=%.4f", s.maxSpeed, s.avgSpeed);
+        ImGui::TextDisabled("  [sim] tmp  max=%.4f avg=%.4f  KE=%.2f", s.maxTemp, s.avgTemp, s.kineticEnergy);
         ImGui::Unindent();
       }
       ImGui::Spacing();

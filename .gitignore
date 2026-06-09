@@ -11,3 +11,6 @@ cmake-build-*/
 xcuserdata/
 DerivedData/
 third_party/syphon/
+
+# secrets — never commit
+.env

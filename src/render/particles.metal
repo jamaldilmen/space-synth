@@ -100,6 +100,18 @@ static float noise(uint id, uint frame) {
     return (float(x & 0x7FFFu) / 32767.0f) - 0.5f;
 }
 
+// Bit-level non-finite test (exponent all-ones ⇒ inf or NaN). Metal compiles
+// with fast-math, which makes isnan()/isinf() unreliable — integer bits don't
+// lie and can't be optimized away.
+static bool notFinite3(float3 v) {
+    uint3 b = as_type<uint3>(v);
+    return any(((b >> 23) & 0x000000FFu) == 0x000000FFu);
+}
+static bool notFinite1(float v) {
+    uint b = as_type<uint>(v);
+    return ((b >> 23) & 0x000000FFu) == 0x000000FFu;
+}
+
 // Collision constants
 constant int MAX_PER_CELL = 128; // Was 32 (sized for 1M); bumped for 5M+ so
                                   // dense disk regions don't clip the neighbor
@@ -579,6 +591,7 @@ kernel void compute_physics(
                         float cm = float(cellCounts[cID]);   // full count = cell mass
                         if (cm < 0.5f) continue;
                         float3 cpos = cellCentroids[cID].xyz;
+                        if (notFinite3(cpos)) continue;      // poisoned cell: don't ingest
                         nearM  += cm;
                         nearMP += cpos * cm;
                         float3 toC = cpos - gpos;
@@ -1376,6 +1389,27 @@ kernel void compute_physics(
 
     // ── Write back ───────────────────────────────────────────────────
     if (mass > 0.0f) {
+        // NaN/INF TRIPWIRE — self-healing field. The play pipeline can emit
+        // occasional non-finite particles (float-edge cases at star-map radii);
+        // harmless when particles were independent, but the self-gravity
+        // near-field READS neighbour centroids, so one bad star infects its
+        // 27 cells and the whole field dies in seconds (measured: every
+        // play→NaN blackout today). Containment: a star whose state goes
+        // non-finite is respawned at its stored star-map home, at rest, cold —
+        // same frame, before it can poison a centroid. Source rate of the
+        // play-pipeline NaNs still TODO (the r≤3-domain voice-math audit).
+        if (notFinite3(nextPos) || notFinite3(finalV)) {
+            float r_home = p.spinW.x;
+            float theta  = as_type<float>(p.entanglement.z);
+            float aphi   = as_type<float>(p.entanglement.w);
+            float st = sin(theta);
+            float3 home = r_home * float3(st * cos(aphi), st * sin(aphi), cos(theta));
+            p.prevW = float4(home, 0.0f);   // zero velocity, cold
+            p.posW  = float4(home, mass);
+            p.velW  = float4(0.0f);
+            return;
+        }
+        if (notFinite1(currentTemp)) currentTemp = 0.0f; // T⁴ overflow → inf−inf
         p.prevW = float4(px, py, pz, currentTemp);
         p.posW = float4(nextPos, mass);
         // Wrap phase into [0, 2π) before packing — a clamp here saturated every

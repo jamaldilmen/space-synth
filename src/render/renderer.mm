@@ -889,11 +889,23 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // Upload spatial hash uniforms
       SpatialHashUniforms su = {};
       su.gridSize = kGridSize;
-      // Particle field extends to ~Gaussian σ=1 spawn → 99% live within
-      // r=3 sim coords. Hash must cover [-3, +3] so out-of-unit-cube
-      // particles aren't squashed into edge cells (which made the raytracer
-      // sample miss the entire disk).
-      su.halfExtent = 3.0f;
+      // PHASE-SWITCHED EXTENT (the hash is rebuilt from zero every frame, so
+      // the grid can resize freely between frames):
+      //   PLAY (decay/sustain): ±3 — the Chladni tube. Eruptions, hardening
+      //   and the disk machinery keep their tuned fine cells (6/128 ≈ 0.047).
+      //   REST + RELEASE: ±64 — THE FIELD. The star map lives at r≈40-70;
+      //   with the old fixed ±3 every grid force (relaxation, mergers,
+      //   near-field gravity, density signal) existed only in a central
+      //   sliver, so the post-release remnant could never dissipate or eat —
+      //   it just wobbled, and the hole had no path to exist. ±64 covers the
+      //   whole spawn box (|coords| ≤ 42) with drift margin; cells are 1.0
+      //   sim — coarser viscosity/gravity sampling, but contact mergers stay
+      //   exact (the d² test uses real stellar radii, the cell only scopes
+      //   the partner search). The raytracer reads halfExtent from the same
+      //   uniforms and scales with it.
+      float ph = physicsUniforms.envelopePhase;
+      bool tubePhase = (ph >= 1.5f && ph < 3.5f);
+      su.halfExtent = tubePhase ? 3.0f : 64.0f;
       su.particleCount = particleCount;
       su.cellSize = 2.0f * su.halfExtent / (float)kGridSize;
       su.invCellSize = (float)kGridSize / (2.0f * su.halfExtent);
@@ -1141,10 +1153,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float totalKE = 0, totalMX = 0, totalMY = 0;
         float totalSumTemp = 0, totalSumSpeed = 0;
         float gMaxTemp = -1e9f, gMaxSpeed = -1e9f;
-        float totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
-        float totalSM = 0;
-        float totalSR = 0, gMaxR = -1e9f;
-        float totalEX = 0, totalEY = 0, totalEZ = 0, totalEC = 0;
+        // double accumulation: at 5M+ stars float32 partial-sum rounding read
+        // as ±0.2% fake mass loss in the conservation watchdog.
+        double totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
+        double totalSM = 0;
+        double totalSR = 0;
+        float gMaxR = -1e9f;
+        double totalEX = 0, totalEY = 0, totalEZ = 0, totalEC = 0;
         // Only sum the threadgroups actually dispatched this frame. The kernel
         // writes one partial per ceil(particleCount/tg) groups; numThreadgroups
         // is the buffer-alloc size (capacity), so looping it summed STALE

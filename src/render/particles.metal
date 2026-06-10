@@ -681,14 +681,23 @@ kernel void compute_physics(
         int rcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         uint rcID = uint((rcz * su.gridSize + rcy) * su.gridSize + rcx);
         float cnt = float(cellCounts[rcID]);
-        if (cnt >= 16.0f) {
+        if (cnt >= 2.0f) {
             float3 vMean = cellVelocities[rcID].xyz;
             if (!notFinite3(vMean)) {
-                // Collision rate ramps with density: 0 at 16/cell → full at
-                // 128/cell. Full rate = 2/s (dispersion e-folds in ~0.5 s in
-                // the densest core; the disk emerges over seconds as mass
-                // piles up). vMean and vp are both per-frame displacements.
-                float relax = smoothstep(16.0f, 128.0f, cnt) * (2.0f * dt);
+                // CONTINUOUS in density — no activation cliff. The old
+                // smoothstep(16,128) floor was why the post-release remnant
+                // wobbled forever: at 1-2 stars/cell dissipation was exactly
+                // zero, bound orbits never shrank, and the density needed to
+                // wake the sink could never build (chicken-and-egg). Real
+                // two-body relaxation has no threshold — its RATE just scales
+                // with density (∝ n·σ·v). rate = (cnt/128)·2/s, capped at
+                // 2/s: ~0.03/s e-fold in the diffuse remnant (visible sinking
+                // within a minute) → runaway as density grows → core collapse
+                // → contact mergers → the hole. Needs ≥2 stars (a cell's own
+                // mean is a no-op for its only member). Per-cell momentum
+                // conserved exactly, as before — rotation survives, random
+                // motion thermalizes into the disk.
+                float relax = min(cnt * (1.0f / 128.0f), 1.0f) * (2.0f * dt);
                 shiftVx += (vMean.x - vpx) * relax;
                 shiftVy += (vMean.y - vpy) * relax;
                 shiftVz += (vMean.z - vpz) * relax;

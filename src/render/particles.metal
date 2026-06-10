@@ -73,6 +73,12 @@ struct PhysicsUniforms {
     float comY;                  // 116
     float comZ;                  // 120
     float gravGM;                // 124: G_sim·M_total — 0 disables self-gravity
+
+    // ═══ EMERGENT-BH SIGNAL (Step 2) ═══
+    float bhX;                   // 128: densest-region position (1-frame lag)
+    float bhY;                   // 132
+    float bhZ;                   // 136
+    float bhMass;                // 140: stars enclosed within R_ENC of bh pos
 };
 
 struct SpatialHashUniforms {
@@ -179,6 +185,7 @@ kernel void compute_physics(
     device const uint* cellCounts [[buffer(6)]],
     constant SpatialHashUniforms& su [[buffer(7)]],
     device const float4* cellCentroids [[buffer(8)]],
+    device const float4* cellVelocities [[buffer(9)]],
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -221,6 +228,12 @@ kernel void compute_physics(
     float fricRest = pow(0.99f, dt);
     float baseFric = mix(fricRest, fricPlay,
                          clamp(u.totalAmplitude * 4.0f, 0.0f, 1.0f));
+    // RELEASE = heavy-drag inspiral. Physically: the post-supernova gas is
+    // shocked and dissipative — orbital energy bleeds off fast while the
+    // orbital DIRECTION (angular momentum) is untouched, so matter visibly
+    // spirals onto the hole over ~tens of seconds and settles into the disk.
+    // This drag (e-fold ~20 s) replaces the deleted scripted collapse.
+    if (u.envelopePhase > 3.5f) baseFric = pow(0.95f, dt);
 
     float dynamicFric = baseFric;
 
@@ -634,6 +647,42 @@ kernel void compute_physics(
         shiftVx += gkick.x;
         shiftVy += gkick.y;
         shiftVz += gkick.z;
+    }
+
+    // ── COLLISIONAL RELAXATION (always-on — the ACCRETION-DISK force) ────────
+    // Dense matter is collisional: stars/gas in a crowded cell exchange
+    // momentum until their RANDOM motions thermalize away, while the bulk
+    // flow (net rotation = angular momentum) survives. Numerically: relax
+    // each star's velocity toward its cell's MEAN velocity, rate ∝ density.
+    // Per-cell momentum is conserved exactly (every member relaxes toward
+    // the shared mean by the same fraction), so rotation is untouched —
+    // dispersion dies, and the gathered ball around the hole settles into a
+    // thin rotating DISK in the plane ⊥ its angular momentum. This is how a
+    // real accretion disk forms (energy dissipates, L conserved) — physics,
+    // not a render aesthetic. Sparse regions (< ~16/cell) feel nothing.
+    // Must sit BEFORE the lifecycle capture so it acts at rest.
+    if (mass > 0.001f && mass < 1000.0f && su.gridSize > 0 &&
+        !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) && // attack: hash stale
+        fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+        fabs(pz) < su.halfExtent) {
+        int rcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int rcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int rcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        uint rcID = uint((rcz * su.gridSize + rcy) * su.gridSize + rcx);
+        float cnt = float(cellCounts[rcID]);
+        if (cnt >= 16.0f) {
+            float3 vMean = cellVelocities[rcID].xyz;
+            if (!notFinite3(vMean)) {
+                // Collision rate ramps with density: 0 at 16/cell → full at
+                // 128/cell. Full rate = 2/s (dispersion e-folds in ~0.5 s in
+                // the densest core; the disk emerges over seconds as mass
+                // piles up). vMean and vp are both per-frame displacements.
+                float relax = smoothstep(16.0f, 128.0f, cnt) * (2.0f * dt);
+                shiftVx += (vMean.x - vpx) * relax;
+                shiftVy += (vMean.y - vpy) * relax;
+                shiftVz += (vMean.z - vpz) * relax;
+            }
+        }
     }
 
     // Save lifecycle-only shifts before the force pipeline contaminates them
@@ -1107,15 +1156,13 @@ kernel void compute_physics(
     // released does the hole pull matter in (the collapse gesture). At rest the
     // ONLY attraction is particle↔particle (the grid cohesion above), which lets
     // mass slowly clump from where it is, NOT pull toward a fake origin/ball.
-    if (mass > 0.001f && u.envelopePhase > 3.5f) {
-        float gr2   = px * px + py * py + pz * pz;
-        float gsoft = gr2 + 0.25f;
-        float ginvR3 = rsqrt(gsoft) / gsoft;            // 1/(r²+ε²)^1.5
-        float Gstr  = 8.0f * clamp(u.envelopeProgress, 0.0f, 1.0f); // release: collapse to hole
-        shiftVx -= px * Gstr * ginvR3 * dt;
-        shiftVy -= py * Gstr * ginvR3 * dt;
-        shiftVz -= pz * Gstr * ginvR3 * dt;
-    }
+    // Legacy release-collapse REMOVED (Gstr=8 pull to the ORIGIN, ~120×
+    // stronger than labeled in this integrator's units). It was the "whole
+    // box falls down" yank and the second L-killer: a pure radial force
+    // toward a fixed point erases orbital structure. The always-on
+    // self-gravity (above, toward the real centre of mass) is the only
+    // attractor now; release just turns the drag up (see baseFric) so the
+    // same gravity reads as a watchable spiral-in.
 
     // ── Störmer-Verlet integration (damped) ──────────────────────────
     // Restored natural damping without extra cosmic over-drag.
@@ -1144,10 +1191,12 @@ kernel void compute_physics(
     // Release: kill momentum so collapse tracks the envelope fade
     // Sustain: let it breathe — no damping
     if (u.envelopePhase > 3.5f) {
-        // Release: kill momentum so collapse tracks the envelope fade
-        vpx *= 0.15f;
-        vpy *= 0.15f;
-        vpz *= 0.15f;
+        // Release momentum-kill REMOVED (was vp ×= 0.15). It destroyed the
+        // angular momentum of everything falling toward the hole, so matter
+        // arrived with L≈0 and could only form a dead BALL — never a disk.
+        // Release is now a drag-driven gravitational inspiral (see baseFric):
+        // |v| decays, the ORBITAL DIRECTION survives, matter spirals in and
+        // settles into the accretion disk. Dissipation, not amputation.
     } else if (u.envelopePhase > 2.5f) {
         // Sustain: CRYSTALLIZE by LOCAL hardness (density + dwell), not a global
         // envelope ramp. A dense region held over time has H→1 and locks its
@@ -1281,7 +1330,11 @@ kernel void compute_physics(
         if (ph < 0.5f)        dynamic_cap = STAR_MAP_CAP;                                       // silence = wide STAR MAP (overflows frame)
         else if (ph < 1.5f)   dynamic_cap = mix(STAR_MAP_CAP, ORBIT_R_CHLADNI, ph - 0.5f);      // attack: stars rush IN toward the Chladni/supernova
         else if (ph < 3.5f)   dynamic_cap = ORBIT_R_CHLADNI;                                    // decay/sustain
-        else                  dynamic_cap = mix(ORBIT_R_CHLADNI, 0.7f, clamp(u.envelopeProgress, 0.0f, 1.0f)); // release: collapse CHLADNI→ tight onto the BH horizon
+        else                  dynamic_cap = STAR_MAP_CAP; // release: NO scripted crush — the
+                                                          // collapse onto the hole is gravity's
+                                                          // job (drag-driven inspiral), and the
+                                                          // XY squeeze was the third L-killer
+                                                          // (it erased orbits → ball, no disk)
         // Yield the cap while spinning — otherwise the tumbling body periodically
         // hits the XY cap and gets yanked, flickering between two states.
         dynamic_cap += (1.0f - spinSuppress) * 8.0f;
@@ -1443,6 +1496,10 @@ struct PartialStats {
     float sumR;      // Σ |r| of live stars (→ mean radius)
     float maxR;      // farthest live star
     float pad2, pad3;
+    float sumEncX;   // Σ position of stars within R_ENC of the BH candidate
+    float sumEncY;   //   → enclosed mass (count) + refined core COM
+    float sumEncZ;
+    float sumEncCount;
 };
 
 kernel void reduce_stats(
@@ -1467,6 +1524,10 @@ kernel void reduce_stats(
     threadgroup float sharedCT[256];  // live star count
     threadgroup float sharedSR[256];  // Σ radius
     threadgroup float sharedMR[256];  // max radius
+    threadgroup float sharedEX[256];  // Σ pos within R_ENC of BH candidate
+    threadgroup float sharedEY[256];
+    threadgroup float sharedEZ[256];
+    threadgroup float sharedEC[256];  // count within R_ENC
 
     float ke = 0.0f, mx = 0.0f, my = 0.0f;
     float temp = 0.0f, speed = 0.0f;
@@ -1515,6 +1576,16 @@ kernel void reduce_stats(
     float lr = length(lpos);
     sharedSR[tid] = real ? lr : 0.0f;
     sharedMR[tid] = real ? lr : -1e9f;
+    // Emergent-BH enclosure (Step 2): R_ENC = 0.5 sim units around the
+    // densest region (u.bh*, 1-frame lag). Enclosed COUNT is the enclosed
+    // stellar mass in M_sun (1 star = 1 M_sun); the geometric BH criterion
+    // (Step 3) compares it against M_crit(R_ENC) = R_ENC·unit/r_s(M_sun).
+    float3 encD = lpos - float3(u.bhX, u.bhY, u.bhZ);
+    bool enc = real && (dot(encD, encD) < 0.25f);   // R_ENC² = 0.25
+    sharedEX[tid] = enc ? lpos.x : 0.0f;
+    sharedEY[tid] = enc ? lpos.y : 0.0f;
+    sharedEZ[tid] = enc ? lpos.z : 0.0f;
+    sharedEC[tid] = enc ? 1.0f : 0.0f;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
@@ -1529,6 +1600,10 @@ kernel void reduce_stats(
             sharedPZ[tid] += sharedPZ[tid + stride];
             sharedCT[tid] += sharedCT[tid + stride];
             sharedSR[tid] += sharedSR[tid + stride];
+            sharedEX[tid] += sharedEX[tid + stride];
+            sharedEY[tid] += sharedEY[tid + stride];
+            sharedEZ[tid] += sharedEZ[tid + stride];
+            sharedEC[tid] += sharedEC[tid + stride];
             sharedMR[tid]  = max(sharedMR[tid], sharedMR[tid + stride]);
             sharedMT[tid]  = max(sharedMT[tid], sharedMT[tid + stride]);
             sharedMS[tid]  = max(sharedMS[tid], sharedMS[tid + stride]);
@@ -1550,5 +1625,9 @@ kernel void reduce_stats(
         partialSums[tgId].sumCount = sharedCT[0];
         partialSums[tgId].sumR     = sharedSR[0];
         partialSums[tgId].maxR     = sharedMR[0];
+        partialSums[tgId].sumEncX  = sharedEX[0];
+        partialSums[tgId].sumEncY  = sharedEY[0];
+        partialSums[tgId].sumEncZ  = sharedEZ[0];
+        partialSums[tgId].sumEncCount = sharedEC[0];
     }
 }

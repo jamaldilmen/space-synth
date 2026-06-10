@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "core/units.h"
 #include "backends/imgui_impl_metal.h"
 #include "imgui.h"
 #include <Metal/Metal.h>
@@ -49,6 +50,7 @@ struct Renderer::Impl {
 
   // Conservation law reduction
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
+  id<MTLComputePipelineState> reduceCellMaxPipeline = nil;
 
   id<MTLBuffer> particleBuffer = nil;
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
@@ -71,6 +73,8 @@ struct Renderer::Impl {
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
   id<MTLBuffer> sortedParticlesBuffer = nil; // particle data in cell order
   id<MTLBuffer> cellCentroidsBuffer = nil;   // float4 per cell: xyz centroid, w count
+  id<MTLBuffer> cellVelocitiesBuffer = nil;  // float4 per cell: xyz mean velocity (per-frame)
+  id<MTLBuffer> cellMaxPartialsBuffer = nil; // {count,cid} per threadgroup (densest cell)
   id<MTLBuffer> spatialHashUniformBuffer = nil;
 
   // Stats readback (partial sums from GPU reduction)
@@ -82,11 +86,16 @@ struct Renderer::Impl {
   // mass + live star count. Feeds the self-gravity far-field monopole.
   float liveComX = 0.0f, liveComY = 0.0f, liveComZ = 0.0f;
   float liveCount = 0.0f;
-  // G_sim·M_total for the always-on self-gravity. Calibrated so the untouched
-  // star map (box half-extent 42) drifts inward over MINUTES: a(r) = GM/r²
-  // → a(20) ≈ 0.0075, free-fall from mid-field ≈ 1–2 min. PLACEHOLDER until
-  // the Step-5 NASA pass anchors it to Sgr A* real units. 0 = gravity off.
-  static constexpr float kSelfGravGM = 3.0f;
+  // Emergent-BH signal (Step 2, 1-frame lag): position of the densest
+  // region + the stellar mass enclosed within R_ENC of it. The hole's
+  // existence/strength derives from THIS, not from envelope phases.
+  float bhPosX = 0.0f, bhPosY = 0.0f, bhPosZ = 0.0f;
+  float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
+  float bhStrength = 0.0f;    // r_s(M_enc)/R_ENC — 0..1, ≥0.9 = the hole exists
+  uint32_t bhPeakCount = 0;   // densest single cell (saturates at 128)
+  // G_sim·M_total is DERIVED, not tuned: N stars × 1 M_sun each, through the
+  // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
+  // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
   bool collisionsEnabled = false;
   bool bondNetworkEnabled = false;
 
@@ -235,6 +244,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
                                                      error:&error];
     if (error)
       NSLog(@"Density pipeline error: %@", error);
+  }
+
+  // ── Densest-cell reduce pipeline (emergent-BH signal) ───────────────
+  id<MTLFunction> cellMaxFunc =
+      [impl_->library newFunctionWithName:@"reduce_cell_max"];
+  if (cellMaxFunc) {
+    impl_->reduceCellMaxPipeline =
+        [impl_->device newComputePipelineStateWithFunction:cellMaxFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Cell-max pipeline error: %@", error);
   }
 
   // ── Stats reduction pipeline ────────────────────────────────────────
@@ -458,6 +478,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellOffsetsBuffer, cellSize);
   allocIfNeeded(impl_->sortedParticlesBuffer, size);
   allocIfNeeded(impl_->cellCentroidsBuffer, Impl::kTotalCells * 16); // float4/cell
+  allocIfNeeded(impl_->cellVelocitiesBuffer, Impl::kTotalCells * 16); // float4/cell
+  allocIfNeeded(impl_->cellMaxPartialsBuffer,
+                ((Impl::kTotalCells + 255) / 256) * 8); // {count,cid}/group
   allocIfNeeded(impl_->spatialHashUniformBuffer, sizeof(SpatialHashUniforms));
 
   // Density heatmap texture (256x256 R/W)
@@ -486,9 +509,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
     }
     impl_->numThreadgroups = (count + (int)tgCap - 1) / (int)tgCap;
   }
-  // 64 bytes = 16 floats per threadgroup, must match PartialStats in
-  // particles.metal (8 stats + COM/live-count + radius fields).
-  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 64);
+  // 80 bytes = 20 floats per threadgroup, must match PartialStats in
+  // particles.metal (8 stats + COM/live-count + radius + BH-enclosure).
+  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 80);
 }
 
 void Renderer::resetParticles() {
@@ -687,6 +710,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.spinY = config.spinY;
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
+  cam.bhStrength = impl_->bhStrength;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -777,6 +801,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.spinY = config.spinY;
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
+  cam.bhStrength = impl_->bhStrength;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -795,13 +820,18 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       resetPending = false;
     }
 
-    // SELF-GRAVITY uniforms: last frame's COM + the calibrated G·M_total.
+    // SELF-GRAVITY uniforms: last frame's COM + the DERIVED G·M_total
+    // (N × 1 M_sun through the Sgr A* anchor + time-lapse — see units.h).
     // Set here (not in computeStep) — they're renderer-internal state from
     // the stats readback, and computeStep wholesale-resets physicsUniforms.
     physicsUniforms.comX = liveComX;
     physicsUniforms.comY = liveComY;
     physicsUniforms.comZ = liveComZ;
-    physicsUniforms.gravGM = kSelfGravGM;
+    physicsUniforms.gravGM = (float)space::units::gmSim((double)particleCount);
+    physicsUniforms.bhX = bhPosX;
+    physicsUniforms.bhY = bhPosY;
+    physicsUniforms.bhZ = bhPosZ;
+    physicsUniforms.bhMass = bhMassEnc;
 
     memcpy(uniformBuffer[frameIdx].contents, &physicsUniforms,
            sizeof(physicsUniforms));
@@ -967,10 +997,25 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:2];
         [comp setBuffer:cellCentroidsBuffer offset:0 atIndex:3];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
+        [comp setBuffer:cellVelocitiesBuffer offset:0 atIndex:5];
         NSUInteger tgC = std::min(
             (NSUInteger)256, centroidPipeline.maxTotalThreadsPerThreadgroup);
         [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(tgC, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
+      if (reduceCellMaxPipeline && cellMaxPartialsBuffer) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:reduceCellMaxPipeline];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellMaxPartialsBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        NSUInteger tgM = std::min(
+            (NSUInteger)256, reduceCellMaxPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgM, 1, 1)];
         [comp endEncoding];
       }
     }
@@ -1007,6 +1052,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:6];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];
         [comp setBuffer:cellCentroidsBuffer offset:0 atIndex:8];
+        [comp setBuffer:cellVelocitiesBuffer offset:0 atIndex:9];
       }
 
       NSUInteger tg =
@@ -1039,6 +1085,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           float sumTemp, maxTemp, sumSpeed, maxSpeed;
           float sumPx, sumPy, sumPz, sumCount;
           float sumR, maxR, pad2, pad3;
+          float sumEncX, sumEncY, sumEncZ, sumEncCount;
         };
         const PartialStats *sums =
             (const PartialStats *)partialSumsBuffer.contents;
@@ -1047,6 +1094,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float gMaxTemp = -1e9f, gMaxSpeed = -1e9f;
         float totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
         float totalSR = 0, gMaxR = -1e9f;
+        float totalEX = 0, totalEY = 0, totalEZ = 0, totalEC = 0;
         // Only sum the threadgroups actually dispatched this frame. The kernel
         // writes one partial per ceil(particleCount/tg) groups; numThreadgroups
         // is the buffer-alloc size (capacity), so looping it summed STALE
@@ -1065,6 +1113,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           totalCT += sums[i].sumCount;
           totalSR += sums[i].sumR;
           if (sums[i].maxR > gMaxR) gMaxR = sums[i].maxR;
+          totalEX += sums[i].sumEncX;
+          totalEY += sums[i].sumEncY;
+          totalEZ += sums[i].sumEncZ;
+          totalEC += sums[i].sumEncCount;
           if (sums[i].maxTemp > gMaxTemp) gMaxTemp = sums[i].maxTemp;
           if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
         }
@@ -1077,16 +1129,37 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           liveComZ = totalPZ / totalCT;
           liveCount = totalCT;
         }
+        // Emergent-BH enclosure (Step 2): stars within R_ENC of the BH
+        // candidate, counted by the same reduce → enclosed mass + refined
+        // core position (its COM). Saturation-free (per-cell counts cap at
+        // 128, particle counting doesn't).
+        if (totalEC > 0.5f && std::isfinite(totalEX) && std::isfinite(totalEY) &&
+            std::isfinite(totalEZ)) {
+          bhMassEnc = totalEC;
+          if (totalEC > 1000.0f) { // enough mass: self-refine the core position
+            bhPosX = totalEX / totalEC;
+            bhPosY = totalEY / totalEC;
+            bhPosZ = totalEZ / totalEC;
+          }
+        } else {
+          bhMassEnc = 0.0f;
+        }
+        // The geometric criterion: is the enclosed mass inside its own
+        // Schwarzschild radius? (smoothed: lensing scales below 1)
+        bhStrength = (float)(bhMassEnc * space::units::kRsSimPerMsun /
+                             space::units::kREnc);
+
         // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
         // particle count and COM ≈ 0 at spawn, else the 48B reduce is broken.
         if ((physicsUniforms.frameCounter % 240u) == 0u) {
           fprintf(stderr,
                   "[GRAV] live=%.0f com=(%.2f %.2f %.2f) meanR=%.2f maxR=%.1f "
-                  "phase=%.1f prog=%.2f amp=%.3f\n",
+                  "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
                   liveCount, liveComX, liveComY, liveComZ,
                   (totalCT > 0.5f) ? (totalSR / totalCT) : -1.0f, gMaxR,
-                  physicsUniforms.envelopePhase, physicsUniforms.envelopeProgress,
-                  physicsUniforms.totalAmplitude);
+                  physicsUniforms.envelopePhase,
+                  physicsUniforms.totalAmplitude, physicsUniforms.gravGM,
+                  bhPosX, bhPosY, bhPosZ, bhMassEnc, bhPeakCount);
         }
         latestStats.kineticEnergy = totalKE;
         latestStats.momentumX = totalMX;
@@ -1104,6 +1177,32 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         } else {
           latestStats.errorState = 0;
         }
+      }
+    }
+
+    // ── Densest-cell readback (Step 2, 1-frame lag): seeds/locates the
+    // BH-candidate position. The enclosure COM (above) refines it once
+    // real mass gathers; the raw peak cell is the cold-start seed.
+    if (reduceCellMaxPipeline && cellMaxPartialsBuffer) {
+      struct CellMaxPartial { uint32_t count, cid; };
+      const CellMaxPartial *cm =
+          (const CellMaxPartial *)cellMaxPartialsBuffer.contents;
+      int nTG = (Impl::kTotalCells + 255) / 256;
+      uint32_t best = 0, bestCid = 0;
+      for (int i = 0; i < nTG; i++) {
+        if (cm[i].count > best) { best = cm[i].count; bestCid = cm[i].cid; }
+      }
+      bhPeakCount = best;
+      if (best > 0 && bhMassEnc <= 1000.0f) {
+        // No established core yet → point the enclosure at the raw peak.
+        const float halfExt = 3.0f; // must match the hash build above
+        const float cellSz = 2.0f * halfExt / (float)Impl::kGridSize;
+        int cx = (int)(bestCid % Impl::kGridSize);
+        int cy = (int)((bestCid / Impl::kGridSize) % Impl::kGridSize);
+        int cz = (int)(bestCid / (Impl::kGridSize * Impl::kGridSize));
+        bhPosX = ((float)cx + 0.5f) * cellSz - halfExt;
+        bhPosY = ((float)cy + 0.5f) * cellSz - halfExt;
+        bhPosZ = ((float)cz + 0.5f) * cellSz - halfExt;
       }
     }
 
@@ -1140,10 +1239,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // Run during silence, sustain, release. Attack + decay skip (shader-side
   // opacity is 0 there anyway).
   PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-  // STAR-MAP LIFECYCLE: the black hole appears ONLY on RELEASE (after the
-  // supernova collapses) — not at rest (star map) and not during play. So the
-  // raytraced shadow only renders on the release phase. Was: > 2.5f (sustain).
-  bool needRaytracer = (phys_gate->envelopePhase > 3.5f);
+  // EMERGENT-BH render gate (Step 3): the shadow renders because the core
+  // approaches the geometric hole criterion — mass decides, not the phase.
+  bool needRaytracer = (bhStrength > 0.5f);
+  (void)phys_gate;
   if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8
@@ -1154,7 +1253,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       float simScale;      // 4 — particle scale (plateRadius)
       float orthoFrustum;  // 4 — ortho half-extent in world units (0 = persp)
       float shadowRadius;  // 4 — black shadow radius in sim coords (user-tunable)
-    }; // 44 bytes
+      float bhStrength;    // 4 — emergent-hole signal (Step 3)
+    }; // 48 bytes
 
     PhysicsUniforms *phys = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
     BlackHoleUniforms bhUniforms;
@@ -1176,6 +1276,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     // zoom entirely. cameraRho varies 50-2000 with the user's zoom.
     bhUniforms.orthoFrustum = config.orthoMode ? (config.cameraRho * 1.2f) : 0.0f;
     bhUniforms.shadowRadius = config.shadowRadius;
+    bhUniforms.bhStrength = bhStrength;
 
     [enc setRenderPipelineState:blackHolePipeline];
     [enc setFragmentBytes:&bhUniforms

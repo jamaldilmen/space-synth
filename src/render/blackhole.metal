@@ -21,6 +21,7 @@ struct BlackHoleUniforms {
     float simScale;       // particle scale (plateRadius), see notes below
     float orthoFrustum;   // ortho half-extent in world units (0 = perspective)
     float shadowRadius;   // black shadow radius in sim coords (user-tunable)
+    float bhStrength;     // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
 };
 
 // --- Spatial Hash Data Structures ---
@@ -409,14 +410,9 @@ fragment float4 fragment_black_hole(
     device const uint* cellStarts [[buffer(2)]],
     device const Particle* sortedParticles [[buffer(3)]])
 {
-    // ADSR opacity gate, matches particle_vertex lensScale in render.metal.
-    float p = uniforms.envelopePhase;
-    float opacity;
-    if (p < 0.5)       opacity = 1.0;
-    else if (p < 1.5)  opacity = mix(1.0, 0.0, clamp(p, 0.0, 1.0));
-    else if (p < 2.5)  opacity = 0.0;
-    else if (p < 3.5)  opacity = mix(0.0, 0.7, clamp(p - 2.5, 0.0, 1.0));
-    else               opacity = mix(0.7, 1.0, clamp(p - 3.5, 0.0, 1.0));
+    // EMERGENT opacity (Step 3): the raytraced shadow fades in as the core
+    // approaches the geometric hole criterion — mass decides, not the ADSR.
+    float opacity = smoothstep(0.5, 0.95, uniforms.bhStrength);
     if (opacity <= 0.001) return float4(0.0);
     
     float2 uv = in.uv * 2.0 - 1.0; uv.y *= -1.0;

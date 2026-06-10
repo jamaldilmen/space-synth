@@ -292,16 +292,82 @@ kernel void compute_cell_centroids(
     device const uint* cellCounts [[buffer(2)]],
     device float4* cellCentroids [[buffer(3)]],
     constant SpatialHashUniforms& u [[buffer(4)]],
+    device float4* cellVelocities [[buffer(5)]],
     uint cid [[thread_position_in_grid]])
 {
     uint totalCells = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
     if (cid >= totalCells) return;
     uint count = min(cellCounts[cid], 32u);   // scatter writes ≤32 per cell
-    if (count == 0u) { cellCentroids[cid] = float4(0.0f); return; }
+    if (count == 0u) {
+        cellCentroids[cid] = float4(0.0f);
+        cellVelocities[cid] = float4(0.0f);
+        return;
+    }
     uint start = cellStarts[cid];
     float3 sum = float3(0.0f);
+    // Mean LOCAL FLOW velocity (per-frame displacement units, pos − prev).
+    // Collisional relaxation in compute_physics damps each star toward this
+    // mean: random motions thermalize away, the bulk rotation survives
+    // (per-cell momentum conserved) → dense matter settles into a DISK in
+    // the plane ⊥ its net angular momentum. Real accretion-disk physics.
+    float3 vsum = float3(0.0f);
     for (uint i = 0u; i < count; i++) {
-        sum += sortedParticles[start + i].posW.xyz;
+        float3 pp = sortedParticles[start + i].posW.xyz;
+        sum  += pp;
+        vsum += pp - sortedParticles[start + i].prevW.xyz;
     }
     cellCentroids[cid] = float4(sum / float(count), float(count));
+    cellVelocities[cid] = float4(vsum / float(count), 0.0f);
+}
+
+// ── Densest-cell reduce (the emergent-BH signal, Step 2) ────────────────────
+// Finds the single densest grid cell (max particle count + its cell id).
+// The CPU reads this back, sums the mass in the surrounding neighbourhood,
+// and that enclosed mass IS the "has a black hole formed here?" signal —
+// geometric criterion (physics canon): a hole exists when the mass inside a
+// radius fits within its own Schwarzschild radius. No phase gates.
+struct CellMaxPartial {
+    uint count;
+    uint cid;
+};
+
+kernel void reduce_cell_max(
+    device const uint* cellCounts [[buffer(0)]],
+    device CellMaxPartial* partials [[buffer(1)]],
+    constant SpatialHashUniforms& u [[buffer(2)]],
+    uint id [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tgSize [[threads_per_threadgroup]],
+    uint tgId [[threadgroup_position_in_grid]])
+{
+    threadgroup uint sC[256];
+    threadgroup uint sI[256];
+    uint totalCells = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
+    uint c = (id < totalCells) ? cellCounts[id] : 0u;
+    // EXCLUDE the boundary shell: assign_cells clamps every particle outside
+    // ±halfExtent into the outermost cells, so those counts are a binning
+    // artifact (the whole star map piles into them), not physical density.
+    // The emergent core can only be detected in the interior.
+    if (id < totalCells) {
+        int g = u.gridSize;
+        int cx = int(id) % g;
+        int cy = (int(id) / g) % g;
+        int cz = int(id) / (g * g);
+        if (cx == 0 || cy == 0 || cz == 0 ||
+            cx == g - 1 || cy == g - 1 || cz == g - 1) c = 0u;
+    }
+    sC[tid] = c;
+    sI[tid] = id;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
+        if (tid < stride && sC[tid + stride] > sC[tid]) {
+            sC[tid] = sC[tid + stride];
+            sI[tid] = sI[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) {
+        partials[tgId].count = sC[0];
+        partials[tgId].cid   = sI[0];
+    }
 }

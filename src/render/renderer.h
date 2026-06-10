@@ -135,6 +135,7 @@ struct CameraUniforms {
   float spinY;             // spin rate around Y (rad/s) — trail/Doppler velocity
   float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
   float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
+  float bhStrength;        // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)
@@ -191,6 +192,12 @@ struct PhysicsUniforms {
   float comY;
   float comZ;
   float gravGM;             // G_sim·M_total — 0 disables self-gravity
+
+  // ═══ EMERGENT-BH SIGNAL (Step 2) ═══
+  float bhX;                // densest-region position (1-frame lag, self-refining)
+  float bhY;
+  float bhZ;
+  float bhMass;             // stars (M_sun) enclosed within R_ENC of (bhX,bhY,bhZ)
 };
 
 // Spatial hash uniforms for collision grid

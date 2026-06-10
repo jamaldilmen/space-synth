@@ -1,4 +1,5 @@
 #include "core/particles.h"
+#include "core/units.h"
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -44,7 +45,10 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     // Same sense as the old rigid rotation (v ∝ (z, 0, −x)) and the home-pin
     // spin. Stored in per-FRAME displacement units (×kDt) — the shader's
     // Verlet velocity proxy is displacement-per-frame.
-    const float kGM = 3.0f;        // MUST match kSelfGravGM in renderer.mm
+    // GM of the whole field, DERIVED from the Sgr A* anchor + time-lapse
+    // (units.h) — same expression the renderer uploads as gravGM, so spawn
+    // orbits exactly match the gravity they live in.
+    const float kGM = (float)units::gmSim((double)count);
     const float kDt = 1.0f / 120.0f;
     float r3 = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
     float lxz = std::sqrt(p.x * p.x + p.z * p.z);

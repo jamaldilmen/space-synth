@@ -28,6 +28,7 @@ struct CameraUniforms {
     float spinY;             // spin rate around Y (rad/s) — trail/Doppler velocity
     float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
     float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
+    float bhStrength;        // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -272,9 +273,11 @@ vertex VertexOut particle_vertex(
     // the photon ring → the donut/hole). The bend now ONLY appears as matter
     // collapses on RELEASE — the hole forms with the BH, not before.
     // 0 during play (no distortion of the Chladni shape).
-    float lensRamp = 0.0f;
-    if (cam.envelopePhase > 3.5f)
-        lensRamp = cam.envelopeProgress;       // release: ramp 0→1 as it fades
+    // EMERGENT lensing (Step 3): light bending scales with how close the
+    // central mass is to forming a hole — weak lensing as mass gathers,
+    // full deflection as r_s(M_enc) approaches the enclosure radius. The
+    // envelope phase no longer gates this: mass does.
+    float lensRamp = smoothstep(0.2f, 0.9f, cam.bhStrength);
     if (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f) {
         float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
         if (bhClip.w > 0.001f && out.position.w > 0.001f) {
@@ -522,7 +525,9 @@ vertex VertexOut particle_vertex(
     // STAR-MAP LIFECYCLE: the black hole exists ONLY on RELEASE (after the
     // supernova collapses). So the horizon cull only applies on the release
     // phase — at rest (star map) and during play there's no hole to cull.
-    bool bhVisible = cam.envelopePhase > 3.5f;
+    // Cull stars inside the horizon only when the hole actually EXISTS
+    // (geometric criterion), not when a note is released.
+    bool bhVisible = cam.bhStrength > 0.9f;
     if (bhVisible && (originR < RS_CULL || rXYcull < RS_CULL)) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;

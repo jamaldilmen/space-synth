@@ -980,6 +980,42 @@ kernel void compute_physics(
         }
     }
 
+    // ── PRESSURE (grid-based SPH, O(N·27), ALWAYS-ON) — the gas force ────────
+    // Push each particle DOWN the local density gradient: away from neighbouring
+    // cells that are DENSER than its own → toward sparser space. This is the SPH
+    // pressure law (density → pressure → −∇P), the real astrophysical gas force.
+    // It prevents collapse and makes matter spread/expand/shock like gas, and
+    // pairs with cohesion (pull toward centre) → a real fluid whose equilibrium
+    // density IS the state. Grid-based (reads precomputed cell centroids, no
+    // pairwise loop) → bounded, can't hit the collision wall → safe to be
+    // always-on (the replacement for optional pairwise collisions).
+    if (su.gridSize > 0) {
+        int pcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int pcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int pcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        float selfDensity = cellCentroids[uint((pcz * su.gridSize + pcy) * su.gridSize + pcx)].w;
+
+        float3 pForce = float3(0.0f);
+        for (int z = max(0, pcz - 1); z <= min(su.gridSize - 1, pcz + 1); z++) {
+            for (int y = max(0, pcy - 1); y <= min(su.gridSize - 1, pcy + 1); y++) {
+                for (int x = max(0, pcx - 1); x <= min(su.gridSize - 1, pcx + 1); x++) {
+                    uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                    float4 c = cellCentroids[cID];      // xyz = centre, w = count
+                    if (c.w < 0.5f) continue;           // skip empty
+                    float dP = c.w - selfDensity;        // neighbour denser?
+                    if (dP <= 0.0f) continue;            // only repel from DENSER cells
+                    float3 toNb = c.xyz - float3(px, py, pz);
+                    float d = length(toNb);
+                    if (d > 1e-5f) pForce -= (toNb / d) * dP;  // push away (down-gradient)
+                }
+            }
+        }
+        float pStiff = 2.0f;
+        shiftVx += pForce.x * pStiff * dt;
+        shiftVy += pForce.y * pStiff * dt;
+        shiftVz += pForce.z * pStiff * dt;
+    }
+
     // ── Störmer-Verlet integration (damped) ──────────────────────────
     // Restored natural damping without extra cosmic over-drag.
     // Jitter and collision forces are now visible again.

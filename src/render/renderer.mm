@@ -1080,8 +1080,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // Run during silence, sustain, release. Attack + decay skip (shader-side
   // opacity is 0 there anyway).
   PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-  bool needRaytracer = (phys_gate->envelopePhase < 0.5f
-                     || phys_gate->envelopePhase > 2.5f);
+  // STAR-MAP FLIP: the open/rest (silence) state is now a STAR MAP, not a black
+  // hole — so DON'T raytrace the BH shadow at silence. The hole only appears
+  // once matter collapses (sustain/release). Was: < 0.5f || > 2.5f.
+  bool needRaytracer = (phys_gate->envelopePhase > 2.5f);
   if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8

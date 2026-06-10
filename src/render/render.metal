@@ -476,6 +476,31 @@ vertex VertexOut particle_vertex(
         out.color += float3(boost * 0.3f, boost * 0.2f, boost * 0.1f);
     }
 
+    // ── STAR MAP (open/rest state): each particle is a real STAR ─────────────
+    // At rest, render the field as a star map. Each particle's stellar mass is a
+    // deterministic Kroupa-IMF draw from its id (no storage, no physics impact),
+    // and its SIZE, BRIGHTNESS and COLOUR come from that mass (R∝M^0.8, L∝M^3.5,
+    // T_eff(M) → blackbody). Most are tiny dim red dwarfs, a rare few are blazing
+    // blue giants — a real cluster. Fades to the gas/supernova look as you play.
+    float starMix = 1.0f - smoothstep(0.0f, 0.5f, cam.envelopePhase); // 1 at silence
+    if (starMix > 0.001f) {
+        uint h = vid * 2654435761u; h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12;
+        float u01 = float(h & 0xFFFFFFu) / float(0xFFFFFF);          // [0,1)
+        // Kroupa IMF inverse-CDF: dN/dM ∝ M^-2.3, M in [0.08, 50] M_sun.
+        float aI = pow(0.08f, -1.3f);   // ≈ 22.0
+        float bI = pow(50.0f, -1.3f);   // ≈ 0.005
+        float Mstar = pow(aI + u01 * (bI - aI), 1.0f / -1.3f);       // M_sun
+        float Teff  = 5772.0f * pow(Mstar, 0.55f);                   // K (main-seq)
+        float Lstar = pow(Mstar, 3.5f);                             // L_sun
+        float Rstar = pow(Mstar, 0.8f);                             // R_sun (size)
+        float3 starColor = blackbodyRGB(Teff);
+        float starSize = clamp(cam.particleSize * (0.5f + 0.8f * sqrt(Rstar)) * sizeScale, 1.0f, 40.0f);
+        float starLum  = 0.6f + 2.5f * log2(1.0f + Lstar);          // compress huge L range
+        out.pointSize = mix(out.pointSize, starSize, starMix);
+        out.color     = mix(out.color, starColor, starMix);
+        out.luminance = mix(out.luminance, starLum, starMix);
+    }
+
     // ── Gargantua: Only cull particles inside the event horizon ──
     // The Schwarzschild radius is 0.40. Cull at RS so the raytracer's black
     // void shows through, but the entire accretion disk (r > 0.40) renders
@@ -495,7 +520,11 @@ vertex VertexOut particle_vertex(
     // only removes on-axis strays.
     float RS_CULL = 0.57f;
     float rXYcull = length(in.posW.xy);
-    if (originR < RS_CULL || rXYcull < RS_CULL) {
+    // STAR-MAP FLIP: at the open/rest (silence) state there's no black hole, so
+    // DON'T cull the centre — let stars fill it. The horizon cull only applies
+    // once the hole exists (playing/collapsing, envelopePhase ≥ 0.5).
+    bool bhVisible = cam.envelopePhase >= 0.5f;
+    if (bhVisible && (originR < RS_CULL || rXYcull < RS_CULL)) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
         out.color = float3(0.0f);

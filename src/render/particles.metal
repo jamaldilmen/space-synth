@@ -1286,6 +1286,18 @@ kernel void compute_physics(
         }
     }
 
+    // ── RADIATIVE COOLING (Stefan-Boltzmann, dE/dt ∝ T⁴) ────────────────────
+    // Hot matter radiates its energy away as light → it COOLS, fast when hot,
+    // slow when cool (the real T⁴ law). Because it's T⁴ this targets the HOT
+    // played/supernova matter (fading blue→red over time = the Crab's evolution)
+    // and barely touches the cool ambient disk. Only positive temps cool;
+    // stealth's negative temp is left alone. Floored at 0.
+    if (currentTemp > 0.0f) {
+        float T = currentTemp;
+        currentTemp -= dt * 0.0005f * (T * T * T * T);
+        currentTemp = max(currentTemp, 0.0f);
+    }
+
     // ── Write back ───────────────────────────────────────────────────
     if (mass > 0.0f) {
         p.prevW = float4(px, py, pz, currentTemp);

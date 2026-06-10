@@ -267,14 +267,13 @@ vertex VertexOut particle_vertex(
     // (cam.bhShadowNdcRadius), so the lensed ring sits exactly on the shadow
     // edge — ring radius == hole radius, which is what makes it a black hole.
     //
-    // Lens strength ramps in over RELEASE then holds full at silence — so the
-    // bend grows continuously as the note collapses instead of snapping ON at
-    // the silence switch (that snap was the release "2D-orbit → bending-BH"
-    // jump). 0 during play (no distortion of the Chladni shape).
+    // STAR-MAP FLIP: at silence the rest state is a STAR MAP, not a black hole,
+    // so there is NO lensing at rest (lensing was what bent every particle onto
+    // the photon ring → the donut/hole). The bend now ONLY appears as matter
+    // collapses on RELEASE — the hole forms with the BH, not before.
+    // 0 during play (no distortion of the Chladni shape).
     float lensRamp = 0.0f;
-    if (cam.envelopePhase < 0.5f)
-        lensRamp = 1.0f;                       // silence: full bend
-    else if (cam.envelopePhase > 3.5f)
+    if (cam.envelopePhase > 3.5f)
         lensRamp = cam.envelopeProgress;       // release: ramp 0→1 as it fades
     if (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f) {
         float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);

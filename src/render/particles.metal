@@ -1111,25 +1111,27 @@ kernel void compute_physics(
     // Final position integration
     float3 nextPos = float3(px, py, pz) + finalV;
 
-    // ── BRUNETON-STYLE ANALYTIC ORBITS ──────────────────────────────────
-    // Per-particle home orbit (r_home, phi_offset) set at spawn in spinW.
-    // At REST (envPhase < 0.5 AND no voice amplitude): position is FULLY
-    // analytic — no integration, no drift, no pulse. Particle is exactly
-    // on its orbital trajectory at all times.
+    // ── STAR-MAP HOME (fixed 3D point + slow rigid rotation) ─────────────
+    // Each star holds a FIXED isotropic 3D home (r_home, theta, phi) set at
+    // spawn — a filled cluster, NOT a flat disk orbit. The whole map rotates
+    // slowly as a rigid body (calm star-cluster motion). At REST (no voice)
+    // position eases fully onto home → no drift, no pulse, the star map.
     // During PLAY: nextPos comes from the integrator (voice forces win) +
-    // a small pull back toward analytic so particles don't fully escape.
+    // a small pull back toward home so particles don't fully escape.
     {
-        float r_home    = p.spinW.x;
-        float phi_offset = p.spinW.y;
+        float r_home = p.spinW.x;
         if (r_home > 0.001f) {
-            // K=4 → ~1.57s period at r=1 (fast enough for strong trails).
-            // omega = K/r^1.5 = K · rsqrt(r³) (avoids pow, faster on GPU).
-            float r3 = r_home * r_home * r_home;
-            float omega = 4.0f * rsqrt(r3);
-            float phi   = phi_offset + omega * u.time;
-            float3 target = float3(r_home * cos(phi),
-                                   r_home * sin(phi),
-                                   0.0f);
+            float theta = as_type<float>(p.entanglement.z);
+            float aphi  = as_type<float>(p.entanglement.w);
+            float st = sin(theta), ct = cos(theta);
+            float3 home = r_home * float3(st * cos(aphi), st * sin(aphi), ct);
+            // Slow rigid rotation of the whole star map about +Y (0.08 rad/s,
+            // matches the spawn velocity in particles.cpp).
+            float ang = 0.08f * u.time;
+            float ca = cos(ang), sa = sin(ang);
+            float3 target = float3(home.x * ca + home.z * sa,
+                                   home.y,
+                                  -home.x * sa + home.z * ca);
 
             float voiceMute = clamp(u.totalAmplitude, 0.0f, 1.0f);
             // Blend toward the analytic home orbit. The OLD code SNAPPED
@@ -1188,7 +1190,7 @@ kernel void compute_physics(
     {
         float ph = u.envelopePhase;
         float cap_t;
-        if (ph < 0.5f)        cap_t = 0.0f;                                  // silence
+        if (ph < 0.5f)        cap_t = 1.0f;                                  // silence = STAR MAP (wide, filled cluster — not the tight BH ring)
         else if (ph < 1.5f)   cap_t = ph - 0.5f;                             // attack
         else if (ph < 3.5f)   cap_t = 1.0f;                                  // decay/sustain
         else                  cap_t = 1.0f - clamp(u.envelopeProgress, 0.0f, 1.0f); // release: ramp CHLADNI→BH (ph is a constant 4.0, so use progress, not ph-3.5)

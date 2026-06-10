@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "core/imf.h"
 #include "core/units.h"
 #include "backends/imgui_impl_metal.h"
 #include "imgui.h"
@@ -68,6 +69,7 @@ struct Renderer::Impl {
       kGridSize * kGridSize * kGridSize;     // 2,097,152
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
   id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
+  id<MTLBuffer> cellMassBuffer = nil;        // Σ stellar mass per cell (M_sun ×64, atomic)
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
@@ -472,6 +474,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->particleBufferRead, size);
   allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
+  allocIfNeeded(impl_->cellMassBuffer, cellSize);
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
@@ -821,13 +824,21 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // SELF-GRAVITY uniforms: last frame's COM + the DERIVED G·M_total
-    // (N × 1 M_sun through the Sgr A* anchor + time-lapse — see units.h).
+    // (Σ real per-star IMF masses through the Sgr A* anchor + time-lapse —
+    // see units.h / imf.h; mean star ≈ 0.30 M_sun, NOT 1).
     // Set here (not in computeStep) — they're renderer-internal state from
     // the stats readback, and computeStep wholesale-resets physicsUniforms.
     physicsUniforms.comX = liveComX;
     physicsUniforms.comY = liveComY;
     physicsUniforms.comZ = liveComZ;
-    physicsUniforms.gravGM = (float)space::units::gmSim((double)particleCount);
+    static double sMassTotal = 0.0;
+    static int sMassTotalCount = -1;
+    if (sMassTotalCount != particleCount) {
+      sMassTotal = space::imf::totalMassMsun(particleCount);
+      sMassTotalCount = particleCount;
+    }
+    physicsUniforms.massTotal = (float)sMassTotal;
+    physicsUniforms.gravGM = (float)space::units::gmSim(sMassTotal);
     physicsUniforms.bhX = bhPosX;
     physicsUniforms.bhY = bhPosY;
     physicsUniforms.bhZ = bhPosZ;
@@ -878,9 +889,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       memcpy(spatialHashUniformBuffer.contents, &su,
              sizeof(SpatialHashUniforms));
 
-      // Clear cell counts and offsets
+      // Clear cell counts, masses and offsets
       id<MTLBlitCommandEncoder> clearBlit = [cmdBuf blitCommandEncoder];
       [clearBlit fillBuffer:cellCountsBuffer
+                      range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
+                      value:0];
+      [clearBlit fillBuffer:cellMassBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:cellOffsetsBuffer
@@ -909,6 +923,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellIndicesBuffer offset:0 atIndex:0];
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:1];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        [comp setBuffer:cellMassBuffer offset:0 atIndex:3];
+        [comp setBuffer:particleBufferRead offset:0 atIndex:4];
         NSUInteger tg =
             std::min(tgSize, countCellsPipeline.maxTotalThreadsPerThreadgroup);
         [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
@@ -1053,6 +1069,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];
         [comp setBuffer:cellCentroidsBuffer offset:0 atIndex:8];
         [comp setBuffer:cellVelocitiesBuffer offset:0 atIndex:9];
+        [comp setBuffer:cellMassBuffer offset:0 atIndex:10];
       }
 
       NSUInteger tg =
@@ -1081,11 +1098,11 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // For now, read previous frame's data synchronously
       if (numThreadgroups > 0) {
         struct PartialStats {
-          float ke, mx, my, pad;
+          float ke, mx, my, sumMass;
           float sumTemp, maxTemp, sumSpeed, maxSpeed;
           float sumPx, sumPy, sumPz, sumCount;
           float sumR, maxR, pad2, pad3;
-          float sumEncX, sumEncY, sumEncZ, sumEncCount;
+          float sumEncX, sumEncY, sumEncZ, sumEncMass;
         };
         const PartialStats *sums =
             (const PartialStats *)partialSumsBuffer.contents;
@@ -1093,6 +1110,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float totalSumTemp = 0, totalSumSpeed = 0;
         float gMaxTemp = -1e9f, gMaxSpeed = -1e9f;
         float totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
+        float totalSM = 0;
         float totalSR = 0, gMaxR = -1e9f;
         float totalEX = 0, totalEY = 0, totalEZ = 0, totalEC = 0;
         // Only sum the threadgroups actually dispatched this frame. The kernel
@@ -1111,28 +1129,31 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           totalPY += sums[i].sumPy;
           totalPZ += sums[i].sumPz;
           totalCT += sums[i].sumCount;
+          totalSM += sums[i].sumMass;
           totalSR += sums[i].sumR;
           if (sums[i].maxR > gMaxR) gMaxR = sums[i].maxR;
           totalEX += sums[i].sumEncX;
           totalEY += sums[i].sumEncY;
           totalEZ += sums[i].sumEncZ;
-          totalEC += sums[i].sumEncCount;
+          totalEC += sums[i].sumEncMass;
           if (sums[i].maxTemp > gMaxTemp) gMaxTemp = sums[i].maxTemp;
           if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
         }
-        // Centre of mass of the live stars (mass 1 each) → next frame's
-        // self-gravity far-field monopole. Guard NaN/empty.
-        if (totalCT > 0.5f && std::isfinite(totalPX) && std::isfinite(totalPY) &&
+        // MASS-WEIGHTED centre of mass of the live stars (real IMF masses) →
+        // next frame's self-gravity far-field monopole. Guard NaN/empty.
+        if (totalSM > 0.5f && std::isfinite(totalPX) && std::isfinite(totalPY) &&
             std::isfinite(totalPZ)) {
-          liveComX = totalPX / totalCT;
-          liveComY = totalPY / totalCT;
-          liveComZ = totalPZ / totalCT;
+          liveComX = totalPX / totalSM;
+          liveComY = totalPY / totalSM;
+          liveComZ = totalPZ / totalSM;
           liveCount = totalCT;
         }
         // Emergent-BH enclosure (Step 2): stars within R_ENC of the BH
         // candidate, counted by the same reduce → enclosed mass + refined
         // core position (its COM). Saturation-free, like cellCounts now is
         // (count_cells uncapped — both mass signals are honest).
+        // totalEC is now Σ MASS (M_sun) within R_ENC, not a star count; the
+        // enclosure positions are mass-weighted to match.
         if (totalEC > 0.5f && std::isfinite(totalEX) && std::isfinite(totalEY) &&
             std::isfinite(totalEZ)) {
           bhMassEnc = totalEC;

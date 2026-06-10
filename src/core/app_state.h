@@ -77,9 +77,19 @@ struct AppState {
 
   // ── Debugging (Phase 7) — backing state; most controls were culled ──
   bool  uiFixedTimestep = false;
-  bool  uiSoloEField = true;
+  // E-field OFF: all charges are +1 (particles.cpp) so this was pure pair
+  // REPULSION — an anti-collision. Real stellar collisions are inelastic
+  // (merge, KE→heat→radiated: mass piles up → the hole). The dissipative
+  // channel is the collisional relaxation in particles.metal; this force
+  // injected outward KE at max compression = the core "trampoline" bounce.
+  bool  uiSoloEField = false;
   bool  uiSoloBField = true;
-  bool  uiSoloGravity = true;
+  // Legacy pairwise gravity OFF: it double-counts the real self-gravity
+  // (Barnes-Hut block, real units) inside the 0.02 contact radius, at an
+  // arbitrary 0.8 constant in the ~120× a·dt convention. With real IMF
+  // masses in posW.w (massProd up to 50×50) it would detonate close pairs.
+  // Mergers (US2 eating) replace what contact "gravity" was faking.
+  bool  uiSoloGravity = false;
   bool  uiSoloStrings = true;
   bool  uiSoloJitter = true;
   bool  uiSoloCollisions = true;

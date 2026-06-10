@@ -181,7 +181,7 @@ struct PhysicsUniforms {
   float envelopePhase;    // 0=silence, 1=attack, 2=decay, 3=sustain, 4=release
   float envelopeProgress; // 0.0→1.0 within current phase
   float lifecycleIntensity; // Combined amplitude measure
-  float lifecyclePad;       // Alignment padding
+  float massTotal;          // Σ stellar mass of the field, M_sun (was padding)
   float diskThickness;      // accretion-disk vertical thickness (UI)
   float spinX;              // user spin torque around X axis (rad/s)
   float spinY;              // user spin torque around Y axis (rad/s)

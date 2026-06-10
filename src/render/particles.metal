@@ -62,7 +62,7 @@ struct PhysicsUniforms {
     float envelopePhase;         // 80: 0=silence, 1=attack, 2=decay, 3=sustain, 4=release
     float envelopeProgress;      // 84: 0.0→1.0 within current phase
     float lifecycleIntensity;    // 88: master intensity multiplier
-    float lifecyclePad;          // 92: alignment
+    float massTotal;             // 92: Σ stellar mass of the field, M_sun
     float diskThickness;         // 96: accretion-disk vertical thickness (UI)
     float spinX;                 // 100: user spin torque around X axis (rad/s)
     float spinY;                 // 104: user spin torque around Y axis (rad/s)
@@ -188,6 +188,7 @@ kernel void compute_physics(
     constant SpatialHashUniforms& su [[buffer(7)]],
     device const float4* cellCentroids [[buffer(8)]],
     device const float4* cellVelocities [[buffer(9)]],
+    device const uint* cellMass [[buffer(10)]],   // Σ M_sun ×64 per cell (count_cells)
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -574,20 +575,22 @@ kernel void compute_physics(
     // Barnes-Hut style split on the existing O(N) grid (no pairwise scan):
     //   NEAR = the 3×3×3 neighbour cells, each a point mass at its sampled
     //          centroid (local clumping — star↔star attraction). Cell mass is
-    //          the FULL cellCounts — UNCAPPED (count_cells), so piled-up mass
-    //          really pulls harder (the centroid's .w still caps at 32 samples;
-    //          only the POSITION is sampled, the mass is exact).
+    //          cellMass — the UNCAPPED Σ of REAL per-star IMF masses in M_sun
+    //          (count_cells, fixed-point ×64), so piled-up mass really pulls
+    //          harder and a heavy star counts for what it weighs (the
+    //          centroid's .w still caps at 32 samples; only the POSITION is
+    //          sampled, the mass is exact).
     //   FAR  = the rest of the galaxy as ONE monopole at the global COM
-    //          (from reduce_stats, 1-frame lag), near cells subtracted so
-    //          mass isn't counted twice.
-    // Each live star has mass 1 (posW.w = invMass), so M_total ≈ particleCount
-    // and gravGM = G_sim·M_total is calibrated CPU-side (placeholder until the
-    // Step-5 Sgr A* unit anchor). Plummer ε² softening for numerics only.
+    //          (mass-weighted, from reduce_stats, 1-frame lag), near cells
+    //          subtracted so mass isn't counted twice.
+    // Stars carry their REAL Kroupa-IMF mass in posW.w (mean ≈ 0.30 M_sun);
+    // u.massTotal = Σ masses and gravGM = gmSim(massTotal), both derived from
+    // the Sgr A* anchor (units.h). Plummer ε² softening for numerics only.
     // MUST run BEFORE the lifecycle capture below — the silence-immunity
     // restore wipes everything after it, and gravity must act at rest.
     if (mass > 0.001f && mass < 1000.0f && u.gravGM > 0.0f) {
-        float Ntot = max(float(u.particleCount), 1.0f);
-        float G1   = u.gravGM / Ntot;            // GM of ONE star
+        float Mtot = max(u.massTotal, 1.0f);
+        float G1   = u.gravGM / Mtot;            // GM of ONE solar mass
         float3 gpos = float3(px, py, pz);
         float3 gacc = float3(0.0f);
 
@@ -608,8 +611,9 @@ kernel void compute_physics(
                 for (int y = max(0, gcy - 1); y <= min(su.gridSize - 1, gcy + 1); y++) {
                     for (int x = max(0, gcx - 1); x <= min(su.gridSize - 1, gcx + 1); x++) {
                         uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
-                        float cm = float(cellCounts[cID]);   // full count = cell mass
-                        if (cm < 0.5f) continue;
+                        // True cell mass in M_sun (fixed-point ×64 → float)
+                        float cm = float(cellMass[cID]) * (1.0f / 64.0f);
+                        if (cm < 0.04f) continue;            // < half a red dwarf
                         float3 cpos = cellCentroids[cID].xyz;
                         if (notFinite3(cpos)) continue;      // poisoned cell: don't ingest
                         nearM  += cm;
@@ -623,9 +627,9 @@ kernel void compute_physics(
         }
 
         // FAR field: everything not in the near cells, as one monopole.
-        float farM = max(Ntot - nearM, 0.0f);
+        float farM = max(Mtot - nearM, 0.0f);
         if (farM > 0.5f) {
-            float3 farCom = (float3(u.comX, u.comY, u.comZ) * Ntot - nearMP) / farM;
+            float3 farCom = (float3(u.comX, u.comY, u.comZ) * Mtot - nearMP) / farM;
             float3 toC = farCom - gpos;
             float  d2  = dot(toC, toC) + 0.25f;              // ε² far (horizon scale)
             gacc += toC * (G1 * farM * rsqrt(d2) / d2);
@@ -1491,22 +1495,22 @@ struct PartialStats {
     float kineticEnergy;
     float momentumX;
     float momentumY;
-    float pad;
+    float sumMass;   // Σ stellar mass (M_sun) of live stars (was pad)
     float sumTemp;   // Σ temperature (→ avg)
     float maxTemp;   // max temperature
     float sumSpeed;  // Σ |v| (→ avg)
     float maxSpeed;  // max |v|
-    float sumPx;     // Σ position of live stars (→ centre of mass)
+    float sumPx;     // Σ mass·position of live stars (→ mass-weighted COM)
     float sumPy;
     float sumPz;
-    float sumCount;  // live star count (mass 1 each → total mass)
+    float sumCount;  // live star count
     float sumR;      // Σ |r| of live stars (→ mean radius)
     float maxR;      // farthest live star
     float pad2, pad3;
-    float sumEncX;   // Σ position of stars within R_ENC of the BH candidate
-    float sumEncY;   //   → enclosed mass (count) + refined core COM
+    float sumEncX;   // Σ mass·position of stars within R_ENC of the candidate
+    float sumEncY;   //   → enclosed MASS (M_sun) + refined core COM
     float sumEncZ;
-    float sumEncCount;
+    float sumEncMass;
 };
 
 kernel void reduce_stats(
@@ -1529,20 +1533,23 @@ kernel void reduce_stats(
     threadgroup float sharedPY[256];
     threadgroup float sharedPZ[256];
     threadgroup float sharedCT[256];  // live star count
+    threadgroup float sharedSM[256];  // Σ stellar mass (M_sun)
     threadgroup float sharedSR[256];  // Σ radius
     threadgroup float sharedMR[256];  // max radius
-    threadgroup float sharedEX[256];  // Σ pos within R_ENC of BH candidate
+    threadgroup float sharedEX[256];  // Σ m·pos within R_ENC of BH candidate
     threadgroup float sharedEY[256];
     threadgroup float sharedEZ[256];
-    threadgroup float sharedEC[256];  // count within R_ENC
+    threadgroup float sharedEC[256];  // Σ mass (M_sun) within R_ENC
 
     float ke = 0.0f, mx = 0.0f, my = 0.0f;
     float temp = 0.0f, speed = 0.0f;
     float3 lpos = float3(0.0f);
+    float pmass = 0.0f;
     bool real = false;
 
     if (int(id) < u.particleCount) {
         float mass = particles[id].posW.w;
+        pmass = mass;
         float vx = particles[id].velW.x;
         float vy = particles[id].velW.y;
         float vz = particles[id].velW.z;
@@ -1576,23 +1583,28 @@ kernel void reduce_stats(
     sharedMT[tid] = real ? temp : -1e9f;
     sharedSS[tid] = real ? speed : 0.0f;
     sharedMS[tid] = real ? speed : -1e9f;
-    sharedPX[tid] = real ? lpos.x : 0.0f;
-    sharedPY[tid] = real ? lpos.y : 0.0f;
-    sharedPZ[tid] = real ? lpos.z : 0.0f;
+    // Mass-weighted: COM must be where the MASS is (stars carry real IMF
+    // masses now), else a lucky cluster of O-stars pulls toward the wrong
+    // point. Readback divides by sumMass.
+    float lm = (real && pmass < 1000.0f) ? pmass : 0.0f;
+    sharedPX[tid] = lpos.x * lm;
+    sharedPY[tid] = lpos.y * lm;
+    sharedPZ[tid] = lpos.z * lm;
     sharedCT[tid] = real ? 1.0f : 0.0f;
+    sharedSM[tid] = lm;
     float lr = length(lpos);
     sharedSR[tid] = real ? lr : 0.0f;
     sharedMR[tid] = real ? lr : -1e9f;
     // Emergent-BH enclosure (Step 2): R_ENC = 0.5 sim units around the
-    // densest region (u.bh*, 1-frame lag). Enclosed COUNT is the enclosed
-    // stellar mass in M_sun (1 star = 1 M_sun); the geometric BH criterion
-    // (Step 3) compares it against M_crit(R_ENC) = R_ENC·unit/r_s(M_sun).
+    // densest region (u.bh*, 1-frame lag). Enclosed Σmass is the REAL
+    // stellar mass in M_sun; the geometric BH criterion (Step 3) compares
+    // it against M_crit(R_ENC) = R_ENC·unit/r_s(M_sun).
     float3 encD = lpos - float3(u.bhX, u.bhY, u.bhZ);
     bool enc = real && (dot(encD, encD) < 0.25f);   // R_ENC² = 0.25
-    sharedEX[tid] = enc ? lpos.x : 0.0f;
-    sharedEY[tid] = enc ? lpos.y : 0.0f;
-    sharedEZ[tid] = enc ? lpos.z : 0.0f;
-    sharedEC[tid] = enc ? 1.0f : 0.0f;
+    sharedEX[tid] = enc ? lpos.x * lm : 0.0f;
+    sharedEY[tid] = enc ? lpos.y * lm : 0.0f;
+    sharedEZ[tid] = enc ? lpos.z * lm : 0.0f;
+    sharedEC[tid] = enc ? lm : 0.0f;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
@@ -1606,6 +1618,7 @@ kernel void reduce_stats(
             sharedPY[tid] += sharedPY[tid + stride];
             sharedPZ[tid] += sharedPZ[tid + stride];
             sharedCT[tid] += sharedCT[tid + stride];
+            sharedSM[tid] += sharedSM[tid + stride];
             sharedSR[tid] += sharedSR[tid + stride];
             sharedEX[tid] += sharedEX[tid + stride];
             sharedEY[tid] += sharedEY[tid + stride];
@@ -1622,6 +1635,7 @@ kernel void reduce_stats(
         partialSums[tgId].kineticEnergy = sharedKE[0];
         partialSums[tgId].momentumX = sharedMX[0];
         partialSums[tgId].momentumY = sharedMY[0];
+        partialSums[tgId].sumMass  = sharedSM[0];
         partialSums[tgId].sumTemp  = sharedST[0];
         partialSums[tgId].maxTemp  = sharedMT[0];
         partialSums[tgId].sumSpeed = sharedSS[0];
@@ -1635,6 +1649,6 @@ kernel void reduce_stats(
         partialSums[tgId].sumEncX  = sharedEX[0];
         partialSums[tgId].sumEncY  = sharedEY[0];
         partialSums[tgId].sumEncZ  = sharedEZ[0];
-        partialSums[tgId].sumEncCount = sharedEC[0];
+        partialSums[tgId].sumEncMass = sharedEC[0];
     }
 }

@@ -46,25 +46,40 @@ kernel void assign_cells(
 
 // ── Phase 2: Count particles per cell (atomic) ─────────────────────────────
 
+// Per-cell MASS fixed-point scale: cellMass accumulates round(M_sun × 64).
+// uint32 headroom: 10M stars × 0.30 M_sun mean × 64 ≈ 1.9e8 ≪ 4.3e9.
+constant float MASS_FP = 64.0f;
+
 kernel void count_cells(
     device const uint* cellIndices [[buffer(0)]],
     device atomic_uint* cellCounts [[buffer(1)]],
     constant SpatialHashUniforms& u [[buffer(2)]],
+    device atomic_uint* cellMass [[buffer(3)]],
+    device const Particle* particles [[buffer(4)]],
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
-    
+
     uint cellID = cellIndices[id];
-    // UNCAPPED — cellCounts is the TRUE count (= cell MASS for self-gravity).
-    // The old `if (current < 128)` guard silently clipped gravity: 50k stars
-    // piled in a cell read as mass 128, so "mass piles up → gravity grows"
-    // broke above 128/cell and the emergent-BH runaway could never happen.
-    // The GPU-stall fear the cap addressed lives in the neighbour-SCAN loops,
-    // and those clamp at their read sites (min(count, MAX_PER_CELL) in
-    // particles.metal); the count itself must stay honest. Measure FPS during
-    // collapse — if a stall returns, it returns HERE (atomic contention on
-    // one hot cell), not in the scans.
+    // UNCAPPED — cellCounts is the TRUE count, cellMass the TRUE stellar mass
+    // (M_sun, fixed-point ×64) for self-gravity. The old `if (current < 128)`
+    // guard silently clipped gravity: 50k stars piled in a cell read as mass
+    // 128, so "mass piles up → gravity grows" broke above 128/cell and the
+    // emergent-BH runaway could never happen. The GPU-stall fear the cap
+    // addressed lives in the neighbour-SCAN loops, and those clamp at their
+    // read sites (min(count, MAX_PER_CELL) in particles.metal); the signals
+    // themselves must stay honest. (Verified: no stall, 120fps @ 3M.)
     atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
+    // posW.w = stellar mass in M_sun (0 = wall → adds nothing). NaN-poisoned
+    // stars must not poison the cell: integer test, fast-math-proof.
+    float m = particles[id].posW.w;
+    uint mb = as_type<uint>(m);
+    bool finite = ((mb >> 23) & 0xFFu) != 0xFFu;
+    if (finite && m > 0.0f) {
+        atomic_fetch_add_explicit(&cellMass[cellID],
+                                  uint(m * MASS_FP + 0.5f),
+                                  memory_order_relaxed);
+    }
 }
 
 // ── Phase 3: Multi-pass Blelloch Prefix Sum ──────────────────────────────────

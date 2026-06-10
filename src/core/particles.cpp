@@ -1,4 +1,5 @@
 #include "core/particles.h"
+#include "core/imf.h"
 #include "core/units.h"
 #include <cmath>
 #include <cstring>
@@ -47,8 +48,15 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     // Verlet velocity proxy is displacement-per-frame.
     // GM of the whole field, DERIVED from the Sgr A* anchor + time-lapse
     // (units.h) — same expression the renderer uploads as gravGM, so spawn
-    // orbits exactly match the gravity they live in.
-    const float kGM = (float)units::gmSim((double)count);
+    // orbits exactly match the gravity they live in. Field mass = Σ of the
+    // real per-star IMF masses (mean ≈ 0.30 M_sun), not N×1.
+    static double sTotalMass = 0.0;
+    static int sTotalMassCount = -1;
+    if (sTotalMassCount != count) {
+      sTotalMass = imf::totalMassMsun(count);
+      sTotalMassCount = count;
+    }
+    const float kGM = (float)units::gmSim(sTotalMass);
     const float kDt = 1.0f / 120.0f;
     float r3 = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
     float lxz = std::sqrt(p.x * p.x + p.z * p.z);
@@ -79,7 +87,11 @@ std::vector<GPUParticle> packForGPU(const ParticleSystem &system) {
     // [-2,2] box spawn) made ~90% of particles invisible walls after Phase
     // 10's Gaussian rewrite, leaving the rest visual sparse and BH-less.
     // At 3.0 (~2.5σ), only the long Gaussian tail becomes static boundary.
-    float invMass = (r3D > 80.0f) ? 0.0f : 1.0f; // star map has no wall (box reaches r≈73)
+    // posW.w = the star's REAL stellar mass in M_sun (Kroupa IMF, the same
+    // per-id draw the render uses for size/brightness/colour — see imf.h).
+    // 0.0 still marks a static wall. This is the mass the self-gravity
+    // weighs and the mass mergers will transfer: the US2 "eating" currency.
+    float starMass = (r3D > 80.0f) ? 0.0f : imf::massOfId((uint32_t)i);
 
     // STAR-MAP home, stored per-particle: the fixed 3D point each star holds
     // at rest. The compute shader reconstructs home = r·(sinθcosφ, sinθsinφ,
@@ -98,7 +110,7 @@ std::vector<GPUParticle> packForGPU(const ParticleSystem &system) {
         p.x,
         p.y,
         p.z,
-        invMass, // posW.w = invMass (0.0 = static wall)
+        starMass, // posW.w = stellar mass in M_sun (0.0 = static wall)
         p.vx,
         p.vy,
         p.vz,

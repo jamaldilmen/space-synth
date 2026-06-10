@@ -21,22 +21,21 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   // whole map as a rigid body — calm star-cluster motion. The BH only forms
   // later, on the release/collapse phase. Was: ring (r_inner 0.75, z σ=0.05).
   const float r_inner   = 0.15f;  // small core so the CENTRE is filled
-  const float r_outer   = 2.5f;   // cluster extent (inside the 3.0 XY cap)
+  const float r_outer   = 42.0f;  // box larger than the camera POV incl. the
+                                  // diagonal corners. Play squeezes it inward to
+                                  // the Chladni cap; release collapses.
   std::uniform_real_distribution<float> u01(0.0f, 1.0f);
   std::uniform_real_distribution<float> phiDist(0.0f, 2.0f * (float)M_PI);
   for (auto &p : particles_) {
-    // Volumetric radius: r = (r_in³ + u·(r_out³ − r_in³))^(1/3) → uniform
-    // density through the ball (no central pile-up artefact).
-    float ri3 = r_inner * r_inner * r_inner;
-    float ro3 = r_outer * r_outer * r_outer;
-    float r   = std::cbrt(ri3 + u01(rng) * (ro3 - ri3));
-    // Isotropic direction: cosθ uniform in [-1,1], φ uniform in [0,2π).
-    float ct  = 1.0f - 2.0f * u01(rng);        // cos(theta)
-    float st  = std::sqrt(std::max(0.0f, 1.0f - ct * ct));
-    float phi = phiDist(rng);
-    p.x = r * st * std::cos(phi);
-    p.y = r * st * std::sin(phi);
-    p.z = r * ct;
+    // Uniform BOX, not a sphere → the field fills the frame CORNER-TO-CORNER
+    // (no circular edge, no "tube"/radius limitation at rest). That tube only
+    // belongs to the PLAY state (the Chladni cap reintroduces the disk when a
+    // note is held); the open star map has no such limit.
+    (void)r_inner;
+    const float boxL = r_outer;  // half-extent of the star-field box
+    p.x = (2.0f * u01(rng) - 1.0f) * boxL;
+    p.y = (2.0f * u01(rng) - 1.0f) * boxL;
+    p.z = (2.0f * u01(rng) - 1.0f) * boxL;
 
     // Gentle rigid-rotation velocity about +Y (matches the slow whole-map
     // spin the shader applies at rest), so play perturbations start coherent.
@@ -65,7 +64,7 @@ std::vector<GPUParticle> packForGPU(const ParticleSystem &system) {
     // [-2,2] box spawn) made ~90% of particles invisible walls after Phase
     // 10's Gaussian rewrite, leaving the rest visual sparse and BH-less.
     // At 3.0 (~2.5σ), only the long Gaussian tail becomes static boundary.
-    float invMass = (r3D > 3.0f) ? 0.0f : 1.0f;
+    float invMass = (r3D > 80.0f) ? 0.0f : 1.0f; // star map has no wall (box reaches r≈73)
 
     // STAR-MAP home, stored per-particle: the fixed 3D point each star holds
     // at rest. The compute shader reconstructs home = r·(sinθcosφ, sinθsinφ,

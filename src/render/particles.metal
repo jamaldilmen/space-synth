@@ -138,6 +138,7 @@ constant float ORBIT_R_BH      = 2.0f; // widened from 1.0: the rest disk now ha
                                        // outer) is visible. Still breathes out to
                                        // ORBIT_R_CHLADNI on play.
 constant float ORBIT_R_CHLADNI = 3.0f;
+constant float STAR_MAP_CAP    = 100.0f; // silence: NO cap (the star map has no tube limit)
 
 // ── ERUPTIONS in the hardened areas (magnetic-reconnection / solar-flare) ──
 // Where the Chladni pattern hardens (dense nodes), stress builds; past a
@@ -1189,12 +1190,11 @@ kernel void compute_physics(
     // attack, 1.5–2.5=decay, 2.5–3.5=sustain, 3.5–4.5=release.
     {
         float ph = u.envelopePhase;
-        float cap_t;
-        if (ph < 0.5f)        cap_t = 1.0f;                                  // silence = STAR MAP (wide, filled cluster — not the tight BH ring)
-        else if (ph < 1.5f)   cap_t = ph - 0.5f;                             // attack
-        else if (ph < 3.5f)   cap_t = 1.0f;                                  // decay/sustain
-        else                  cap_t = 1.0f - clamp(u.envelopeProgress, 0.0f, 1.0f); // release: ramp CHLADNI→BH (ph is a constant 4.0, so use progress, not ph-3.5)
-        float dynamic_cap = mix(ORBIT_R_BH, ORBIT_R_CHLADNI, cap_t);
+        float dynamic_cap;
+        if (ph < 0.5f)        dynamic_cap = STAR_MAP_CAP;                                       // silence = wide STAR MAP (overflows frame)
+        else if (ph < 1.5f)   dynamic_cap = mix(STAR_MAP_CAP, ORBIT_R_CHLADNI, ph - 0.5f);      // attack: stars rush IN toward the Chladni/supernova
+        else if (ph < 3.5f)   dynamic_cap = ORBIT_R_CHLADNI;                                    // decay/sustain
+        else                  dynamic_cap = mix(ORBIT_R_CHLADNI, ORBIT_R_BH, clamp(u.envelopeProgress, 0.0f, 1.0f)); // release: collapse CHLADNI→BH
         // Yield the cap while spinning — otherwise the tumbling body periodically
         // hits the XY cap and gets yanked, flickering between two states.
         dynamic_cap += (1.0f - spinSuppress) * 8.0f;

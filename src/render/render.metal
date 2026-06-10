@@ -519,10 +519,10 @@ vertex VertexOut particle_vertex(
     // only removes on-axis strays.
     float RS_CULL = 0.57f;
     float rXYcull = length(in.posW.xy);
-    // STAR-MAP FLIP: at the open/rest (silence) state there's no black hole, so
-    // DON'T cull the centre — let stars fill it. The horizon cull only applies
-    // once the hole exists (playing/collapsing, envelopePhase ≥ 0.5).
-    bool bhVisible = cam.envelopePhase >= 0.5f;
+    // STAR-MAP LIFECYCLE: the black hole exists ONLY on RELEASE (after the
+    // supernova collapses). So the horizon cull only applies on the release
+    // phase — at rest (star map) and during play there's no hole to cull.
+    bool bhVisible = cam.envelopePhase > 3.5f;
     if (bhVisible && (originR < RS_CULL || rXYcull < RS_CULL)) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;

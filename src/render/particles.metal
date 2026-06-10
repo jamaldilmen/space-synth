@@ -67,6 +67,12 @@ struct PhysicsUniforms {
     float spinX;                 // 100: user spin torque around X axis (rad/s)
     float spinY;                 // 104: user spin torque around Y axis (rad/s)
     float bondNetworkOn;         // 108: >0.5 = bond-find nearest neighbour in sustain
+
+    // ═══ SELF-GRAVITY (emergent BH, Step 1) ═══
+    float comX;                  // 112: live-mass centre of mass (reduce_stats, 1-frame lag)
+    float comY;                  // 116
+    float comZ;                  // 120
+    float gravGM;                // 124: G_sim·M_total — 0 disables self-gravity
 };
 
 struct SpatialHashUniforms {
@@ -186,11 +192,23 @@ kernel void compute_physics(
     
     // Base friction. Was pow(0.02, dt) ≈ 0.968/frame (heavy damping) which
     // killed orbital stability — Kepler orbits need energy conservation,
-    // friction makes them spiral in. Bumped to pow(0.9, dt) ≈ 0.9991/frame
-    // → nearly zero damping at rest, particles orbit cleanly.
-    // During play, voice forces still dominate; the small friction prevents
-    // runaway velocity buildup but doesn't crush orbital momentum.
-    float baseFric = pow(0.9f, dt);
+    // friction makes them spiral in. pow(0.9, dt) ≈ 0.9991/frame still
+    // e-folds velocity in ~9.5 s — fine for play (voice forces dominate,
+    // damping prevents runaway), but at REST it kills orbits long before one
+    // period completes, reducing self-gravity to terminal-velocity creep.
+    // Rest friction is therefore near-conservative: pow(0.997, dt) e-folds in
+    // ~5.5 min, so stars complete orbits and the gentle drag IS the accretion
+    // mechanism (slow inspiral toward the mass centre — the dynamical-friction
+    // analog). Blend by amplitude: rest → conservative, play → damped.
+    float fricPlay = pow(0.9f, dt);
+    // 0.99/s (e-fold ~100 s): conservative enough that inner orbits complete
+    // (period 19 s at r=3), dissipative enough to (a) damp the grid-binning
+    // force noise that otherwise slowly HEATS the map outward (measured:
+    // +0.19 sim/s drift at pow(0.997,dt)) and (b) drive the visible inspiral
+    // — the dynamical-friction analog that makes the untouched galaxy accrete.
+    float fricRest = pow(0.99f, dt);
+    float baseFric = mix(fricRest, fricPlay,
+                         clamp(u.totalAmplitude * 4.0f, 0.0f, 1.0f));
 
     float dynamicFric = baseFric;
 
@@ -263,26 +281,18 @@ kernel void compute_physics(
 
             // ═══ MULTI-LAYER FORCES (fixed strength — no amplitude scaling) ═══
 
-            // 1. GRAVITY — flat rotation curve, BH MUST DOMINATE.
-            // G bumped 20 → 100 so the central pull dominates all other
-            // forces including voice perturbations. r0 0.5 → 0.1 so the
-            // gravity well is sharper near the BH (less softening fudge).
-            // 1/(r+r0) falloff keeps gravity meaningful at large r so
-            // escaped particles get pulled back, not lost.
-            // MUST match the spawn velocity formula in particles.cpp.
-            float G = 100.0f;
-            float r0 = 0.1f;
-            float gMag = (G / (rLen + r0)) * spinSuppress; // yields while spinning
-            shiftVx -= dir.x * gMag * dt;
-            shiftVy -= dir.y * gMag * dt;
-            shiftVz -= dir.z * gMag * dt;
+            // 1. GRAVITY — DISABLED AT REST. There is NO black-hole gravity before
+            // a note is played. The rest state is the full STAR MAP (the box spawn,
+            // particles.cpp L=42), held only by the gentle particle↔particle
+            // cohesion + SPH pressure later in this kernel (which run every phase).
+            // A central pull-to-origin here (the old G=100) instantly balled the
+            // whole galaxy into a hole — exactly what we DON'T want at rest. The
+            // hole must EMERGE from mass clumping (cohesion) over time, or from the
+            // release collapse, never from a hardcoded central attractor.
 
-            // 1b. Z-PLANE DAMPING. Active pull toward z=0 so the disk stays flat.
-            // Strength is now driven by the Disk Thickness fader: weaker damping
-            // = fatter disk. zDamp = 0.75/thickness → at the 0.15 default this is
-            // 5.0 (the original), at 0.30 it's 2.5 (thicker), etc.
-            float zDamp = (0.75f / max(u.diskThickness, 0.02f)) * spinSuppress;
-            shiftVz -= pz * zDamp * dt;
+            // 1b. Z-PLANE DAMPING — DISABLED. It flattened the star map into a thin
+            // disk (the accretion-disk look). The rest state is a 3D star map, not
+            // a disk; no z-confinement.
 
             // 2. DISK CONFINEMENT — TEMP DISABLED.
             // Was a hardcoded spring force pulling every particle to a
@@ -341,13 +351,13 @@ kernel void compute_physics(
             // creating orbital "yoyo" rings. Lensing is a LIGHT effect handled
             // by the Kerr raytracer in blackhole.metal, not a matter force.
 
-            // 5. HAWKING RADIATION (quantum fluctuations near horizon)
-            if (rLen < SCHWARZSCHILD_RS * 4.0f) {
-                shiftVx += noise(id, u.frameCounter) * 0.8f * dt;
-                shiftVy += noise(id + 1000u, u.frameCounter) * 0.8f * dt;
-                shiftVz += noise(id + 2000u, u.frameCounter) * 0.4f * dt;
-                currentTemp = mix(currentTemp, 0.3f, 0.05f);
-            }
+            // 5. HAWKING RADIATION — DISABLED AT REST. In the emergent model
+            // there is NO black hole at rest, so nothing radiates: this block
+            // was per-frame velocity noise on every particle inside r<2.3,
+            // a random walk that (now that rest is undamped for orbits)
+            // evaporates exactly the central region where infalling mass must
+            // settle to build the hole. Re-introduce later keyed to the
+            // EMERGENT bhStrength (Step 3), not to the rest phase.
 
             // 6. EVENT HORIZON FREEZE — DISABLED.
             // Was a trapdoor: any particle that crossed r < RS got both its
@@ -524,6 +534,93 @@ kernel void compute_physics(
                 currentTemp = max(currentTemp, ERUPT_TEMP * stress); // flash hot plasma
             }
         }
+    }
+
+    // ── SELF-GRAVITY (always-on, EVERY phase — the emergent-BH engine) ───────
+    // Real Newtonian gravity replaces the old cohesion spring: every star falls
+    // toward the rest of the mass, so the galaxy accretes on its own — no note
+    // required, no phase gate, no scripted central attractor. Stars collide,
+    // clump, and the centre piles up until the density itself births the hole.
+    // Barnes-Hut style split on the existing O(N) grid (no pairwise scan):
+    //   NEAR = the 3×3×3 neighbour cells, each a point mass at its sampled
+    //          centroid (local clumping — star↔star attraction). Cell mass is
+    //          the FULL cellCounts (the centroid's .w caps at 32 samples).
+    //   FAR  = the rest of the galaxy as ONE monopole at the global COM
+    //          (from reduce_stats, 1-frame lag), near cells subtracted so
+    //          mass isn't counted twice.
+    // Each live star has mass 1 (posW.w = invMass), so M_total ≈ particleCount
+    // and gravGM = G_sim·M_total is calibrated CPU-side (placeholder until the
+    // Step-5 Sgr A* unit anchor). Plummer ε² softening for numerics only.
+    // MUST run BEFORE the lifecycle capture below — the silence-immunity
+    // restore wipes everything after it, and gravity must act at rest.
+    if (mass > 0.001f && mass < 1000.0f && u.gravGM > 0.0f) {
+        float Ntot = max(float(u.particleCount), 1.0f);
+        float G1   = u.gravGM / Ntot;            // GM of ONE star
+        float3 gpos = float3(px, py, pz);
+        float3 gacc = float3(0.0f);
+
+        // NEAR field. Skip during attack (hash not rebuilt there → stale
+        // centroids) and outside the hash extent (binning clamps to edge
+        // cells, meaningless for this particle → monopole only).
+        float nearM = 0.0f;
+        float3 nearMP = float3(0.0f);
+        bool hashFresh = !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f);
+        if (su.gridSize > 0 && hashFresh &&
+            fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+            fabs(pz) < su.halfExtent) {
+            int gcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+            int gcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+            int gcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+            float softN = 4.0f * su.cellSize * su.cellSize;  // ε² ≈ (2·cell)²
+            for (int z = max(0, gcz - 1); z <= min(su.gridSize - 1, gcz + 1); z++) {
+                for (int y = max(0, gcy - 1); y <= min(su.gridSize - 1, gcy + 1); y++) {
+                    for (int x = max(0, gcx - 1); x <= min(su.gridSize - 1, gcx + 1); x++) {
+                        uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                        float cm = float(cellCounts[cID]);   // full count = cell mass
+                        if (cm < 0.5f) continue;
+                        float3 cpos = cellCentroids[cID].xyz;
+                        nearM  += cm;
+                        nearMP += cpos * cm;
+                        float3 toC = cpos - gpos;
+                        float  d2  = dot(toC, toC) + softN;
+                        gacc += toC * (G1 * cm * rsqrt(d2) / d2); // GM_c/(d²+ε²)^1.5
+                    }
+                }
+            }
+        }
+
+        // FAR field: everything not in the near cells, as one monopole.
+        float farM = max(Ntot - nearM, 0.0f);
+        if (farM > 0.5f) {
+            float3 farCom = (float3(u.comX, u.comY, u.comZ) * Ntot - nearMP) / farM;
+            float3 toC = farCom - gpos;
+            float  d2  = dot(toC, toC) + 0.25f;              // ε² far (horizon scale)
+            gacc += toC * (G1 * farM * rsqrt(d2) / d2);
+        }
+
+        // dt² — NOT the usual force convention here. shiftV is a PER-FRAME
+        // displacement, so a real acceleration [sim/s²] adds a·dt² per frame.
+        // The other forces' `a·dt` makes their labels ~1/dt (120×) stronger
+        // than written; gravity must be in REAL units so gravGM calibrates
+        // physically (and so the Step-5 Sgr A* anchor lands on honest maths).
+        // Measured failure without this: GM=3 acted like GM≈360 → radial
+        // plunge at ~38 sim/s through the soft core → slingshot heating →
+        // the whole star map inflated 4× within seconds.
+        //
+        // ACCELERATION BOUND: when play/release crushes all 2M stars into a
+        // few grid cells, per-cell masses hit ~10⁶ and the near-field force
+        // explodes the integrator (measured: post-note silence → exponential
+        // velocity growth → NaN positions). Bound the per-frame kick well
+        // below the softening scale so extreme density can't pump energy.
+        // Division-free per-component clamp. The norm-scale version
+        // (gkick *= MAX/len) manufactured NaN (inf · MAX/inf = NaN) and the
+        // COM reduce then spread it to every star — the all-black field.
+        // clamp() cannot create NaN from a finite/inf input.
+        const float GKICK_MAX = 0.005f;   // sim units/frame, ≪ ε
+        float3 gkick = clamp(gacc * (dt * dt), -GKICK_MAX, GKICK_MAX);
+        shiftVx += gkick.x;
+        shiftVy += gkick.y;
+        shiftVz += gkick.z;
     }
 
     // Save lifecycle-only shifts before the force pipeline contaminates them
@@ -942,44 +1039,12 @@ kernel void compute_physics(
     }
     p.entanglement.y = as_type<uint>(hardness);
 
-    // ── COHESION (grid-based, O(N·27) — can't hit the collision wall) ────────
-    // Pull each hardened particle toward its LOCAL MASS CENTRE: the count-
-    // weighted centroid of the 3×3×3 neighbouring cells (precomputed per-cell in
-    // compute_cell_centroids → just 27 cell lookups here, NO per-pair neighbour
-    // loop, so it can never blow up like the old O(N·27·128) scan that froze the
-    // GPU). Only particles beyond a rest radius are pulled in → it densifies
-    // into stable clusters (surface tension) without collapsing. Scaled by H,
-    // gated by H so sparse/non-hardened matter pays nothing. CREATES density →
-    // the "not super dense" fix, independent of the collisions toggle.
-    if (hardness > 0.02f && su.gridSize > 0) {
-        int ccx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-        int ccy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-        int ccz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-
-        float3 massSum = float3(0.0f);
-        float  wSum    = 0.0f;
-        for (int z = max(0, ccz - 1); z <= min(su.gridSize - 1, ccz + 1); z++) {
-            for (int y = max(0, ccy - 1); y <= min(su.gridSize - 1, ccy + 1); y++) {
-                for (int x = max(0, ccx - 1); x <= min(su.gridSize - 1, ccx + 1); x++) {
-                    uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
-                    float4 c = cellCentroids[cID];   // xyz = centroid, w = count
-                    massSum += c.xyz * c.w;
-                    wSum    += c.w;
-                }
-            }
-        }
-        if (wSum > 1.5f) {                            // need real neighbours
-            float3 localCenter = massSum / wSum;
-            float3 toC = localCenter - float3(px, py, pz);
-            float  d   = length(toC);
-            float  rest = 3.0f * su.cellSize;         // stable cluster scale
-            if (d > rest) {                            // pull only the outliers in
-                float cohStiff = 6.0f;
-                float3 cf = (toC / d) * (d - rest) * (cohStiff * hardness * dt);
-                shiftVx += cf.x; shiftVy += cf.y; shiftVz += cf.z;
-            }
-        }
-    }
+    // ── COHESION SPRING — REPLACED by real SELF-GRAVITY ──────────────────────
+    // The grid cohesion spring (pull toward the 3×3×3 centroid) clumped locally
+    // but never accumulated mass to a centre — and it was wiped at rest by the
+    // silence-immunity restore anyway. Its job (local clumping) is now done by
+    // the NEAR field of the always-on Newtonian self-gravity block above the
+    // lifecycle capture, which also survives silence. Same grid, same O(N·27).
 
     // ── PRESSURE (grid-based SPH, O(N·27), ALWAYS-ON) — the gas force ────────
     // Push each particle DOWN the local density gradient: away from neighbouring
@@ -1017,6 +1082,28 @@ kernel void compute_physics(
         shiftVz += pForce.z * pStiff * dt;
     }
 
+    // ── COLLAPSE INTO THE BLACK HOLE (release / held-BH state) ───────────────
+    // Once a note is let go, the star map falls into the hole under real central
+    // gravity (Plummer-softened), SLOWLY — scaled by envelopeProgress, the
+    // collapse ramp held by the CPU lifecycle. "Let go → slow collapse into a
+    // black hole." Gated to the release/BH phase (>3.5), so rest/play untouched.
+    // ALWAYS-ON central gravity → the galaxy self-collapses over time (the BH
+    // is the EMERGENT physical sum of the mass falling in, no note required).
+    // Release accelerates the collapse. Plummer-softened, gated only by mass>0.
+    // Central "black hole" gravity does NOT exist at rest — only after a note is
+    // released does the hole pull matter in (the collapse gesture). At rest the
+    // ONLY attraction is particle↔particle (the grid cohesion above), which lets
+    // mass slowly clump from where it is, NOT pull toward a fake origin/ball.
+    if (mass > 0.001f && u.envelopePhase > 3.5f) {
+        float gr2   = px * px + py * py + pz * pz;
+        float gsoft = gr2 + 0.25f;
+        float ginvR3 = rsqrt(gsoft) / gsoft;            // 1/(r²+ε²)^1.5
+        float Gstr  = 8.0f * clamp(u.envelopeProgress, 0.0f, 1.0f); // release: collapse to hole
+        shiftVx -= px * Gstr * ginvR3 * dt;
+        shiftVy -= py * Gstr * ginvR3 * dt;
+        shiftVz -= pz * Gstr * ginvR3 * dt;
+    }
+
     // ── Störmer-Verlet integration (damped) ──────────────────────────
     // Restored natural damping without extra cosmic over-drag.
     // Jitter and collision forces are now visible again.
@@ -1028,37 +1115,16 @@ kernel void compute_physics(
         if (collapsed) {
             shiftVx = 0.0f; shiftVy = 0.0f; shiftVz = 0.0f;
             vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
-        } else {
-            // ── 3B: Ambient Idle State ──────────────────────────────────
-            // Gentle motion during silence so particles feel alive, not dead.
-            float r_idle = sqrt(px*px + py*py + pz*pz);
-            if (r_idle > 0.01f) {
-                // 1. Slow rotation around Y axis (~0.1 rad/s)
-                float omega = 0.1f * dt;
-                float cosO = cos(omega);
-                float sinO = sin(omega);
-                float newPx = px * cosO + pz * sinO;
-                float newPz = -px * sinO + pz * cosO;
-                px = newPx;
-                pz = newPz;
-
-                // 2. Breathing radius: ±5% at 0.2 Hz
-                float breathe = 0.05f * sin(u.time * 0.2f * 2.0f * M_PI_F);
-                float3 rDir = float3(px, py, pz) / r_idle;
-                shiftVx += rDir.x * breathe * 0.5f * dt;
-                shiftVy += rDir.y * breathe * 0.5f * dt;
-                shiftVz += rDir.z * breathe * 0.5f * dt;
-
-                // 3. Per-particle turbulence (slowly varying Perlin-like)
-                uint slowFrame = u.frameCounter / 8u; // change every 8 frames
-                float turbX = noise(id, slowFrame) * 0.02f;
-                float turbY = noise(id + 7777u, slowFrame) * 0.02f;
-                float turbZ = noise(id + 15555u, slowFrame) * 0.02f;
-                shiftVx += turbX;
-                shiftVy += turbY;
-                shiftVz += turbZ;
-            }
         }
+        // ── 3B "Ambient Idle State" — REMOVED (it was THE rest-state cheat) ──
+        // The old block ran ONLY here (rest), AFTER the force wipe: a scripted
+        // Y-rotation applied straight to position, a ±5% "breathing" radius,
+        // and per-particle turbulence kicks of ±0.01/frame (no dt, re-rolled
+        // every 8 frames). With the rest damper gone the turbulence was a free
+        // deterministic velocity random walk — measured: the whole star map
+        // ballooned outward at ~30 sim/s, identical curve every run, even with
+        // gravity disabled. Rest motion is now REAL: Kepler spawn velocities +
+        // always-on self-gravity make the map orbit, clump and accrete.
     }
 
     // ── Envelope-Coupled Velocity Damping ──────────────────────────────
@@ -1083,13 +1149,12 @@ kernel void compute_physics(
 
     // ── VJ Silence Damping ──────────────────────────────────────────────
     // When amplitude drops, apply extra friction so particles return to sphere
-    float silence = 1.0f - clamp(u.totalAmplitude, 0.0f, 1.0f);
-    if (silence > 0.5f) {
-        float extra = mix(1.0f, 0.90f, (silence - 0.5f) * 2.0f);
-        vpx *= extra;
-        vpy *= extra;
-        vpz *= extra;
-    }
+    // ── Extra silence damping — DISABLED for emergent gravity ───────────────
+    // The old ×0.90/frame rest damper froze the map (kills velocity ~10⁻⁶/s),
+    // which turned the always-on self-gravity into invisible terminal-velocity
+    // creep (measured: ~0.02 sim units of infall in 2 min). Rest must be LIVE:
+    // baseFric (pow(0.9, dt) ≈ 0.9991/frame, tuned above for Kepler orbits)
+    // is the only damping, so the spawn rotation orbits and the core accretes.
 
     // Combine proxy with force pulses
     float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
@@ -1106,7 +1171,13 @@ kernel void compute_physics(
         float3 jit = float3(noise(id, u.frameCounter + 11u),
                             noise(id + 7919u, u.frameCounter + 23u),
                             noise(id + 104729u, u.frameCounter + 37u));
-        finalV += jit * (u.jitterFactor * 0.02f) * (1.0f - hardness); // crystallized matter stops shimmering
+        // Amplitude-gated: jitter feeds finalV, which IS next frame's Verlet
+        // velocity — at rest (no damping since the rest state went
+        // conservative for orbits) it was a free velocity random walk that
+        // blew the star map up to 4× its radius within seconds (measured).
+        // Shimmer belongs to play, where fricPlay contains it.
+        float jitterGate = clamp(u.totalAmplitude * 4.0f, 0.0f, 1.0f);
+        finalV += jit * (u.jitterFactor * 0.02f * jitterGate) * (1.0f - hardness); // crystallized matter stops shimmering
     }
 
     // Final position integration
@@ -1119,7 +1190,10 @@ kernel void compute_physics(
     // position eases fully onto home → no drift, no pulse, the star map.
     // During PLAY: nextPos comes from the integrator (voice forces win) +
     // a small pull back toward home so particles don't fully escape.
-    {
+    // AT REST: the home-pin is OFF — real gravity governs, so the galaxy
+    // self-collapses over time (emergent BH, not a scripted snap). Gated by
+    // amplitude: the pin only helps recover the shape while a note sounds.
+    if (u.totalAmplitude > 0.005f) {
         float r_home = p.spinW.x;
         if (r_home > 0.001f) {
             float theta = as_type<float>(p.entanglement.z);
@@ -1194,7 +1268,7 @@ kernel void compute_physics(
         if (ph < 0.5f)        dynamic_cap = STAR_MAP_CAP;                                       // silence = wide STAR MAP (overflows frame)
         else if (ph < 1.5f)   dynamic_cap = mix(STAR_MAP_CAP, ORBIT_R_CHLADNI, ph - 0.5f);      // attack: stars rush IN toward the Chladni/supernova
         else if (ph < 3.5f)   dynamic_cap = ORBIT_R_CHLADNI;                                    // decay/sustain
-        else                  dynamic_cap = mix(ORBIT_R_CHLADNI, ORBIT_R_BH, clamp(u.envelopeProgress, 0.0f, 1.0f)); // release: collapse CHLADNI→BH
+        else                  dynamic_cap = mix(ORBIT_R_CHLADNI, 0.7f, clamp(u.envelopeProgress, 0.0f, 1.0f)); // release: collapse CHLADNI→ tight onto the BH horizon
         // Yield the cap while spinning — otherwise the tumbling body periodically
         // hits the XY cap and gets yanked, flickering between two states.
         dynamic_cap += (1.0f - spinSuppress) * 8.0f;
@@ -1328,6 +1402,13 @@ struct PartialStats {
     float maxTemp;   // max temperature
     float sumSpeed;  // Σ |v| (→ avg)
     float maxSpeed;  // max |v|
+    float sumPx;     // Σ position of live stars (→ centre of mass)
+    float sumPy;
+    float sumPz;
+    float sumCount;  // live star count (mass 1 each → total mass)
+    float sumR;      // Σ |r| of live stars (→ mean radius)
+    float maxR;      // farthest live star
+    float pad2, pad3;
 };
 
 kernel void reduce_stats(
@@ -1346,9 +1427,16 @@ kernel void reduce_stats(
     threadgroup float sharedMT[256];  // max temp
     threadgroup float sharedSS[256];  // sum speed
     threadgroup float sharedMS[256];  // max speed
+    threadgroup float sharedPX[256];  // Σ live position → COM (self-gravity)
+    threadgroup float sharedPY[256];
+    threadgroup float sharedPZ[256];
+    threadgroup float sharedCT[256];  // live star count
+    threadgroup float sharedSR[256];  // Σ radius
+    threadgroup float sharedMR[256];  // max radius
 
     float ke = 0.0f, mx = 0.0f, my = 0.0f;
     float temp = 0.0f, speed = 0.0f;
+    float3 lpos = float3(0.0f);
     bool real = false;
 
     if (int(id) < u.particleCount) {
@@ -1374,6 +1462,7 @@ kernel void reduce_stats(
             // (μ=0.6 ionized plasma, m_p=1.673e-27, k_B=1.381e-23, c²=8.988e16).
             // The honest Sgr A* RIAF: ~10^11 K mean → ~10^12 K (quark-gluon) inner.
             temp  = (r_sim > 1e-4f) ? (1.089e12f / r_sim) : 0.0f;
+            lpos  = float3(px, py, pz);
             real  = true;
         }
     }
@@ -1385,6 +1474,13 @@ kernel void reduce_stats(
     sharedMT[tid] = real ? temp : -1e9f;
     sharedSS[tid] = real ? speed : 0.0f;
     sharedMS[tid] = real ? speed : -1e9f;
+    sharedPX[tid] = real ? lpos.x : 0.0f;
+    sharedPY[tid] = real ? lpos.y : 0.0f;
+    sharedPZ[tid] = real ? lpos.z : 0.0f;
+    sharedCT[tid] = real ? 1.0f : 0.0f;
+    float lr = length(lpos);
+    sharedSR[tid] = real ? lr : 0.0f;
+    sharedMR[tid] = real ? lr : -1e9f;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
@@ -1394,6 +1490,12 @@ kernel void reduce_stats(
             sharedMY[tid] += sharedMY[tid + stride];
             sharedST[tid] += sharedST[tid + stride];
             sharedSS[tid] += sharedSS[tid + stride];
+            sharedPX[tid] += sharedPX[tid + stride];
+            sharedPY[tid] += sharedPY[tid + stride];
+            sharedPZ[tid] += sharedPZ[tid + stride];
+            sharedCT[tid] += sharedCT[tid + stride];
+            sharedSR[tid] += sharedSR[tid + stride];
+            sharedMR[tid]  = max(sharedMR[tid], sharedMR[tid + stride]);
             sharedMT[tid]  = max(sharedMT[tid], sharedMT[tid + stride]);
             sharedMS[tid]  = max(sharedMS[tid], sharedMS[tid + stride]);
         }
@@ -1408,5 +1510,11 @@ kernel void reduce_stats(
         partialSums[tgId].maxTemp  = sharedMT[0];
         partialSums[tgId].sumSpeed = sharedSS[0];
         partialSums[tgId].maxSpeed = sharedMS[0];
+        partialSums[tgId].sumPx    = sharedPX[0];
+        partialSums[tgId].sumPy    = sharedPY[0];
+        partialSums[tgId].sumPz    = sharedPZ[0];
+        partialSums[tgId].sumCount = sharedCT[0];
+        partialSums[tgId].sumR     = sharedSR[0];
+        partialSums[tgId].maxR     = sharedMR[0];
     }
 }

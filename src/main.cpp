@@ -1536,9 +1536,34 @@ int main() {
                               envState.intensity);
     renderer.setDiskThickness(app.uiDiskThickness);
 
-    // Pass envelope state to config for shaders
-    config.envelopePhase = envState.phase;
-    config.envelopeProgress = envState.progress;
+    // ── STAR-MAP LIFECYCLE: hold the BLACK HOLE after release ────────────────
+    // The audio envelope returns to Off (phase 0 = star map) once release ends,
+    // but VISUALLY the matter must STAY collapsed as a black hole — the loop is
+    // star map → play (supernova) → let go → SLOW collapse into a black hole
+    // that PERSISTS. Track a collapse state: it starts when a played note
+    // finishes, ramps collapseT 0→1 slowly (the slow collapse), holds at the BH,
+    // and resets to the supernova/star map only when a new note plays.
+    {
+        static bool  playedCycle = false;
+        static bool  collapsed   = false;
+        static float collapseT   = 0.0f;
+        float ph = envState.phase;
+        if (ph >= 0.5f) {            // a note is active → supernova (reset)
+            playedCycle = true;
+            collapsed   = false;
+            collapseT   = 0.0f;
+        } else if (playedCycle) {    // note finished → collapse into the BH
+            collapsed = true;
+        }
+        if (collapsed) {
+            collapseT = std::min(1.0f, collapseT + 1.0f / 300.0f); // ~2.5s slow collapse
+            config.envelopePhase    = 4.0f;       // held black-hole phase (gates on)
+            config.envelopeProgress = collapseT;  // drives the collapse + BH ramp
+        } else {
+            config.envelopePhase    = envState.phase;    // 0 = star map, else playing
+            config.envelopeProgress = envState.progress;
+        }
+    }
 
     float effectiveTotalAmp = synth.totalAmplitude();
     if (app.uiVJMode) {

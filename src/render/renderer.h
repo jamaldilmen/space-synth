@@ -185,6 +185,12 @@ struct PhysicsUniforms {
   float spinX;              // user spin torque around X axis (rad/s)
   float spinY;              // user spin torque around Y axis (rad/s)
   float bondNetworkOn;      // >0.5 = find nearest-neighbour bonds in sustain
+
+  // ═══ SELF-GRAVITY (emergent BH, Step 1) ═══
+  float comX;               // live-mass centre of mass (reduce_stats, 1-frame lag)
+  float comY;
+  float comZ;
+  float gravGM;             // G_sim·M_total — 0 disables self-gravity
 };
 
 // Spatial hash uniforms for collision grid

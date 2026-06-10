@@ -77,6 +77,16 @@ struct Renderer::Impl {
   id<MTLBuffer> partialSumsBuffer = nil;
   int numThreadgroups = 0;
   PhysicsStats latestStats = {};
+
+  // Live-galaxy aggregates from the stats reduce (1-frame lag): centre of
+  // mass + live star count. Feeds the self-gravity far-field monopole.
+  float liveComX = 0.0f, liveComY = 0.0f, liveComZ = 0.0f;
+  float liveCount = 0.0f;
+  // G_sim·M_total for the always-on self-gravity. Calibrated so the untouched
+  // star map (box half-extent 42) drifts inward over MINUTES: a(r) = GM/r²
+  // → a(20) ≈ 0.0075, free-fall from mid-field ≈ 1–2 min. PLACEHOLDER until
+  // the Step-5 NASA pass anchors it to Sgr A* real units. 0 = gravity off.
+  static constexpr float kSelfGravGM = 3.0f;
   bool collisionsEnabled = false;
   bool bondNetworkEnabled = false;
 
@@ -462,11 +472,23 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
     impl_->densityTexture = [impl_->device newTextureWithDescriptor:densDesc];
   }
 
-  // Partial sums buffer for reduction: 1 per threadgroup (800k/256 = 3125)
-  impl_->numThreadgroups = (count + 255) / 256;
-  // Each partial sum: 8 floats (KE, MX, MY, pad, sumTemp, maxTemp, sumSpeed,
-  // maxSpeed) = 32 bytes
-  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 32);
+  // Partial sums buffer for reduction: 1 per threadgroup. SIZE IT FROM THE
+  // PIPELINE'S REAL THREADGROUP CAPACITY — the fatter reduce_stats kernel
+  // (16 threadgroup arrays) can push maxTotalThreadsPerThreadgroup below
+  // 256; assuming 256 here undersizes the buffer → the kernel writes past
+  // the end → corrupted stats (measured: live=8.9M of 2M, NaN COM).
+  {
+    NSUInteger tgCap = 256;
+    if (impl_->reduceStatsPipeline) {
+      tgCap = std::min(
+          tgCap, impl_->reduceStatsPipeline.maxTotalThreadsPerThreadgroup);
+      fprintf(stderr, "[GRAV] reduce_stats tgCap=%lu\n", (unsigned long)tgCap);
+    }
+    impl_->numThreadgroups = (count + (int)tgCap - 1) / (int)tgCap;
+  }
+  // 64 bytes = 16 floats per threadgroup, must match PartialStats in
+  // particles.metal (8 stats + COM/live-count + radius fields).
+  allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 64);
 }
 
 void Renderer::resetParticles() {
@@ -773,6 +795,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       resetPending = false;
     }
 
+    // SELF-GRAVITY uniforms: last frame's COM + the calibrated G·M_total.
+    // Set here (not in computeStep) — they're renderer-internal state from
+    // the stats readback, and computeStep wholesale-resets physicsUniforms.
+    physicsUniforms.comX = liveComX;
+    physicsUniforms.comY = liveComY;
+    physicsUniforms.comZ = liveComZ;
+    physicsUniforms.gravGM = kSelfGravGM;
+
     memcpy(uniformBuffer[frameIdx].contents, &physicsUniforms,
            sizeof(physicsUniforms));
 
@@ -1007,12 +1037,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         struct PartialStats {
           float ke, mx, my, pad;
           float sumTemp, maxTemp, sumSpeed, maxSpeed;
+          float sumPx, sumPy, sumPz, sumCount;
+          float sumR, maxR, pad2, pad3;
         };
         const PartialStats *sums =
             (const PartialStats *)partialSumsBuffer.contents;
         float totalKE = 0, totalMX = 0, totalMY = 0;
         float totalSumTemp = 0, totalSumSpeed = 0;
         float gMaxTemp = -1e9f, gMaxSpeed = -1e9f;
+        float totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
+        float totalSR = 0, gMaxR = -1e9f;
         // Only sum the threadgroups actually dispatched this frame. The kernel
         // writes one partial per ceil(particleCount/tg) groups; numThreadgroups
         // is the buffer-alloc size (capacity), so looping it summed STALE
@@ -1025,8 +1059,34 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           totalMY += sums[i].my;
           totalSumTemp += sums[i].sumTemp;
           totalSumSpeed += sums[i].sumSpeed;
+          totalPX += sums[i].sumPx;
+          totalPY += sums[i].sumPy;
+          totalPZ += sums[i].sumPz;
+          totalCT += sums[i].sumCount;
+          totalSR += sums[i].sumR;
+          if (sums[i].maxR > gMaxR) gMaxR = sums[i].maxR;
           if (sums[i].maxTemp > gMaxTemp) gMaxTemp = sums[i].maxTemp;
           if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
+        }
+        // Centre of mass of the live stars (mass 1 each) → next frame's
+        // self-gravity far-field monopole. Guard NaN/empty.
+        if (totalCT > 0.5f && std::isfinite(totalPX) && std::isfinite(totalPY) &&
+            std::isfinite(totalPZ)) {
+          liveComX = totalPX / totalCT;
+          liveComY = totalPY / totalCT;
+          liveComZ = totalPZ / totalCT;
+          liveCount = totalCT;
+        }
+        // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
+        // particle count and COM ≈ 0 at spawn, else the 48B reduce is broken.
+        if ((physicsUniforms.frameCounter % 240u) == 0u) {
+          fprintf(stderr,
+                  "[GRAV] live=%.0f com=(%.2f %.2f %.2f) meanR=%.2f maxR=%.1f "
+                  "phase=%.1f prog=%.2f amp=%.3f\n",
+                  liveCount, liveComX, liveComY, liveComZ,
+                  (totalCT > 0.5f) ? (totalSR / totalCT) : -1.0f, gMaxR,
+                  physicsUniforms.envelopePhase, physicsUniforms.envelopeProgress,
+                  physicsUniforms.totalAmplitude);
         }
         latestStats.kineticEnergy = totalKE;
         latestStats.momentumX = totalMX;
@@ -1080,10 +1140,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // Run during silence, sustain, release. Attack + decay skip (shader-side
   // opacity is 0 there anyway).
   PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-  // STAR-MAP FLIP: the open/rest (silence) state is now a STAR MAP, not a black
-  // hole — so DON'T raytrace the BH shadow at silence. The hole only appears
-  // once matter collapses (sustain/release). Was: < 0.5f || > 2.5f.
-  bool needRaytracer = (phys_gate->envelopePhase > 2.5f);
+  // STAR-MAP LIFECYCLE: the black hole appears ONLY on RELEASE (after the
+  // supernova collapses) — not at rest (star map) and not during play. So the
+  // raytraced shadow only renders on the release phase. Was: > 2.5f (sustain).
+  bool needRaytracer = (phys_gate->envelopePhase > 3.5f);
   if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8

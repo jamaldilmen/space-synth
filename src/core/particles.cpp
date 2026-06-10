@@ -37,14 +37,25 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     p.y = (2.0f * u01(rng) - 1.0f) * boxL;
     p.z = (2.0f * u01(rng) - 1.0f) * boxL;
 
-    // Gentle rigid-rotation velocity about +Y (matches the slow whole-map
-    // spin the shader applies at rest), so play perturbations start coherent.
-    const float omega_slow = 0.08f; // rad/s, matches particles.metal rest spin
+    // KEPLERIAN rest velocity: each star starts on a circular orbit about +Y
+    // around the cluster's mass centre (≈ origin at spawn), v_circ = √(GM/r).
+    // This is what makes rest = ORBITS instead of radial plunge: without
+    // tangential velocity every star falls straight through the centre.
+    // Same sense as the old rigid rotation (v ∝ (z, 0, −x)) and the home-pin
+    // spin. Stored in per-FRAME displacement units (×kDt) — the shader's
+    // Verlet velocity proxy is displacement-per-frame.
+    const float kGM = 3.0f;        // MUST match kSelfGravGM in renderer.mm
     const float kDt = 1.0f / 120.0f;
-    // v = ω × r,  ω = (0, omega_slow, 0)  ⇒  v = omega·(z, 0, −x)
-    p.vx =  omega_slow * p.z * kDt;
-    p.vy =  0.0f;
-    p.vz = -omega_slow * p.x * kDt;
+    float r3 = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+    float lxz = std::sqrt(p.x * p.x + p.z * p.z);
+    float vmag = std::sqrt(kGM / std::max(r3, 0.5f)) * kDt;
+    if (lxz > 1e-4f) {
+      p.vx =  vmag * p.z / lxz;
+      p.vy =  0.0f;
+      p.vz = -vmag * p.x / lxz;
+    } else {
+      p.vx = 0.0f; p.vy = 0.0f; p.vz = 0.0f; // polar axis: radial orbit
+    }
   }
 }
 
@@ -88,9 +99,13 @@ std::vector<GPUParticle> packForGPU(const ParticleSystem &system) {
         p.vy,
         p.vz,
         0.0f, // vel + phase
-        p.x,
-        p.y,
-        p.z,
+        // prevPos seeded one step BEHIND the Keplerian orbit velocity: the
+        // shader's Störmer-Verlet derives velocity from (pos − prev), so this
+        // is how spawn velocity actually enters the physics (velW above is
+        // never read by compute_physics). vx/vy/vz are per-frame units.
+        p.x - p.vx,
+        p.y - p.vy,
+        p.z - p.vz,
         0.0f, // prevPos + temperature
         r_home,
         0.0f,

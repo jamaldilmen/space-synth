@@ -1131,8 +1131,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         }
         // Emergent-BH enclosure (Step 2): stars within R_ENC of the BH
         // candidate, counted by the same reduce → enclosed mass + refined
-        // core position (its COM). Saturation-free (per-cell counts cap at
-        // 128, particle counting doesn't).
+        // core position (its COM). Saturation-free, like cellCounts now is
+        // (count_cells uncapped — both mass signals are honest).
         if (totalEC > 0.5f && std::isfinite(totalEX) && std::isfinite(totalEY) &&
             std::isfinite(totalEZ)) {
           bhMassEnc = totalEC;

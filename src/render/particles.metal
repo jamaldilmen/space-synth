@@ -119,10 +119,12 @@ static bool notFinite1(float v) {
 }
 
 // Collision constants
-constant int MAX_PER_CELL = 128; // Was 32 (sized for 1M); bumped for 5M+ so
-                                  // dense disk regions don't clip the neighbor
-                                  // scan / density readback. Must match the
-                                  // atomic cap in spatial_hash.metal.
+constant int MAX_PER_CELL = 128; // Read-site SCAN clamp only: bounds the
+                                  // neighbor-loop iteration count so a hot
+                                  // cell can't stall the GPU. cellCounts
+                                  // itself is UNCAPPED (count_cells in
+                                  // spatial_hash.metal) — it is the cell MASS
+                                  // for self-gravity and must stay honest.
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
@@ -541,7 +543,10 @@ kernel void compute_physics(
         int ecy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int ecz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         uint ecID = uint((ecz * su.gridSize + ecy) * su.gridSize + ecx);
-        uint ecount = cellCounts[ecID];
+        // Clamp to the old 128 cap: cellCounts is uncapped now, and the flare
+        // stress/temp tuning (log2 ramp 0..~2.7) was built against capped
+        // counts — an uncapped 50k cell would flash 11× the intended burst.
+        uint ecount = min(cellCounts[ecID], uint(MAX_PER_CELL));
         if (ecount > ERUPT_DENSITY) {
             float stress = log2(float(ecount) / float(ERUPT_DENSITY)); // 0..~3
             // Intermittent per-cell flare clock (changes a few times/sec).
@@ -569,7 +574,9 @@ kernel void compute_physics(
     // Barnes-Hut style split on the existing O(N) grid (no pairwise scan):
     //   NEAR = the 3×3×3 neighbour cells, each a point mass at its sampled
     //          centroid (local clumping — star↔star attraction). Cell mass is
-    //          the FULL cellCounts (the centroid's .w caps at 32 samples).
+    //          the FULL cellCounts — UNCAPPED (count_cells), so piled-up mass
+    //          really pulls harder (the centroid's .w still caps at 32 samples;
+    //          only the POSITION is sampled, the mass is exact).
     //   FAR  = the rest of the galaxy as ONE monopole at the global COM
     //          (from reduce_stats, 1-frame lag), near cells subtracted so
     //          mass isn't counted twice.

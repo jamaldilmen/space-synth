@@ -55,14 +55,16 @@ kernel void count_cells(
     if (int(id) >= u.particleCount) return;
     
     uint cellID = cellIndices[id];
-    // Cap atomic increments to MAX_PER_CELL (128, see particles.metal).
-    // Prevents massive GPU stalling when millions of particles clump at the
-    // origin while still resolving dense disk regions (avg cell density at
-    // 5M particles / 64^3 cells ~ 19, disk peaks well below 128).
-    uint current = atomic_load_explicit(&cellCounts[cellID], memory_order_relaxed);
-    if (current < 128) {
-        atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
-    }
+    // UNCAPPED — cellCounts is the TRUE count (= cell MASS for self-gravity).
+    // The old `if (current < 128)` guard silently clipped gravity: 50k stars
+    // piled in a cell read as mass 128, so "mass piles up → gravity grows"
+    // broke above 128/cell and the emergent-BH runaway could never happen.
+    // The GPU-stall fear the cap addressed lives in the neighbour-SCAN loops,
+    // and those clamp at their read sites (min(count, MAX_PER_CELL) in
+    // particles.metal); the count itself must stay honest. Measure FPS during
+    // collapse — if a stall returns, it returns HERE (atomic contention on
+    // one hot cell), not in the scans.
+    atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
 }
 
 // ── Phase 3: Multi-pass Blelloch Prefix Sum ──────────────────────────────────

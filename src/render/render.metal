@@ -478,20 +478,27 @@ vertex VertexOut particle_vertex(
         out.color += float3(boost * 0.3f, boost * 0.2f, boost * 0.1f);
     }
 
+    // ── DEAD STARS (eaten by a merger): gone in EVERY phase ──────────────────
+    // The merge kernel zeroes posW.w and parks the body outside the domain;
+    // the render must never show it again. Zero size + fully transparent.
+    if (in.posW.w <= 0.001f) {
+        out.pointSize = 0.0f;
+        out.color = float3(0.0f);
+        out.luminance = 0.0f;
+        out.position = float4(0.0f, 0.0f, -2.0f, 1.0f); // clipped (z < -w)
+        return out;
+    }
+
     // ── STAR MAP (open/rest state): each particle is a real STAR ─────────────
-    // At rest, render the field as a star map. Each particle's stellar mass is a
-    // deterministic Kroupa-IMF draw from its id (no storage, no physics impact),
-    // and its SIZE, BRIGHTNESS and COLOUR come from that mass (R∝M^0.8, L∝M^3.5,
-    // T_eff(M) → blackbody). Most are tiny dim red dwarfs, a rare few are blazing
-    // blue giants — a real cluster. Fades to the gas/supernova look as you play.
+    // At rest, render the field as a star map. Each particle's stellar mass is
+    // its REAL physics mass (posW.w — Kroupa-IMF at spawn, and it GROWS when
+    // the star eats another in a merger: the render is the READOUT of the
+    // physics). SIZE, BRIGHTNESS and COLOUR come from that mass (R∝M^0.8,
+    // L∝M^3.5, T_eff(M) → blackbody). Most are tiny dim red dwarfs, a rare few
+    // are blazing blue giants. Fades to the gas/supernova look as you play.
     float starMix = 1.0f - smoothstep(0.0f, 0.5f, cam.envelopePhase); // 1 at silence
     if (starMix > 0.001f) {
-        uint h = vid * 2654435761u; h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12;
-        float u01 = float(h & 0xFFFFFFu) / float(0xFFFFFF);          // [0,1)
-        // Kroupa IMF inverse-CDF: dN/dM ∝ M^-2.3, M in [0.08, 50] M_sun.
-        float aI = pow(0.08f, -1.3f);   // ≈ 22.0
-        float bI = pow(50.0f, -1.3f);   // ≈ 0.005
-        float Mstar = pow(aI + u01 * (bI - aI), 1.0f / -1.3f);       // M_sun
+        float Mstar = min(in.posW.w, 500.0f);            // M_sun, merger-grown
         float Teff  = 5772.0f * pow(Mstar, 0.55f);                   // K (main-seq)
         float Lstar = pow(Mstar, 3.5f);                             // L_sun
         float Rstar = pow(Mstar, 0.8f);                             // R_sun (size)

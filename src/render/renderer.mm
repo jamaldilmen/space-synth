@@ -52,6 +52,7 @@ struct Renderer::Impl {
   // Conservation law reduction
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
   id<MTLComputePipelineState> reduceCellMaxPipeline = nil;
+  id<MTLComputePipelineState> mergeStarsPipeline = nil; // stellar mergers (US2 eating)
 
   id<MTLBuffer> particleBuffer = nil;
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
@@ -246,6 +247,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
                                                      error:&error];
     if (error)
       NSLog(@"Density pipeline error: %@", error);
+  }
+
+  // ── Stellar-merger pipeline (US2 eating, emergent-BH arc step 2) ────
+  id<MTLFunction> mergeFunc =
+      [impl_->library newFunctionWithName:@"merge_stars"];
+  if (mergeFunc) {
+    impl_->mergeStarsPipeline =
+        [impl_->device newComputePipelineStateWithFunction:mergeFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Merge pipeline error: %@", error);
   }
 
   // ── Densest-cell reduce pipeline (emergent-BH signal) ───────────────
@@ -1034,6 +1046,26 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             threadsPerThreadgroup:MTLSizeMake(tgM, 1, 1)];
         [comp endEncoding];
       }
+
+      // Phase 7: STELLAR MERGERS (US2 eating) — touching stars merge, the
+      // heavier eats the lighter. Runs on this frame's fresh snapshot
+      // (sortedParticles), writes the live buffer BEFORE compute_physics.
+      // The kernel itself skips the attack phase (stale-hash guard).
+      if (mergeStarsPipeline) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:mergeStarsPipeline];
+        [comp setBuffer:particleBuffer offset:0 atIndex:0];
+        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:1];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:2];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:3];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
+        [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:5];
+        NSUInteger tgMg = std::min(
+            tgSize, mergeStarsPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgMg, 1, 1)];
+        [comp endEncoding];
+      }
     }
 
     // ── Density heatmap (compute from cell counts) ─────────────────
@@ -1173,10 +1205,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
         // particle count and COM ≈ 0 at spawn, else the 48B reduce is broken.
         if ((physicsUniforms.frameCounter % 240u) == 0u) {
+          // CONSERVATION WATCHDOG: Mlive (Σ mass of living stars) must equal
+          // Mtot (spawn total) through ANY number of mergers — mass moves
+          // between stars, never appears or vanishes. live (count) dropping
+          // while Mlive holds = stars being EATEN, working as designed.
           fprintf(stderr,
-                  "[GRAV] live=%.0f com=(%.2f %.2f %.2f) meanR=%.2f maxR=%.1f "
+                  "[GRAV] live=%.0f Mlive=%.0f/%.0f com=(%.2f %.2f %.2f) "
+                  "meanR=%.2f maxR=%.1f "
                   "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
-                  liveCount, liveComX, liveComY, liveComZ,
+                  liveCount, totalSM, physicsUniforms.massTotal,
+                  liveComX, liveComY, liveComZ,
                   (totalCT > 0.5f) ? (totalSR / totalCT) : -1.0f, gMaxR,
                   physicsUniforms.envelopePhase,
                   physicsUniforms.totalAmplitude, physicsUniforms.gravGM,

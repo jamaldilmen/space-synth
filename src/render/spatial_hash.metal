@@ -69,17 +69,17 @@ kernel void count_cells(
     // addressed lives in the neighbour-SCAN loops, and those clamp at their
     // read sites (min(count, MAX_PER_CELL) in particles.metal); the signals
     // themselves must stay honest. (Verified: no stall, 120fps @ 3M.)
-    atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
-    // posW.w = stellar mass in M_sun (0 = wall → adds nothing). NaN-poisoned
-    // stars must not poison the cell: integer test, fast-math-proof.
+    // posW.w = stellar mass in M_sun. Dead stars (eaten by a merger, mass 0)
+    // and walls are invisible to the grid: neither counted nor weighed. NaN-
+    // poisoned stars must not poison the cell: integer test, fast-math-proof.
     float m = particles[id].posW.w;
     uint mb = as_type<uint>(m);
     bool finite = ((mb >> 23) & 0xFFu) != 0xFFu;
-    if (finite && m > 0.0f) {
-        atomic_fetch_add_explicit(&cellMass[cellID],
-                                  uint(m * MASS_FP + 0.5f),
-                                  memory_order_relaxed);
-    }
+    if (!finite || m <= 0.001f) return;
+    atomic_fetch_add_explicit(&cellCounts[cellID], 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&cellMass[cellID],
+                              uint(m * MASS_FP + 0.5f),
+                              memory_order_relaxed);
 }
 
 // ── Phase 3: Multi-pass Blelloch Prefix Sum ──────────────────────────────────

@@ -1489,6 +1489,133 @@ kernel void compute_physics(
     }
 }
 
+// ── STELLAR MERGERS — the US2 "eating" (emergent-BH arc, step 2) ─────────────
+// Real collisions are INELASTIC: two touching stars MERGE — the heavier eats
+// the lighter, mass adds, momentum is conserved, the relative kinetic energy
+// thermalizes (this is THE dissipation sink that lets piled mass STAY piled
+// instead of bouncing back out — gravity alone is conservative).
+// Scale honesty: at the Sgr A* anchor 1 R_sun = 0.0549 sim units, so stars in
+// a crushed core (spacing ~0.008) physically OVERLAP — contact merging is the
+// real outcome (runaway collisions in nuclear clusters are real astrophysics).
+//
+// Race-free GPU scheme: pair = MUTUAL nearest contact partner, decided by both
+// threads independently from the SAME immutable snapshot (sortedParticles,
+// built this frame before this kernel). Each thread writes ONLY its own
+// particle: the winner (heavier; tie → lower id) absorbs, the loser dies
+// (mass→0, parked outside the domain, frozen). At most one merge per star per
+// frame. Resolution limits: partners come from the ≤32 scattered samples/cell,
+// and contact reach is capped at 1.45·cellSize (the 27-cell scan); both only
+// RATE-limit merging, never break conservation.
+
+constant float MERGE_RSUN_SIM = 0.0549f;  // 1 R_sun in sim units (6.96e8 m / 1.269e10 m)
+
+// Nearest LIVE star in contact with (pos, mass), from the sorted snapshot.
+// Deterministic for all callers: strict d² ordering, ties → lower original id.
+// Returns the partner's ORIGINAL id + its snapshot data, or 0xFFFFFFFF.
+static uint nearestContactPartner(float3 pos, float m, uint selfOrig,
+                                  device const Particle* sorted,
+                                  device const uint* cellStarts,
+                                  device const uint* cellCounts,
+                                  constant SpatialHashUniforms& su,
+                                  thread Particle& outPartner)
+{
+    float selfR = MERGE_RSUN_SIM * pow(m, 0.8f);   // main-sequence R ∝ M^0.8
+    int cx = clamp(int((pos.x + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    int cy = clamp(int((pos.y + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    int cz = clamp(int((pos.z + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    float bestD2 = 1e30f;
+    uint bestOrig = 0xFFFFFFFFu;
+    float maxReach = 1.45f * su.cellSize;          // 27-cell scan limit
+    for (int z = max(0, cz - 1); z <= min(su.gridSize - 1, cz + 1); z++) {
+        for (int y = max(0, cy - 1); y <= min(su.gridSize - 1, cy + 1); y++) {
+            for (int x = max(0, cx - 1); x <= min(su.gridSize - 1, cx + 1); x++) {
+                uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                uint count = min(cellCounts[cID], 32u);   // scatter writes ≤32
+                uint start = cellStarts[cID];
+                for (uint i = 0; i < count; i++) {
+                    Particle q = sorted[start + i];
+                    uint qOrig = q.entanglement.y;        // original id (scatter)
+                    float qm = q.posW.w;
+                    if (qOrig == selfOrig) continue;
+                    if (qm <= 0.001f || qm >= 1000.0f) continue;  // dead/wall
+                    float3 d = q.posW.xyz - pos;
+                    float d2 = dot(d, d);
+                    // Contact: separation < R_self + R_other (capped at reach)
+                    float rc = min(selfR + MERGE_RSUN_SIM * pow(qm, 0.8f), maxReach);
+                    if (d2 >= rc * rc) continue;
+                    if (d2 < bestD2 || (d2 == bestD2 && qOrig < bestOrig)) {
+                        bestD2 = d2;
+                        bestOrig = qOrig;
+                        outPartner = q;
+                    }
+                }
+            }
+        }
+    }
+    return bestOrig;
+}
+
+kernel void merge_stars(
+    device Particle* particles [[buffer(0)]],          // live state: write OWN slot only
+    device const Particle* sorted [[buffer(1)]],       // this frame's immutable snapshot
+    device const uint* cellStarts [[buffer(2)]],
+    device const uint* cellCounts [[buffer(3)]],
+    constant SpatialHashUniforms& su [[buffer(4)]],
+    constant PhysicsUniforms& u [[buffer(5)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (int(id) >= u.particleCount) return;
+    if (su.gridSize <= 0) return;
+    // Attack: hash is stale (not rebuilt during attack) — no merging.
+    if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return;
+
+    device Particle& p = particles[id];
+    float m = p.posW.w;
+    if (m <= 0.001f || m >= 1000.0f) return;           // dead star or wall
+    float3 pos = p.posW.xyz;
+    if (notFinite3(pos)) return;
+    if (fabs(pos.x) >= su.halfExtent || fabs(pos.y) >= su.halfExtent ||
+        fabs(pos.z) >= su.halfExtent) return;          // interior only
+
+    // My nearest contact partner, from the snapshot.
+    Particle j;
+    uint jOrig = nearestContactPartner(pos, m, id, sorted, cellStarts,
+                                       cellCounts, su, j);
+    if (jOrig == 0xFFFFFFFFu) return;
+
+    // MUTUALITY: j must independently pick ME (same snapshot, same rule),
+    // else no merge this frame — prevents chains and double-eating.
+    Particle k;
+    uint jChoice = nearestContactPartner(j.posW.xyz, j.posW.w, jOrig, sorted,
+                                         cellStarts, cellCounts, su, k);
+    if (jChoice != id) return;
+
+    float mj = j.posW.w;
+    bool winner = (m > mj) || (m == mj && id < jOrig);
+
+    if (!winner) {
+        // EATEN: die. Mass → 0 (gravity/stats/render all gate on it), parked
+        // far outside the domain and frozen so no force path resurrects it.
+        float park = 4000.0f + float(id % 1024);
+        p.posW = float4(park, park, park, 0.0f);
+        p.prevW = float4(park, park, park, p.prevW.w);
+        return;
+    }
+
+    // EAT: inelastic merge from SNAPSHOT values (both sides see identical
+    // numbers). New body at the pair's barycentre, momentum conserved; the
+    // lost relative KE thermalizes → temperature bump (full Rankine-Hugoniot
+    // shock heating comes with the supernova rung).
+    float3 vi = pos - p.prevW.xyz;                     // per-frame displacement
+    float3 vj = j.posW.xyz - j.prevW.xyz;
+    float mNew = m + mj;
+    float3 posNew = (pos * m + j.posW.xyz * mj) / mNew;
+    float3 vNew = (vi * m + vj * mj) / mNew;
+    float tNew = max(p.prevW.w, j.prevW.w) + 0.4f * min(1.0f, mj / m);
+    p.posW = float4(posNew, mNew);
+    p.prevW = float4(posNew - vNew, tNew);
+}
+
 // ── Conservation law reduction kernel ───────────────────────────────────────
 
 struct PartialStats {

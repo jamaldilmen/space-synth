@@ -1518,111 +1518,107 @@ kernel void compute_physics(
 
 constant float MERGE_RSUN_SIM = 0.0549f;  // 1 R_sun in sim units (6.96e8 m / 1.269e10 m)
 
-// Nearest LIVE star in contact with (pos, mass), from the sorted snapshot.
-// Deterministic for all callers: strict d² ordering, ties → lower original id.
-// Returns the partner's ORIGINAL id + its snapshot data, or 0xFFFFFFFF.
-static uint nearestContactPartner(float3 pos, float m, uint selfOrig,
-                                  device const Particle* sorted,
-                                  device const uint* cellStarts,
-                                  device const uint* cellCounts,
-                                  constant SpatialHashUniforms& su,
-                                  thread Particle& outPartner)
-{
-    float selfR = MERGE_RSUN_SIM * pow(m, 0.8f);   // main-sequence R ∝ M^0.8
-    int cx = clamp(int((pos.x + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-    int cy = clamp(int((pos.y + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-    int cz = clamp(int((pos.z + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-    float bestD2 = 1e30f;
-    uint bestOrig = 0xFFFFFFFFu;
-    float maxReach = 1.45f * su.cellSize;          // 27-cell scan limit
-    for (int z = max(0, cz - 1); z <= min(su.gridSize - 1, cz + 1); z++) {
-        for (int y = max(0, cy - 1); y <= min(su.gridSize - 1, cy + 1); y++) {
-            for (int x = max(0, cx - 1); x <= min(su.gridSize - 1, cx + 1); x++) {
-                uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
-                uint count = min(cellCounts[cID], 32u);   // scatter writes ≤32
-                uint start = cellStarts[cID];
-                for (uint i = 0; i < count; i++) {
-                    Particle q = sorted[start + i];
-                    uint qOrig = q.entanglement.y;        // original id (scatter)
-                    float qm = q.posW.w;
-                    if (qOrig == selfOrig) continue;
-                    if (qm <= 0.001f || qm >= 1000.0f) continue;  // dead/wall
-                    float3 d = q.posW.xyz - pos;
-                    float d2 = dot(d, d);
-                    // Contact: separation < R_self + R_other (capped at reach)
-                    float rc = min(selfR + MERGE_RSUN_SIM * pow(qm, 0.8f), maxReach);
-                    if (d2 >= rc * rc) continue;
-                    if (d2 < bestD2 || (d2 == bestD2 && qOrig < bestOrig)) {
-                        bestD2 = d2;
-                        bestOrig = qOrig;
-                        outPartner = q;
-                    }
-                }
-            }
-        }
-    }
-    return bestOrig;
-}
-
+// ONE THREAD PER CELL (the centroid pass's architecture — the per-STAR version
+// cost 120fps→37: 2M threads × random 80B struct reads; per-cell reads are
+// contiguous and only dense cells do real work). Each cell-thread greedily
+// pairs its own ≤32 scattered entries by nearest contact, sequentially —
+// deterministic, no mutuality double-scan needed, and RACE-FREE because every
+// particle belongs to exactly one cell: only its own cell's thread may write
+// it. Cross-cell contact pairs are missed (rate-limit only, conservation safe).
 kernel void merge_stars(
-    device Particle* particles [[buffer(0)]],          // live state: write OWN slot only
-    device const Particle* sorted [[buffer(1)]],       // this frame's immutable snapshot
+    device Particle* particles [[buffer(0)]],          // written by ORIGINAL id
+    device const Particle* sorted [[buffer(1)]],       // immutable snapshot
     device const uint* cellStarts [[buffer(2)]],
     device const uint* cellCounts [[buffer(3)]],
     constant SpatialHashUniforms& su [[buffer(4)]],
     constant PhysicsUniforms& u [[buffer(5)]],
-    uint id [[thread_position_in_grid]])
+    uint cid [[thread_position_in_grid]])
 {
-    if (int(id) >= u.particleCount) return;
-    if (su.gridSize <= 0) return;
+    uint totalCells = uint(su.gridSize) * uint(su.gridSize) * uint(su.gridSizeZ);
+    if (cid >= totalCells) return;
     // Attack: hash is stale (not rebuilt during attack) — no merging.
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return;
 
-    device Particle& p = particles[id];
-    float m = p.posW.w;
-    if (m <= 0.001f || m >= 1000.0f) return;           // dead star or wall
-    float3 pos = p.posW.xyz;
-    if (notFinite3(pos)) return;
-    if (fabs(pos.x) >= su.halfExtent || fabs(pos.y) >= su.halfExtent ||
-        fabs(pos.z) >= su.halfExtent) return;          // interior only
+    uint count = min(cellCounts[cid], 32u);            // scatter writes ≤32
+    if (count < 2u) return;
+    uint start = cellStarts[cid];
 
-    // My nearest contact partner, from the snapshot.
-    Particle j;
-    uint jOrig = nearestContactPartner(pos, m, id, sorted, cellStarts,
-                                       cellCounts, su, j);
-    if (jOrig == 0xFFFFFFFFu) return;
+    bool used[32];
+    for (uint i = 0; i < count; i++) used[i] = false;
 
-    // MUTUALITY: j must independently pick ME (same snapshot, same rule),
-    // else no merge this frame — prevents chains and double-eating.
-    Particle k;
-    uint jChoice = nearestContactPartner(j.posW.xyz, j.posW.w, jOrig, sorted,
-                                         cellStarts, cellCounts, su, k);
-    if (jChoice != id) return;
+    for (uint i = 0; i < count; i++) {
+        if (used[i]) continue;
+        Particle a = sorted[start + i];
+        float ma = a.posW.w;
+        if (ma <= 0.001f || ma >= 1000.0f) continue;   // dead/wall
+        if (notFinite3(a.posW.xyz)) continue;
+        float aR = MERGE_RSUN_SIM * pow(ma, 0.8f);     // main-sequence R ∝ M^0.8
 
-    float mj = j.posW.w;
-    bool winner = (m > mj) || (m == mj && id < jOrig);
+        // Nearest unused contact partner among the LATER entries.
+        int best = -1;
+        float bestD2 = 1e30f;
+        for (uint j = i + 1; j < count; j++) {
+            if (used[j]) continue;
+            Particle b = sorted[start + j];
+            float mb = b.posW.w;
+            if (mb <= 0.001f || mb >= 1000.0f) continue;
+            float3 d = b.posW.xyz - a.posW.xyz;
+            float d2 = dot(d, d);
+            // Contact: separation < R_a + R_b — REAL stellar radii.
+            float rc = aR + MERGE_RSUN_SIM * pow(mb, 0.8f);
+            if (d2 < rc * rc && d2 < bestD2) {
+                bestD2 = d2;
+                best = int(j);
+            }
+        }
+        if (best < 0) continue;
+        used[i] = true;
+        used[uint(best)] = true;
 
-    if (!winner) {
+        Particle b = sorted[start + uint(best)];
+        float mb = b.posW.w;
+        uint aOrig = a.entanglement.y;                 // original ids (scatter)
+        uint bOrig = b.entanglement.y;
+        // The heavier eats (tie → lower id).
+        bool aWins = (ma > mb) || (ma == mb && aOrig < bOrig);
+        uint wOrig = aWins ? aOrig : bOrig;
+        uint lOrig = aWins ? bOrig : aOrig;
+        Particle w = aWins ? a : b;
+        Particle l = aWins ? b : a;
+
+        // INELASTIC MERGE: barycentre, momentum conserved, relative KE
+        // thermalizes → temperature bump (full Rankine-Hugoniot shock heating
+        // comes with the supernova rung).
+        float mW = w.posW.w, mL = l.posW.w;
+        float3 vw = w.posW.xyz - w.prevW.xyz;          // per-frame displacement
+        float3 vl = l.posW.xyz - l.prevW.xyz;
+        float mNew = mW + mL;
+        float3 posNew = (w.posW.xyz * mW + l.posW.xyz * mL) / mNew;
+        float3 vNew = (vw * mW + vl * mL) / mNew;
+        float tNew = max(w.prevW.w, l.prevW.w) + 0.4f * min(1.0f, mL / mW);
+        // Stale ids can exceed the current buffer (count switched 5M→2M).
+        if (wOrig >= uint(u.particleCount) || lOrig >= uint(u.particleCount))
+            continue;
+
+        // COMPARE-AND-WRITE GUARD — conservation insurance. The merge was
+        // decided from the snapshot; if the LIVE buffer no longer matches
+        // (stale sorted slot, wrong id, respawn transient — measured: stale
+        // winner ids CREATED mass, Mlive 594k→2.8M), the data this merge is
+        // based on is wrong: abort the pair. Valid merges (the vast
+        // majority) see exact equality — posW.w is untouched between the
+        // snapshot blit and this kernel.
+        if (particles[wOrig].posW.w != mW || particles[lOrig].posW.w != mL)
+            continue;
+
+        particles[wOrig].posW = float4(posNew, mNew);
+        particles[wOrig].prevW = float4(posNew - vNew, tNew);
+
         // EATEN: die. Mass → 0 (gravity/stats/render all gate on it), parked
         // far outside the domain and frozen so no force path resurrects it.
-        float park = 4000.0f + float(id % 1024);
-        p.posW = float4(park, park, park, 0.0f);
-        p.prevW = float4(park, park, park, p.prevW.w);
-        return;
+        float park = 4000.0f + float(lOrig % 1024);
+        particles[lOrig].posW = float4(park, park, park, 0.0f);
+        particles[lOrig].prevW = float4(park, park, park, l.prevW.w);
     }
-
-    // EAT: inelastic merge from SNAPSHOT values (both sides see identical
-    // numbers). New body at the pair's barycentre, momentum conserved; the
-    // lost relative KE thermalizes → temperature bump (full Rankine-Hugoniot
-    // shock heating comes with the supernova rung).
-    float3 vi = pos - p.prevW.xyz;                     // per-frame displacement
-    float3 vj = j.posW.xyz - j.prevW.xyz;
-    float mNew = m + mj;
-    float3 posNew = (pos * m + j.posW.xyz * mj) / mNew;
-    float3 vNew = (vi * m + vj * mj) / mNew;
-    float tNew = max(p.prevW.w, j.prevW.w) + 0.4f * min(1.0f, mj / m);
-    p.posW = float4(posNew, mNew);
-    p.prevW = float4(posNew - vNew, tNew);
 }
 
 // ── Conservation law reduction kernel ───────────────────────────────────────

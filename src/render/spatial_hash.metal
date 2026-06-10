@@ -275,8 +275,19 @@ kernel void scatter_particles(
 {
     if (int(id) >= u.particleCount) return;
 
+    // MUST mirror count_cells's skip EXACTLY: cellStarts is the prefix sum of
+    // LIVE counts. Scattering a dead/parked star (mass ≤ 0.001 — eaten by a
+    // merger) would overflow this cell's allocated range into the NEXT cell's
+    // region → the same live star appears in multiple cells' lists → mergers
+    // eat it twice → mass CREATION (measured: Mlive tripled at 50k dead).
+    {
+        float m = particlesInput[id].posW.w;
+        uint mb = as_type<uint>(m);
+        if (((mb >> 23) & 0xFFu) == 0xFFu || m <= 0.001f) return;
+    }
+
     uint cellID = cellIndices[id];
-    
+
     // Only scatter if we haven't hit the 32 particle limit for this cell
     uint currentOffset = atomic_load_explicit(&cellOffsets[cellID], memory_order_relaxed);
     if (currentOffset < 32) {

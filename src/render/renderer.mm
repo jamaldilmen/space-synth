@@ -95,7 +95,8 @@ struct Renderer::Impl {
   float bhPosX = 0.0f, bhPosY = 0.0f, bhPosZ = 0.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
   float bhStrength = 0.0f;    // r_s(M_enc)/R_ENC — 0..1, ≥0.9 = the hole exists
-  uint32_t bhPeakCount = 0;   // densest single cell (saturates at 128)
+  uint32_t bhPeakCount = 0;   // densest single cell (true count, uncapped)
+  float lastHashExtent = 64.0f; // extent the hash was actually built with
   // G_sim·M_total is DERIVED, not tuned: N stars × 1 M_sun each, through the
   // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
@@ -906,6 +907,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       float ph = physicsUniforms.envelopePhase;
       bool tubePhase = (ph >= 1.5f && ph < 3.5f);
       su.halfExtent = tubePhase ? 3.0f : 64.0f;
+      lastHashExtent = su.halfExtent;
       su.particleCount = particleCount;
       su.cellSize = 2.0f * su.halfExtent / (float)kGridSize;
       su.invCellSize = (float)kGridSize / (2.0f * su.halfExtent);
@@ -1063,7 +1065,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // heavier eats the lighter. Runs on this frame's fresh snapshot
       // (sortedParticles), writes the live buffer BEFORE compute_physics.
       // The kernel itself skips the attack phase (stale-hash guard).
-      if (mergeStarsPipeline) {
+      // Skip the frame right after a particle-count change: the hash/sorted
+      // state may still describe the OLD field (respawn transient).
+      static int sLastMergeCount = -1;
+      bool countStable = (sLastMergeCount == particleCount);
+      sLastMergeCount = particleCount;
+      if (mergeStarsPipeline && countStable) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:mergeStarsPipeline];
         [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1072,9 +1079,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:3];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
         [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:5];
+        // One thread per CELL (see merge_stars) — only dense cells do work.
         NSUInteger tgMg = std::min(
             tgSize, mergeStarsPipeline.maxTotalThreadsPerThreadgroup);
-        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+        [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(tgMg, 1, 1)];
         [comp endEncoding];
       }
@@ -1269,7 +1277,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       bhPeakCount = best;
       if (best > 0 && bhMassEnc <= 1000.0f) {
         // No established core yet → point the enclosure at the raw peak.
-        const float halfExt = 3.0f; // must match the hash build above
+        const float halfExt = lastHashExtent; // the extent THIS hash used
+        // (was hardcoded 3.0 — after the phase-switched ±64 field grid the
+        // candidate decoded to the wrong world position, so the enclosure
+        // sampled empty space: peak=6500 with Menc=2.)
         const float cellSz = 2.0f * halfExt / (float)Impl::kGridSize;
         int cx = (int)(bestCid % Impl::kGridSize);
         int cy = (int)((bestCid / Impl::kGridSize) % Impl::kGridSize);

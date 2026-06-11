@@ -487,7 +487,12 @@ vertex VertexOut particle_vertex(
     // ── DEAD STARS (eaten by a merger): gone in EVERY phase ──────────────────
     // The merge kernel zeroes posW.w and parks the body outside the domain;
     // the render must never show it again. Zero size + fully transparent.
-    if (in.posW.w <= 0.001f) {
+    // BH SEEDS (mass ≥ 50 M_sun, see M_BH_SEED in particles.metal) are DARK —
+    // a hole emits nothing. Exception: while flaring (fresh meal, temp > 2.5)
+    // it renders — that's a tidal disruption event, the brightest thing there
+    // is. The raytracer shadow takes over once the global signal trips.
+    bool darkSeed = (in.posW.w >= 50.0f) && (in.prevW.w <= 2.5f);
+    if (in.posW.w <= 0.001f || darkSeed) {
         out.pointSize = 0.0f;
         out.color = float3(0.0f);
         out.luminance = 0.0f;

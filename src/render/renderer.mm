@@ -53,6 +53,7 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
   id<MTLComputePipelineState> reduceCellMaxPipeline = nil;
   id<MTLComputePipelineState> mergeStarsPipeline = nil; // stellar mergers (US2 eating)
+  id<MTLComputePipelineState> seedFeedPipeline = nil;   // BH seeds eat (fate ladder)
 
   id<MTLBuffer> particleBuffer = nil;
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
@@ -71,6 +72,8 @@ struct Renderer::Impl {
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
   id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
   id<MTLBuffer> cellMassBuffer = nil;        // Σ stellar mass per cell (M_sun ×64, atomic)
+  id<MTLBuffer> seedCountBuffer = nil;       // BH-seed registry counter (atomic, per frame)
+  id<MTLBuffer> seedIdsBuffer = nil;         // BH-seed particle ids (≤256)
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
@@ -97,6 +100,12 @@ struct Renderer::Impl {
   float bhStrength = 0.0f;    // r_s(M_enc)/R_ENC — 0..1, ≥0.9 = the hole exists
   uint32_t bhPeakCount = 0;   // densest single cell (true count, uncapped)
   float lastHashExtent = 64.0f; // extent the hash was actually built with
+  // RENDER-side smoothed envelope phase: the raw phase is a DISCRETE state
+  // id (0..4) — feeding it straight into the shader crossfades (starMix,
+  // playMix) snapped the whole field's colour in one frame ("particles jump
+  // from one color to the next"). Physics keeps the exact phase; the RENDER
+  // eases toward it (~0.3 s) so every look transition is a motion.
+  float renderPhaseSmooth = 0.0f;
   // G_sim·M_total is DERIVED, not tuned: N stars × 1 M_sun each, through the
   // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
@@ -259,6 +268,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
                                                      error:&error];
     if (error)
       NSLog(@"Merge pipeline error: %@", error);
+  }
+
+  // ── Seed-feed pipeline (BH seeds eat — fate ladder, step 3) ─────────
+  id<MTLFunction> seedFunc =
+      [impl_->library newFunctionWithName:@"seed_feed"];
+  if (seedFunc) {
+    impl_->seedFeedPipeline =
+        [impl_->device newComputePipelineStateWithFunction:seedFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Seed-feed pipeline error: %@", error);
   }
 
   // ── Densest-cell reduce pipeline (emergent-BH signal) ───────────────
@@ -488,6 +508,8 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellMassBuffer, cellSize);
+  allocIfNeeded(impl_->seedCountBuffer, sizeof(uint32_t));
+  allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
@@ -656,6 +678,8 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
 }
 
 void Renderer::render(const RenderConfig &config) {
+  impl_->renderPhaseSmooth +=
+      (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
 
@@ -708,7 +732,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.plateRadius = R;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.waveDepth = config.modeP * 20.0f; // Using modeP to scale depth
-  cam.envelopePhase = config.envelopePhase;
+  cam.envelopePhase = impl_->renderPhaseSmooth; // smoothed (render-only)
   cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   {
@@ -733,6 +757,8 @@ void Renderer::render(const RenderConfig &config) {
 }
 
 void Renderer::render(const RenderConfig &config, const float *viewProj) {
+  impl_->renderPhaseSmooth +=
+      (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
 
@@ -794,7 +820,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
-  cam.envelopePhase = config.envelopePhase;
+  cam.envelopePhase = impl_->renderPhaseSmooth; // smoothed (render-only)
   cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   // Lens Einstein radius = the shadow's on-screen radius, so the lensed
@@ -923,6 +949,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [clearBlit fillBuffer:cellMassBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
+      [clearBlit fillBuffer:seedCountBuffer
+                      range:NSMakeRange(0, sizeof(uint32_t))
+                      value:0];
       [clearBlit fillBuffer:cellOffsetsBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
@@ -951,6 +980,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
         [comp setBuffer:cellMassBuffer offset:0 atIndex:3];
         [comp setBuffer:particleBufferRead offset:0 atIndex:4];
+        [comp setBuffer:seedCountBuffer offset:0 atIndex:5];
+        [comp setBuffer:seedIdsBuffer offset:0 atIndex:6];
         NSUInteger tg =
             std::min(tgSize, countCellsPipeline.maxTotalThreadsPerThreadgroup);
         [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
@@ -1086,6 +1117,26 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             threadsPerThreadgroup:MTLSizeMake(tgMg, 1, 1)];
         [comp endEncoding];
       }
+
+      // Phase 8: SEED FEEDING — one thread per registered black hole.
+      // Runs AFTER the merge pass (encoders serialize); victims are claimed
+      // atomically so the two passes can never double-eat a star.
+      if (seedFeedPipeline && countStable) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:seedFeedPipeline];
+        [comp setBuffer:particleBuffer offset:0 atIndex:0];
+        [comp setBuffer:particleBuffer offset:0 atIndex:1]; // atomic view
+        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:2];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:3];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:4];
+        [comp setBuffer:seedCountBuffer offset:0 atIndex:5];
+        [comp setBuffer:seedIdsBuffer offset:0 atIndex:6];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];
+        [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:8];
+        [comp dispatchThreads:MTLSizeMake(256, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        [comp endEncoding];
+      }
     }
 
     // ── Density heatmap (compute from cell counts) ─────────────────
@@ -1153,7 +1204,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           float ke, mx, my, sumMass;
           float sumTemp, maxTemp, sumSpeed, maxSpeed;
           float sumPx, sumPy, sumPz, sumCount;
-          float sumR, maxR, pad2, pad3;
+          float sumR, maxR, maxMass, pad3;
           float sumEncX, sumEncY, sumEncZ, sumEncMass;
         };
         const PartialStats *sums =
@@ -1165,6 +1216,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // as ±0.2% fake mass loss in the conservation watchdog.
         double totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
         double totalSM = 0;
+        float gMaxMass = 0;
         double totalSR = 0;
         float gMaxR = -1e9f;
         double totalEX = 0, totalEY = 0, totalEZ = 0, totalEC = 0;
@@ -1187,6 +1239,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           totalSM += sums[i].sumMass;
           totalSR += sums[i].sumR;
           if (sums[i].maxR > gMaxR) gMaxR = sums[i].maxR;
+          if (sums[i].maxMass > gMaxMass) gMaxMass = sums[i].maxMass;
           totalEX += sums[i].sumEncX;
           totalEY += sums[i].sumEncY;
           totalEZ += sums[i].sumEncZ;
@@ -1233,10 +1286,11 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           // between stars, never appears or vanishes. live (count) dropping
           // while Mlive holds = stars being EATEN, working as designed.
           fprintf(stderr,
-                  "[GRAV] live=%.0f Mlive=%.0f/%.0f com=(%.2f %.2f %.2f) "
+                  "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f seeds=%u com=(%.2f %.2f %.2f) "
                   "meanR=%.2f maxR=%.1f "
                   "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
-                  liveCount, totalSM, physicsUniforms.massTotal,
+                  liveCount, totalSM, physicsUniforms.massTotal, gMaxMass,
+                  seedCountBuffer ? *(const uint32_t *)seedCountBuffer.contents : 0u,
                   liveComX, liveComY, liveComZ,
                   (totalCT > 0.5f) ? (totalSR / totalCT) : -1.0f, gMaxR,
                   physicsUniforms.envelopePhase,
@@ -1353,7 +1407,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     bhUniforms.cameraPos[2] = camStruct->cameraPos[2];
 
     bhUniforms.time = phys->time;
-    bhUniforms.envelopePhase = config.envelopePhase;
+    bhUniforms.envelopePhase = renderPhaseSmooth; // smoothed (render-only)
     bhUniforms.rotationX = config.rotationX;
     bhUniforms.simScale = std::max(0.01f, config.plateRadius);
     // Ortho frustum half-extent = cameraRho * 1.2 (matches main.cpp:534).

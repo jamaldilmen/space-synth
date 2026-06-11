@@ -588,7 +588,7 @@ kernel void compute_physics(
     // the Sgr A* anchor (units.h). Plummer ε² softening for numerics only.
     // MUST run BEFORE the lifecycle capture below — the silence-immunity
     // restore wipes everything after it, and gravity must act at rest.
-    if (mass > 0.001f && mass < 1000.0f && u.gravGM > 0.0f) {
+    if (mass > 0.001f && mass < 1e8f && u.gravGM > 0.0f) {  // incl. BH seeds
         float Mtot = max(u.massTotal, 1.0f);
         float G1   = u.gravGM / Mtot;            // GM of ONE solar mass
         float3 gpos = float3(px, py, pz);
@@ -672,7 +672,7 @@ kernel void compute_physics(
     // real accretion disk forms (energy dissipates, L conserved) — physics,
     // not a render aesthetic. Sparse regions (< ~16/cell) feel nothing.
     // Must sit BEFORE the lifecycle capture so it acts at rest.
-    if (mass > 0.001f && mass < 1000.0f && su.gridSize > 0 &&
+    if (mass > 0.001f && mass < 1e8f && su.gridSize > 0 &&  // incl. BH seeds
         !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) && // attack: hash stale
         fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
         fabs(pz) < su.halfExtent) {
@@ -918,8 +918,8 @@ kernel void compute_physics(
     // mass (see snapshot above). invInertia = 1 for the IMF mean star;
     // a 30 M_sun monster feels ~1% — it stays put at the centre, keeps
     // eating through the note, and the Chladni pattern forms around it.
-    if (mass > 0.001f && mass < 1000.0f) {
-        float invInertia = clamp(0.3f / max(mass, 0.05f), 0.01f, 1.0f);
+    if (mass > 0.001f && mass < 1e8f) {
+        float invInertia = clamp(0.3f / max(mass, 0.05f), 0.0005f, 1.0f);
         shiftVx = preVoiceV.x + (shiftVx - preVoiceV.x) * invInertia;
         shiftVy = preVoiceV.y + (shiftVy - preVoiceV.y) * invInertia;
         shiftVz = preVoiceV.z + (shiftVz - preVoiceV.z) * invInertia;
@@ -1536,6 +1536,15 @@ kernel void compute_physics(
 
 constant float MERGE_RSUN_SIM = 0.0549f;  // 1 R_sun in sim units (6.96e8 m / 1.269e10 m)
 
+// ── FATE LADDER (step 3): the BH seed ────────────────────────────────────────
+// The Kroupa draw tops out at 50 M_sun, so any body ABOVE it can only be a
+// merger product — and a merger remnant that heavy collapses: it IS a black
+// hole (single-scalar mass→fate, physics canon). Seeds are dark (render culls
+// them except while flaring), keep eating with a TIDAL capture radius that
+// grows with mass, and their own r_s feeds the global signal via Menc.
+// Must match the 50.0f in render.metal's dark-cull.
+constant float M_BH_SEED = 50.0f;
+
 // ONE THREAD PER CELL (the centroid pass's architecture — the per-STAR version
 // cost 120fps→37: 2M threads × random 80B struct reads; per-cell reads are
 // contiguous and only dense cells do real work). Each cell-thread greedily
@@ -1568,7 +1577,7 @@ kernel void merge_stars(
         if (used[i]) continue;
         Particle a = sorted[start + i];
         float ma = a.posW.w;
-        if (ma <= 0.001f || ma >= 1000.0f) continue;   // dead/wall
+        if (ma <= 0.001f || ma >= 1e8f) continue;      // dead / legacy wall
         if (notFinite3(a.posW.xyz)) continue;
         float aR = MERGE_RSUN_SIM * pow(ma, 0.8f);     // main-sequence R ∝ M^0.8
 
@@ -1579,11 +1588,24 @@ kernel void merge_stars(
             if (used[j]) continue;
             Particle b = sorted[start + j];
             float mb = b.posW.w;
-            if (mb <= 0.001f || mb >= 1000.0f) continue;
+            if (mb <= 0.001f || mb >= 1e8f) continue;
             float3 d = b.posW.xyz - a.posW.xyz;
             float d2 = dot(d, d);
-            // Contact: separation < R_a + R_b — REAL stellar radii.
-            float rc = aR + MERGE_RSUN_SIM * pow(mb, 0.8f);
+            float rc;
+            if (ma >= M_BH_SEED || mb >= M_BH_SEED) {
+                // BH-SEED CAPTURE: tidal-disruption radius — the hole
+                // shreds and swallows anything inside
+                // R_t = R_star·(M_BH/m_star)^(1/3), far beyond stellar
+                // contact; ×1.5 for gravitational focusing. Grows with
+                // every meal → THE runaway breaker: the first seed
+                // out-eats every competing cluster.
+                float mBig = max(ma, mb), mSmall = min(ma, mb);
+                float rStar = MERGE_RSUN_SIM * pow(mSmall, 0.8f);
+                rc = 1.5f * rStar * pow(mBig / mSmall, 1.0f / 3.0f);
+            } else {
+                // Stellar contact: separation < R_a + R_b — real radii.
+                rc = aR + MERGE_RSUN_SIM * pow(mb, 0.8f);
+            }
             if (d2 < rc * rc && d2 < bestD2) {
                 bestD2 = d2;
                 best = int(j);
@@ -1647,6 +1669,112 @@ kernel void merge_stars(
     }
 }
 
+// ── SEED FEEDING — one thread per black hole (step 3's heart) ────────────────
+// The per-cell merge pass samples ≤32 stars/cell, so a seed inside a 15k-star
+// core cell got a merge chance ~0.2% of frames and STARVED (measured). Here
+// every registered seed (count_cells appends ids of bodies ≥ M_BH_SEED) gets
+// a dedicated thread that scans its 27-cell neighbourhood and EATS everything
+// inside its tidal radius. Victims are CLAIMED by an atomic exchange on the
+// mass word (posW.w): exactly one claimer receives the old bits — duplication
+// is impossible by construction, so conservation is hardware-enforced even
+// against the concurrent merge pass (whose compare-and-write guard then sees
+// the mismatch and aborts its own attempt on the same star).
+kernel void seed_feed(
+    device Particle* particles [[buffer(0)]],          // live state
+    device atomic_uint* particlesA [[buffer(1)]],      // SAME buffer, atomic view
+    device const Particle* sorted [[buffer(2)]],       // immutable snapshot
+    device const uint* cellStarts [[buffer(3)]],
+    device const uint* cellCounts [[buffer(4)]],
+    device const uint* seedCount [[buffer(5)]],
+    device const uint* seedIds [[buffer(6)]],
+    constant SpatialHashUniforms& su [[buffer(7)]],
+    constant PhysicsUniforms& u [[buffer(8)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= min(seedCount[0], 256u)) return;
+    if (su.gridSize <= 0) return;
+    if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return; // stale hash
+
+    uint sid = seedIds[tid];
+    if (sid >= uint(u.particleCount)) return;
+    float mSeed = particles[sid].posW.w;               // LIVE (post-merge-pass)
+    if (mSeed < M_BH_SEED || mSeed >= 1e8f) return;
+    float3 pos = particles[sid].posW.xyz;
+    if (notFinite3(pos)) return;
+    if (fabs(pos.x) >= su.halfExtent || fabs(pos.y) >= su.halfExtent ||
+        fabs(pos.z) >= su.halfExtent) return;
+
+    float3 vSeed = pos - particles[sid].prevW.xyz;
+    float tSeed = particles[sid].prevW.w;
+
+    int cx = clamp(int((pos.x + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    int cy = clamp(int((pos.y + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    int cz = clamp(int((pos.z + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+
+    float eaten = 0.0f;
+    float3 eatenP = vSeed * mSeed;                     // momentum budget
+    float3 posM = pos * mSeed;                         // barycentre budget
+    int meals = 0;
+    const int MAX_MEALS = 16;                          // bounded work per frame
+
+    for (int z = max(0, cz - 1); z <= min(su.gridSize - 1, cz + 1) && meals < MAX_MEALS; z++) {
+        for (int y = max(0, cy - 1); y <= min(su.gridSize - 1, cy + 1) && meals < MAX_MEALS; y++) {
+            for (int x = max(0, cx - 1); x <= min(su.gridSize - 1, cx + 1) && meals < MAX_MEALS; x++) {
+                uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                uint count = min(cellCounts[cID], 32u);
+                uint start = cellStarts[cID];
+                for (uint i = 0; i < count && meals < MAX_MEALS; i++) {
+                    Particle v = sorted[start + i];
+                    float mv = v.posW.w;
+                    if (mv <= 0.001f || mv >= M_BH_SEED) continue;  // seeds don't eat seeds here
+                    uint vOrig = v.entanglement.y;
+                    if (vOrig == sid || vOrig >= uint(u.particleCount)) continue;
+                    float3 d = v.posW.xyz - pos;
+                    float d2 = dot(d, d);
+                    // Tidal capture radius (×1.5 focusing), capped at scan reach.
+                    float rt = min(1.5f * MERGE_RSUN_SIM * pow(mv, 0.8f) *
+                                   pow((mSeed + eaten) / mv, 1.0f / 3.0f),
+                                   1.4f * su.cellSize);
+                    if (d2 >= rt * rt) continue;
+                    // CLAIM: atomically swap the victim's mass word with 0.
+                    // Particle = 80B = 20 uints; posW.w is uint index id·20+3.
+                    uint old = atomic_exchange_explicit(&particlesA[vOrig * 20u + 3u],
+                                                        0u, memory_order_relaxed);
+                    float mClaim = as_type<float>(old);
+                    uint ob = old;
+                    bool claimFinite = ((ob >> 23) & 0xFFu) != 0xFFu;
+                    if (!claimFinite || mClaim <= 0.001f || mClaim >= M_BH_SEED) {
+                        // lost the race / already dead / not a valid snack —
+                        // if it was a real body we must NOT destroy it: restore.
+                        if (claimFinite && mClaim > 0.001f)
+                            atomic_exchange_explicit(&particlesA[vOrig * 20u + 3u],
+                                                     old, memory_order_relaxed);
+                        continue;
+                    }
+                    // OWNED: exact claimed mass, momentum from the snapshot.
+                    eaten  += mClaim;
+                    eatenP += (v.posW.xyz - v.prevW.xyz) * mClaim;
+                    posM   += v.posW.xyz * mClaim;
+                    // Victim: freeze in place, dead (mass word already 0).
+                    particles[vOrig].prevW = float4(v.posW.xyz, v.prevW.w);
+                    meals++;
+                }
+            }
+        }
+    }
+
+    if (eaten > 0.0f) {
+        float mNew = mSeed + eaten;
+        float3 posNew = posM / mNew;
+        float3 vNew = eatenP / mNew;
+        // TDE FLARE: a feeding hole flares (the darkSeed render exception
+        // shows it while temp > 2.5); T⁴ cooling fades it back to dark.
+        float tNew = max(tSeed, 3.0f + 2.0f * min(1.0f, eaten / mSeed));
+        particles[sid].posW = float4(posNew, mNew);
+        particles[sid].prevW = float4(posNew - vNew, tNew);
+    }
+}
+
 // ── Conservation law reduction kernel ───────────────────────────────────────
 
 struct PartialStats {
@@ -1664,7 +1792,8 @@ struct PartialStats {
     float sumCount;  // live star count
     float sumR;      // Σ |r| of live stars (→ mean radius)
     float maxR;      // farthest live star
-    float pad2, pad3;
+    float maxMass;   // heaviest body (M_sun) — watches the seed grow
+    float pad3;
     float sumEncX;   // Σ mass·position of stars within R_ENC of the candidate
     float sumEncY;   //   → enclosed MASS (M_sun) + refined core COM
     float sumEncZ;
@@ -1692,6 +1821,7 @@ kernel void reduce_stats(
     threadgroup float sharedPZ[256];
     threadgroup float sharedCT[256];  // live star count
     threadgroup float sharedSM[256];  // Σ stellar mass (M_sun)
+    threadgroup float sharedMM[256];  // max stellar mass (the seed watch)
     threadgroup float sharedSR[256];  // Σ radius
     threadgroup float sharedMR[256];  // max radius
     threadgroup float sharedEX[256];  // Σ m·pos within R_ENC of BH candidate
@@ -1744,12 +1874,13 @@ kernel void reduce_stats(
     // Mass-weighted: COM must be where the MASS is (stars carry real IMF
     // masses now), else a lucky cluster of O-stars pulls toward the wrong
     // point. Readback divides by sumMass.
-    float lm = (real && pmass < 1000.0f) ? pmass : 0.0f;
+    float lm = (real && pmass < 1e8f) ? pmass : 0.0f;  // incl. BH seeds
     sharedPX[tid] = lpos.x * lm;
     sharedPY[tid] = lpos.y * lm;
     sharedPZ[tid] = lpos.z * lm;
     sharedCT[tid] = real ? 1.0f : 0.0f;
     sharedSM[tid] = lm;
+    sharedMM[tid] = lm;
     float lr = length(lpos);
     sharedSR[tid] = real ? lr : 0.0f;
     sharedMR[tid] = real ? lr : -1e9f;
@@ -1777,6 +1908,7 @@ kernel void reduce_stats(
             sharedPZ[tid] += sharedPZ[tid + stride];
             sharedCT[tid] += sharedCT[tid + stride];
             sharedSM[tid] += sharedSM[tid + stride];
+            sharedMM[tid]  = max(sharedMM[tid], sharedMM[tid + stride]);
             sharedSR[tid] += sharedSR[tid + stride];
             sharedEX[tid] += sharedEX[tid + stride];
             sharedEY[tid] += sharedEY[tid + stride];
@@ -1794,6 +1926,7 @@ kernel void reduce_stats(
         partialSums[tgId].momentumX = sharedMX[0];
         partialSums[tgId].momentumY = sharedMY[0];
         partialSums[tgId].sumMass  = sharedSM[0];
+        partialSums[tgId].maxMass  = sharedMM[0];
         partialSums[tgId].sumTemp  = sharedST[0];
         partialSums[tgId].maxTemp  = sharedMT[0];
         partialSums[tgId].sumSpeed = sharedSS[0];

@@ -56,6 +56,8 @@ kernel void count_cells(
     constant SpatialHashUniforms& u [[buffer(2)]],
     device atomic_uint* cellMass [[buffer(3)]],
     device const Particle* particles [[buffer(4)]],
+    device atomic_uint* seedCount [[buffer(5)]],   // BH-seed registry (per frame)
+    device uint* seedIds [[buffer(6)]],            // up to 256 seed particle ids
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -80,6 +82,15 @@ kernel void count_cells(
     atomic_fetch_add_explicit(&cellMass[cellID],
                               uint(m * MASS_FP + 0.5f),
                               memory_order_relaxed);
+    // BH-SEED REGISTRY: any body above the IMF ceiling (50 M_sun, must match
+    // M_BH_SEED in particles.metal) is a collapsed object — register it so
+    // seed_feed can run one dedicated thread per seed. The per-cell merge
+    // pass only sees 32 sampled stars per cell; a seed in a 15k-star core
+    // cell was sampled 0.2% of frames and STARVED (measured: Mmax froze).
+    if (m >= 50.0f) {
+        uint slot = atomic_fetch_add_explicit(seedCount, 1u, memory_order_relaxed);
+        if (slot < 256u) seedIds[slot] = id;
+    }
 }
 
 // ── Phase 3: Multi-pass Blelloch Prefix Sum ──────────────────────────────────

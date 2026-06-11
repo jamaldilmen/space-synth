@@ -472,10 +472,11 @@ vertex VertexOut particle_vertex(
         float playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
         float3 bbColor = mix(thermalCol, snCol, playMix);
 
-        // Blend with per-band color when voices are active (bandId > 0)
-        float3 bandColor = kBandColors[bClamped];
-        float bandMix = (bClamped > 0) ? 0.4f : 0.0f;
-        out.color = mix(bbColor, bandColor, bandMix);
+        // Per-band RGB tint REMOVED (Jamal 2026-06-11): it painted the field
+        // in primary red/green/blue per voice — the "ocean of RGB" — and
+        // fought the physical blackbody continuum. Temperature is the only
+        // colour authority now. (bandId still tracked for future use.)
+        out.color = bbColor;
 
         // Speed-based brightness boost (Doppler-like)
         float speed = length(in.velW.xyz);
@@ -525,11 +526,13 @@ vertex VertexOut particle_vertex(
             starLum *= f * f;             // flux conserved: smaller → dimmer
         }
         // ── MERGER FLASH — the "sense of collision" ──────────────────────────
-        // A star that just ATE carries a temperature spike (merge kernel) that
-        // the T⁴ cooling decays over seconds: render it as the nova it is —
-        // luminance surge, colour shifted hot, size pulse. Quiet stars
-        // (temp ≤ 0.5) are untouched.
-        float flashT = clamp(temp - 0.5f, 0.0f, 5.0f);
+        // A star that just ATE carries a temperature spike (merge kernel,
+        // base 2.0 + violence) that the T⁴ cooling decays over seconds:
+        // luminance surge, colour shifted hot, size pulse. Threshold 2.5
+        // sits ABOVE the post-play residual heat (~1-2) — a played note must
+        // not paint the whole field as novae; the rest look returns as the
+        // field cools, only true fresh mergers flash.
+        float flashT = clamp(temp - 2.5f, 0.0f, 5.0f);
         if (flashT > 0.01f) {
             starLum += flashT * 3.0f;
             starColor = mix(starColor, blackbodyRGB(Teff + flashT * 6000.0f),

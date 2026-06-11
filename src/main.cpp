@@ -267,6 +267,9 @@ int main() {
   };
 
 
+  // ── Simulation pause (SPACE) — physics freezes, render/camera live on ──
+  bool simPaused = false;
+
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
     // Arrow keys = orbit camera. Handled BEFORE the isRepeat gate so a
@@ -323,6 +326,14 @@ int main() {
     // TAB = toggle HUD
     if (e.keyCode == 48 && e.isDown) {
       showHUD = !showHUD;
+      return;
+    }
+
+    // SPACE = pause/resume the ENTIRE simulation (physics freezes in place,
+    // render + camera keep working — inspect the frozen field freely).
+    if (e.keyCode == 49 && e.isDown) {
+      simPaused = !simPaused;
+      printf("[SIM] %s\n", simPaused ? "PAUSED" : "RESUMED");
       return;
     }
 
@@ -878,6 +889,21 @@ int main() {
           app.uiParticleCount = 2000000;
         }
         ImGui::SetItemTooltip("Active number of particles");
+
+        // FULL SIMULATION RESET: re-run the deterministic spawn (same seed,
+        // same IMF masses) and re-upload — the field returns to t=0 exactly:
+        // all eaten stars restored, all heat gone, fresh star map.
+        if (ImGui::Button("RESET SIMULATION")) {
+          particles.init(PARTICLE_COUNT, MAX_WAVE_DEPTH);
+          auto freshData = packForGPU(particles);
+          renderer.uploadParticles(freshData.data(), PARTICLE_COUNT);
+          printf("[SIM] FULL RESET — field respawned at t=0\n");
+        }
+        ImGui::SetItemTooltip("Respawn the entire field at its initial state");
+        if (simPaused) {
+          ImGui::SameLine();
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "PAUSED [space]");
+        }
 
         UiSliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -1579,11 +1605,14 @@ int main() {
     else
         smoothedAmp = decay * effectiveTotalAmp + (1.0f - decay) * smoothedAmp;
 
-    renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
-                         smoothedAmp, app.uiWaveDepth,
-                         app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
-                         app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,
-                         app.uiRestLength, debugFlags);
+    // SPACE pause: skip the physics step entirely — no compute dispatch,
+    // the field freezes in place; render and camera keep running.
+    if (!simPaused)
+      renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
+                           smoothedAmp, app.uiWaveDepth,
+                           app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
+                           app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,
+                           app.uiRestLength, debugFlags);
 
     renderer.render(config, viewProj);
 

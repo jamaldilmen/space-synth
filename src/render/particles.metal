@@ -720,6 +720,13 @@ kernel void compute_physics(
     int bestBand = 0;
     float bestForce = 0.0f;
 
+    // INERTIA snapshot: the note's sculpt is a FORCE, and F = ma — a star
+    // that has eaten its way to 30 M_sun must NOT dance like a red dwarf.
+    // The voice block's velocity contribution gets scaled by 1/m below
+    // (normalized to the IMF mean 0.3 → the average star feels the old
+    // tuning exactly; monsters resist the crush and HOLD THE MIDDLE).
+    float3 preVoiceV = float3(shiftVx, shiftVy, shiftVz);
+
     if (numVoices > 0 && baseMass < 1000.0f) {
         // Polyphony normalizer (the proven 1/sqrt(voiceCount)). Without it a
         // chord stacks every voice's sculpt force N× → particles over-cluster
@@ -904,7 +911,18 @@ kernel void compute_physics(
 
         // ODS-03: Thermal Energy Evolution
         float targetTemp = clamp(pow(jitterTotal, 0.6f) * 0.8f, 0.0f, 1.5f);
-        currentTemp = mix(currentTemp, targetTemp, 0.02f); 
+        currentTemp = mix(currentTemp, targetTemp, 0.02f);
+    }
+
+    // INERTIA: scale the voice block's velocity contribution by the real
+    // mass (see snapshot above). invInertia = 1 for the IMF mean star;
+    // a 30 M_sun monster feels ~1% — it stays put at the centre, keeps
+    // eating through the note, and the Chladni pattern forms around it.
+    if (mass > 0.001f && mass < 1000.0f) {
+        float invInertia = clamp(0.3f / max(mass, 0.05f), 0.01f, 1.0f);
+        shiftVx = preVoiceV.x + (shiftVx - preVoiceV.x) * invInertia;
+        shiftVy = preVoiceV.y + (shiftVy - preVoiceV.y) * invInertia;
+        shiftVz = preVoiceV.z + (shiftVz - preVoiceV.z) * invInertia;
     }
 
     // ── Noether Symmetry Breaking ─────────────────────────────────────
@@ -1600,7 +1618,10 @@ kernel void merge_stars(
         // snack ≈ +1. The T⁴ radiative cooling decays it over seconds; the
         // render shows it as a luminous-red-nova surge (the eat made visible).
         float q = mL / mNew;
-        float tNew = max(w.prevW.w, l.prevW.w) + 1.0f + 6.0f * q;
+        // Base 2.0 lifts every flash above the post-play residual heat
+        // (~1-2 after T⁴ cooling) so the render threshold (2.5) separates
+        // real novae from ambient warmth.
+        float tNew = max(w.prevW.w, l.prevW.w) + 2.0f + 6.0f * q;
         // Stale ids can exceed the current buffer (count switched 5M→2M).
         if (wOrig >= uint(u.particleCount) || lOrig >= uint(u.particleCount))
             continue;

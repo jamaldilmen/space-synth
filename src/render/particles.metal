@@ -1595,7 +1595,12 @@ kernel void merge_stars(
         float mNew = mW + mL;
         float3 posNew = (w.posW.xyz * mW + l.posW.xyz * mL) / mNew;
         float3 vNew = (vw * mW + vl * mL) / mNew;
-        float tNew = max(w.prevW.w, l.prevW.w) + 0.4f * min(1.0f, mL / mW);
+        // NOVA FLASH: the merger's thermalized energy, scaled by violence —
+        // q = mL/mNew ∈ (0, 0.5], ½ = equal-mass head-on (brightest), tiny
+        // snack ≈ +1. The T⁴ radiative cooling decays it over seconds; the
+        // render shows it as a luminous-red-nova surge (the eat made visible).
+        float q = mL / mNew;
+        float tNew = max(w.prevW.w, l.prevW.w) + 1.0f + 6.0f * q;
         // Stale ids can exceed the current buffer (count switched 5M→2M).
         if (wOrig >= uint(u.particleCount) || lOrig >= uint(u.particleCount))
             continue;

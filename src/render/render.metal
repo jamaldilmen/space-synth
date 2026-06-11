@@ -370,7 +370,13 @@ vertex VertexOut particle_vertex(
     float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 1x → 2.5x (crisp points, pre-impostor)
     float distRatio = 800.0f / max(0.0001f, dist);
     float sizeScale = pow(distRatio, 0.65f) * 1.275f;
-    float rawSize = cam.particleSize * heatSizeBoost * sizeScale;
+    // MASS drives size in EVERY phase (was rest-only): the render is the
+    // readout of the physics — a star that has eaten stays visibly bigger
+    // through play and release too. R ∝ M^0.8, screen size ∝ √R, normalized
+    // so the IMF mean (0.3 M_sun) ≈ 1× (the old look for an average star).
+    float Mphys = clamp(in.posW.w, 0.05f, 500.0f);
+    float massSize = 0.5f + 0.8f * sqrt(pow(Mphys, 0.8f));
+    float rawSize = cam.particleSize * heatSizeBoost * massSize * sizeScale;
     // Cap lowered 64 → 40: with sub-linear growth, hot particles at rho=25
     // hit ~40px naturally. A tighter cap keeps overdraw under control on
     // TBDR (each capped sprite is fewer tile-fragment ops).
@@ -453,14 +459,13 @@ vertex VertexOut particle_vertex(
         // only at pow(t,2) so it stays rare and WARM (no blue; Gargantua's disk
         // is warm — blue lives in the supernova). colWhite is HDR for the glow.
         float thT = clamp((kelvin - 1000.0f) / (PEAK_KELVIN - 1000.0f), 0.0f, 1.0f);
-        // Interstellar Gargantua tones (movie reference): WARM throughout —
-        // amber-brown → amber-gold → pale yellow-white. No red (the movie's
-        // coolest is amber, not red), no blue (Doppler lopsidedness was removed
-        // for the film). White rare via pow(t,2). colHot is HDR for the glow.
-        float3 colCool = float3(0.55, 0.20, 0.04);  // amber-brown (outer/receding)
-        float3 colMid  = float3(1.00, 0.55, 0.15);  // amber-gold (body)
-        float3 colHot  = float3(1.60, 1.35, 1.00);  // pale yellow-white (brightest)
-        float3 thermalCol = mix(mix(colCool, colMid, thT), colHot, pow(thT, 2.0f));
+        // TRUE BLACKBODY CONTINUUM (Jamal 2026-06-11): the movie-amber 3-stop
+        // ramp quantized everything into "3 colors that switch". kelvin above
+        // is already the physical display temperature — render it through the
+        // same Tanner-Helland blackbody the star map uses: dark red → orange →
+        // yellow-white → BLUE, continuous, how heat actually looks. HDR
+        // headroom scales with thT so the hottest matter still blooms.
+        float3 thermalCol = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
         // SUPERNOVA (played): emission-line ramp (the green [OIII] tell).
         float3 snCol = supernovaRamp(temp / SN_TEMP_PEAK);
         // Cross-fade by envelope: SILENCE → thermal disk, PLAYING → supernova.
@@ -503,8 +508,34 @@ vertex VertexOut particle_vertex(
         float Lstar = pow(Mstar, 3.5f);                             // L_sun
         float Rstar = pow(Mstar, 0.8f);                             // R_sun (size)
         float3 starColor = blackbodyRGB(Teff);
-        float starSize = clamp(cam.particleSize * (0.5f + 0.8f * sqrt(Rstar)) * sizeScale, 1.0f, 40.0f);
+        // ── SUB-PIXEL FLUX CONSERVATION = the depth cue ──────────────────────
+        // The old clamp(…, 1.0, 40) gave every distant star a full-bright 1px
+        // point → zoomed out, the field collapsed into a uniform noise carpet
+        // with no sense of depth. Physics: a star whose projected size falls
+        // below the sprite minimum keeps its total FLUX, not its surface
+        // brightness — render at the minimum size, dimmed by the area ratio
+        // (raw/min)². Distant dwarfs fade smoothly toward black, near giants
+        // stay bold; the d-dependence rides the existing sizeScale zoom law.
+        float rawStar = cam.particleSize * (0.5f + 0.8f * sqrt(Rstar)) * sizeScale;
+        const float STAR_MIN_PX = 2.0f;   // ≥2px so the falloff can antialias
+        float starSize = clamp(rawStar, STAR_MIN_PX, 40.0f);
         float starLum  = 0.6f + 2.5f * log2(1.0f + Lstar);          // compress huge L range
+        if (rawStar < STAR_MIN_PX) {
+            float f = rawStar / STAR_MIN_PX;
+            starLum *= f * f;             // flux conserved: smaller → dimmer
+        }
+        // ── MERGER FLASH — the "sense of collision" ──────────────────────────
+        // A star that just ATE carries a temperature spike (merge kernel) that
+        // the T⁴ cooling decays over seconds: render it as the nova it is —
+        // luminance surge, colour shifted hot, size pulse. Quiet stars
+        // (temp ≤ 0.5) are untouched.
+        float flashT = clamp(temp - 0.5f, 0.0f, 5.0f);
+        if (flashT > 0.01f) {
+            starLum += flashT * 3.0f;
+            starColor = mix(starColor, blackbodyRGB(Teff + flashT * 6000.0f),
+                            clamp(flashT * 0.5f, 0.0f, 1.0f));
+            starSize = min(starSize * (1.0f + 0.3f * flashT), 40.0f);
+        }
         out.pointSize = mix(out.pointSize, starSize, starMix);
         out.color     = mix(out.color, starColor, starMix);
         out.luminance = mix(out.luminance, starLum, starMix);

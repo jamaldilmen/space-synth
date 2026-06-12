@@ -129,6 +129,16 @@ constant int MAX_PER_CELL = 128; // Read-site SCAN clamp only: bounds the
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
 
+// ── Stellar scale + FATE LADDER constants (used by physics, merge, seeds) ───
+// 1 R_sun in sim units (6.96e8 m / 1.269e10 m, the Sgr A* anchor).
+constant float MERGE_RSUN_SIM = 0.0549f;
+// The Kroupa draw tops out at 50 M_sun, so any body ABOVE it can only be a
+// merger product — and a merger remnant that heavy collapses: it IS a black
+// hole (single-scalar mass→fate, physics canon). Seeds are dark (render
+// culls them except while flaring) and grow ONLY via victim-initiated
+// feeding. Must match the 50.0f in render.metal's dark-cull.
+constant float M_BH_SEED = 50.0f;
+
 // ── Unified BH constants ────────────────────────────────────────────────────
 // All BH-related sizes derive from BH_M (the visual Schwarzschild radius in
 // sim coords). Must match `M` in blackhole.metal:5.
@@ -189,6 +199,9 @@ kernel void compute_physics(
     device const float4* cellCentroids [[buffer(8)]],
     device const float4* cellVelocities [[buffer(9)]],
     device const uint* cellMass [[buffer(10)]],   // Σ M_sun ×64 per cell (count_cells)
+    device const uint* cellSeedMap [[buffer(11)]],   // 0=none, else seed slot+1
+    device const uint* seedIds [[buffer(12)]],       // registry (count_cells)
+    device atomic_uint* seedAccum [[buffer(13)]],    // per-slot meal accumulator
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -567,6 +580,60 @@ kernel void compute_physics(
         }
     }
 
+    // ── BLACK-HOLE CAPTURE — victim-initiated accretion (step 3 v2) ──────────
+    // If a registered seed is marked in one of my 27 neighbour cells and I'm
+    // inside its capture radius (tidal + gravitational focusing), I am eaten:
+    // I add my exact mass to the seed's accumulator and die, this thread, no
+    // races. Seeds themselves and walls don't get eaten.
+    if (su.gridSize > 0 && mass > 0.001f && mass < M_BH_SEED &&
+        !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) &&
+        fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+        fabs(pz) < su.halfExtent) {
+        int kcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int kcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int kcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        for (int z = max(0, kcz - 1); z <= min(su.gridSize - 1, kcz + 1); z++) {
+            for (int y = max(0, kcy - 1); y <= min(su.gridSize - 1, kcy + 1); y++) {
+                for (int x = max(0, kcx - 1); x <= min(su.gridSize - 1, kcx + 1); x++) {
+                    uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                    uint slot = cellSeedMap[cID];
+                    if (slot == 0u) continue;
+                    uint sid2 = seedIds[slot - 1u];
+                    if (sid2 == id || sid2 >= uint(u.particleCount)) continue;
+                    float mS = particles[sid2].posW.w;
+                    if (mS < M_BH_SEED || mS >= 1e8f) continue;
+                    float3 sp = particles[sid2].posW.xyz;
+                    if (notFinite3(sp)) continue;
+                    float3 dS = float3(px, py, pz) - sp;
+                    float dS2 = dot(dS, dS);
+                    // Tidal radius + gravitational focusing (σ grows with the
+                    // hole's mass and shrinks with relative speed — slow
+                    // passers-by are captured from far beyond contact).
+                    float rt = 1.5f * MERGE_RSUN_SIM * pow(mass, 0.8f) *
+                               pow(mS / mass, 1.0f / 3.0f);
+                    float3 dvS = (float3(vpx, vpy, vpz) -
+                                  (sp - particles[sid2].prevW.xyz)) * 120.0f;
+                    float vrel2 = max(dot(dvS, dvS), 1e-4f);
+                    float G1s = u.gravGM / max(u.massTotal, 1.0f);
+                    float rt2 = rt * rt + rt * (2.0f * G1s * mS) / vrel2;
+                    float reach = 1.4f * su.cellSize;
+                    rt2 = min(rt2, reach * reach);
+                    if (dS2 >= rt2) continue;
+                    // EATEN: exact mass to the seed's plate, then die parked.
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 0u],
+                                              uint(mass * 64.0f + 0.5f),
+                                              memory_order_relaxed);
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 1u],
+                                              1u, memory_order_relaxed);
+                    float park = 4000.0f + float(id % 1024);
+                    p.posW = float4(park, park, park, 0.0f);
+                    p.prevW = float4(park, park, park, p.prevW.w);
+                    return;
+                }
+            }
+        }
+    }
+
     // ── SELF-GRAVITY (always-on, EVERY phase — the emergent-BH engine) ───────
     // Real Newtonian gravity replaces the old cohesion spring: every star falls
     // toward the rest of the mass, so the galaxy accretes on its own — no note
@@ -698,6 +765,16 @@ kernel void compute_physics(
                 // conserved exactly, as before — rotation survives, random
                 // motion thermalizes into the disk.
                 float relax = min(cnt * (1.0f / 128.0f), 1.0f) * (2.0f * dt);
+                // DYNAMICAL FRICTION / MASS SEGREGATION — the accretion
+                // accelerator. Chandrasekhar drag scales LINEARLY with the
+                // body's mass: a heavy body dumps its orbital energy into
+                // the light background and SINKS to the core — how real
+                // massive black holes reach their food. (Measured failure
+                // without it: seeds born in the knot coasted off and
+                // starved alone — probe read cnt=1, no candidates in
+                // reach.) Normalized at the IMF mean (dwarfs unchanged),
+                // capped ×8 to stay integrator-safe.
+                relax *= clamp(mass * (1.0f / 0.3f), 1.0f, 8.0f);
                 shiftVx += (vMean.x - vpx) * relax;
                 shiftVy += (vMean.y - vpy) * relax;
                 shiftVz += (vMean.z - vpz) * relax;
@@ -1534,16 +1611,6 @@ kernel void compute_physics(
 // and contact reach is capped at 1.45·cellSize (the 27-cell scan); both only
 // RATE-limit merging, never break conservation.
 
-constant float MERGE_RSUN_SIM = 0.0549f;  // 1 R_sun in sim units (6.96e8 m / 1.269e10 m)
-
-// ── FATE LADDER (step 3): the BH seed ────────────────────────────────────────
-// The Kroupa draw tops out at 50 M_sun, so any body ABOVE it can only be a
-// merger product — and a merger remnant that heavy collapses: it IS a black
-// hole (single-scalar mass→fate, physics canon). Seeds are dark (render culls
-// them except while flaring), keep eating with a TIDAL capture radius that
-// grows with mass, and their own r_s feeds the global signal via Menc.
-// Must match the 50.0f in render.metal's dark-cull.
-constant float M_BH_SEED = 50.0f;
 
 // ONE THREAD PER CELL (the centroid pass's architecture — the per-STAR version
 // cost 120fps→37: 2M threads × random 80B struct reads; per-cell reads are
@@ -1566,6 +1633,20 @@ kernel void merge_stars(
     // Attack: hash is stale (not rebuilt during attack) — no merging.
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return;
 
+    // BOUNDARY SHELL EXCLUDED (same rule as reduce_cell_max): assign_cells
+    // clamps every escaper outside ±halfExtent into the outermost cells, and
+    // the r≈1000 position wall physically piles them up until they touch —
+    // ARTIFICIAL contact. Mergers there are clamp artifacts, and they were
+    // BIRTHING SEEDS AT THE WALL (measured: registry led by out-of-domain
+    // seeds, exit=304). Only interior cells merge.
+    {
+        int g = su.gridSize;
+        int bx = int(cid) % g;
+        int by = (int(cid) / g) % g;
+        int bz = int(cid) / (g * g);
+        if (bx == 0 || by == 0 || bz == 0 ||
+            bx == g - 1 || by == g - 1 || bz == g - 1) return;
+    }
     uint count = min(cellCounts[cid], 32u);            // scatter writes ≤32
     if (count < 2u) return;
     uint start = cellStarts[cid];
@@ -1577,7 +1658,10 @@ kernel void merge_stars(
         if (used[i]) continue;
         Particle a = sorted[start + i];
         float ma = a.posW.w;
-        if (ma <= 0.001f || ma >= 1e8f) continue;      // dead / legacy wall
+        // Seeds neither merge nor get merged here — they grow ONLY via the
+        // victim-initiated feeding path (seed_mark/seed_apply), which keeps
+        // them immortal: a dead seed would leak its in-flight accumulator.
+        if (ma <= 0.001f || ma >= M_BH_SEED) continue; // dead / seed / wall
         if (notFinite3(a.posW.xyz)) continue;
         float aR = MERGE_RSUN_SIM * pow(ma, 0.8f);     // main-sequence R ∝ M^0.8
 
@@ -1669,7 +1753,65 @@ kernel void merge_stars(
     }
 }
 
-// ── SEED FEEDING — one thread per black hole (step 3's heart) ────────────────
+// ── SEED MARK + VICTIM-INITIATED FEEDING (step 3's heart, v2) ────────────────
+// The sample-based per-seed scan starved (sorted-slot desyncs measured for
+// six straight probe cycles). INVERTED architecture: a tiny pass marks each
+// seed's CELL in cellSeedMap; every star checks its 27 neighbour cells in
+// compute_physics and, if inside a marked seed's capture radius, SACRIFICES
+// ITSELF — parks, dies, and atomically adds its exact mass to the seed's
+// accumulator. Each victim is its own thread: double-eating is structurally
+// impossible. seed_apply then credits the seeds. No sampling, no sorted
+// buffer, conservation exact by construction.
+
+kernel void seed_mark(
+    device const Particle* particles [[buffer(0)]],
+    device const uint* seedMeta [[buffer(1)]],         // [0] = seed count
+    device const uint* seedIds [[buffer(2)]],
+    device uint* cellSeedMap [[buffer(3)]],            // 0 = none, else slot+1
+    constant SpatialHashUniforms& su [[buffer(4)]],
+    constant PhysicsUniforms& u [[buffer(5)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= min(seedMeta[0], 256u)) return;
+    if (su.gridSize <= 0) return;
+    uint sid = seedIds[tid];
+    if (sid >= uint(u.particleCount)) return;
+    float m = particles[sid].posW.w;
+    if (m < M_BH_SEED || m >= 1e8f) return;
+    float3 pos = particles[sid].posW.xyz;
+    if (notFinite3(pos)) return;
+    if (fabs(pos.x) >= su.halfExtent || fabs(pos.y) >= su.halfExtent ||
+        fabs(pos.z) >= su.halfExtent) return;
+    int cx = clamp(int((pos.x + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    int cy = clamp(int((pos.y + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    int cz = clamp(int((pos.z + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+    cellSeedMap[uint((cz * su.gridSize + cy) * su.gridSize + cx)] = tid + 1u;
+}
+
+// seedAccum layout per slot (4 uints): [0] mass ×64, [1] meals, [2,3] reserved.
+kernel void seed_apply(
+    device Particle* particles [[buffer(0)]],
+    device const uint* seedMeta [[buffer(1)]],
+    device const uint* seedIds [[buffer(2)]],
+    device const atomic_uint* seedAccum [[buffer(3)]],
+    constant PhysicsUniforms& u [[buffer(4)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= min(seedMeta[0], 256u)) return;
+    uint sid = seedIds[tid];
+    if (sid >= uint(u.particleCount)) return;
+    float gain = float(atomic_load_explicit(&seedAccum[tid * 4u + 0u],
+                                            memory_order_relaxed)) * (1.0f / 64.0f);
+    if (gain <= 0.0f) return;
+    float m = particles[sid].posW.w;
+    if (m < M_BH_SEED || m >= 1e8f) return;   // seeds are immortal; safety only
+    particles[sid].posW.w = m + gain;
+    // TDE FLARE scaled by the meal; T⁴ cooling fades it back to dark.
+    float t = particles[sid].prevW.w;
+    particles[sid].prevW.w = max(t, 3.0f + 2.0f * min(1.0f, gain / m));
+}
+
+// ── (v1 sample-based seed_feed below: NOT dispatched — kept for reference) ───
 // The per-cell merge pass samples ≤32 stars/cell, so a seed inside a 15k-star
 // core cell got a merge chance ~0.2% of frames and STARVED (measured). Here
 // every registered seed (count_cells appends ids of bodies ≥ M_BH_SEED) gets
@@ -1685,24 +1827,36 @@ kernel void seed_feed(
     device const Particle* sorted [[buffer(2)]],       // immutable snapshot
     device const uint* cellStarts [[buffer(3)]],
     device const uint* cellCounts [[buffer(4)]],
-    device const uint* seedCount [[buffer(5)]],
+    device atomic_uint* seedMeta [[buffer(5)]],        // [0]=count [1]=meals [2]=eaten×64
     device const uint* seedIds [[buffer(6)]],
     constant SpatialHashUniforms& su [[buffer(7)]],
     constant PhysicsUniforms& u [[buffer(8)]],
     uint tid [[thread_position_in_grid]])
 {
-    if (tid >= min(seedCount[0], 256u)) return;
+    uint nSeeds = atomic_load_explicit(&seedMeta[0], memory_order_relaxed);
+    // Staged exit-code probe (thread 0 always launches in the 256 dispatch):
+    // 100+n = entry (n = nSeeds GPU-side), 200 = past count/grid, 300 = past
+    // phase, then 301..304 = sid/mass/nan/extent rejects, 305 = scanning.
+    if (tid == 0u)
+        atomic_store_explicit(&seedMeta[7], 100u + min(nSeeds, 99u),
+                              memory_order_relaxed);
+    if (tid >= min(nSeeds, 256u)) return;
     if (su.gridSize <= 0) return;
+    if (tid == 0u) atomic_store_explicit(&seedMeta[7], 200u, memory_order_relaxed);
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return; // stale hash
+    if (tid == 0u) atomic_store_explicit(&seedMeta[7], 300u, memory_order_relaxed);
 
     uint sid = seedIds[tid];
-    if (sid >= uint(u.particleCount)) return;
+    // Exit-code probe (thread 0): which gate rejects the seed?
+    #define SEED_EXIT(code) { if (tid == 0u) atomic_store_explicit(&seedMeta[7], (code), memory_order_relaxed); return; }
+    if (sid >= uint(u.particleCount)) SEED_EXIT(301u);
     float mSeed = particles[sid].posW.w;               // LIVE (post-merge-pass)
-    if (mSeed < M_BH_SEED || mSeed >= 1e8f) return;
+    if (mSeed < M_BH_SEED || mSeed >= 1e8f) SEED_EXIT(302u);
     float3 pos = particles[sid].posW.xyz;
-    if (notFinite3(pos)) return;
+    if (notFinite3(pos)) SEED_EXIT(303u);
     if (fabs(pos.x) >= su.halfExtent || fabs(pos.y) >= su.halfExtent ||
-        fabs(pos.z) >= su.halfExtent) return;
+        fabs(pos.z) >= su.halfExtent) SEED_EXIT(304u);
+    if (tid == 0u) atomic_store_explicit(&seedMeta[7], 305u, memory_order_relaxed);
 
     float3 vSeed = pos - particles[sid].prevW.xyz;
     float tSeed = particles[sid].prevW.w;
@@ -1711,11 +1865,16 @@ kernel void seed_feed(
     int cy = clamp(int((pos.y + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
     int cz = clamp(int((pos.z + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
 
+    // BISECT meter: this seed thread passed every early-out and is scanning.
+    atomic_fetch_add_explicit(&seedMeta[3], 1u, memory_order_relaxed);
+
+    float bestD2 = 1e30f;   // nearest candidate, probe only
+
     float eaten = 0.0f;
     float3 eatenP = vSeed * mSeed;                     // momentum budget
     float3 posM = pos * mSeed;                         // barycentre budget
     int meals = 0;
-    const int MAX_MEALS = 16;                          // bounded work per frame
+    const int MAX_MEALS = 32;                          // bounded work per frame
 
     for (int z = max(0, cz - 1); z <= min(su.gridSize - 1, cz + 1) && meals < MAX_MEALS; z++) {
         for (int y = max(0, cy - 1); y <= min(su.gridSize - 1, cy + 1) && meals < MAX_MEALS; y++) {
@@ -1731,11 +1890,23 @@ kernel void seed_feed(
                     if (vOrig == sid || vOrig >= uint(u.particleCount)) continue;
                     float3 d = v.posW.xyz - pos;
                     float d2 = dot(d, d);
-                    // Tidal capture radius (×1.5 focusing), capped at scan reach.
-                    float rt = min(1.5f * MERGE_RSUN_SIM * pow(mv, 0.8f) *
-                                   pow((mSeed + eaten) / mv, 1.0f / 3.0f),
-                                   1.4f * su.cellSize);
-                    if (d2 >= rt * rt) continue;
+                    bestD2 = min(bestD2, d2);
+                    // Tidal disruption radius (the bare cross-section)…
+                    float mNow = mSeed + eaten;
+                    float rt = 1.5f * MERGE_RSUN_SIM * pow(mv, 0.8f) *
+                               pow(mNow / mv, 1.0f / 3.0f);
+                    // …boosted by GRAVITATIONAL FOCUSING — the accelerator.
+                    // σ = πR_t²(1 + 2GM/(R_t·v_rel²)): a slow passer-by is
+                    // captured from far beyond R_t, and the boost grows with
+                    // the hole's mass → accretion self-accelerates as it
+                    // eats. v_rel in sim/s (velW are per-frame, ×120).
+                    float3 dv = ((v.posW.xyz - v.prevW.xyz) - vSeed) * 120.0f;
+                    float vrel2 = max(dot(dv, dv), 1e-4f);
+                    float G1 = u.gravGM / max(u.massTotal, 1.0f);
+                    float rt2 = rt * rt + rt * (2.0f * G1 * mNow) / vrel2;
+                    float reach = 1.4f * su.cellSize;
+                    rt2 = min(rt2, reach * reach);
+                    if (d2 >= rt2) continue;
                     // CLAIM: atomically swap the victim's mass word with 0.
                     // Particle = 80B = 20 uints; posW.w is uint index id·20+3.
                     uint old = atomic_exchange_explicit(&particlesA[vOrig * 20u + 3u],
@@ -1763,6 +1934,25 @@ kernel void seed_feed(
         }
     }
 
+    // PROBE (thread for the first seed): my cell's population, nearest
+    // candidate distance ×1000, my mass — decodes the starvation.
+    if (tid == 0u) {
+        uint myCell = uint((cz * su.gridSize + cy) * su.gridSize + cx);
+        atomic_store_explicit(&seedMeta[4], cellCounts[myCell], memory_order_relaxed);
+        // Raw first sorted entry of my cell: its mass ×1000 and its orig id —
+        // decodes WHY every candidate fails the gates.
+        Particle p0 = sorted[cellStarts[myCell]];
+        atomic_store_explicit(&seedMeta[5],
+                              uint(clamp(p0.posW.w, 0.0f, 4000000.0f) * 1000.0f),
+                              memory_order_relaxed);
+        atomic_store_explicit(&seedMeta[6], p0.entanglement.y, memory_order_relaxed);
+    }
+    if (meals > 0) {
+        // Meal meter (telemetry): meals + eaten mass this frame, all seeds.
+        atomic_fetch_add_explicit(&seedMeta[1], uint(meals), memory_order_relaxed);
+        atomic_fetch_add_explicit(&seedMeta[2], uint(eaten * 64.0f + 0.5f),
+                                  memory_order_relaxed);
+    }
     if (eaten > 0.0f) {
         float mNew = mSeed + eaten;
         float3 posNew = posM / mNew;

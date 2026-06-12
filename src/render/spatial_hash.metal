@@ -87,9 +87,20 @@ kernel void count_cells(
     // seed_feed can run one dedicated thread per seed. The per-cell merge
     // pass only sees 32 sampled stars per cell; a seed in a 15k-star core
     // cell was sampled 0.2% of frames and STARVED (measured: Mmax froze).
+    // Boundary-shell cells excluded: wall-clamped escapers merge artificially
+    // out there (see merge_stars) — a wall-born "seed" can never feed and
+    // hogs the registry. Interior seeds only.
     if (m >= 50.0f) {
-        uint slot = atomic_fetch_add_explicit(seedCount, 1u, memory_order_relaxed);
-        if (slot < 256u) seedIds[slot] = id;
+        int g = u.gridSize;
+        int bx = int(cellID) % g;
+        int by = (int(cellID) / g) % g;
+        int bz = int(cellID) / (g * g);
+        bool shell = (bx == 0 || by == 0 || bz == 0 ||
+                      bx == g - 1 || by == g - 1 || bz == g - 1);
+        if (!shell) {
+            uint slot = atomic_fetch_add_explicit(seedCount, 1u, memory_order_relaxed);
+            if (slot < 256u) seedIds[slot] = id;
+        }
     }
 }
 

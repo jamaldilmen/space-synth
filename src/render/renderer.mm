@@ -53,7 +53,8 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
   id<MTLComputePipelineState> reduceCellMaxPipeline = nil;
   id<MTLComputePipelineState> mergeStarsPipeline = nil; // stellar mergers (US2 eating)
-  id<MTLComputePipelineState> seedFeedPipeline = nil;   // BH seeds eat (fate ladder)
+  id<MTLComputePipelineState> seedMarkPipeline = nil;   // mark seed cells (fate ladder)
+  id<MTLComputePipelineState> seedApplyPipeline = nil;  // credit seed meals
 
   id<MTLBuffer> particleBuffer = nil;
   id<MTLBuffer> particleBufferRead = nil; // Double-buffer for collision reads
@@ -74,6 +75,8 @@ struct Renderer::Impl {
   id<MTLBuffer> cellMassBuffer = nil;        // Σ stellar mass per cell (M_sun ×64, atomic)
   id<MTLBuffer> seedCountBuffer = nil;       // BH-seed registry counter (atomic, per frame)
   id<MTLBuffer> seedIdsBuffer = nil;         // BH-seed particle ids (≤256)
+  id<MTLBuffer> cellSeedMapBuffer = nil;     // per-cell seed slot (victim lookup)
+  id<MTLBuffer> seedAccumBuffer = nil;       // per-seed meal accumulator (4 uints)
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
@@ -248,6 +251,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     }
   }
 
+  // One-time capacity report: the prefix-sum pair must agree on block size
+  // (pass 3b's kernel hardcodes 2048/block = 1024 threads in pass 3a).
+  if (impl_->prefixSumLocalPipeline && impl_->prefixSumBlocksPipeline) {
+    fprintf(stderr, "[HASH] tg caps: local=%lu blocks=%lu add=%lu\n",
+            (unsigned long)impl_->prefixSumLocalPipeline.maxTotalThreadsPerThreadgroup,
+            (unsigned long)impl_->prefixSumBlocksPipeline.maxTotalThreadsPerThreadgroup,
+            (unsigned long)(impl_->prefixSumAddPipeline
+                                ? impl_->prefixSumAddPipeline.maxTotalThreadsPerThreadgroup
+                                : 0));
+  }
+
   // ── Density heatmap pipeline ────────────────────────────────────────
   id<MTLFunction> densityFunc =
       [impl_->library newFunctionWithName:@"density_heatmap"];
@@ -270,15 +284,24 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Merge pipeline error: %@", error);
   }
 
-  // ── Seed-feed pipeline (BH seeds eat — fate ladder, step 3) ─────────
-  id<MTLFunction> seedFunc =
-      [impl_->library newFunctionWithName:@"seed_feed"];
-  if (seedFunc) {
-    impl_->seedFeedPipeline =
-        [impl_->device newComputePipelineStateWithFunction:seedFunc
+  // ── Seed mark/apply pipelines (victim-initiated feeding, step 3 v2) ──
+  id<MTLFunction> seedMarkFunc =
+      [impl_->library newFunctionWithName:@"seed_mark"];
+  if (seedMarkFunc) {
+    impl_->seedMarkPipeline =
+        [impl_->device newComputePipelineStateWithFunction:seedMarkFunc
                                                      error:&error];
     if (error)
-      NSLog(@"Seed-feed pipeline error: %@", error);
+      NSLog(@"Seed-mark pipeline error: %@", error);
+  }
+  id<MTLFunction> seedApplyFunc =
+      [impl_->library newFunctionWithName:@"seed_apply"];
+  if (seedApplyFunc) {
+    impl_->seedApplyPipeline =
+        [impl_->device newComputePipelineStateWithFunction:seedApplyFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Seed-apply pipeline error: %@", error);
   }
 
   // ── Densest-cell reduce pipeline (emergent-BH signal) ───────────────
@@ -508,8 +531,10 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellMassBuffer, cellSize);
-  allocIfNeeded(impl_->seedCountBuffer, sizeof(uint32_t));
+  allocIfNeeded(impl_->seedCountBuffer, 8 * sizeof(uint32_t)); // [0]=n [1]=meals [2]=eaten×64 [3]=scan [4..6]=probe
   allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
+  allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
+  allocIfNeeded(impl_->seedAccumBuffer, 256 * 4 * sizeof(uint32_t));
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
@@ -950,7 +975,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:seedCountBuffer
-                      range:NSMakeRange(0, sizeof(uint32_t))
+                      range:NSMakeRange(0, 8 * sizeof(uint32_t))
+                      value:0];
+      [clearBlit fillBuffer:cellSeedMapBuffer
+                      range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
+                      value:0];
+      [clearBlit fillBuffer:seedAccumBuffer
+                      range:NSMakeRange(0, 256 * 4 * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:cellOffsetsBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
@@ -1118,21 +1149,18 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
-      // Phase 8: SEED FEEDING — one thread per registered black hole.
-      // Runs AFTER the merge pass (encoders serialize); victims are claimed
-      // atomically so the two passes can never double-eat a star.
-      if (seedFeedPipeline && countStable) {
+      // Phase 8: SEED MARK — write each registered seed's cell into the
+      // victim-lookup map. The eating itself is victim-initiated inside
+      // compute_physics; seed_apply credits the meals after it.
+      if (seedMarkPipeline && countStable) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
-        [comp setComputePipelineState:seedFeedPipeline];
+        [comp setComputePipelineState:seedMarkPipeline];
         [comp setBuffer:particleBuffer offset:0 atIndex:0];
-        [comp setBuffer:particleBuffer offset:0 atIndex:1]; // atomic view
-        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:2];
-        [comp setBuffer:cellStartsBuffer offset:0 atIndex:3];
-        [comp setBuffer:cellCountsBuffer offset:0 atIndex:4];
-        [comp setBuffer:seedCountBuffer offset:0 atIndex:5];
-        [comp setBuffer:seedIdsBuffer offset:0 atIndex:6];
-        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:7];
-        [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:8];
+        [comp setBuffer:seedCountBuffer offset:0 atIndex:1];
+        [comp setBuffer:seedIdsBuffer offset:0 atIndex:2];
+        [comp setBuffer:cellSeedMapBuffer offset:0 atIndex:3];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
+        [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:5];
         [comp dispatchThreads:MTLSizeMake(256, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
         [comp endEncoding];
@@ -1173,12 +1201,29 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellCentroidsBuffer offset:0 atIndex:8];
         [comp setBuffer:cellVelocitiesBuffer offset:0 atIndex:9];
         [comp setBuffer:cellMassBuffer offset:0 atIndex:10];
+        [comp setBuffer:cellSeedMapBuffer offset:0 atIndex:11];
+        [comp setBuffer:seedIdsBuffer offset:0 atIndex:12];
+        [comp setBuffer:seedAccumBuffer offset:0 atIndex:13];
       }
 
       NSUInteger tg =
           std::min(tgSize, physicsPipeline.maxTotalThreadsPerThreadgroup);
       [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      [comp endEncoding];
+    }
+
+    // ── Seed apply: credit each black hole its meals (after physics) ──
+    if (seedApplyPipeline && seedAccumBuffer) {
+      id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+      [comp setComputePipelineState:seedApplyPipeline];
+      [comp setBuffer:particleBuffer offset:0 atIndex:0];
+      [comp setBuffer:seedCountBuffer offset:0 atIndex:1];
+      [comp setBuffer:seedIdsBuffer offset:0 atIndex:2];
+      [comp setBuffer:seedAccumBuffer offset:0 atIndex:3];
+      [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:4];
+      [comp dispatchThreads:MTLSizeMake(256, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
       [comp endEncoding];
     }
 
@@ -1286,11 +1331,32 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           // between stars, never appears or vanishes. live (count) dropping
           // while Mlive holds = stars being EATEN, working as designed.
           fprintf(stderr,
-                  "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f seeds=%u com=(%.2f %.2f %.2f) "
+                  "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f seeds=%u feed=%u/%.1f scan=%u s0[cnt=%u e0m=%.3f e0id=%u exit=%u] com=(%.2f %.2f %.2f) "
                   "meanR=%.2f maxR=%.1f "
                   "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
                   liveCount, totalSM, physicsUniforms.massTotal, gMaxMass,
-                  seedCountBuffer ? *(const uint32_t *)seedCountBuffer.contents : 0u,
+                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[0] : 0u,
+                  [&]() -> uint32_t {
+                    if (!seedAccumBuffer) return 0;
+                    const uint32_t *a = (const uint32_t *)seedAccumBuffer.contents;
+                    uint32_t meals = 0;
+                    for (int i = 0; i < 256; i++) meals += a[i * 4 + 1];
+                    return meals;
+                  }(),
+                  [&]() -> float {
+                    if (!seedAccumBuffer) return 0.0f;
+                    const uint32_t *a = (const uint32_t *)seedAccumBuffer.contents;
+                    uint64_t fp = 0;
+                    for (int i = 0; i < 256; i++) fp += a[i * 4 + 0];
+                    return (float)fp / 64.0f;
+                  }(),
+                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[3] : 0u,
+                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[4] : 0u,
+                  seedCountBuffer
+                      ? ((const uint32_t *)seedCountBuffer.contents)[5] / 1000.0f
+                      : 0.0f,
+                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[6] : 0u,
+                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[7] : 0u,
                   liveComX, liveComY, liveComZ,
                   (totalCT > 0.5f) ? (totalSR / totalCT) : -1.0f, gMaxR,
                   physicsUniforms.envelopePhase,

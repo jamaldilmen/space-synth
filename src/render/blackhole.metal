@@ -518,7 +518,14 @@ fragment float4 fragment_black_hole(
         );
         
         float3 gridPos = rotX * cartPos;
-        float4 partData = sample_spatial_grid_velocity(gridPos, gridU, cellStarts, sortedParticles);
+        // SECOND-LAYER DISK OFF (the no-overlay rule: particles ARE the
+        // disk). This volumetric emission was tuned for the ±3 fine grid;
+        // on the ±64 field grid it under-sampled into a dim red SLAB that
+        // spawned with the hole and floated across the screen ("the red
+        // line"). The raytracer's job is the SHADOW + geodesics; all light
+        // comes from the real particle disk.
+        float4 partData = float4(0.0);
+        (void)gridPos;
         
         if (partData.a > 0.001) {
             float3 vel = partData.xyz;

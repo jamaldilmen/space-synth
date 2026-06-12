@@ -18,7 +18,12 @@ namespace units {
 inline constexpr double kGMsunSI    = 1.32712440018e20; // G·M_sun, m³/s² (IAU)
 inline constexpr double kMbhMsun    = 4.297e6;          // Sgr A*, solar masses
 inline constexpr double kUnitMeters = 1.269e10;         // 2 r_g of Sgr A*, in m
-inline constexpr double kTimeLapse  = 130.0;            // real seconds per on-screen second
+inline constexpr double kTimeLapse  = 400.0;            // real seconds per on-screen second
+// 130 → 400 (2026-06-12): the 2-MINUTE ARC. Gravity ∝ K², so the global
+// infall compresses ~9.5× — free-fall from the spawn radius lands near the
+// spec (star map → hole ≤ 2 min at rest). Spawn orbits derive from the same
+// constant, so they stay circular; ISCO period on screen drops to ~1.6 s
+// (fast inner spin — the disk look wants this anyway).
 
 // G·M_sun in sim units (sim³/s², REAL time): ≈ 6.49e-11
 inline constexpr double kGMsunSim =

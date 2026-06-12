@@ -103,6 +103,7 @@ struct Renderer::Impl {
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
   bool bhFormedLatch = false; // once formed, stays formed (until reset)
+  float collapseFrac = 0.25f; // UI dial: core fraction = hole 100%
   uint32_t bhPeakCount = 0;   // densest single cell (true count, uncapped)
   float lastHashExtent = 64.0f; // extent the hash was actually built with
   // RENDER-side smoothed envelope phase: the raw phase is a DISCRETE state
@@ -707,6 +708,7 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
 void Renderer::render(const RenderConfig &config) {
   impl_->renderPhaseSmooth +=
       (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
+  impl_->collapseFrac = config.collapseFrac;
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
 
@@ -778,6 +780,11 @@ void Renderer::render(const RenderConfig &config) {
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
   cam.bhStrength = impl_->bhStrength;
+  cam.tuneLens = config.lensBend;
+  cam.tuneArcWrap = config.arcWrap;
+  cam.tuneArcGain = config.arcGain;
+  cam.tuneTrailGain = config.trailGain;
+  cam.tuneStreakLen = config.streakLen;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -786,6 +793,7 @@ void Renderer::render(const RenderConfig &config) {
 void Renderer::render(const RenderConfig &config, const float *viewProj) {
   impl_->renderPhaseSmooth +=
       (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
+  impl_->collapseFrac = config.collapseFrac;
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
 
@@ -871,6 +879,11 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
   cam.bhStrength = impl_->bhStrength;
+  cam.tuneLens = config.lensBend;
+  cam.tuneArcWrap = config.arcWrap;
+  cam.tuneArcGain = config.arcGain;
+  cam.tuneTrailGain = config.trailGain;
+  cam.tuneStreakLen = config.streakLen;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -1330,7 +1343,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // Strength = how much of the WHOLE field's mass has gathered in
         // the core sphere: 1.0 (full shadow) at kCollapseFrac of total.
         // N- and IMF-independent: every field can complete its collapse.
-        const float kCollapseFrac = 0.25f;
+        const float kCollapseFrac = std::max(collapseFrac, 0.02f);
         float target = (float)(bhMassEnc /
                                (kCollapseFrac *
                                 std::max(physicsUniforms.massTotal, 1.0f)));

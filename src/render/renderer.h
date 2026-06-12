@@ -46,6 +46,14 @@ struct RenderConfig {
   float rotationZ = 0.0f;
   float jitterFactor = 0.1f;
 
+  // ── BLACK HOLE TUNING dials ──
+  float lensBend = 0.85f;
+  float arcWrap = 2.2f;
+  float arcGain = 5.0f;
+  float trailGain = 1.0f;
+  float streakLen = 1.0f;
+  float collapseFrac = 0.25f; // fraction of field mass in core = hole 100%
+
   // Black-hole shadow radius (sim coords). The physical photon-capture
   // value is 3√3·M ≈ 2.6, but the disk here is scaled tight (r≈3), so a
   // smaller shadow reads more proportionally. User-tunable via "BH Size".
@@ -136,6 +144,13 @@ struct CameraUniforms {
   float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
   float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
   float bhStrength;        // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
+  // ── BLACK HOLE TUNING dials (UI-driven, defaults = tuned look) ──
+  float tuneLens;          // lens bend blend (0..1, default 0.85)
+  float tuneArcWrap;       // max arc sweep, rad (default 2.2)
+  float tuneArcGain;       // horizon exposure gain (default 5)
+  float tuneTrailGain;     // arc brightness multiplier (default 1)
+  float tuneStreakLen;     // motion-streak length multiplier (default 1)
+  float tunePad;
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

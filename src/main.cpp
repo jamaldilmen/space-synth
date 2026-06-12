@@ -943,6 +943,20 @@ int main() {
         }
 
         UiSliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
+
+        ImGui::SeparatorText("BLACK HOLE TUNING");
+        UiSliderFloat("Lens Bend", &app.uiLensBend, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Spacetime bending strength (0 = off, 1 = full lens)");
+        UiSliderFloat("Arc Wrap", &app.uiArcWrap, 0.3f, 6.28f, "%.2f");
+        ImGui::SetItemTooltip("Max trail sweep in radians (6.28 = full circles)");
+        UiSliderFloat("Horizon Exposure", &app.uiArcGain, 0.0f, 16.0f, "%.1f");
+        ImGui::SetItemTooltip("Trail exposure near the event horizon");
+        UiSliderFloat("Trail Gain", &app.uiTrailGain, 0.0f, 4.0f, "%.2f");
+        ImGui::SetItemTooltip("Trail brightness multiplier");
+        UiSliderFloat("Streak Length", &app.uiStreakLen, 0.0f, 8.0f, "%.2f");
+        ImGui::SetItemTooltip("Motion-blur streak length for fast matter");
+        UiSliderFloat("Collapse %", &app.uiCollapseFrac, 0.05f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Fraction of the field's mass in the core for the hole to fully form (pacing)");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiShadowRadius = 2.4f;
         ImGui::SetItemTooltip(
@@ -1485,6 +1499,12 @@ int main() {
     config.orthoMode = app.uiOrthoMode;
     config.phaseViz = app.uiPhaseViz;
     config.shadowRadius = app.uiShadowRadius;
+    config.lensBend = app.uiLensBend;
+    config.arcWrap = app.uiArcWrap;
+    config.arcGain = app.uiArcGain;
+    config.trailGain = app.uiTrailGain;
+    config.streakLen = app.uiStreakLen;
+    config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────
     synth.envelopeParams().attack = app.uiAttack / 1000.0f;

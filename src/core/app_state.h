@@ -96,6 +96,14 @@ struct AppState {
   bool  uiAutoMode = true;
   bool  uiQuantumEntangle = false;
   bool  uiBlackHoles = false;
+
+  // ── BLACK HOLE TUNING dials (defaults = the tuned 2026-06-12 look) ──
+  float uiLensBend = 0.85f;    // spacetime bend strength (0..1)
+  float uiArcWrap = 2.2f;      // max trail arc sweep (rad)
+  float uiArcGain = 5.0f;      // horizon exposure gain
+  float uiTrailGain = 1.0f;    // trail brightness x
+  float uiStreakLen = 1.0f;    // motion streak length x
+  float uiCollapseFrac = 0.25f;// %% of field in core = hole formed
 };
 
 } // namespace space

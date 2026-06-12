@@ -29,6 +29,12 @@ struct CameraUniforms {
     float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
     float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
     float bhStrength;        // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
+    float tuneLens;          // lens bend blend (UI dial)
+    float tuneArcWrap;       // max arc sweep, rad (UI dial)
+    float tuneArcGain;       // horizon exposure gain (UI dial)
+    float tuneTrailGain;     // arc brightness multiplier (UI dial)
+    float tuneStreakLen;     // motion-streak length multiplier (UI dial)
+    float tunePad;
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -304,7 +310,7 @@ vertex VertexOut particle_vertex(
                 // lens IS the black hole — light wraps to the Einstein ring
                 // and the centre empties by bending alone ("the bending of
                 // spacetime" made visible, one entity by construction).
-                float theta = mix(beta, thetaFull, 0.85f * lensRamp);
+                float theta = mix(beta, thetaFull, cam.tuneLens * lensRamp);
                 float2 lensed = (d / beta) * theta; // image offset, isotropic
                 lensed.x /= asp;                    // back to raw NDC
                 float2 lensedP = ndcBH + lensed;
@@ -338,7 +344,8 @@ vertex VertexOut particle_vertex(
     velReal = applySpin(velReal, cam.spinAngleX, cam.spinAngleY);
     float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), spinPos);
     float3 velWorld = (velReal + vSpin) * R;
-    float4 endClip = cam.viewProjection * float4(worldPos + velWorld * STREAK_EXPOSURE, 1.0);
+    float4 endClip = cam.viewProjection *
+        float4(worldPos + velWorld * STREAK_EXPOSURE * cam.tuneStreakLen, 1.0);
     float2 v1_screen = out.position.xy / out.position.w;
     float2 v2_screen = endClip.xy / endClip.w;
     out.velDir2D = (v2_screen - v1_screen) * STREAK_GAIN;
@@ -769,14 +776,14 @@ vertex TrajOut trajectory_vertex(
     // Far from the hole the exposure dies off: the calm field stays points.
     float horizonExp = cam.bhStrength * exp(-rXY * 0.8f);
     float exposure = TRAIL_EXPOSURE *
-                     (1.0f + 4.0f * cam.oscAmount + 5.0f * horizonExp);
+                     (1.0f + 4.0f * cam.oscAmount + cam.tuneArcGain * horizonExp);
     // Wrap clamp: differential rotation is the physics (inner MUST be
     // faster), but unbounded wrap made the inner arcs lap into a closed
     // ring while the outer barely dashed — two objects instead of one
     // fused disk. Cap the sweep; speed still reads via arc length below.
     // Wrap ≤ 2.2 rad: longer arcs closed into per-particle CIRCLES — the
     // hole read as concentric rings instead of flowing matter.
-    float totalPhi = min(omega * exposure + spinMag * 0.05f, 2.2f);
+    float totalPhi = min(omega * exposure + spinMag * 0.05f, cam.tuneArcWrap);
     // At rest (no spin) keep the ribbons local to the hole: beyond its
     // sphere of influence emit nothing — cheap degenerate output.
     if (spinMag < 0.01f && cam.oscAmount < 0.01f && rXY > 8.0f) {
@@ -810,7 +817,7 @@ vertex TrajOut trajectory_vertex(
     // grows. Fast spin lengthens trails, it must not blow them to white.
     float expNorm = 1.5f / (1.5f + totalPhi);
     out.intensity = (1.0f - (float)k / float(TRAIL_SEG - 1)) *
-                    mix(0.25f, 1.0f, innerFade) * expNorm;
+                    mix(0.25f, 1.0f, innerFade) * expNorm * cam.tuneTrailGain;
     return out;
 }
 

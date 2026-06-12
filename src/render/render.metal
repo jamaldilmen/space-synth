@@ -466,8 +466,12 @@ vertex VertexOut particle_vertex(
         // yellow-white → BLUE, continuous, how heat actually looks. HDR
         // headroom scales with thT so the hottest matter still blooms.
         float3 thermalCol = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
-        // SUPERNOVA (played): emission-line ramp (the green [OIII] tell).
-        float3 snCol = supernovaRamp(temp / SN_TEMP_PEAK);
+        // PLAYED state: TEMPERATURE owns the colour here too (Jamal: no RGB,
+        // plasma colours in ALL phases). The heat continuum — deep red →
+        // orange → yellow → white-hot → blue extreme, white rare — replaces
+        // the supernova emission-line ramp (its green/cyan lines read as
+        // arbitrary RGB; physical, but parked until the SN event rung).
+        float3 snCol = heatRamp(temp / SN_TEMP_PEAK);
         // Cross-fade by envelope: SILENCE → thermal disk, PLAYING → supernova.
         float playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
         float3 bbColor = mix(thermalCol, snCol, playMix);

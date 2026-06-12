@@ -606,8 +606,12 @@ kernel void compute_physics(
         float3 toO = -float3(px, py, pz);
         float3 kick = toO * (0.3f * dt);
         float kl = length(kick);
-        if (kl > 0.01f) kick *= 0.01f / kl;          // bounded: no slingshot
-        float vdamp = min(0.5f * dt, 0.05f);         // bleed orbital speed
+        if (kl > 0.01f) kick *= 0.01f / kl;          // bounded spring
+        // HARD damping: a fast seed overshot the bounded spring and
+        // slingshotted — a bright accretion point + trail ribbon roaming
+        // the screen as a dotted beam (measured/screenshot). The hole
+        // parks; it does not zip across the galaxy.
+        float vdamp = min(2.5f * dt, 0.2f);
         shiftVx += kick.x - vpx * vdamp;
         shiftVy += kick.y - vpy * vdamp;
         shiftVz += kick.z - vpz * vdamp;

@@ -8,6 +8,7 @@ struct KeyEvent {
   int keyCode;
   bool isDown;
   bool isRepeat;
+  bool shift = false;
   std::string characters;
 };
 

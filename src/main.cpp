@@ -269,9 +269,23 @@ int main() {
 
   // ── Simulation pause (SPACE) — physics freezes, render/camera live on ──
   bool simPaused = false;
+  // ── TIME WARP (SHIFT+←/→) — multiplicative ramp, rides key-repeat like
+  // the camera arrows: hold to sweep. ×1.3 per tick, range 1/64× … 64×.
+  float timeWarp = 1.0f;
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
+    // SHIFT+←/→ = TIME WARP. Checked before the camera arrows (same keys,
+    // shift modifier) and before the isRepeat gate so holding the key
+    // sweeps the scale — the same ramp feel as the camera rotation.
+    if (e.shift && e.isDown && (e.keyCode == 123 || e.keyCode == 124)) {
+      timeWarp *= (e.keyCode == 124) ? 1.3f : (1.0f / 1.3f);
+      timeWarp = std::min(std::max(timeWarp, 1.0f / 64.0f), 64.0f);
+      if (std::fabs(timeWarp - 1.0f) < 0.12f) timeWarp = 1.0f; // snap to real-time
+      printf("[TIME] warp ×%.2f\n", timeWarp);
+      return;
+    }
+
     // Arrow keys = orbit camera. Handled BEFORE the isRepeat gate so a
     // held key fires every macOS key-repeat tick → smooth continuous
     // rotation. Step is a velocity impulse; Camera::update applies
@@ -903,6 +917,10 @@ int main() {
         if (simPaused) {
           ImGui::SameLine();
           ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "PAUSED [space]");
+        }
+        if (timeWarp != 1.0f) {
+          ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f),
+                             "TIME x%.2f [shift+arrows]", timeWarp);
         }
 
         UiSliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
@@ -1607,8 +1625,12 @@ int main() {
 
     // SPACE pause: skip the physics step entirely — no compute dispatch,
     // the field freezes in place; render and camera keep running.
+    // TIME WARP scales only the PHYSICS clock (audio/camera stay realtime).
+    // Above ~8× the Verlet integrator coarsens (forces are per-frame
+    // impulses) — honest tradeoff for review speed.
+    float simDt = dt * timeWarp;
     if (!simPaused)
-      renderer.computeStep(dt, voiceData.data(), (int)voiceData.size(),
+      renderer.computeStep(simDt, voiceData.data(), (int)voiceData.size(),
                            smoothedAmp, app.uiWaveDepth,
                            app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
                            app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,

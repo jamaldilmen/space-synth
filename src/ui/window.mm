@@ -135,6 +135,7 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
   ke.keyCode = event.keyCode;
   ke.isDown = true;
   ke.isRepeat = event.isARepeat;
+  ke.shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
   ke.characters = event.characters ? [event.characters UTF8String] : "";
   self.impl->keyCallback(ke);
 }

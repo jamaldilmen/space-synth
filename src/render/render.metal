@@ -487,12 +487,7 @@ vertex VertexOut particle_vertex(
     // ── DEAD STARS (eaten by a merger): gone in EVERY phase ──────────────────
     // The merge kernel zeroes posW.w and parks the body outside the domain;
     // the render must never show it again. Zero size + fully transparent.
-    // BH SEEDS (mass ≥ 50 M_sun, see M_BH_SEED in particles.metal) are DARK —
-    // a hole emits nothing. Exception: while flaring (fresh meal, temp > 2.5)
-    // it renders — that's a tidal disruption event, the brightest thing there
-    // is. The raytracer shadow takes over once the global signal trips.
-    bool darkSeed = (in.posW.w >= 50.0f) && (in.prevW.w <= 2.5f);
-    if (in.posW.w <= 0.001f || darkSeed) {
+    if (in.posW.w <= 0.001f) {
         out.pointSize = 0.0f;
         out.color = float3(0.0f);
         out.luminance = 0.0f;
@@ -547,6 +542,25 @@ vertex VertexOut particle_vertex(
         out.pointSize = mix(out.pointSize, starSize, starMix);
         out.color     = mix(out.color, starColor, starMix);
         out.luminance = mix(out.luminance, starLum, starMix);
+    }
+
+    // ── BLACK HOLE SEEDS: accretion-luminous — VISIBLE accumulation ─────────
+    // The hole's dark shadow is sub-pixel until ~10⁶ M_sun (r_s = M·2.33e-7
+    // sim units); what you SEE of a feeding black hole is its ACCRETION
+    // LIGHT — the brightest object there is (X-ray binaries, quasars). Render
+    // size = the CAPTURE radius, which grows as M^(1/3) with every meal: the
+    // object visibly fattens as it eats. Flares (fresh meals, temp spike)
+    // surge it hotter, bluer and bigger; the raytracer shadow takes over once
+    // the global geometric signal trips. Overrides every phase.
+    if (in.posW.w >= 50.0f) {
+        float Mbh = in.posW.w;
+        float capR = 0.0313f * pow(Mbh * (1.0f / 0.3f), 1.0f / 3.0f); // sim units
+        float Req = capR / 0.0549f;                                    // in R_sun
+        float flare = clamp(in.prevW.w - 2.5f, 0.0f, 5.0f);
+        float sz = cam.particleSize * (0.5f + 0.8f * sqrt(Req)) * sizeScale;
+        out.pointSize = clamp(sz * (1.0f + 0.25f * flare), 3.0f, 64.0f);
+        out.color     = blackbodyRGB(20000.0f + 4000.0f * flare);
+        out.luminance = 10.0f + 4.0f * flare;
     }
 
     // ── Gargantua: Only cull particles inside the event horizon ──

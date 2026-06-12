@@ -551,7 +551,18 @@ kernel void compute_physics(
         float aphi   = as_type<float>(p.entanglement.w);
         float st = sin(theta);
         float3 home = r_home * float3(st * cos(aphi), st * sin(aphi), cos(theta));
-        p.prevW = float4(home, 0.0f);   // cold
+        // Re-enter ON ORBIT (Kepler about +Y, same as spawn) — the cold
+        // (v=0) respawn was the unnormalized variable behind the polar
+        // "pebbles": a star with no angular momentum free-falls STRAIGHT
+        // at the hole, and polar homes rained down the axis into the
+        // top/bottom pebble clouds (the old Garganty classic).
+        float GM1 = u.gravGM;
+        float vmag = sqrt(GM1 / max(r_home, 0.5f)) * dt;
+        float lxz = length(home.xz);
+        float3 vK = (lxz > 1e-4f)
+                        ? float3(home.z, 0.0f, -home.x) / lxz * vmag
+                        : float3(0.0f);
+        p.prevW = float4(home - vK, 0.0f);
         p.posW  = float4(home, mass);
         p.velW  = float4(0.0f);
         return;

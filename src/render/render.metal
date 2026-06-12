@@ -300,7 +300,11 @@ vertex VertexOut particle_vertex(
                 // radius (3D preserved, rotates correctly) while still pulling
                 // the inner material toward a photon-ring brightening at the
                 // shadow edge. Cheap too — no per-particle tanh across 5M.
-                float theta = mix(beta, thetaFull, 0.4f * lensRamp);
+                // Near-full bend: with the shadow billboard deleted, the
+                // lens IS the black hole — light wraps to the Einstein ring
+                // and the centre empties by bending alone ("the bending of
+                // spacetime" made visible, one entity by construction).
+                float theta = mix(beta, thetaFull, 0.85f * lensRamp);
                 float2 lensed = (d / beta) * theta; // image offset, isotropic
                 lensed.x /= asp;                    // back to raw NDC
                 float2 lensedP = ndcBH + lensed;
@@ -591,7 +595,12 @@ vertex VertexOut particle_vertex(
     // phase — at rest (star map) and during play there's no hole to cull.
     // Cull stars inside the horizon only when the hole actually EXISTS
     // (geometric criterion), not when a note is released.
-    bool bhVisible = cam.bhStrength > 0.9f;
+    // CULL DISABLED with the billboard gone: this sphere+cylinder delete
+    // punched the elliptical void that wobbled with the camera ("the weird
+    // shadow upon rotation"). The hole's darkness now comes from the LENS
+    // (light bends away from the centre) + the seed having eaten the
+    // plunge zone — physics, not deletion.
+    bool bhVisible = false;
     if (bhVisible && (originR < RS_CULL || rXYcull < RS_CULL)) {
         out.position = float4(0, 0, -2, 1);
         out.pointSize = 0.0f;
@@ -737,7 +746,10 @@ vertex TrajOut trajectory_vertex(
     // predates it and swept XY/Z-axis arcs: trails cut ACROSS the real
     // motion and swirled off-centre ("distorted like wrongly").
     float rXY   = max(length(in.posW.xz), 1e-3f);
-    float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);
+    // Differential compressed (1.5 → 0.9): inner still leads (Kepler order
+    // preserved — gravity must read), but the inner/outer ratio no longer
+    // tears the disk into two populations ("not fusing into one form").
+    float omega = 1.0f / (pow(rXY, 0.9f) + KERR_A);
     float spinMag = length(float2(cam.spinX, cam.spinY));
     // HORIZON EXPOSURE — spacetime made visible by the hole itself. The arc
     // is the particle's real orbital path over the exposure window; near the

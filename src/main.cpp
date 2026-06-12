@@ -958,7 +958,7 @@ int main() {
         UiSliderFloat("Collapse %", &app.uiCollapseFrac, 0.05f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Fraction of the field's mass in the core for the hole to fully form (pacing)");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          app.uiShadowRadius = 2.4f;
+          app.uiShadowRadius = 1.0f;
         ImGui::SetItemTooltip(
             "Black-hole shadow radius (sim coords). Physical value ~2.6; "
             "lower reads proportional to the disk.");

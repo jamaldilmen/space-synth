@@ -736,8 +736,24 @@ vertex TrajOut trajectory_vertex(
     float rXY   = max(length(in.posW.xy), 1e-3f);
     float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);
     float spinMag = length(float2(cam.spinX, cam.spinY));
-    float exposure = TRAIL_EXPOSURE * (1.0f + 4.0f * cam.oscAmount);
+    // HORIZON EXPOSURE — spacetime made visible by the hole itself. The arc
+    // is the particle's real orbital path over the exposure window; near the
+    // horizon Ω explodes (inner-fast differential law above), so matter
+    // there stretches into the light-trail ribbons Jamal gets from fast
+    // manual spin — but earned by the physics, on whenever the hole exists.
+    // Far from the hole the exposure dies off: the calm field stays points.
+    float horizonExp = cam.bhStrength * exp(-rXY * 0.8f);
+    float exposure = TRAIL_EXPOSURE *
+                     (1.0f + 4.0f * cam.oscAmount + 8.0f * horizonExp);
     float totalPhi = omega * exposure + spinMag * 0.05f;
+    // At rest (no spin) keep the ribbons local to the hole: beyond its
+    // sphere of influence emit nothing — cheap degenerate output.
+    if (spinMag < 0.01f && cam.oscAmount < 0.01f && rXY > 8.0f) {
+        out.position  = float4(0, 0, -2, 1);
+        out.color     = float3(0);
+        out.intensity = 0.0f;
+        return out;
+    }
     float ang = -totalPhi * ((float)k / float(TRAIL_SEG - 1)); // 0 at head
 
     float c = cos(ang), s = sin(ang);

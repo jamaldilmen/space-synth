@@ -1536,7 +1536,12 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // verts per particle (head + tail) → line primitive.
   // Orbital-arc trail pass DISABLED — it spawned a second ring inside the
   // black hole. One black hole only. (Pipeline kept for later; not drawn.)
-  if (false && trajectoryPipeline) {
+  // Re-enabled (was parked during the scope-line experiments): the orbital
+  // long-exposure arcs ARE the "spacetime flow" visual. Drawn when the
+  // emergent hole exists (its horizon region is where Ω is fastest) or
+  // when the user spins (the manual exposure gesture).
+  if (trajectoryPipeline &&
+      (bhStrength > 0.5f || config.oscAmount > 0.01f)) {
     [enc setRenderPipelineState:trajectoryPipeline];
     [enc setDepthStencilState:depthState];
     [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];

@@ -733,7 +733,10 @@ vertex TrajOut trajectory_vertex(
     // Backward orbital rotation: total arc = Ω(r)·exposure (inner-fast/outer-
     // slow → differential streaks). Prograde orbit is +Z; the trail goes back
     // (−Z). Spin lengthens the exposure so spinning draws longer ribbons.
-    float rXY   = max(length(in.posW.xy), 1e-3f);
+    // Orbit plane is about +Y (the star-map/disk convention) — this pass
+    // predates it and swept XY/Z-axis arcs: trails cut ACROSS the real
+    // motion and swirled off-centre ("distorted like wrongly").
+    float rXY   = max(length(in.posW.xz), 1e-3f);
     float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);
     float spinMag = length(float2(cam.spinX, cam.spinY));
     // HORIZON EXPOSURE — spacetime made visible by the hole itself. The arc
@@ -758,7 +761,8 @@ vertex TrajOut trajectory_vertex(
 
     float c = cos(ang), s = sin(ang);
     float3 pos = in.posW.xyz;
-    float3 rot = float3(pos.x * c - pos.y * s, pos.x * s + pos.y * c, pos.z);
+    // Rotate about +Y — the arc traces the particle's actual orbit.
+    float3 rot = float3(pos.x * c + pos.z * s, pos.y, -pos.x * s + pos.z * c);
     out.position = cam.viewProjection * float4(rot * R, 1.0);
 
     // Blackbody colour from temperature — matches the disk palette.
@@ -771,7 +775,10 @@ vertex TrajOut trajectory_vertex(
     else                    bb = mix(float3(1.0,0.95,0.9),  float3(0.8,0.85,1.0), (tNorm-0.75f)*4.0f);
     out.color     = bb;
     // Fade along the trail: bright at the particle, fading down the arc.
-    out.intensity = 1.0f - (float)k / float(TRAIL_SEG - 1);
+    // Inner fade keeps the additive sum from blowing the centre to white.
+    float innerFade = smoothstep(0.57f, 1.2f, rXY);
+    out.intensity = (1.0f - (float)k / float(TRAIL_SEG - 1)) *
+                    mix(0.25f, 1.0f, innerFade);
     return out;
 }
 

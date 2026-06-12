@@ -748,7 +748,11 @@ vertex TrajOut trajectory_vertex(
     float horizonExp = cam.bhStrength * exp(-rXY * 0.8f);
     float exposure = TRAIL_EXPOSURE *
                      (1.0f + 4.0f * cam.oscAmount + 8.0f * horizonExp);
-    float totalPhi = omega * exposure + spinMag * 0.05f;
+    // Wrap clamp: differential rotation is the physics (inner MUST be
+    // faster), but unbounded wrap made the inner arcs lap into a closed
+    // ring while the outer barely dashed — two objects instead of one
+    // fused disk. Cap the sweep; speed still reads via arc length below.
+    float totalPhi = min(omega * exposure + spinMag * 0.05f, 4.0f);
     // At rest (no spin) keep the ribbons local to the hole: beyond its
     // sphere of influence emit nothing — cheap degenerate output.
     if (spinMag < 0.01f && cam.oscAmount < 0.01f && rXY > 8.0f) {

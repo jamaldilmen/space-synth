@@ -1468,6 +1468,45 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // approaches the geometric hole criterion — mass decides, not the phase.
   bool needRaytracer = (bhStrength > 0.5f);
   (void)phys_gate;
+  // (Black-hole shadow pass MOVED below — it must composite OVER the
+  // particle disk and the arcs: drawing it first let matter paint over the
+  // round shadow, leaving only the elliptical cull-gap = the '2D eye'.)
+
+  // 2. Draw Particles
+  [enc setRenderPipelineState:particlePipeline];
+  [enc setDepthStencilState:depthState];
+  [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
+  [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+  [enc setVertexBuffer:particleBuffer
+                offset:0
+               atIndex:2]; // Random-access for Webbing
+  [enc drawPrimitives:MTLPrimitiveTypePoint
+          vertexStart:0
+          vertexCount:particleCount];
+
+  // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
+  // Only encoded when oscillation (spin) is active; the vertex shader also
+  // collapses every line to a point when oscAmount≈0, but skipping the draw
+  // entirely saves the 2×N vertex work when there's nothing to show. Two
+  // verts per particle (head + tail) → line primitive.
+  // Orbital-arc trail pass DISABLED — it spawned a second ring inside the
+  // black hole. One black hole only. (Pipeline kept for later; not drawn.)
+  // Re-enabled (was parked during the scope-line experiments): the orbital
+  // long-exposure arcs ARE the "spacetime flow" visual. Drawn when the
+  // emergent hole exists (its horizon region is where Ω is fastest) or
+  // when the user spins (the manual exposure gesture).
+  if (trajectoryPipeline &&
+      (bhStrength > 0.5f || config.oscAmount > 0.01f)) {
+    [enc setRenderPipelineState:trajectoryPipeline];
+    [enc setDepthStencilState:depthState];
+    [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
+    [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    [enc drawPrimitives:MTLPrimitiveTypeLine
+            vertexStart:0
+            vertexCount:(NSUInteger)particleCount * 22];
+  }
+
+  // 3. Black-hole shadow + lens — LAST: the hole occludes the matter.
   if (blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8
@@ -1517,39 +1556,6 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   }
 
-  // 2. Draw Particles
-  [enc setRenderPipelineState:particlePipeline];
-  [enc setDepthStencilState:depthState];
-  [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
-  [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
-  [enc setVertexBuffer:particleBuffer
-                offset:0
-               atIndex:2]; // Random-access for Webbing
-  [enc drawPrimitives:MTLPrimitiveTypePoint
-          vertexStart:0
-          vertexCount:particleCount];
-
-  // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
-  // Only encoded when oscillation (spin) is active; the vertex shader also
-  // collapses every line to a point when oscAmount≈0, but skipping the draw
-  // entirely saves the 2×N vertex work when there's nothing to show. Two
-  // verts per particle (head + tail) → line primitive.
-  // Orbital-arc trail pass DISABLED — it spawned a second ring inside the
-  // black hole. One black hole only. (Pipeline kept for later; not drawn.)
-  // Re-enabled (was parked during the scope-line experiments): the orbital
-  // long-exposure arcs ARE the "spacetime flow" visual. Drawn when the
-  // emergent hole exists (its horizon region is where Ω is fastest) or
-  // when the user spins (the manual exposure gesture).
-  if (trajectoryPipeline &&
-      (bhStrength > 0.5f || config.oscAmount > 0.01f)) {
-    [enc setRenderPipelineState:trajectoryPipeline];
-    [enc setDepthStencilState:depthState];
-    [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
-    [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
-    [enc drawPrimitives:MTLPrimitiveTypeLine
-            vertexStart:0
-            vertexCount:(NSUInteger)particleCount * 22];
-  }
   [enc endEncoding];
 
   // ── Multi-pass Gaussian blur via ping-pong HDR pool ───────────────

@@ -323,11 +323,17 @@ vertex VertexOut particle_vertex(
     // resting disk swirls into streaks and spin stretches them further. Slow →
     // a dot, fast → a streak. Same sprite, same colour. Speeds only get high at
     // rest (inner orbit) and under arrow-spin — exactly where streaks belong.
-    float rXYv   = max(length(spinPos.xy), 1e-3f);
-    float omegaV = 1.0f / (pow(rXYv, 1.5f) + KERR_A);
-    float3 vOrb  = float3(-spinPos.y, spinPos.x, 0.0f) / rXYv * (omegaV * rXYv);
+    // REAL velocity (Jamal: "true physics at play, not a visual layer").
+    // The old analytic Ω(r) ignored the SIMULATED motion entirely — matter
+    // orbiting the horizon at a real 0.3c drew as calm balls while only the
+    // decorative formula streaked. The streak is now the particle's actual
+    // per-frame displacement (pos − prev, ×120 → sim/s), rotated with the
+    // render spin: horizon orbits, chord slingshots and supernova node-jumps
+    // ALL streak in proportion to their true speed — one law everywhere.
+    float3 velReal = (in.posW.xyz - in.prevW.xyz) * 120.0f;
+    velReal = applySpin(velReal, cam.spinAngleX, cam.spinAngleY);
     float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), spinPos);
-    float3 velWorld = (vOrb + vSpin) * R;
+    float3 velWorld = (velReal + vSpin) * R;
     float4 endClip = cam.viewProjection * float4(worldPos + velWorld * STREAK_EXPOSURE, 1.0);
     float2 v1_screen = out.position.xy / out.position.w;
     float2 v2_screen = endClip.xy / endClip.w;

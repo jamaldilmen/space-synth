@@ -1341,7 +1341,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // true dissolution (field reset: Menc < 1% of total).
         bhStrengthEma += (target - bhStrengthEma) * 0.04f;
         if (target >= 1.0f) bhFormedLatch = true;
-        if (bhMassEnc < 0.01f * physicsUniforms.massTotal) bhFormedLatch = false;
+        // Once a hole, ALWAYS a hole (agreed): the enclosure dips whenever
+        // the seed wanders >0.5 off origin or a chord yanks the disk — that
+        // must NOT un-form it ('exists then ceases to exist'). The latch
+        // clears only when the biggest BODY is gone too, i.e. a true field
+        // reset — no merger product survives a respawn.
+        if (bhMassEnc < 0.01f * physicsUniforms.massTotal && gMaxMass < 50.0f)
+          bhFormedLatch = false;
         bhStrength = bhFormedLatch ? std::max(bhStrengthEma, 1.0f)
                                    : bhStrengthEma;
 

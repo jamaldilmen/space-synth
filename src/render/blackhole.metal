@@ -416,7 +416,10 @@ fragment float4 fragment_black_hole(
     if (opacity <= 0.001) return float4(0.0);
     
     float2 uv = in.uv * 2.0 - 1.0; uv.y *= -1.0;
-    uv.x *= uniforms.resolution.x / uniforms.resolution.y;
+    // NOTE: no aspect pre-scale here — the ortho branch multiplies its ray
+    // offset by (orthoFrustum · aspect) already; applying aspect to uv.x AS
+    // WELL doubled it (x-rays fanned aspect² too wide → the shadow rendered
+    // as a TALL EGG, aspect²:1). Perspective branch applies it itself.
     
     float3 cameraWo = float3(uniforms.cameraPos[0], uniforms.cameraPos[1], uniforms.cameraPos[2]);
     float3 forward = -normalize(cameraWo); 
@@ -451,7 +454,9 @@ fragment float4 fragment_black_hole(
         // Perspective fallback.
         rayOrigin = cameraWo / uniforms.simScale;
         float fovFactor = 0.6;
-        rayDir = normalize(forward + uv.x * right * fovFactor + uv.y * up * fovFactor);
+        float aspectP = uniforms.resolution.x / uniforms.resolution.y;
+        rayDir = normalize(forward + uv.x * aspectP * right * fovFactor +
+                           uv.y * up * fovFactor);
     }
     
     // ── Analytic shadow (photon capture cross-section) ──────────────

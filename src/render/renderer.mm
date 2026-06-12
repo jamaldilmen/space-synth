@@ -1318,10 +1318,18 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         } else {
           bhMassEnc = 0.0f;
         }
-        // The geometric criterion: is the enclosed mass inside its own
-        // Schwarzschild radius? (smoothed: lensing scales below 1)
-        bhStrength = (float)(bhMassEnc * space::units::kRsSimPerMsun /
-                             space::units::kREnc);
+        // COLLAPSE FRACTION criterion (the conservation model: the field
+        // collapsed IS the black hole — M_BH = the field's mass budget).
+        // The old absolute geometric gate r_s(Menc) ≥ R_ENC needed 1.9e6
+        // M_sun in the core sphere; a 2M-star IMF field only HAS 594k —
+        // the proven raytracer hole could physically never turn on.
+        // Strength = how much of the WHOLE field's mass has gathered in
+        // the core sphere: 1.0 (full shadow) at kCollapseFrac of total.
+        // N- and IMF-independent: every field can complete its collapse.
+        const float kCollapseFrac = 0.25f;
+        bhStrength = (float)(bhMassEnc /
+                             (kCollapseFrac *
+                              std::max(physicsUniforms.massTotal, 1.0f)));
 
         // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
         // particle count and COM ≈ 0 at spawn, else the 48B reduce is broken.

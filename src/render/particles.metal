@@ -1578,8 +1578,18 @@ kernel void compute_physics(
             return;
         }
         if (notFinite1(currentTemp)) currentTemp = 0.0f; // T⁴ overflow → inf−inf
-        p.prevW = float4(px, py, pz, currentTemp);
-        p.posW = float4(nextPos, mass);
+        // CENTER OF GRAVITY PINNED AT 0/0/0 (Jamal): drift the field gently
+        // toward the origin by a SMALL, CLAMPED fraction of the measured COM
+        // per frame. Full-gain subtraction destroyed the field (the COM
+        // readback tears; one garbage value teleported everything, feedback
+        // ran away, 99% of stars died — measured). Gain 2%/frame, max
+        // 0.02 units/frame: converges in ~1 s, noise-immune, velocities
+        // untouched (pos and prev shift equally).
+        float3 comShift = float3(u.comX, u.comY, u.comZ) * 0.02f;
+        comShift = clamp(comShift, -0.02f, 0.02f);
+        if (notFinite3(comShift)) comShift = float3(0.0f);
+        p.prevW = float4(float3(px, py, pz) - comShift, currentTemp);
+        p.posW = float4(nextPos - comShift, mass);
         // Wrap phase into [0, 2π) before packing — a clamp here saturated every
         // particle to phaseBits=max → identical hue. fmod can return negative,
         // so add a turn to land in [0, 2π).

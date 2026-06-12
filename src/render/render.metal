@@ -331,6 +331,10 @@ vertex VertexOut particle_vertex(
     // render spin: horizon orbits, chord slingshots and supernova node-jumps
     // ALL streak in proportion to their true speed — one law everywhere.
     float3 velReal = (in.posW.xyz - in.prevW.xyz) * 120.0f;
+    // Teleports are not motion: recycle/respawn moves a star across the
+    // field in one frame — streaking that jump painted random bright
+    // dashes everywhere. Real speeds top out ~60 sim/s; beyond = a jump.
+    if (length(velReal) > 60.0f) velReal = float3(0.0f);
     velReal = applySpin(velReal, cam.spinAngleX, cam.spinAngleY);
     float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), spinPos);
     float3 velWorld = (velReal + vSpin) * R;
@@ -765,12 +769,14 @@ vertex TrajOut trajectory_vertex(
     // Far from the hole the exposure dies off: the calm field stays points.
     float horizonExp = cam.bhStrength * exp(-rXY * 0.8f);
     float exposure = TRAIL_EXPOSURE *
-                     (1.0f + 4.0f * cam.oscAmount + 8.0f * horizonExp);
+                     (1.0f + 4.0f * cam.oscAmount + 5.0f * horizonExp);
     // Wrap clamp: differential rotation is the physics (inner MUST be
     // faster), but unbounded wrap made the inner arcs lap into a closed
     // ring while the outer barely dashed — two objects instead of one
     // fused disk. Cap the sweep; speed still reads via arc length below.
-    float totalPhi = min(omega * exposure + spinMag * 0.05f, 4.0f);
+    // Wrap ≤ 2.2 rad: longer arcs closed into per-particle CIRCLES — the
+    // hole read as concentric rings instead of flowing matter.
+    float totalPhi = min(omega * exposure + spinMag * 0.05f, 2.2f);
     // At rest (no spin) keep the ribbons local to the hole: beyond its
     // sphere of influence emit nothing — cheap degenerate output.
     if (spinMag < 0.01f && cam.oscAmount < 0.01f && rXY > 8.0f) {

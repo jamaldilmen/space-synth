@@ -539,9 +539,22 @@ kernel void compute_physics(
         }
     }
 
-    // Safety Snapback for runaway particles
+    // ESCAPER RECYCLE — closes the energy budget. The old "snapback"
+    // (pos ×0.5, outward velocity KEPT) made runaways ping-pong in shells
+    // at r≈500-1000: the glowing line/wall on screen. Now an escaper
+    // re-enters the simulation as fresh COLD infall at its star-map home —
+    // mass conserved, the note's escape energy is removed (radiated), and
+    // the recycled star becomes food for the hole.
     if (r_curr > 1000.0f) {
-        px *= 0.5f; py *= 0.5f; pz *= 0.5f;
+        float r_home = p.spinW.x;
+        float theta  = as_type<float>(p.entanglement.z);
+        float aphi   = as_type<float>(p.entanglement.w);
+        float st = sin(theta);
+        float3 home = r_home * float3(st * cos(aphi), st * sin(aphi), cos(theta));
+        p.prevW = float4(home, 0.0f);   // cold
+        p.posW  = float4(home, mass);
+        p.velW  = float4(0.0f);
+        return;
     }
     pvec = float3(px, py, pz);
     r_curr = length(pvec);

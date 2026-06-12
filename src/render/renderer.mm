@@ -100,7 +100,9 @@ struct Renderer::Impl {
   // existence/strength derives from THIS, not from envelope phases.
   float bhPosX = 0.0f, bhPosY = 0.0f, bhPosZ = 0.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
-  float bhStrength = 0.0f;    // r_s(M_enc)/R_ENC — 0..1, ≥0.9 = the hole exists
+  float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
+  float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
+  bool bhFormedLatch = false; // once formed, stays formed (until reset)
   uint32_t bhPeakCount = 0;   // densest single cell (true count, uncapped)
   float lastHashExtent = 64.0f; // extent the hash was actually built with
   // RENDER-side smoothed envelope phase: the raw phase is a DISCRETE state
@@ -1312,7 +1314,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         if (totalEC > 0.5f && std::isfinite(totalEX) && std::isfinite(totalEY) &&
             std::isfinite(totalEZ)) {
           bhMassEnc = totalEC;
-          if (totalEC > 200.0f) { // enough mass: self-refine the core position
+          if (false) { // ORIGIN LOCK: refinement disabled — see below
             bhPosX = totalEX / totalEC;
             bhPosY = totalEY / totalEC;
             bhPosZ = totalEZ / totalEC;
@@ -1329,9 +1331,19 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // the core sphere: 1.0 (full shadow) at kCollapseFrac of total.
         // N- and IMF-independent: every field can complete its collapse.
         const float kCollapseFrac = 0.25f;
-        bhStrength = (float)(bhMassEnc /
-                             (kCollapseFrac *
-                              std::max(physicsUniforms.massTotal, 1.0f)));
+        float target = (float)(bhMassEnc /
+                               (kCollapseFrac *
+                                std::max(physicsUniforms.massTotal, 1.0f)));
+        // SMOOTH + LATCH: the raw enclosure signal wobbles with disk slosh
+        // and made the raytracer flicker on/off ("seconds of black hole
+        // greatness"). Ease toward it; once FORMED, a black hole stays a
+        // black hole — mass inside doesn't leave. The latch clears only on
+        // true dissolution (field reset: Menc < 1% of total).
+        bhStrengthEma += (target - bhStrengthEma) * 0.04f;
+        if (target >= 1.0f) bhFormedLatch = true;
+        if (bhMassEnc < 0.01f * physicsUniforms.massTotal) bhFormedLatch = false;
+        bhStrength = bhFormedLatch ? std::max(bhStrengthEma, 1.0f)
+                                   : bhStrengthEma;
 
         // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
         // particle count and COM ≈ 0 at spawn, else the 48B reduce is broken.
@@ -1409,17 +1421,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         if (cm[i].count > best) { best = cm[i].count; bestCid = cm[i].cid; }
       }
       bhPeakCount = best;
-      if (best > 0 && bhMassEnc <= 200.0f) {
-        // No established core yet → seed the enclosure at the ORIGIN. The
-        // centre of gravity is PINNED there by design, so the knot forms at
-        // (0,0,0) — which sits on a grid-cell CORNER: the old peak-cell
-        // decode pointed at a cell CENTRE 0.87 units off the knot and the
-        // enclosure read ~13 M_sun next to thousands of stars. Origin is
-        // the truth; the mass-weighted refinement takes over from 200 M_sun.
-        bhPosX = 0.0f;
-        bhPosY = 0.0f;
-        bhPosZ = 0.0f;
-      }
+      // ORIGIN LOCK (Jamal: lensing and the hole drifted apart after seconds
+      // of correctness): the centre of gravity is PINNED at 0/0/0 by design
+      // and the seed sinks there — the hole IS at the origin, always. The
+      // wandering enclosure-COM refinement made the rendered shadow chase
+      // disk slosh while the disk stayed centred: misalignment + flicker.
+      bhPosX = 0.0f;
+      bhPosY = 0.0f;
+      bhPosZ = 0.0f;
     }
 
     hasCompute = false;

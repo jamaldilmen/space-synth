@@ -626,18 +626,32 @@ kernel void compute_physics(
                     if (notFinite3(sp)) continue;
                     float3 dS = float3(px, py, pz) - sp;
                     float dS2 = dot(dS, dS);
-                    // Tidal radius + gravitational focusing (σ grows with the
-                    // hole's mass and shrinks with relative speed — slow
-                    // passers-by are captured from far beyond contact).
-                    float rt = 1.5f * MERGE_RSUN_SIM * pow(mass, 0.8f) *
-                               pow(mS / mass, 1.0f / 3.0f);
-                    float3 dvS = (float3(vpx, vpy, vpz) -
-                                  (sp - particles[sid2].prevW.xyz)) * 120.0f;
-                    float vrel2 = max(dot(dvS, dvS), 1e-4f);
-                    float G1s = u.gravGM / max(u.massTotal, 1.0f);
-                    float rt2 = rt * rt + rt * (2.0f * G1s * mS) / vrel2;
-                    float reach = 1.4f * su.cellSize;
-                    rt2 = min(rt2, reach * reach);
+                    float rt2;
+                    if (mS > 5000.0f) {
+                        // FORMED-HOLE REGIME: only the PLUNGE ZONE (~3 r_s)
+                        // swallows instantly. Matter in the tidal zone gets
+                        // DISRUPTED, not eaten — the debris keeps its angular
+                        // momentum and ORBITS: that is the accretion disk.
+                        // With tidal capture all the way up (capped 1.4 sim),
+                        // the hole vacuumed its own disk region — "no disk,
+                        // just a few particles around a black screen".
+                        float rs = mS * 2.327e-7f;   // Schwarzschild, sim units
+                        float rc = max(3.0f * rs, 0.02f);
+                        rt2 = rc * rc;
+                    } else {
+                        // GROWTH REGIME (small seed): tidal radius + grav
+                        // focusing — slow passers-by captured from far beyond
+                        // contact; this is what powers the runaway to forming.
+                        float rt = 1.5f * MERGE_RSUN_SIM * pow(mass, 0.8f) *
+                                   pow(mS / mass, 1.0f / 3.0f);
+                        float3 dvS = (float3(vpx, vpy, vpz) -
+                                      (sp - particles[sid2].prevW.xyz)) * 120.0f;
+                        float vrel2 = max(dot(dvS, dvS), 1e-4f);
+                        float G1s = u.gravGM / max(u.massTotal, 1.0f);
+                        rt2 = rt * rt + rt * (2.0f * G1s * mS) / vrel2;
+                        float reach = 1.4f * su.cellSize;
+                        rt2 = min(rt2, reach * reach);
+                    }
                     if (dS2 >= rt2) continue;
                     // EATEN: exact mass to the seed's plate, then die parked.
                     atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 0u],
@@ -795,9 +809,23 @@ kernel void compute_physics(
                 // reach.) Normalized at the IMF mean (dwarfs unchanged),
                 // capped ×8 to stay integrator-safe.
                 relax *= clamp(mass * (1.0f / 0.3f), 1.0f, 8.0f);
-                shiftVx += (vMean.x - vpx) * relax;
-                shiftVy += (vMean.y - vpy) * relax;
-                shiftVz += (vMean.z - vpz) * relax;
+                float3 dvR = vMean - float3(vpx, vpy, vpz);
+                // SPIN-PRESERVING: damp only the RADIAL + VERTICAL parts of
+                // the deviation — the TANGENTIAL (orbital, about +Y at the
+                // origin-pinned hole) flow survives. Infalling stars keep
+                // their angular momentum and spin UP as r shrinks (skater
+                // effect) → matter SPIRALS into a fast rotating DISK instead
+                // of plunging straight ("spinning pull, not square straight
+                // gravity"). Jamal proved the look: fast spin = shadow +
+                // rim + streams (2026-06-12 screenshot).
+                float rXYt = sqrt(px * px + pz * pz);
+                if (rXYt > 1e-4f) {
+                    float3 tdir = float3(-pz, 0.0f, px) / rXYt; // orbit about +Y
+                    dvR -= tdir * dot(dvR, tdir);   // orbital part untouched
+                }
+                shiftVx += dvR.x * relax;
+                shiftVy += dvR.y * relax;
+                shiftVz += dvR.z * relax;
             }
         }
     }

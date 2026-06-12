@@ -1359,10 +1359,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           // between stars, never appears or vanishes. live (count) dropping
           // while Mlive holds = stars being EATEN, working as designed.
           fprintf(stderr,
-                  "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f seeds=%u feed=%u/%.1f scan=%u s0[cnt=%u e0m=%.3f e0id=%u exit=%u] com=(%.2f %.2f %.2f) "
+                  "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f hole=%.2f%s seeds=%u feed=%u/%.1f scan=%u s0[cnt=%u e0m=%.3f e0id=%u exit=%u] com=(%.2f %.2f %.2f) "
                   "meanR=%.2f maxR=%.1f "
                   "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
                   liveCount, totalSM, physicsUniforms.massTotal, gMaxMass,
+                  bhStrength, bhFormedLatch ? "L" : "",
+
                   seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[4] : 0u,
                   [&]() -> uint32_t {
                     if (!seedAccumBuffer) return 0;

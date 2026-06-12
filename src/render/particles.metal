@@ -580,6 +580,26 @@ kernel void compute_physics(
         }
     }
 
+    // ── SEED SINK — mass segregation, the express lane ───────────────────────
+    // A body 100-1000× the field-star mass sinks to the potential minimum on
+    // a dynamical time (Chandrasekhar friction ∝ M — far beyond the resolved
+    // drag's stability cap). The minimum is the PINNED ORIGIN by design, so
+    // seeds get a bounded spring + velocity damping straight to the centre —
+    // measured failure without it: seeds orbited just off the knot, their
+    // capture sphere grazed its edge, Mmax froze at ~105 while thousands of
+    // stars piled at origin. The seed parks at the centre; the disk spins
+    // around it.
+    if (mass >= M_BH_SEED && mass < 1e8f) {
+        float3 toO = -float3(px, py, pz);
+        float3 kick = toO * (0.3f * dt);
+        float kl = length(kick);
+        if (kl > 0.01f) kick *= 0.01f / kl;          // bounded: no slingshot
+        float vdamp = min(0.5f * dt, 0.05f);         // bleed orbital speed
+        shiftVx += kick.x - vpx * vdamp;
+        shiftVy += kick.y - vpy * vdamp;
+        shiftVz += kick.z - vpz * vdamp;
+    }
+
     // ── BLACK-HOLE CAPTURE — victim-initiated accretion (step 3 v2) ──────────
     // If a registered seed is marked in one of my 27 neighbour cells and I'm
     // inside its capture radius (tidal + gravitational focusing), I am eaten:
@@ -1775,13 +1795,16 @@ kernel void merge_stars(
 
 kernel void seed_mark(
     device const Particle* particles [[buffer(0)]],
-    device const uint* seedMeta [[buffer(1)]],         // [0] = seed count
+    device uint* seedMeta [[buffer(1)]],               // [0]=count [4]=stable mirror
     device const uint* seedIds [[buffer(2)]],
     device uint* cellSeedMap [[buffer(3)]],            // 0 = none, else slot+1
     constant SpatialHashUniforms& su [[buffer(4)]],
     constant PhysicsUniforms& u [[buffer(5)]],
     uint tid [[thread_position_in_grid]])
 {
+    // Mirror the final registry count into the uncleared half of the buffer
+    // so the CPU's log read can never land mid-clear and report a false 0.
+    if (tid == 0u) seedMeta[4] = seedMeta[0];
     if (tid >= min(seedMeta[0], 256u)) return;
     if (su.gridSize <= 0) return;
     uint sid = seedIds[tid];

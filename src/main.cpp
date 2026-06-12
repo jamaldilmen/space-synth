@@ -787,7 +787,9 @@ int main() {
         ImGui::Text("Horizon:  %.4f AU", horizon_AU);
         ImGui::Separator();
         ImGui::Text("Particle: 1.00 M_sun  (1 star)");
-        ImGui::Text("Field:    %.2e stars = %.2e M_sun", (double)app.uiParticleCount, fieldMass);
+        ImGui::Text("Field:    %.2e stars = %.2e M_sun (Kroupa IMF)",
+                    (double)app.uiParticleCount,
+                    (double)renderer.getPhysicsStats().fieldMassMsun);
         ImGui::Text("          %.1f%% of the nuclear star cluster", fieldPct);
         ImGui::Separator();
         ImGui::Text("Inner orbit (ISCO ~6 r_g):");
@@ -811,6 +813,23 @@ int main() {
           return "quark-gluon";
         };
         ImGui::Separator();
+        // ── THE COLLAPSE — plain-language live readout (Jamal's numbers) ──
+        {
+          float fieldM = std::max(s.fieldMassMsun, 1.0f);
+          float pctIn = 100.0f * s.coreMassMsun / fieldM;
+          float holePct = 100.0f * std::min(s.bhStrength, 1.0f);
+          ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "THE COLLAPSE");
+          ImGui::Text("  Center mass:  %.0f M_sun", s.coreMassMsun);
+          ImGui::Text("  Collapsed:    %.1f%%   (still outside: %.1f%%)",
+                      pctIn, 100.0f - pctIn);
+          ImGui::Text("  Biggest body: %.0f M_sun", s.maxBodyMsun);
+          if (holePct >= 100.0f)
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f),
+                               "  BLACK HOLE: FORMED");
+          else
+            ImGui::Text("  Black hole:   %.0f%% formed", holePct);
+          ImGui::Separator();
+        }
         ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LIVE  [all real]");
         ImGui::Text("  Orbital v (inner): %.3f c", vmax_c);
         ImGui::Text("  Orbital v (mean):  %.3f c", vavg_c);
@@ -1652,14 +1671,30 @@ int main() {
       int vc = synth.activeVoiceCount();
       if (vc > 0) {
         char buf[256];
-        snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Voices: %d | Amp: %.2f", 
-                 fps, app.uiParticleCount / 1000, vc, synth.totalAmplitude());
+        auto bhs = renderer.getPhysicsStats();
+        float pctIn = (bhs.fieldMassMsun > 1.0f)
+                          ? 100.0f * bhs.coreMassMsun / bhs.fieldMassMsun
+                          : 0.0f;
+        snprintf(buf, sizeof(buf),
+                 "FPS: %d | Particles: %dk | Voices: %d | Amp: %.2f | "
+                 "CORE %.0f M / %.1f%% in / %.1f%% out | hole %.0f%%",
+                 fps, app.uiParticleCount / 1000, vc, synth.totalAmplitude(),
+                 bhs.coreMassMsun, pctIn, 100.0f - pctIn,
+                 100.0f * std::min(bhs.bhStrength, 1.0f));
         Logger::log(buf);
         printf("\n%s    ", buf);
       } else {
         char buf[256];
-        snprintf(buf, sizeof(buf), "FPS: %d | Particles: %dk | Ready", 
-                 fps, app.uiParticleCount / 1000);
+        auto bhs2 = renderer.getPhysicsStats();
+        float pctIn2 = (bhs2.fieldMassMsun > 1.0f)
+                           ? 100.0f * bhs2.coreMassMsun / bhs2.fieldMassMsun
+                           : 0.0f;
+        snprintf(buf, sizeof(buf),
+                 "FPS: %d | Particles: %dk | CORE %.0f M (%.1f%% in / %.1f%% out) "
+                 "| biggest body %.0f M | hole %.0f%%",
+                 fps, app.uiParticleCount / 1000, bhs2.coreMassMsun, pctIn2,
+                 100.0f - pctIn2, bhs2.maxBodyMsun,
+                 100.0f * std::min(bhs2.bhStrength, 1.0f));
         Logger::log(buf);
         printf("\n%s    ", buf);
       }

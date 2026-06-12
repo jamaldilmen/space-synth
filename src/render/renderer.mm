@@ -974,8 +974,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [clearBlit fillBuffer:cellMassBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
+      // [0..3] cleared per frame; [4..7] persist — seed_mark mirrors the
+      // final registry count into [4] so the CPU never reads a mid-clear 0.
       [clearBlit fillBuffer:seedCountBuffer
-                      range:NSMakeRange(0, 8 * sizeof(uint32_t))
+                      range:NSMakeRange(0, 4 * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:cellSeedMapBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
@@ -1310,7 +1312,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         if (totalEC > 0.5f && std::isfinite(totalEX) && std::isfinite(totalEY) &&
             std::isfinite(totalEZ)) {
           bhMassEnc = totalEC;
-          if (totalEC > 1000.0f) { // enough mass: self-refine the core position
+          if (totalEC > 200.0f) { // enough mass: self-refine the core position
             bhPosX = totalEX / totalEC;
             bhPosY = totalEY / totalEC;
             bhPosZ = totalEZ / totalEC;
@@ -1343,7 +1345,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                   "meanR=%.2f maxR=%.1f "
                   "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
                   liveCount, totalSM, physicsUniforms.massTotal, gMaxMass,
-                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[0] : 0u,
+                  seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[4] : 0u,
                   [&]() -> uint32_t {
                     if (!seedAccumBuffer) return 0;
                     const uint32_t *a = (const uint32_t *)seedAccumBuffer.contents;
@@ -1380,6 +1382,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         latestStats.avgSpeed = totalSumSpeed * invN;
         latestStats.maxTemp = gMaxTemp;
         latestStats.maxSpeed = gMaxSpeed;
+        latestStats.coreMassMsun = bhMassEnc;
+        latestStats.fieldMassMsun = physicsUniforms.massTotal;
+        latestStats.maxBodyMsun = gMaxMass;
+        latestStats.bhStrength = bhStrength;
 
         // Physical Assert: Check for NaNs or Infinity (Energy Explosion)
         if (std::isnan(totalKE) || std::isinf(totalKE) || totalKE > 1e12f) {
@@ -1403,19 +1409,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         if (cm[i].count > best) { best = cm[i].count; bestCid = cm[i].cid; }
       }
       bhPeakCount = best;
-      if (best > 0 && bhMassEnc <= 1000.0f) {
-        // No established core yet → point the enclosure at the raw peak.
-        const float halfExt = lastHashExtent; // the extent THIS hash used
-        // (was hardcoded 3.0 — after the phase-switched ±64 field grid the
-        // candidate decoded to the wrong world position, so the enclosure
-        // sampled empty space: peak=6500 with Menc=2.)
-        const float cellSz = 2.0f * halfExt / (float)Impl::kGridSize;
-        int cx = (int)(bestCid % Impl::kGridSize);
-        int cy = (int)((bestCid / Impl::kGridSize) % Impl::kGridSize);
-        int cz = (int)(bestCid / (Impl::kGridSize * Impl::kGridSize));
-        bhPosX = ((float)cx + 0.5f) * cellSz - halfExt;
-        bhPosY = ((float)cy + 0.5f) * cellSz - halfExt;
-        bhPosZ = ((float)cz + 0.5f) * cellSz - halfExt;
+      if (best > 0 && bhMassEnc <= 200.0f) {
+        // No established core yet → seed the enclosure at the ORIGIN. The
+        // centre of gravity is PINNED there by design, so the knot forms at
+        // (0,0,0) — which sits on a grid-cell CORNER: the old peak-cell
+        // decode pointed at a cell CENTRE 0.87 units off the knot and the
+        // enclosure read ~13 M_sun next to thousands of stars. Origin is
+        // the truth; the mass-weighted refinement takes over from 200 M_sun.
+        bhPosX = 0.0f;
+        bhPosY = 0.0f;
+        bhPosZ = 0.0f;
       }
     }
 

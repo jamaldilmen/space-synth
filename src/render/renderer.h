@@ -221,6 +221,11 @@ struct PhysicsStats {
   float maxTemp;  // max particle temperature
   float avgSpeed; // mean particle speed |v|
   float maxSpeed; // max particle speed
+  // ── Emergent black hole (the collapse readout) ──
+  float coreMassMsun;  // mass gathered in the core sphere (M_sun)
+  float fieldMassMsun; // total field mass budget (M_sun)
+  float maxBodyMsun;   // heaviest single body (M_sun)
+  float bhStrength;    // 0..1 collapse fraction signal (1 = full shadow)
 };
 
 class Renderer {

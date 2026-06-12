@@ -781,8 +781,12 @@ vertex TrajOut trajectory_vertex(
     // Fade along the trail: bright at the particle, fading down the arc.
     // Inner fade keeps the additive sum from blowing the centre to white.
     float innerFade = smoothstep(0.57f, 1.2f, rXY);
+    // EXPOSURE-NORMALIZED brightness: a longer exposure spreads the SAME
+    // light over a longer arc — per-segment intensity falls as the arc
+    // grows. Fast spin lengthens trails, it must not blow them to white.
+    float expNorm = 1.5f / (1.5f + totalPhi);
     out.intensity = (1.0f - (float)k / float(TRAIL_SEG - 1)) *
-                    mix(0.25f, 1.0f, innerFade);
+                    mix(0.25f, 1.0f, innerFade) * expNorm;
     return out;
 }
 

@@ -1507,7 +1507,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   }
 
   // 3. Black-hole shadow + lens — LAST: the hole occludes the matter.
-  if (blackHolePipeline && needRaytracer) {
+  // BILLBOARD DELETED (Jamal): the raytraced shadow disc was a 2D layer
+  // composited over the particle world — it could never be one entity with
+  // it. The hole is the LENS now: the original particle lensing bends the
+  // light, and the darkness is wherever no light ends up. No overlay.
+  if (false && blackHolePipeline && needRaytracer) {
     struct BlackHoleUniforms {
       float resolution[2]; // 8
       float cameraPos[3];  // 12

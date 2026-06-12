@@ -766,9 +766,16 @@ void Renderer::render(const RenderConfig &config) {
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   {
     float frustum = config.cameraRho * 1.2f;
+    // PHYSICAL Einstein radius: the lens ring derives from the HOLE'S REAL
+    // MASS (photon capture b = 2.6·r_s(M_core)), not an arbitrary UI size —
+    // that mismatch made the lens sphere and the physical disk read as two
+    // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
+    // the lens grows as the hole eats, always matching the disk it carved.
+    float bSim = 2.6f * 2.327e-7f * std::max(impl_->bhMassEnc, 0.0f) *
+                 config.shadowRadius;
     cam.bhShadowNdcRadius =
         (config.orthoMode && frustum > 1e-4f)
-            ? config.shadowRadius * config.plateRadius / frustum
+            ? bSim * config.plateRadius / frustum
             : 0.0f;
     cam.aspect = aspect;
   }
@@ -865,9 +872,16 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // → 0 disables the lens.
   {
     float frustum = config.cameraRho * 1.2f;
+    // PHYSICAL Einstein radius: the lens ring derives from the HOLE'S REAL
+    // MASS (photon capture b = 2.6·r_s(M_core)), not an arbitrary UI size —
+    // that mismatch made the lens sphere and the physical disk read as two
+    // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
+    // the lens grows as the hole eats, always matching the disk it carved.
+    float bSim = 2.6f * 2.327e-7f * std::max(impl_->bhMassEnc, 0.0f) *
+                 config.shadowRadius;
     cam.bhShadowNdcRadius =
         (config.orthoMode && frustum > 1e-4f)
-            ? config.shadowRadius * config.plateRadius / frustum
+            ? bSim * config.plateRadius / frustum
             : 0.0f;
     cam.aspect = (float)impl_->width / (float)impl_->height;
   }

@@ -52,6 +52,7 @@ struct RenderConfig {
   float arcGain = 5.0f;
   float trailGain = 1.0f;
   float streakLen = 1.0f;
+  float colorTempK = 27000.0f; // colour spectrum: |v|²→Kelvin gain (live tune)
   float collapseFrac = 0.25f; // fraction of field mass in core = hole 100%
 
   // Black-hole shadow radius (sim coords). The physical photon-capture
@@ -150,7 +151,7 @@ struct CameraUniforms {
   float tuneArcGain;       // horizon exposure gain (default 5)
   float tuneTrailGain;     // arc brightness multiplier (default 1)
   float tuneStreakLen;     // motion-streak length multiplier (default 1)
-  float tunePad;
+  float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (live tune, was pad)
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

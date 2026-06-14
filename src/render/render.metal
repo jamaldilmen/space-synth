@@ -34,7 +34,7 @@ struct CameraUniforms {
     float tuneArcGain;       // horizon exposure gain (UI dial)
     float tuneTrailGain;     // arc brightness multiplier (UI dial)
     float tuneStreakLen;     // motion-streak length multiplier (UI dial)
-    float tunePad;
+    float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (UI dial, was pad)
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -173,6 +173,8 @@ constant float DISK_T_STAR_K = 7500.0f;   // S–S temperature scale (∝ accret
                                           // Tunable = the disk Ṁ.
 constant float HEAT_K_PER_T  = 3000.0f;   // shock/play heat → Kelvin (sim temp
                                           // 0–5 adds 0–15000K → blue-white shapes)
+// |v|² → Kelvin gain for the true-temperature spectrum is now a LIVE UI dial:
+// cam.tuneColorK (default 27000). Slide it to spread red↔blue.
 constant float PEAK_KELVIN   = 25000.0f;  // temperature that maps to the ramp's
                                           // peak (white/blue). High → white rare.
 constant float SN_TEMP_PEAK  = 6.0f;      // sim temp → supernova ramp peak. From
@@ -517,34 +519,24 @@ vertex VertexOut particle_vertex(
         // outer → white inner) PLUS shock/play heat (→ blue-white when hot).
         // Coloured by the physical Tanner-Helland blackbody function. This is
         // the orange→yellow→white→blue of real incandescent matter, not a ramp.
-        float rSim    = length(in.posW.xyz);
-        float diskK   = ssDiskTempShape(rSim, BH_R_IN_SIM) * DISK_T_STAR_K;
-        float heatK   = clamp(temp, 0.0f, 5.0f) * HEAT_K_PER_T;
-        // Frequency-shift colour: Doppler (approaching→bluer/hotter, receding→
-        // redder) × gravitational redshift (inner edge redder). Exact for a
-        // blackbody — the observed temperature just rescales by the shift.
-        float kelvin  = max(1000.0f, (diskK + heatK) * dopplerColor * gravShift);
-        // THERMAL black-hole disk (rest): the AUTHENTIC Interstellar/DNGR
-        // palette (Thorne et al.) — dark-red → orange → warm-gold-white, white
-        // only at pow(t,2) so it stays rare and WARM (no blue; Gargantua's disk
-        // is warm — blue lives in the supernova). colWhite is HDR for the glow.
-        float thT = clamp((kelvin - 1000.0f) / (PEAK_KELVIN - 1000.0f), 0.0f, 1.0f);
-        // TRUE BLACKBODY CONTINUUM (Jamal 2026-06-11): the movie-amber 3-stop
-        // ramp quantized everything into "3 colors that switch". kelvin above
-        // is already the physical display temperature — render it through the
-        // same Tanner-Helland blackbody the star map uses: dark red → orange →
-        // yellow-white → BLUE, continuous, how heat actually looks. HDR
-        // headroom scales with thT so the hottest matter still blooms.
-        float3 thermalCol = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
-        // PLAYED state: TEMPERATURE owns the colour here too (Jamal: no RGB,
-        // plasma colours in ALL phases). The heat continuum — deep red →
-        // orange → yellow → white-hot → blue extreme, white rare — replaces
-        // the supernova emission-line ramp (its green/cyan lines read as
-        // arbitrary RGB; physical, but parked until the SN event rung).
-        float3 snCol = heatRamp(temp / SN_TEMP_PEAK);
-        // Cross-fade by envelope: SILENCE → thermal disk, PLAYING → supernova.
-        float playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
-        float3 bbColor = mix(thermalCol, snCol, playMix);
+        // ── ONE UNIVERSAL LAW: colour = blackbody of TRUE TEMPERATURE, ALWAYS ──
+        // (Jamal 2026-06-14: 100% physical, EVERY phase, not just play.) The
+        // observed temperature [K] sums the real heat sources, rendered through
+        // the continuous Tanner-Helland blackbody (deep red → orange → yellow →
+        // white → blue — how incandescent matter actually looks). No ramps, no
+        // per-phase palettes: ONE continuum everywhere.
+        //   • diskK   — Shakura–Sunyaev radial disk profile (viscous heat)
+        //   • heatK   — shock / collision / play thermal heat (currentTemp)
+        //   • kinetic — T ∝ |v|² (equipartition): fast matter hot, still cold
+        //   • × Doppler colour shift × gravitational redshift (real observed-T)
+        float rSim   = length(in.posW.xyz);
+        float diskK  = ssDiskTempShape(rSim, BH_R_IN_SIM) * DISK_T_STAR_K;
+        float heatK  = clamp(temp, 0.0f, 5.0f) * HEAT_K_PER_T;
+        float ke     = dot(in.velW.xyz, in.velW.xyz);       // |v|² ∝ kinetic temperature
+        float kelvin = clamp((diskK + heatK + ke * cam.tuneColorK)
+                             * dopplerColor * gravShift, 1000.0f, 40000.0f);
+        float thT    = clamp((kelvin - 1000.0f) / (40000.0f - 1000.0f), 0.0f, 1.0f);
+        float3 bbColor = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
 
         // Per-band RGB tint REMOVED (Jamal 2026-06-11): it painted the field
         // in primary red/green/blue per voice — the "ocean of RGB" — and

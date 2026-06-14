@@ -804,6 +804,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.tuneArcGain = config.arcGain;
   cam.tuneTrailGain = config.trailGain;
   cam.tuneStreakLen = config.streakLen;
+  cam.tuneColorK = config.colorTempK;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -912,6 +913,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.tuneArcGain = config.arcGain;
   cam.tuneTrailGain = config.trailGain;
   cam.tuneStreakLen = config.streakLen;
+  cam.tuneColorK = config.colorTempK;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);

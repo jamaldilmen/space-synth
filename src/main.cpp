@@ -955,6 +955,8 @@ int main() {
         ImGui::SetItemTooltip("Trail brightness multiplier");
         UiSliderFloat("Streak Length", &app.uiStreakLen, 0.0f, 8.0f, "%.2f");
         ImGui::SetItemTooltip("Motion-blur streak length for fast matter");
+        UiSliderFloat("Colour Spectrum", &app.uiColorTempK, 0.0f, 100000.0f, "%.0f");
+        ImGui::SetItemTooltip("Speed->temperature colour gain: low = warm/red field, high = full red->blue spectrum (hot matter blue)");
         UiSliderFloat("Collapse %", &app.uiCollapseFrac, 0.05f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Fraction of the field's mass in the core for the hole to fully form (pacing)");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -1504,6 +1506,7 @@ int main() {
     config.arcGain = app.uiArcGain;
     config.trailGain = app.uiTrailGain;
     config.streakLen = app.uiStreakLen;
+    config.colorTempK = app.uiColorTempK;
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

@@ -103,6 +103,7 @@ struct AppState {
   float uiArcGain = 5.0f;      // horizon exposure gain
   float uiTrailGain = 1.0f;    // trail brightness x
   float uiStreakLen = 1.0f;    // motion streak length x
+  float uiColorTempK = 27000.0f; // colour spectrum: |v|²→Kelvin gain (live tune)
   float uiCollapseFrac = 0.25f;// %% of field in core = hole formed
 };
 

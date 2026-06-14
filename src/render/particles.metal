@@ -176,6 +176,16 @@ constant float ORBIT_R_BH      = 2.0f; // widened from 1.0: the rest disk now ha
 constant float ORBIT_R_CHLADNI = 3.0f;
 constant float STAR_MAP_CAP    = 100.0f; // silence: NO cap (the star map has no tube limit)
 
+// CYMATICS VELOCITY CAP (play regime). The relativistic c-cap (u.speedCap·dt)
+// governs GRAVITATIONAL INFALL — rest/collapse, where matter falls at up to c.
+// But high-amplitude PLAY is a different physical regime: particles driven by an
+// acoustic STANDING WAVE (Chladni cymatics), non-relativistic, ordinary speeds.
+// The c-cap doesn't apply there — it just throttled the sculpt force (strength
+// 25, tuned against this cap) ~41× and shook the pattern apart (2026-06-13
+// regression). This is the ORIGINAL pre-c-cap sculpt-scale cap (1.2 sim/frame),
+// restored ONLY in the play regime; the c-cap stays intact for rest/infall.
+constant float CHLADNI_VCAP    = 1.2f;   // sim/frame — the tuned cymatics speed
+
 // ── ERUPTIONS in the hardened areas (magnetic-reconnection / solar-flare) ──
 // Where the Chladni pattern hardens (dense nodes), stress builds; past a
 // threshold the node ERUPTS — a sudden outward plasma burst + heat flash. See
@@ -216,6 +226,27 @@ kernel void compute_physics(
     float prevX = p.prevW.x;
     float prevY = p.prevW.y;
     float prevZ = p.prevW.z;
+
+    // ── RESURRECTION — PLAY PUKES THE EATEN FIELD BACK OUT ───────────────────
+    // The BH eats particles to mass≈0 ("dead walls") at REST. The godray-vs-
+    // current log diff showed ~46% of the current field is dead (godray: 0%) —
+    // THAT is why play gives sparse spokes instead of the dense honeycomb: half
+    // the instrument is corpses. A note REVIVES the whole field: every dead
+    // particle returns at its star-map home as a weightless tracer and rejoins
+    // the cymatics. (Jamal: "particles need to PUKE each other out when I play.")
+    // Rest eats (the hole grows); play pukes the field back out, alive.
+    if (mass <= 0.001f && u.totalAmplitude > 0.02f) {
+        float r_home = p.spinW.x;
+        if (r_home > 0.001f) {
+            float theta = as_type<float>(p.entanglement.z);
+            float aphi  = as_type<float>(p.entanglement.w);
+            float st = sin(theta);
+            float3 home = r_home * float3(st * cos(aphi), st * sin(aphi), cos(theta));
+            px = home.x; py = home.y; pz = home.z;
+            prevX = home.x; prevY = home.y; prevZ = home.z;  // v = 0
+            mass = 1.0f;                                       // alive, weightless tracer
+        }
+    }
 
     // Velocity proxy: displacement from previous frame
     float vpx = px - prevX;
@@ -506,35 +537,22 @@ kernel void compute_physics(
             }
         }
     }
-    // ─── PHASE 4: RELEASE → GRAVITATIONAL COLLAPSE ───────────────────────
+    // ─── PHASE 4: RELEASE → EMERGENT GRAVITATIONAL COLLAPSE ──────────────
+    // The scripted collapse is GONE (2026-06-13 audit, step 2, Jamal's call).
+    // The old block applied a hardcoded G=100 pull straight to the ORIGIN +
+    // z-plane flattening + a Kerr spiral, all ramped by release progress t.
+    // A fixed central attractor erases angular momentum → matter arrives with
+    // L≈0 and can only form a dead BALL, never a disk — and it contradicted
+    // the emergent-BH model (the hole is the SUM of the mass falling in, not a
+    // scripted point). Release is now the SAME physics as every other phase:
+    // the always-on self-gravity (below, toward the real COM) pulls matter in,
+    // and the heavy release drag (baseFric = pow(0.95,dt), set above) bleeds
+    // orbital energy so the field spirals onto the hole over ~tens of seconds
+    // while KEEPING its angular momentum → a real inspiral into the disk.
     else {
         if (r_curr > 0.001f) {
-            float3 dir = pvec / r_curr;
-            // SEAMLESS HAND-OFF to silence. The old code yanked everything to a
-            // point at r=0 (and froze velocity), but the silence state wants an
-            // accretion DISK — so the 4→0 phase switch popped. Instead, ramp in
-            // the SAME forces the silence BH state uses (gravity G/(r+r0) +
-            // z-plane damping), scaled by release progress t. By t=1 the
-            // particles are already under silence-strength gravity, so entering
-            // silence is continuous: they get drawn into the BH, not snapped.
-            float G  = 100.0f;
-            float r0 = 0.1f;
-            float gMag = (G / (r_curr + r0)) * t; // ramp 0→full over the collapse
-            shiftVx -= dir.x * gMag * dt;
-            shiftVy -= dir.y * gMag * dt;
-            shiftVz -= dir.z * gMag * dt;
-
-            // Match silence's z-plane damping (ramped) so the disk flattens into
-            // place rather than popping flat at the switch.
-            shiftVz -= pz * (0.75f / max(u.diskThickness, 0.02f)) * t * dt;
-
-            // Gentle Kerr spiral for the spiral-in look (scaled with gravity).
-            float3 galacticUp = normalize(float3(0.2f, 1.0f, 0.3f));
-            float3 spinForce = cross(galacticUp, dir);
-            shiftVx += spinForce.x * gMag * 0.3f * dt;
-            shiftVy += spinForce.y * gMag * 0.3f * dt;
-            shiftVz += spinForce.z * gMag * 0.3f * dt;
-
+            // Gentle radiative cooling as the field collapses (kept — it is a
+            // temperature readout, not a force, so it can't kill orbits).
             currentTemp *= (1.0f - t * 0.05f);
         }
     }
@@ -604,6 +622,16 @@ kernel void compute_physics(
         }
     }
 
+    // playGate: 0 at rest → 1 in play. HARD regime (PLAY OVER EVERYTHING): the
+    // instant any note sounds, this snaps to 1 — so the entire BH simulation
+    // (self-gravity, seed-sink, capture, relaxation, mass-inertia) switches OFF
+    // and the velocity cap jumps to full cymatics speed. The old soft ramp
+    // (·4, saturating at amp 0.25) left play in a half-gated limbo: cap
+    // throttled below full speed ("too slow") + residual center pull. This
+    // restores the godray-stable play path (sculpt → cap, every particle an
+    // equal tracer, no BH). saturates at amp≈0.025 = any audible note.
+    float playGate = smoothstep(0.0f, 0.025f, u.totalAmplitude);
+
     // ── SEED SINK — mass segregation, the express lane ───────────────────────
     // A body 100-1000× the field-star mass sinks to the potential minimum on
     // a dynamical time (Chandrasekhar friction ∝ M — far beyond the resolved
@@ -612,7 +640,8 @@ kernel void compute_physics(
     // measured failure without it: seeds orbited just off the knot, their
     // capture sphere grazed its edge, Mmax froze at ~105 while thousands of
     // stars piled at origin. The seed parks at the centre; the disk spins
-    // around it.
+    // around it. OFF during play (×(1-playGate)) — this origin spring was the
+    // ball pinned dead-center while playing.
     if (mass >= M_BH_SEED && mass < 1e8f) {
         float3 toO = -float3(px, py, pz);
         float3 kick = toO * (0.3f * dt);
@@ -623,9 +652,10 @@ kernel void compute_physics(
         // the screen as a dotted beam (measured/screenshot). The hole
         // parks; it does not zip across the galaxy.
         float vdamp = min(2.5f * dt, 0.2f);
-        shiftVx += kick.x - vpx * vdamp;
-        shiftVy += kick.y - vpy * vdamp;
-        shiftVz += kick.z - vpz * vdamp;
+        float seedGate = 1.0f - playGate;            // OFF while playing
+        shiftVx += (kick.x - vpx * vdamp) * seedGate;
+        shiftVy += (kick.y - vpy * vdamp) * seedGate;
+        shiftVz += (kick.z - vpz * vdamp) * seedGate;
     }
 
     // ── BLACK-HOLE CAPTURE — victim-initiated accretion (step 3 v2) ──────────
@@ -634,6 +664,7 @@ kernel void compute_physics(
     // I add my exact mass to the seed's accumulator and die, this thread, no
     // races. Seeds themselves and walls don't get eaten.
     if (su.gridSize > 0 && mass > 0.001f && mass < M_BH_SEED &&
+        playGate < 0.5f &&                              // no BH accretion while playing
         !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) &&
         fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
         fabs(pz) < su.halfExtent) {
@@ -663,7 +694,21 @@ kernel void compute_physics(
                         // With tidal capture all the way up (capped 1.4 sim),
                         // the hole vacuumed its own disk region — "no disk,
                         // just a few particles around a black screen".
-                        float rs = mS * 2.327e-7f;   // Schwarzschild, sim units
+                        //
+                        // PROPORTION LOCK (2026-06-13 audit, step 1): the
+                        // on-screen shadow and the disk's inner edge must come
+                        // from ONE mass or they read as two layered bodies.
+                        // The lens shadow radius is 2.6·r_s(u.bhMass) — the
+                        // enclosure mass (renderer.mm). Drive the plunge r_s
+                        // off that SAME u.bhMass (not the seed's own mass mS),
+                        // so disk inner edge (3·r_s) and shadow (2.6·r_s) hug
+                        // at the fixed Gargantua ratio and track together as
+                        // the hole eats. Falls back to mS if the enclosure
+                        // readback hasn't caught the core yet.
+                        float mHole = max(u.bhMass, mS);
+                        // kRsSimPerMsun — KEEP IN SYNC with units.h (conservation
+                        // anchor 2026-06-13). Shaders can't include the header.
+                        float rs = mHole * 1.6825e-6f;  // Schwarzschild, sim units
                         float rc = max(3.0f * rs, 0.02f);
                         rt2 = rc * rc;
                     } else {
@@ -735,7 +780,18 @@ kernel void compute_physics(
             int gcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
             int gcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
             int gcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-            float softN = 4.0f * su.cellSize * su.cellSize;  // ε² ≈ (2·cell)²
+            // Plummer softening ε ≈ ONE cell (was 2·cell = over-softened,
+            // 2026-06-13 audit). ε²=(2cell)² heavily flattened gravity within
+            // ~2 sim of the core at rest extent (cellSize 1.0) → matter could
+            // not concentrate below ~2 sim, far above any r_s scale. ε≈cell is
+            // the standard N-body choice and lets the core densify tighter
+            // (denser disk, the science gets closer). NOTE: the true limiter to
+            // real geometric formation is grid RESOLUTION — cellSize 1.0 (±64
+            // grid) cannot resolve r_s≈0.04 sim; that needs near-core mesh
+            // refinement (AMR), an architectural change, not a constant. The
+            // GKICK_MAX cap below stays (it's needed in play extent where cells
+            // are tiny; at rest it doesn't bite).
+            float softN = 1.0f * su.cellSize * su.cellSize;  // ε² ≈ cell²
             for (int z = max(0, gcz - 1); z <= min(su.gridSize - 1, gcz + 1); z++) {
                 for (int y = max(0, gcy - 1); y <= min(su.gridSize - 1, gcy + 1); y++) {
                     for (int x = max(0, gcx - 1); x <= min(su.gridSize - 1, gcx + 1); x++) {
@@ -773,17 +829,21 @@ kernel void compute_physics(
         // plunge at ~38 sim/s through the soft core → slingshot heating →
         // the whole star map inflated 4× within seconds.
         //
-        // ACCELERATION BOUND: when play/release crushes all 2M stars into a
-        // few grid cells, per-cell masses hit ~10⁶ and the near-field force
-        // explodes the integrator (measured: post-note silence → exponential
-        // velocity growth → NaN positions). Bound the per-frame kick well
-        // below the softening scale so extreme density can't pump energy.
-        // Division-free per-component clamp. The norm-scale version
-        // (gkick *= MAX/len) manufactured NaN (inf · MAX/inf = NaN) and the
-        // COM reduce then spread it to every star — the all-black field.
-        // clamp() cannot create NaN from a finite/inf input.
-        const float GKICK_MAX = 0.005f;   // sim units/frame, ≪ ε
-        float3 gkick = clamp(gacc * (dt * dt), -GKICK_MAX, GKICK_MAX);
+        // PHYSICAL ACCELERATION BOUND (Phase A2, 2026-06-13 — fully physical).
+        // The old flat 0.005/frame clamp was a non-physical throttle on core
+        // gravity (it was there to stop the integrator exploding to NaN at
+        // extreme density). Now that finalV is capped at the speed of LIGHT,
+        // gravity is bounded by real physics instead: a single kick cannot push
+        // a particle past c in one step. Cap |gkick| at c·dt (the same physical
+        // limit), so strong core gravity drives a real RELATIVISTIC INFALL
+        // (matter falls at up to c) rather than creeping at a magic number.
+        // Plummer softening keeps gacc finite (d²+ε² > 0), so this can't make
+        // inf; the norm-scale is guarded by the finite check.
+        float3 gkick = gacc * (dt * dt);
+        float gkmag = length(gkick);
+        float gkmax = u.speedCap * dt;       // c·dt — the physical per-step limit
+        if (gkmag > gkmax && gkmag > 1e-12f) gkick *= (gkmax / gkmag);
+        gkick *= (1.0f - playGate);          // self-gravity OFF while playing (no center pull)
         shiftVx += gkick.x;
         shiftVy += gkick.y;
         shiftVz += gkick.z;
@@ -826,7 +886,16 @@ kernel void compute_physics(
                 // mean is a no-op for its only member). Per-cell momentum
                 // conserved exactly, as before — rotation survives, random
                 // motion thermalizes into the disk.
-                float relax = min(cnt * (1.0f / 128.0f), 1.0f) * (2.0f * dt);
+                // Rate raised 2→6 /s (2026-06-13 RETENTION fix): the radial
+                // infall free-falls into the core in ~0.14 s, but a 2/s rate
+                // e-folds in 0.5 s — so matter bounced back out before it was
+                // damped ("BH forms then vanishes"). 6/s (e-fold ~0.17 s ≈ the
+                // free-fall time) damps the radial infall AS it arrives, so the
+                // disk circularizes and BINDS at the core instead of bouncing.
+                // Still spin-preserving (tangential untouched) → a settling
+                // DISK, not a ball; still density-gated (cnt/128) → only the
+                // dense core dissipates fast, the diffuse halo orbits free.
+                float relax = min(cnt * (1.0f / 128.0f), 1.0f) * (6.0f * dt) * (1.0f - playGate); // accretion damping OFF while playing
                 // DYNAMICAL FRICTION / MASS SEGREGATION — the accretion
                 // accelerator. Chandrasekhar drag scales LINEARLY with the
                 // body's mass: a heavy body dumps its orbital energy into
@@ -849,7 +918,17 @@ kernel void compute_physics(
                 float rXYt = sqrt(px * px + pz * pz);
                 if (rXYt > 1e-4f) {
                     float3 tdir = float3(-pz, 0.0f, px) / rXYt; // orbit about +Y
-                    dvR -= tdir * dot(dvR, tdir);   // orbital part untouched
+                    dvR -= tdir * dot(dvR, tdir);   // orbital part untouched (disk, not ball)
+                    // (2026-06-13) An α-drag that DESTROYED angular momentum was
+                    // tried here and REVERTED (both 0.10 and 0.02): real
+                    // viscosity TRANSPORTS L (inner→outer), it doesn't delete it.
+                    // Deleting L drops matter below its centrifugal support →
+                    // radial plunge → bounce → "BH forms to ~30% then vanishes,
+                    // meanR explodes". The correct retention lever is faster
+                    // RADIAL dissipation (the rate below): the infall is damped
+                    // before it bounces, the disk circularizes and BINDS — no
+                    // plunge, no ball. True L-transport accretion is a future
+                    // step (cross-cell momentum exchange, not per-particle drag).
                 }
                 shiftVx += dvR.x * relax;
                 shiftVy += dvR.y * relax;
@@ -863,7 +942,13 @@ kernel void compute_physics(
     float3 lifecycleShiftP = float3(shiftX, shiftY, shiftZ);
 
     // Emitter Interactions (Macro forces)
-    float baseMass = (mass > 1000.0f) ? mass : 1.0f;
+    // PLAY OVER EVERYTHING: while a note sounds, EVERY particle is a weightless
+    // cymatics tracer — heavy seeds (the eaten/merged bodies) become mass-1 so
+    // they pass the sculpt guard below, feel the note's outward "puke" impulse
+    // AND the standing-wave sculpt like every other grain. No body is too heavy
+    // to be moved by the keys. At rest they keep their real mass → BH physics
+    // (gravity collides them into bodies only off-key). Jamal 2026-06-14.
+    float baseMass = (mass > 1000.0f && playGate < 0.5f) ? mass : 1.0f;
     float dynamicMass = baseMass;
 
     // Safety: Clamp voiceCount to prevent reading beyond buffer or into uninitialized memory
@@ -1073,6 +1158,11 @@ kernel void compute_physics(
     // eating through the note, and the Chladni pattern forms around it.
     if (mass > 0.001f && mass < 1e8f) {
         float invInertia = clamp(0.3f / max(mass, 0.05f), 0.0005f, 1.0f);
+        // PLAY OVER EVERYTHING: while playing, the keys hit EVERY particle at
+        // full strength regardless of mass (cymatics sand = massless tracers).
+        // The mass-resistance (heavy stars drifting free = stragglers) is BH
+        // physics; it belongs to rest, not play. → invInertia = 1 in play.
+        invInertia = mix(invInertia, 1.0f, playGate);
         shiftVx = preVoiceV.x + (shiftVx - preVoiceV.x) * invInertia;
         shiftVy = preVoiceV.y + (shiftVy - preVoiceV.y) * invInertia;
         shiftVz = preVoiceV.z + (shiftVz - preVoiceV.z) * invInertia;
@@ -1412,10 +1502,23 @@ kernel void compute_physics(
     // Combine proxy with force pulses
     float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
 
-    // Speed cap
+    // PHYSICAL LIGHT-SPEED CAP (Phase A1, 2026-06-13 — fully physical). Nothing
+    // moves faster than c. u.speedCap is now c in sim/(on-screen s); finalV is a
+    // per-frame DISPLACEMENT, so the per-frame limit is c·dt → the cap is
+    // frame-rate-correct (the old fixed 1.2/frame was ≈41c in honest units, the
+    // superluminal core the HUD exposed). Orbital motion (ISCO ≈0.41c) is below
+    // this and untouched; only the radial-plunge/play transients get clamped to c.
+    // REGIME-AWARE: at rest/infall the cap is c·dt (relativistic, correct). During
+    // high-amplitude PLAY the system is in the CYMATICS standing-wave regime
+    // (non-relativistic acoustic driving) — blend the cap up to CHLADNI_VCAP so
+    // the sculpt force reaches its tuned magnitude (fixes the 2026-06-13 c-cap
+    // regression that throttled the Chladni pattern ~41×). Same play gate the
+    // friction/jitter blends use (totalAmplitude·4, saturating at amp≈0.25).
+    // playGate declared once at the gravity-regime switch above; reused here.
+    float vCapFrame = mix(u.speedCap * dt, CHLADNI_VCAP, playGate);
     float speed = length(finalV);
-    if (speed > u.speedCap) {
-        finalV = (finalV / max(speed, 0.0001f)) * u.speedCap;
+    if (speed > vCapFrame) {
+        finalV = (finalV / max(speed, 0.0001f)) * vCapFrame;
     }
 
     // Jitter (UI slider — now wired). Per-particle Brownian shimmer added as a
@@ -2127,17 +2230,33 @@ kernel void reduce_stats(
             float px = particles[id].posW.x;
             float py = particles[id].posW.y;
             float pz = particles[id].posW.z;
-            float r_sim = sqrt(px*px + py*py + pz*pz);
-            // REAL orbital velocity as a fraction of c: v/c = sqrt(r_g/r), and
-            // 1 sim unit = 2 r_g ⇒ v/c = sqrt(0.5 / r_sim). Pure geometry from
-            // the Sgr A* anchor — the real Keplerian/Schwarzschild orbital speed
-            // at this radius (reactive: mean drops as the field expands on play).
-            speed = (r_sim > 1e-4f) ? min(0.999f, sqrt(0.5f / r_sim)) : 0.0f;
-            // REAL virial plasma temperature: T = μ·m_p·v²/(3·k_B), v = orbital
-            // speed. With v/c=sqrt(0.5/r_sim) it reduces to T[K] = 1.089e12/r_sim.
-            // (μ=0.6 ionized plasma, m_p=1.673e-27, k_B=1.381e-23, c²=8.988e16).
-            // The honest Sgr A* RIAF: ~10^11 K mean → ~10^12 K (quark-gluon) inner.
-            temp  = (r_sim > 1e-4f) ? (1.089e12f / r_sim) : 0.0f;
+            // MEASURED state (2026-06-13 audit — Jamal: "keep it real"). The
+            // old speed/temp were analytic functions of RADIUS (√(0.5/r),
+            // 1.089e12/r) — the IDEAL Keplerian value at that radius, NOT the
+            // star's actual motion. A star flung outward fast read as cold &
+            // slow. Now both derive from the star's REAL simulated velocity
+            // (velW = per-frame displacement; ×120 = sim/s on screen):
+            //   v/c : sim/s · kUnitMeters / (K_timelapse · c). Constant =
+            //         120·1.269e10/(400·2.998e8) ≈ 12.70 per per-frame unit.
+            //   T   : thermalized kT = μ·m_p·v²/(3·k_B), v in m/s, μ=0.6
+            //         ionized plasma → T[K] ≈ 3.51e14·|v_perframe|².
+            // NOTE: |v| can exceed c here — the sim does NOT yet cap velocity
+            // at c (speedCap=1.2/frame ≈ 15c). The superluminal readout is
+            // HONEST: it exposes the missing relativistic bound, whose real
+            // fix couples to the K=400 time-lapse (architectural — see audit).
+            float3 vlin = particles[id].velW.xyz;       // per-frame displacement
+            float vmag  = length(vlin);
+            // FRAME-RATE-CORRECT v/c (Phase A1): velW is displacement per FRAME
+            // (per u.dt, not a fixed 1/120), and the light cap is |v| ≤ u.speedCap
+            // (c in sim/s). So v/c = |velW| / (c·dt) = |velW|/(u.speedCap·u.dt) —
+            // uses the REAL dt, correct at any FPS, reads exactly 1.0 at the cap
+            // (the old 120-based ×34.14 over-reported as 40c at low FPS).
+            float cFrame = u.speedCap * max(u.dt, 1e-6f);   // c as a per-frame step
+            float vc     = vmag / max(cFrame, 1e-9f);       // v/c
+            speed = vc;
+            // Real thermalized plasma T: kT = μ·m_p·v²/3 → T[K] = (μ m_p c²/3k_B)·
+            // (v/c)² = 2.178e12·(v/c)² (μ=0.6 ionized H/He).
+            temp  = 2.178e12f * vc * vc;
             lpos  = float3(px, py, pz);
             real  = true;
         }

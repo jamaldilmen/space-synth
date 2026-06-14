@@ -3,14 +3,27 @@
 ## What This Is
 C++/Metal real-time Chladni pattern particle synthesizer. Millions of particles driven by Bessel function physics, responsive to keyboard/MIDI/voice input, with mod menu and Syphon output.
 
-## Build
-```bash
-mkdir build && cd build
-cmake .. && make -j$(sysctl -n hw.ncpu)
-./SpaceSynth
-```
+## Build  — 🚨 READ THIS, do not use bare `make`
+**`make` alone does NOT update the launchable `SpaceSynth.app`.** It only writes
+`build/SpaceSynth` + `build/default.metallib`. The app loads its binary + shaders
+from inside the bundle (`Contents/MacOS/` + `Contents/Resources/`), which are
+copied in ONLY by the packaging script. Bare `make` + relaunch = you test a STALE
+binary (this burned a full day on 2026-06-14).
 
-Requires macOS 13+, Xcode command line tools (for Metal compiler).
+```bash
+# Build AND deploy into the app bundle:
+bash package_macos.sh
+
+# VERIFY the deploy landed before testing (bundle artifacts must be >= source):
+stat -f "%Sm %N" SpaceSynth.app/Contents/MacOS/SpaceSynth \
+                 SpaceSynth.app/Contents/Resources/default.metallib \
+                 src/render/particles.metal
+
+# Then run:
+pkill -f SpaceSynth; open -n SpaceSynth.app
+```
+If a change "does nothing / same bug," SUSPECT A STALE BINARY FIRST — check the
+timestamps above before re-diagnosing. Requires macOS 13+, Xcode CLI tools.
 
 ## Project Structure
 - `src/core/` — Physics: Bessel functions, gradient LUT, mode table, particles, envelope

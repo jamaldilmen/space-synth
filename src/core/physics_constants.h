@@ -78,13 +78,21 @@ constexpr StellarClass MAIN_SEQUENCE[7] = {
 // dN/dM ∝ M^(-alpha). The unbiased population source (the catalog above is
 // planet-host biased → inverted, ~46% G vs reality ~8%; use IT for relations,
 // use THIS for how many of each). ~76% of stars end up M-dwarfs.
+//
+// ⚠ REFERENCE ONLY — NOT the live sampler (2026-06-13 audit note). The masses
+// the sim and render actually carry come from core/imf.h::massOfId, which is a
+// SINGLE α=2.3 slope over [0.08, 50] M☉ (mean ≈ 0.30 M☉), hashed per id so
+// physics (posW.w) and render (size/colour) agree. A proper 3-segment Kroupa
+// is more correct but would change every per-id mass → it must be edited in
+// BOTH imf.h AND render.metal's matching hash together (deferred; flagged). So
+// the conservation coupling is really M_BH ≈ N × 0.30 (not 0.5 below).
 struct ImfSegment { double m_lo, m_hi, alpha; };
 constexpr ImfSegment IMF_KROUPA[3] = {
     { 0.08, 0.50, 1.3 },   // low-mass
     { 0.50, 1.00, 2.3 },   // mid
     { 1.00, 150.0, 2.3 },  // high-mass (Salpeter slope)
 };
-constexpr double IMF_MEAN_MASS = 0.5;   // ≈ mass-weighted mean star [M☉] (for the conservation count)
+constexpr double IMF_MEAN_MASS = 0.30;  // live mean (imf.h single α=2.3 slope); reference only
 
 // ── UNIT ANCHOR + conservation coupling ─────────────────────────────────────
 // Conservation: M_black_hole = N_particles × mean_star_mass. Pick any two.

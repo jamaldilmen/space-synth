@@ -100,6 +100,7 @@ struct Renderer::Impl {
   // existence/strength derives from THIS, not from envelope phases.
   float bhPosX = 0.0f, bhPosY = 0.0f, bhPosZ = 0.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
+  float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
   bool bhFormedLatch = false; // once formed, stays formed (until reset)
@@ -658,7 +659,11 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
   impl_->physicsUniforms.plateRadius = 1.0f; // Normalized
   impl_->physicsUniforms.jitterFactor = jitterFactor;
-  impl_->physicsUniforms.speedCap = speedCap;
+  // FULLY PHYSICAL (Phase A1): the speed cap IS the speed of light, not a tuned
+  // value. Stored as sim/(on-screen s); the kernel caps |v| = |finalV|/dt at it
+  // so it's frame-rate-correct. (The UI 'speedCap'/'drive' still drives audio.)
+  (void)speedCap;
+  impl_->physicsUniforms.speedCap = (float)space::units::kCSimPerSec;
   impl_->physicsUniforms.frameCounter = impl_->frameCount++;
 
   // Noether symmetry breaking: detect voice config changes
@@ -771,10 +776,17 @@ void Renderer::render(const RenderConfig &config) {
     // that mismatch made the lens sphere and the physical disk read as two
     // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
     // the lens grows as the hole eats, always matching the disk it carved.
-    float bSim = 2.6f * 2.327e-7f * std::max(impl_->bhMassEnc, 0.0f) *
+    float bSim = 2.6f * (float)space::units::kRsSimPerMsun *
+                 std::max(impl_->bhSeedMass, 0.0f) *   // accreted BH mass (stable, monotonic)
                  config.shadowRadius;
+    // LENS OFF DURING PLAY: the BH gravitational lens warps the whole field
+    // toward screen-center (the "squeeze to the middle / eckig, not fluid"
+    // distortion + bright center dot). No hole while a note sounds → no lens.
+    // Returns at rest. The center pull was a RENDER lens, not a physics force
+    // (the log showed 99.9% of mass is OUT of the core during play). Jamal 2026-06-14.
+    bool bhLensActive = (impl_->physicsUniforms.totalAmplitude < 0.02f);
     cam.bhShadowNdcRadius =
-        (config.orthoMode && frustum > 1e-4f)
+        (config.orthoMode && frustum > 1e-4f && bhLensActive)
             ? bSim * config.plateRadius / frustum
             : 0.0f;
     cam.aspect = aspect;
@@ -877,10 +889,12 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // that mismatch made the lens sphere and the physical disk read as two
     // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
     // the lens grows as the hole eats, always matching the disk it carved.
-    float bSim = 2.6f * 2.327e-7f * std::max(impl_->bhMassEnc, 0.0f) *
+    float bSim = 2.6f * (float)space::units::kRsSimPerMsun *
+                 std::max(impl_->bhSeedMass, 0.0f) *   // accreted BH mass (stable, monotonic)
                  config.shadowRadius;
+    bool bhLensActive = (impl_->physicsUniforms.totalAmplitude < 0.02f); // lens OFF during play
     cam.bhShadowNdcRadius =
-        (config.orthoMode && frustum > 1e-4f)
+        (config.orthoMode && frustum > 1e-4f && bhLensActive)
             ? bSim * config.plateRadius / frustum
             : 0.0f;
     cam.aspect = (float)impl_->width / (float)impl_->height;
@@ -1163,7 +1177,11 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       static int sLastMergeCount = -1;
       bool countStable = (sLastMergeCount == particleCount);
       sLastMergeCount = particleCount;
-      if (mergeStarsPipeline && countStable) {
+      // NO BUILDING DURING PLAY: while any note sounds, the mass-growth pipeline
+      // (mergers + seed feeding) is OFF — no eating, no new bodies. Pure
+      // cymatics. The BH only grows at rest/silence. (Jamal, 2026-06-14.)
+      bool notPlaying = (physicsUniforms.totalAmplitude < 0.02f);
+      if (mergeStarsPipeline && countStable && notPlaying) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:mergeStarsPipeline];
         [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1183,7 +1201,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // Phase 8: SEED MARK — write each registered seed's cell into the
       // victim-lookup map. The eating itself is victim-initiated inside
       // compute_physics; seed_apply credits the meals after it.
-      if (seedMarkPipeline && countStable) {
+      if (seedMarkPipeline && countStable && notPlaying) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:seedMarkPipeline];
         [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1245,7 +1263,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Seed apply: credit each black hole its meals (after physics) ──
-    if (seedApplyPipeline && seedAccumBuffer) {
+    if (seedApplyPipeline && seedAccumBuffer &&
+        physicsUniforms.totalAmplitude < 0.02f) {  // no meal-crediting while playing
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:seedApplyPipeline];
       [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1349,18 +1368,35 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         } else {
           bhMassEnc = 0.0f;
         }
-        // COLLAPSE FRACTION criterion (the conservation model: the field
-        // collapsed IS the black hole — M_BH = the field's mass budget).
-        // The old absolute geometric gate r_s(Menc) ≥ R_ENC needed 1.9e6
-        // M_sun in the core sphere; a 2M-star IMF field only HAS 594k —
-        // the proven raytracer hole could physically never turn on.
-        // Strength = how much of the WHOLE field's mass has gathered in
-        // the core sphere: 1.0 (full shadow) at kCollapseFrac of total.
-        // N- and IMF-independent: every field can complete its collapse.
-        const float kCollapseFrac = std::max(collapseFrac, 0.02f);
-        float target = (float)(bhMassEnc /
-                               (kCollapseFrac *
-                                std::max(physicsUniforms.massTotal, 1.0f)));
+        // REAL GEOMETRIC SCHWARZSCHILD CRITERION (2026-06-13 audit — Jamal:
+        // "keep it real"). A region IS a black hole only when its mass is
+        // crushed inside its own Schwarzschild radius: r_s(M_enc) ≥ R_enc
+        // (the physics canon, the same geometric rule everywhere). strength =
+        // r_s(M_enc)/R_ENC, = 1 exactly at the true horizon. NO fraction
+        // cheat (the old Menc/(0.25·Mtot) declared "formed" at 25% gathered
+        // regardless of whether light could escape — that was the lie behind
+        // "says formed but isn't").
+        //   r_s(M)[sim] = kRsSimPerMsun·M  (units.h, ≈2.327e-7 per M_sun);
+        //   R_ENC = 0.5 sim (the enclosure-measurement radius).
+        // HONEST CONSEQUENCE at the current scale: 164k M_sun in R_ENC gives
+        // strength ≈ 0.08 ≪ 1 → no hole. The science telling the truth — a
+        // 594k-M_sun field is a dense cluster, not a Gargantua. A real
+        // visible hole needs the mass crushed to the r_s scale (resolution,
+        // see the gravity-softening floor) AND more mass (more particles).
+        const float kRsSimPerMsun = (float)space::units::kRsSimPerMsun; // single source
+        const float kREnc = (float)space::units::kREnc;
+        // The hole's mass is the ACCRETED SEED (the biggest body) — the matter
+        // actually SWALLOWED, which is conserved and only grows (2026-06-13).
+        // The enclosure mass (bhMassEnc) is transient orbiting disk: it sloshes
+        // as the disk moves, so basing the hole on it made the hole "form then
+        // vanish". The seed IS the black hole (conservation model); r_s(M_seed)
+        // is its real horizon, monotonic → the hole forms and STAYS, growing as
+        // it eats. Use the seed ALONE (not max'd with the enclosure — that
+        // would re-import the slosh); gMaxMass only grows via eating, so the
+        // signal is monotonic and never flickers.
+        bhSeedMass = gMaxMass;
+        float target = (float)(kRsSimPerMsun * bhSeedMass / kREnc);
+        (void)collapseFrac;                      // UI dial now unused by formation
         // SMOOTH + LATCH: the raw enclosure signal wobbles with disk slosh
         // and made the raytracer flicker on/off ("seconds of black hole
         // greatness"). Ease toward it; once FORMED, a black hole stays a
@@ -1515,9 +1551,14 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc setVertexBuffer:particleBuffer
                 offset:0
                atIndex:2]; // Random-access for Webbing
+  // instanceCount:2 — instance 0 = primary image, instance 1 = the SECONDARY
+  // lensed image (the Gargantua fold-over; particle_vertex reads instance_id).
+  // The secondary is culled in-shader (pointSize 0) wherever there's no hole or
+  // it's demagnified, so it adds fragment work only for the near-hole fold arcs.
   [enc drawPrimitives:MTLPrimitiveTypePoint
           vertexStart:0
-          vertexCount:particleCount];
+          vertexCount:particleCount
+        instanceCount:2];
 
   // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
   // Only encoded when oscillation (spin) is active; the vertex shader also

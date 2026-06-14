@@ -201,12 +201,25 @@ constant float STREAK_GAIN     = 3.0f;  // screen-space streak amplification (lo
 
 vertex VertexOut particle_vertex(
     uint vid [[vertex_id]],
+    uint iid [[instance_id]],
     device const Particle* particlesIn [[buffer(0)]],
     constant CameraUniforms& cam [[buffer(1)]],
     device const Particle* particlesRef [[buffer(2)]])
 {
     VertexOut out;
     Particle in = particlesIn[vid];
+    // SECONDARY LENSED IMAGE (2026-06-13, Jamal: "secondary lensing, stick to
+    // the science"). The point-mass lens has TWO solutions: the primary image
+    // θ₊ (outside the Einstein ring, the current bend) and the SECONDARY θ₋
+    // (opposite side, inside the ring) — the fold-over arc that makes Gargantua
+    // read as ONE body. Instance 0 = primary, instance 1 = secondary. The
+    // secondary is the same particle's light, drawn at θ₋ and dimmed by its real
+    // relative magnification μ₋/μ₊ (→1 at the ring, →0 far out), so only
+    // near-hole matter shows a fold. No second layer, no billboard — the same
+    // particles, where curved spacetime puts their second image.
+    bool isSecondary = (iid == 1u);
+    float imageWeight = 1.0f;   // primary = full brightness
+    bool  cullThis    = false;  // secondary culled where no 2nd image exists
     float R = cam.plateRadius;
     float mass = in.posW.w;
 
@@ -284,7 +297,10 @@ vertex VertexOut particle_vertex(
     // full deflection as r_s(M_enc) approaches the enclosure radius. The
     // envelope phase no longer gates this: mass does.
     float lensRamp = smoothstep(0.2f, 0.9f, cam.bhStrength);
-    if (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f) {
+    bool lensActive = (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f);
+    // No hole (no lens, or perspective) → the secondary image doesn't exist.
+    if (isSecondary && !lensActive) cullThis = true;
+    if (lensActive) {
         float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
         if (bhClip.w > 0.001f && out.position.w > 0.001f) {
             float2 ndcP  = out.position.xy / out.position.w;
@@ -295,27 +311,46 @@ vertex VertexOut particle_vertex(
             float2 d = (ndcP - ndcBH);
             d.x *= asp;
             float beta = length(d);
-            if (beta > 1e-5f) {
+            // DEPTH-AWARE LENSING (Phase D1, 2026-06-13 — Jamal's flaw #1: "the
+            // BH is a 2D layer, not in the room"). Light is only gravitationally
+            // bent if it passes BEHIND the hole. A particle in FRONT of the BH
+            // (nearer the camera than the origin) is NOT lensed — it renders at
+            // its true 3D position and OCCLUDES the shadow. So the hole sits
+            // inside the scene with matter correctly in front of / behind it,
+            // instead of the lens always painting a flat disc over everything.
+            float3 viewDir = normalize(-cam.cameraPos.xyz);   // camera → origin/BH
+            bool behindBH = dot(worldPos, viewDir) > 0.0f;    // farther than the BH
+            if (isSecondary && !behindBH) cullThis = true;    // front matter casts no 2nd image
+            if (beta > 1e-5f && behindBH) {
                 float thetaE = cam.bhShadowNdcRadius;
-                float thetaFull = 0.5f * (beta + sqrt(beta * beta + 4.0f * thetaE * thetaE));
-                // GENTLE lens. The full lens equation (and especially the old
-                // tanh soft-cap) collapsed every particle onto the θ_E ring,
-                // so the disk flattened into the same circle from every camera
-                // angle — the side view stopped looking 3D. Blending only
-                // partway toward the lensed image keeps the disk at its real
-                // radius (3D preserved, rotates correctly) while still pulling
-                // the inner material toward a photon-ring brightening at the
-                // shadow edge. Cheap too — no per-particle tanh across 5M.
-                // Near-full bend: with the shadow billboard deleted, the
-                // lens IS the black hole — light wraps to the Einstein ring
-                // and the centre empties by bending alone ("the bending of
-                // spacetime" made visible, one entity by construction).
-                float theta = mix(beta, thetaFull, cam.tuneLens * lensRamp);
-                float2 lensed = (d / beta) * theta; // image offset, isotropic
-                lensed.x /= asp;                    // back to raw NDC
-                float2 lensedP = ndcBH + lensed;
-                out.position.xy = lensedP * out.position.w;
+                float disc   = sqrt(beta * beta + 4.0f * thetaE * thetaE);
+                if (!isSecondary) {
+                    // PRIMARY image θ₊ = ½(β+√(β²+4θ_E²)), outside the ring.
+                    // Gentle blend keeps the disk's real 3D radius while pulling
+                    // inner material toward the photon-ring brightening.
+                    float thetaPlus = 0.5f * (beta + disc);
+                    float theta = mix(beta, thetaPlus, cam.tuneLens * lensRamp);
+                    float2 lensed = (d / beta) * theta;
+                    lensed.x /= asp;
+                    out.position.xy = (ndcBH + lensed) * out.position.w;
+                } else {
+                    // SECONDARY image θ₋ = ½(β−√(β²+4θ_E²)) < 0 → opposite side,
+                    // inside the ring: the fold-over arc. Brightness = the real
+                    // relative magnification μ₋/μ₊ (→1 at ring, →0 far), faded
+                    // in by lensRamp — the honest faintness of the 2nd image.
+                    float thetaMinus = 0.5f * (beta - disc);          // negative
+                    float2 lensed = (d / beta) * (thetaMinus * lensRamp);
+                    lensed.x /= asp;
+                    out.position.xy = (ndcBH + lensed) * out.position.w;
+                    float u = beta / max(thetaE, 1e-5f);
+                    float A = (u * u + 2.0f) / (u * sqrt(u * u + 4.0f));
+                    imageWeight = lensRamp * clamp((A - 1.0f) / (A + 1.0f), 0.0f, 1.0f);
+                }
+            } else if (isSecondary) {
+                cullThis = true;   // front / degenerate: no second image
             }
+        } else if (isSecondary) {
+            cullThis = true;
         }
     }
 
@@ -443,6 +478,20 @@ vertex VertexOut particle_vertex(
             out.luminance *= pow(beam, DOPPLER_EXP);
         }
     }
+
+    // ── SECONDARY-IMAGE finalization ─────────────────────────────────────────
+    // Apply the second image's real (faint) magnification to its brightness, and
+    // CULL it where there's no second image (no hole) or it's demagnified to
+    // nothing — so the secondary pass adds only the near-hole fold-over arcs and
+    // costs no fragment work elsewhere. Streaks are zeroed (the mirror image's
+    // screen-velocity isn't the particle's real motion → would smear wrong).
+    if (isSecondary) {
+        out.luminance *= imageWeight;
+        out.velDir2D = float2(0.0f);
+        out.strDir2D = float2(0.0f);
+        if (cullThis || imageWeight < 0.02f) out.pointSize = 0.0f;
+    }
+
     // Gravitational redshift T_obs = T·√(1 − r_h/r): inner edge reddens. Kept
     // MILD (blended mostly toward 1) — at full strength it halved the kelvin at
     // the inner edge and cancelled the Doppler BLUE exactly where it should be

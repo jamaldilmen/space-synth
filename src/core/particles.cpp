@@ -60,7 +60,20 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     const float kDt = 1.0f / 120.0f;
     float r3 = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
     float lxz = std::sqrt(p.x * p.x + p.z * p.z);
-    float vmag = std::sqrt(kGM / std::max(r3, 0.5f)) * kDt;
+    // ENCLOSED-MASS circular velocity (2026-06-13 audit, step 3). The old
+    // v=√(GM_total/r) treated ALL the field mass as interior to every star —
+    // true only for a point mass. The spawn is a uniform BOX, so the mass
+    // actually inside radius r is ≈ M_total·(r/R)³. Using the full mass made
+    // the inner stars (where enclosed mass ≈ 0) hugely over-sped → they flew
+    // outward and the whole map slowly drifted/heated outward at rest (the
+    // leak the rest friction was masking; measured: meanR climbing with
+    // amp=0). Correct law: v ∝ r inside the cluster (solid-body rotation of a
+    // bound cluster), Keplerian only in the sparse tail outside it. Continuous
+    // at r=R (both give √(GM/R) there).
+    const float Rc = boxL;                       // cluster scale (box half-extent)
+    float vmag = (r3 < Rc)
+                   ? r3 * std::sqrt(kGM / (Rc * Rc * Rc)) * kDt   // enclosed ∝ r³
+                   : std::sqrt(kGM / std::max(r3, 0.5f)) * kDt;   // Keplerian tail
     if (lxz > 1e-4f) {
       p.vx =  vmag * p.z / lxz;
       p.vy =  0.0f;

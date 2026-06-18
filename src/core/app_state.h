@@ -104,6 +104,7 @@ struct AppState {
   float uiTrailGain = 1.0f;    // trail brightness x
   float uiStreakLen = 1.0f;    // motion streak length x
   float uiColorTempK = 27000.0f; // colour spectrum: |v|²→Kelvin gain (live tune)
+  float uiHeatGain = 3000.0f;    // thermal heat→Kelvin gain (live tune; lower = less white)
   float uiCollapseFrac = 0.25f;// %% of field in core = hole formed
 };
 

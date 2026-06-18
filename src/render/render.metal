@@ -35,6 +35,7 @@ struct CameraUniforms {
     float tuneTrailGain;     // arc brightness multiplier (UI dial)
     float tuneStreakLen;     // motion-streak length multiplier (UI dial)
     float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (UI dial, was pad)
+    float tuneHeatK;         // thermal heat→Kelvin gain (UI dial): low = warm/red, high = white plasma
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -531,7 +532,7 @@ vertex VertexOut particle_vertex(
         //   • × Doppler colour shift × gravitational redshift (real observed-T)
         float rSim   = length(in.posW.xyz);
         float diskK  = ssDiskTempShape(rSim, BH_R_IN_SIM) * DISK_T_STAR_K;
-        float heatK  = clamp(temp, 0.0f, 5.0f) * HEAT_K_PER_T;
+        float heatK  = clamp(temp, 0.0f, 5.0f) * cam.tuneHeatK;
         float ke     = dot(in.velW.xyz, in.velW.xyz);       // |v|² ∝ kinetic temperature
         float kelvin = clamp((diskK + heatK + ke * cam.tuneColorK)
                              * dopplerColor * gravShift, 1000.0f, 40000.0f);

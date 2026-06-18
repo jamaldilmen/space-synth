@@ -145,6 +145,12 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/syphon/Syphon.framework")
         "${CMAKE_SOURCE_DIR}/third_party/syphon/Syphon.framework"
     )
     target_compile_definitions(${PROJECT_NAME} PRIVATE HAS_SYPHON=1)
+    # Framework is embedded in the .app's Contents/Frameworks by package_macos.sh;
+    # resolve its @rpath install name from there at runtime.
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "@executable_path/../Frameworks")
+    message(STATUS "Syphon: ENABLED (HAS_SYPHON=1)")
 endif()
 
 # ── Copy metallib to build dir ──────────────────────────────────────────────

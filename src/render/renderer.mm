@@ -8,6 +8,9 @@
 #import <MetalKit/MetalKit.h>
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#if HAS_SYPHON
+#import <Syphon/SyphonMetalServer.h>
+#endif
 #include <algorithm>
 #include <cstring>
 #include <simd/simd.h>
@@ -20,6 +23,10 @@ struct Renderer::Impl {
   id<MTLDevice> device;
   id<MTLCommandQueue> commandQueue;        // For rendering
   id<MTLCommandQueue> computeCommandQueue; // For async physics
+#if HAS_SYPHON
+  SyphonMetalServer *syphonServer = nil;   // live video out (Resolume/Arena etc.)
+  id<MTLTexture> syphonTexture = nil;      // dedicated SDR-tonemapped feed (vibrant in SDR)
+#endif
   id<MTLEvent> frameEvent;                 // Synchronization fence
   uint64_t frameEventValue;                // Fence ticket
 
@@ -135,6 +142,9 @@ struct Renderer::Impl {
   id<MTLBuffer> uniformBuffer[kMaxInFlightFrames];
   id<MTLBuffer> cameraBuffer[kMaxInFlightFrames];
   id<MTLBuffer> postUniformBuffer[kMaxInFlightFrames];
+#if HAS_SYPHON
+  id<MTLBuffer> postUniformSyphonBuffer[kMaxInFlightFrames]; // SDR uniform (headroom=1)
+#endif
 
   id<MTLDepthStencilState> depthState = nil;
   id<MTLDepthStencilState> bgDepthState = nil;
@@ -198,6 +208,11 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
 
   impl_->commandQueue = [impl_->device newCommandQueue];
   impl_->computeCommandQueue = [impl_->device newCommandQueue];
+#if HAS_SYPHON
+  impl_->syphonServer = [[SyphonMetalServer alloc] initWithName:@"Main"
+                                                         device:impl_->device
+                                                        options:nil];
+#endif
   impl_->frameEvent = [impl_->device newEvent];
   impl_->frameEventValue = 0;
 
@@ -499,6 +514,11 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     impl_->postUniformBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
                                    options:MTLResourceStorageModeShared];
+#if HAS_SYPHON
+    impl_->postUniformSyphonBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
+                                   options:MTLResourceStorageModeShared];
+#endif
   }
 
   // Use layer's drawableSize directly to ensure sync with window backing
@@ -805,6 +825,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.tuneTrailGain = config.trailGain;
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
+  cam.tuneHeatK = config.heatGain;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -914,6 +935,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.tuneTrailGain = config.trailGain;
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
+  cam.tuneHeatK = config.heatGain;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -1827,18 +1849,61 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
                 vertexStart:0
                 vertexCount:3];
   }
+  [postEnc endEncoding];   // end BEFORE the UI — keep the render clean
 
-  // Watermark removed for screen recording (was tiled DVD-bounce @jamaldimen overlay).
+#if HAS_SYPHON
+  // ── Dedicated SDR Syphon pass ───────────────────────────────────────────
+  // The screen drawable is EDR (values >1.0 → vibrant on the HDR panel), but
+  // Resolume/Arena are SDR and clamp >1.0 to flat white. Re-run the SAME
+  // hue-preserving tonemap with the headroom forced to 1.0, so it compresses
+  // into [0,1] keeping COLOUR at brightness (vibrant SDR, not blown white) and
+  // computes the alpha key. Publish THIS, not the EDR drawable. Reads the same
+  // last-frame prevFrameTexture as the screen pass → run BEFORE the blit below.
+  if (syphonTexture && postPipeline) {
+    PostFXUniforms postSdr = post;
+    postSdr.edrHeadroom = 1.0f;            // SDR: no headroom above white
+    memcpy(postUniformSyphonBuffer[frameIdx].contents, &postSdr, sizeof(postSdr));
+    MTLRenderPassDescriptor *syPass = [MTLRenderPassDescriptor renderPassDescriptor];
+    syPass.colorAttachments[0].texture = syphonTexture;
+    syPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    syPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> syEnc =
+        [cmdBuf renderCommandEncoderWithDescriptor:syPass];
+    [syEnc setRenderPipelineState:postPipeline];
+    [syEnc setFragmentTexture:postSource atIndex:0];
+    [syEnc setFragmentTexture:prevFrameTexture atIndex:1];
+    [syEnc setFragmentTexture:bloomTexture atIndex:2];
+    [syEnc setFragmentBuffer:postUniformSyphonBuffer[frameIdx] offset:0 atIndex:0];
+    [syEnc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [syEnc endEncoding];
+  }
+#endif
 
-  ImGui::Render();
-  ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, postEnc);
-
-  [postEnc endEncoding];
-
-  // ── Copy result to prevFrameTexture for trails ────────────────────
+  // ── Copy the CLEAN render (no UI) to prevFrameTexture for trails ───
   id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
   [blit copyFromTexture:drawable.texture toTexture:prevFrameTexture];
   [blit endEncoding];
+
+#if HAS_SYPHON
+  // Publish the dedicated SDR feed (vibrant, alpha-keyed, no UI) to Syphon.
+  if (syphonServer && syphonTexture) {
+    [syphonServer publishFrameTexture:syphonTexture
+                      onCommandBuffer:cmdBuf
+                          imageRegion:NSMakeRect(0, 0, width, height)
+                              flipped:YES];  // plain render target is top-left origin
+  }
+#endif
+
+  // ── UI pass: draw the ImGui menu OVER the clean render (on-screen only) ──
+  MTLRenderPassDescriptor *uiPass = [MTLRenderPassDescriptor renderPassDescriptor];
+  uiPass.colorAttachments[0].texture = drawable.texture;
+  uiPass.colorAttachments[0].loadAction = MTLLoadActionLoad;   // keep the render
+  uiPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> uiEnc =
+      [cmdBuf renderCommandEncoderWithDescriptor:uiPass];
+  ImGui::Render();
+  ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, uiEnc);
+  [uiEnc endEncoding];
 
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
@@ -1893,6 +1958,11 @@ void Renderer::resize(int width, int height) {
   hdrDesc.storageMode = MTLStorageModePrivate;
   hdrDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
+#if HAS_SYPHON
+  // Dedicated SDR-tonemapped texture for the Syphon feed (same format, separate
+  // target so the screen stays EDR while the feed is vibrant-SDR).
+  impl_->syphonTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
+#endif
 
   // Ping-pong HDR pool (two reused buffers for multi-pass effects)
   impl_->pingTexture[0] = [impl_->device newTextureWithDescriptor:hdrDesc];

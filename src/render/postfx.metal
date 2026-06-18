@@ -339,7 +339,14 @@ fragment float4 postfx_fragment(
     float dn2 = fract(sin(dot(dpx, float2(39.3468, 11.135))) * 24634.6345);
     color.rgb += (dn1 + dn2 - 1.0) / 255.0;
 
-    return color;
+    // ── SYPHON ALPHA OUT ────────────────────────────────────────────────────
+    // Everything that isn't black becomes opaque; pure black → transparent. The
+    // RGB is already premultiplied (glow on a black background = 0,0,0), so the
+    // feed keys cleanly as a layer in Resolume/Arena. The on-screen CAMetalLayer
+    // is opaque, so writing alpha here does NOT affect the app window — only the
+    // published Syphon texture carries the coverage. (Opaque-black toggle next.)
+    float outA = clamp(dot(color.rgb, float3(0.299f, 0.587f, 0.114f)), 0.0f, 1.0f);
+    return float4(color.rgb, outA);
 }
 
 // ── Separable Gaussian blur (ping-pong multi-pass building block) ───────────

@@ -27,6 +27,13 @@ strip -x "${MACOS_DIR}/SpaceSynth"
 
 cp build/default.metallib "${RESOURCES_DIR}/"
 cp -r presets "${RESOURCES_DIR}/"
+
+# Embed Syphon.framework (if present) so the @rpath/Syphon load resolves.
+if [ -d third_party/syphon/Syphon.framework ]; then
+  echo "🔌 Embedding Syphon.framework..."
+  mkdir -p "${CONTENTS_DIR}/Frameworks"
+  ditto third_party/syphon/Syphon.framework "${CONTENTS_DIR}/Frameworks/Syphon.framework"
+fi
 mkdir -p "${RESOURCES_DIR}/fonts"
 cp third_party/imgui/misc/fonts/Roboto-Medium.ttf "${RESOURCES_DIR}/fonts/"
 # cp src/ui/fonts/*.ttf "${RESOURCES_DIR}/"

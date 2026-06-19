@@ -1161,8 +1161,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
-      // Phase 5: per-cell centroids (the local mass centre, for O(N) cohesion)
-      if (centroidPipeline && cellCentroidsBuffer) {
+      // Phase 5: per-cell centroids (the local mass centre, for O(N) cohesion).
+      // SKIP during play: its outputs (cellCentroids, cellVelocities) are read
+      // ONLY by self-gravity, relaxation and pressure — all gated off during
+      // play — so during play this builds 2.1M-cell aggregates that nothing
+      // reads. Pure wasted compute every play frame. (No feature lost: unused
+      // during play; runs normally at rest where the BH physics needs it.)
+      if (centroidPipeline && cellCentroidsBuffer &&
+          physicsUniforms.totalAmplitude < 0.02f) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:centroidPipeline];
         [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:0];
@@ -1575,14 +1581,18 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc setVertexBuffer:particleBuffer
                 offset:0
                atIndex:2]; // Random-access for Webbing
-  // instanceCount:2 — instance 0 = primary image, instance 1 = the SECONDARY
-  // lensed image (the Gargantua fold-over; particle_vertex reads instance_id).
-  // The secondary is culled in-shader (pointSize 0) wherever there's no hole or
-  // it's demagnified, so it adds fragment work only for the near-hole fold arcs.
+  // instanceCount — instance 0 = primary image, instance 1 = the SECONDARY
+  // lensed image (the Gargantua fold-over). The secondary only EXISTS when a
+  // hole is lensing; with no hole it was culled in-shader to pointSize 0 — but
+  // the heavy vertex shader (lensing + Doppler + blackbody + streak + webbing
+  // partner read) STILL RAN for all 2×N particles, doubling the most expensive
+  // pass in the app every frame for nothing. Only instance the secondary when a
+  // hole is actually present → no-hole (play/rest) runs 1×, halving the pass.
+  NSUInteger particleInstances = (bhStrength > 0.5f) ? 2u : 1u;
   [enc drawPrimitives:MTLPrimitiveTypePoint
           vertexStart:0
           vertexCount:particleCount
-        instanceCount:2];
+        instanceCount:particleInstances];
 
   // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
   // Only encoded when oscillation (spin) is active; the vertex shader also
@@ -1601,9 +1611,15 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [enc setDepthStencilState:depthState];
     [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
     [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    // ARC LOD BUDGET: every particle drawing a 22-vertex ribbon makes this pass
+    // cost 22×particleCount line-vertices — unbounded with count (the 5M-easy →
+    // 2M-fighting regression). Cap the arc-drawing particles to a fixed budget;
+    // the field is dense enough that this many arcs still read as continuous
+    // spacetime flow, but the cost stops scaling. (2026-06-18)
+    int arcParticles = std::min(particleCount, 1500000);
     [enc drawPrimitives:MTLPrimitiveTypeLine
             vertexStart:0
-            vertexCount:(NSUInteger)particleCount * 22];
+            vertexCount:(NSUInteger)arcParticles * 22];
   }
 
   // 3. Black-hole shadow + lens — LAST: the hole occludes the matter.

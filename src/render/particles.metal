@@ -762,7 +762,9 @@ kernel void compute_physics(
     // the Sgr A* anchor (units.h). Plummer ε² softening for numerics only.
     // MUST run BEFORE the lifecycle capture below — the silence-immunity
     // restore wipes everything after it, and gravity must act at rest.
-    if (mass > 0.001f && mass < 1e8f && u.gravGM > 0.0f) {  // incl. BH seeds
+    if (mass > 0.001f && mass < 1e8f && u.gravGM > 0.0f &&
+        playGate < 0.5f) {  // incl. BH seeds; SKIP the whole near-field scan while
+                            // playing (was running + zeroing the result = wasted compute)
         float Mtot = max(u.massTotal, 1.0f);
         float G1   = u.gravGM / Mtot;            // GM of ONE solar mass
         float3 gpos = float3(px, py, pz);
@@ -862,6 +864,7 @@ kernel void compute_physics(
     // not a render aesthetic. Sparse regions (< ~16/cell) feel nothing.
     // Must sit BEFORE the lifecycle capture so it acts at rest.
     if (mass > 0.001f && mass < 1e8f && su.gridSize > 0 &&  // incl. BH seeds
+        playGate < 0.5f &&  // SKIP the accretion-relaxation cell scan while playing
         !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) && // attack: hash stale
         fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
         fabs(pz) < su.halfExtent) {
@@ -1182,7 +1185,9 @@ kernel void compute_physics(
     // (Schwarzschild gravity replaced by ADSR lifecycle above)
 
     // ── Particle-Particle Collisions (spatial hash neighbor scan) ─────
-    if (u.collisionsOn > 0 && su.gridSize > 0) {
+    // SKIP during play: play is pure cymatics (keys only), and this 27-cell scan
+    // explodes on the dense Chladni pattern — wasted compute. Off-key only.
+    if (u.collisionsOn > 0 && su.gridSize > 0 && playGate < 0.5f) {
         int cellX = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int cellY = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int cellZ = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
@@ -1398,7 +1403,9 @@ kernel void compute_physics(
     // density IS the state. Grid-based (reads precomputed cell centroids, no
     // pairwise loop) → bounded, can't hit the collision wall → safe to be
     // always-on (the replacement for optional pairwise collisions).
-    if (su.gridSize > 0) {
+    // SKIP during play: it fights the Chladni pattern (pushes particles OUT of
+    // the dense nodes) and the O(N·27) scan is expensive on the packed pattern.
+    if (su.gridSize > 0 && playGate < 0.5f) {
         int pcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int pcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int pcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);

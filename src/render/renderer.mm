@@ -188,6 +188,12 @@ struct Renderer::Impl {
   float lastComputeMs = 0;
   float lastRenderMs = 0;
   int profileFrameCount = 0;
+  // Per-window aggregation (steady-state vs spikes — one instantaneous sample
+  // every 120f was lying about the cost; the 25ms reads were just whichever
+  // frame coincided with a debug-readback stall).
+  float profCompSum = 0, profCompMax = 0, profCompMin = 1e9f;
+  float profRendSum = 0, profRendMax = 0, profRendMin = 1e9f;
+  float profTotMax = 0;
 
   void runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx);
   void renderWithCamera(id<CAMetalDrawable> drawable,
@@ -871,11 +877,23 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     dispatch_semaphore_signal(block_sema);
     double gpuMs = (buffer.GPUEndTime - buffer.GPUStartTime) * 1000.0;
     impl_ptr->lastRenderMs = (float)gpuMs;
+    float c = impl_ptr->lastComputeMs, r = impl_ptr->lastRenderMs, t = c + r;
+    impl_ptr->profCompSum += c;  impl_ptr->profRendSum += r;
+    impl_ptr->profCompMax = fmaxf(impl_ptr->profCompMax, c);
+    impl_ptr->profRendMax = fmaxf(impl_ptr->profRendMax, r);
+    impl_ptr->profCompMin = fminf(impl_ptr->profCompMin, c);
+    impl_ptr->profRendMin = fminf(impl_ptr->profRendMin, r);
+    impl_ptr->profTotMax  = fmaxf(impl_ptr->profTotMax, t);
     impl_ptr->profileFrameCount++;
     if (impl_ptr->profileFrameCount % 120 == 0) {
-      printf("[PROFILE] Compute: %.2fms | Render+PostFX: %.2fms | Total GPU: %.2fms\n",
-             impl_ptr->lastComputeMs, impl_ptr->lastRenderMs,
-             impl_ptr->lastComputeMs + impl_ptr->lastRenderMs);
+      const float inv = 1.0f / 120.0f;
+      printf("[PROFILE/120f] Compute avg %.2f (min %.2f max %.2f) | Render+PostFX avg %.2f (min %.2f max %.2f) | Total avg %.2f max %.2f ms\n",
+             impl_ptr->profCompSum * inv, impl_ptr->profCompMin, impl_ptr->profCompMax,
+             impl_ptr->profRendSum * inv, impl_ptr->profRendMin, impl_ptr->profRendMax,
+             (impl_ptr->profCompSum + impl_ptr->profRendSum) * inv, impl_ptr->profTotMax);
+      impl_ptr->profCompSum = 0; impl_ptr->profRendSum = 0;
+      impl_ptr->profCompMax = 0; impl_ptr->profRendMax = 0;
+      impl_ptr->profCompMin = 1e9f; impl_ptr->profRendMin = 1e9f; impl_ptr->profTotMax = 0;
     }
   }];
 

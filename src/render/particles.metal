@@ -968,6 +968,12 @@ kernel void compute_physics(
     // tuning exactly; monsters resist the crush and HOLD THE MIDDLE).
     float3 preVoiceV = float3(shiftVx, shiftVy, shiftVz);
 
+    // CRYSTALLIZE ridge-pull: the PURE up-gradient sculpt direction at this
+    // particle (no swirl/breathing/impulse mixed in), set after the voice loop.
+    // As hardness→1 below, this REPLACES the grain's dynamics so it condenses
+    // onto the exact node ridge (where ∇Y→0 → it stops) → sharp filaments.
+    float3 ridgePull = float3(0.0f);
+
     if (numVoices > 0 && baseMass < 1000.0f) {
         // Polyphony normalizer (the proven 1/sqrt(voiceCount)). Without it a
         // chord stacks every voice's sculpt force N× → particles over-cluster
@@ -1094,6 +1100,19 @@ kernel void compute_physics(
 
         // Phase 11: String Theory
         dynamicMass += massAdd;
+
+        // Build the ridge-pull from the SUMMED sculpt gradient (same up-gradient
+        // direction the per-voice sculpt uses, isolated from swirl/breathing).
+        // Used at the velocity-freeze below to condense hardened grains onto the
+        // node line. Global thetaDir/phiDir at this particle (like webbing does).
+        {
+            float thAng = atan2(py, px);
+            float3 thetaDirG = float3(-sin(thAng), cos(thAng), 0.0f);
+            float r_c = sqrt(px*px + py*py + pz*pz);
+            float phiG = acos(clamp(pz / max(r_c, 0.0001f), -1.0f, 1.0f));
+            float3 phiDirG = float3(cos(thAng)*cos(phiG), sin(thAng)*cos(phiG), -sin(phiG));
+            ridgePull = (sum_dYdth * thetaDirG + sum_dYdphi * phiDirG) * polyNorm;
+        }
 
         // ── Phase 18: Chord Webbing (Inter-Harmonic Connectivity) ────────
         if (numVoices > 1) {
@@ -1380,8 +1399,12 @@ kernel void compute_physics(
         int hcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int hcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         uint hcID = uint((hcz * su.gridSize + hcy) * su.gridSize + hcx);
-        float hTarget = smoothstep(8.0f, 48.0f, float(cellCounts[hcID]));
-        hardness += (hTarget - hardness) * min(1.0f, 1.2f * dt); // dwell ~1-2s
+        // Density is a WEIGHT on the freeze RATE, not a gate: even the sparse
+        // spread crystallizes, just slower. Bright nodes (dense) set first,
+        // the gas sets last → the pattern solidifies INWARD over sustain time.
+        float dens = smoothstep(2.0f, 48.0f, float(cellCounts[hcID]));
+        float rate = mix(1.0f / 15.0f, 1.0f / 10.0f, dens); // dense ~10s, sparse ~15s to full solid
+        hardness = min(1.0f, hardness + rate * dt);          // INTEGRATE over sustain time (hold longer = harder)
     } else {
         hardness += (0.0f - hardness) * min(1.0f, 3.0f * dt);    // relax to gas
     }
@@ -1506,8 +1529,17 @@ kernel void compute_physics(
     // baseFric (pow(0.9, dt) ≈ 0.9991/frame, tuned above for Kepler orbits)
     // is the only damping, so the spawn rotation orbits and the core accretes.
 
-    // Combine proxy with force pulses
-    float3 finalV = float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz);
+    // Combine proxy with force pulses, then CROSS-FADE to ridge-condense by
+    // hardness. Freezing motion in place blurs (it locks a loose cloud mid-swim).
+    // Instead, as a grain hardens we fade OUT its momentum + swirl/breathing
+    // (the overshoot that smears the filament) and fade IN a pure RIDGE-PULL —
+    // overdamped gradient ascent that drives it onto the exact node line and
+    // self-terminates there (∇Y→0) → sharp threads, not frozen dust. At full
+    // hardness only ridgePull acts; on the ridge it's ~0 → still AND sharp. The
+    // speed cap below bounds it; the rigid spin folds in later (~1715) → trails live.
+    float soften = 1.0f - hardness;
+    float3 finalV = (float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz)) * soften
+                  + ridgePull * (hardness * 8.0f); // 8.0 = condense strength (lever)
 
     // PHYSICAL LIGHT-SPEED CAP (Phase A1, 2026-06-13 — fully physical). Nothing
     // moves faster than c. u.speedCap is now c in sim/(on-screen s); finalV is a

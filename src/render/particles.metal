@@ -761,6 +761,62 @@ kernel void compute_physics(
         }
     }
 
+    // ── SEED ↔ SEED MERGE — runaway to ONE dominant central mass ─────────────
+    // Seeds (M≥M_BH_SEED) eat STARS above, but until now NEVER each other (the
+    // capture gated victims to mass<M_BH_SEED). So heavy mass fragmented into
+    // many separate seeds that PILE into a central "blob" and never ran away to
+    // a single giant → no geometric BH ever formed (Jamal 2026-06-25 diagnosis:
+    // seeds=866, biggest body crawling because it only ate small stars). US2
+    // rule: when two bodies overlap the SMALLER is absorbed by the LARGER
+    // (larger keeps identity). Strict ordering (mS>mass, ties broken by id) →
+    // exactly ONE victim per pair, no mutual death, no race. Merge radius ≈ 1
+    // grid cell: below the grid resolution two seeds are unresolvable as
+    // distinct bodies, so they coalesce — this is what produces the runaway to
+    // one giant and, with it, the geometric BH pop. Same phase/domain guards,
+    // atomic accumulator and park-on-death as the star capture above.
+    if (su.gridSize > 0 && mass >= M_BH_SEED && mass < 1e8f &&
+        playGate < 0.5f &&
+        !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) &&
+        fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+        fabs(pz) < su.halfExtent) {
+        int scx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int scy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        int scz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+        float mergeReach = 1.4f * su.cellSize;
+        float mergeR2 = mergeReach * mergeReach;
+        for (int z = max(0, scz - 1); z <= min(su.gridSize - 1, scz + 1); z++) {
+            for (int y = max(0, scy - 1); y <= min(su.gridSize - 1, scy + 1); y++) {
+                for (int x = max(0, scx - 1); x <= min(su.gridSize - 1, scx + 1); x++) {
+                    uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
+                    uint slot = cellSeedMap[cID];
+                    if (slot == 0u) continue;
+                    uint sid2 = seedIds[slot - 1u];
+                    if (sid2 == id || sid2 >= uint(u.particleCount)) continue;
+                    float mS = particles[sid2].posW.w;
+                    if (mS < M_BH_SEED || mS >= 1e8f) continue;
+                    // larger-wins identity rule (strict, id tiebreak): I survive
+                    // only if I'm the bigger one — else I'm the victim.
+                    bool iAmVictim = (mS > mass) || (mS == mass && sid2 < id);
+                    if (!iAmVictim) continue;
+                    float3 sp = particles[sid2].posW.xyz;
+                    if (notFinite3(sp)) continue;
+                    float3 dS = float3(px, py, pz) - sp;
+                    if (dot(dS, dS) >= mergeR2) continue;
+                    // I am the smaller seed → hand my mass to the larger, die.
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 0u],
+                                              uint(mass * 64.0f + 0.5f),
+                                              memory_order_relaxed);
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 1u],
+                                              1u, memory_order_relaxed);
+                    float park = 4000.0f + float(id % 1024);
+                    p.posW = float4(park, park, park, 0.0f);
+                    p.prevW = float4(park, park, park, p.prevW.w);
+                    return;
+                }
+            }
+        }
+    }
+
     // ── SELF-GRAVITY (always-on, EVERY phase — the emergent-BH engine) ───────
     // Real Newtonian gravity replaces the old cohesion spring: every star falls
     // toward the rest of the mass, so the galaxy accretes on its own — no note
@@ -826,7 +882,7 @@ kernel void compute_physics(
             // refinement (AMR), an architectural change, not a constant. The
             // GKICK_MAX cap below stays (it's needed in play extent where cells
             // are tiny; at rest it doesn't bite).
-            float softN = 1.0f * su.cellSize * su.cellSize;  // ε² ≈ cell²
+            float cellSoftFloor = 1.0f * su.cellSize * su.cellSize;  // ε² ≈ cell²
             for (int z = max(0, gcz - 1); z <= min(su.gridSize - 1, gcz + 1); z++) {
                 for (int y = max(0, gcy - 1); y <= min(su.gridSize - 1, gcy + 1); y++) {
                     for (int x = max(0, gcx - 1); x <= min(su.gridSize - 1, gcx + 1); x++) {
@@ -839,6 +895,19 @@ kernel void compute_physics(
                         nearM  += cm;
                         nearMP += cpos * cm;
                         float3 toC = cpos - gpos;
+                        // MASS-ADAPTIVE Plummer softening (2026-06-25). A heavy
+                        // cell's kick must not SATURATE the c·dt gkick cap below,
+                        // or stars passing the cell get LAUNCHED at c instead of
+                        // deflecting → the field evaporates (meanR 65→187 once
+                        // seed-merge built a 140k M giant; the documented
+                        // "slingshot heating"). Peak kick = G1·cm/ε²·dt²; bound
+                        // it to ≤¼·c·dt by ε² ≥ 4·G1·cm·dt/c. Floored at the cell
+                        // scale so light cells (the star field) are UNCHANGED;
+                        // only massive bodies soften. Physical: gravity is
+                        // resolution-limited — a body can't deliver a kick
+                        // sharper than the per-step light limit can resolve.
+                        float softN = max(cellSoftFloor,
+                                          4.0f * G1 * cm * dt / max(u.speedCap, 1e-6f));
                         float  d2  = dot(toC, toC) + softN;
                         gacc += toC * (G1 * cm * rsqrt(d2) / d2); // GM_c/(d²+ε²)^1.5
                     }

@@ -95,6 +95,7 @@ struct Renderer::Impl {
 
   // Stats readback (partial sums from GPU reduction)
   id<MTLBuffer> partialSumsBuffer = nil;
+  id<MTLBuffer> radialMassBuffer = nil;  // 256-shell enclosed-mass profile → honest horizon r_h
   int numThreadgroups = 0;
   PhysicsStats latestStats = {};
 
@@ -108,6 +109,9 @@ struct Renderer::Impl {
   float bhPosX = 0.0f, bhPosY = 0.0f, bhPosZ = 0.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
   float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
+  float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
+  float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
+  float lastParticleSize = 2.0f; // Size slider (1-frame lag) → scales the cluster's mass/gravity
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
   bool bhFormedLatch = false; // once formed, stays formed (until reset)
@@ -605,6 +609,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   // 80 bytes = 20 floats per threadgroup, must match PartialStats in
   // particles.metal (8 stats + COM/live-count + radius + BH-enclosure).
   allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 80);
+  allocIfNeeded(impl_->radialMassBuffer, 256 * sizeof(uint32_t)); // 256-shell horizon profile
 }
 
 void Renderer::resetParticles() {
@@ -678,6 +683,8 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   // Stage uniforms — will be dispatched in render()
   impl_->physicsUniforms = {};
   impl_->physicsUniforms.dt = dt;
+  impl_->physicsUniforms.dtPrev = impl_->lastDt; // time-corrected Verlet: last frame's dt
+  impl_->lastDt = dt;
   impl_->physicsUniforms.totalAmplitude =
       totalAmplitude; // Phase 17: Pass real synth amplitude for ADSR dynamics
   impl_->physicsUniforms.voiceCount = voiceCount; // Bug fix: Don't force 1 if 0
@@ -740,6 +747,7 @@ void Renderer::render(const RenderConfig &config) {
   impl_->renderPhaseSmooth +=
       (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
   impl_->collapseFrac = config.collapseFrac;
+  impl_->lastParticleSize = config.particleSize; // → mass/gravity scale in runComputePass
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
 
@@ -841,6 +849,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   impl_->renderPhaseSmooth +=
       (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
   impl_->collapseFrac = config.collapseFrac;
+  impl_->lastParticleSize = config.particleSize; // → mass/gravity scale in runComputePass
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
 
@@ -986,8 +995,23 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       sMassTotal = space::imf::totalMassMsun(particleCount);
       sMassTotalCount = particleCount;
     }
-    physicsUniforms.massTotal = (float)sMassTotal;
-    physicsUniforms.gravGM = (float)space::units::gmSim(sMassTotal);
+    // SIZE↔MASS↔GRAVITY (Jamal 2026-06-25): the Size slider scales the stars'
+    // effective MASS, so render size grows (handled in render.metal) AND the
+    // field's self-gravity grows with it — heavier stars pull harder. Normalised
+    // to the default Size=2 → ×1 (no change). Exponent 1.25 makes it physical:
+    // render size ∝ Size, and since R∝M^0.8 the implied mass ∝ Size^1.25, so
+    // gravity (∝M) ∝ Size^1.25. The central SMBH (centerGM) is NOT scaled — it's
+    // the fixed anchor; only the cluster's own mass scales.
+    float massScale = powf(fmaxf(lastParticleSize / 2.0f, 0.05f), 1.25f);
+    physicsUniforms.massTotal = (float)(sMassTotal * massScale);
+    physicsUniforms.gravGM = (float)(space::units::gmSim(sMassTotal) * massScale);
+    // Hard-coded CENTRAL mass at the origin — the dominant anchor the cluster
+    // orbits. Sized so its ISCO (3·r_s = 3·M·kRsSimPerMsun) is SMALLER than the
+    // cluster radius (~1–3 sim), so stars orbit OUTSIDE the ISCO (stable, ~0.4c)
+    // instead of plunging from inside it. 1e5 M☉ → ISCO ≈ 0.5 sim. TUNABLE knob:
+    // bigger = faster/tighter orbits (ISCO grows), smaller = wider/slower.
+    physicsUniforms.centerGM = (float)space::units::gmSim(4297000.0);
+    physicsUniforms.horizonR = lastHorizonR;  // honest r_h (1-frame lag) → pressure-yield in the kernel
     physicsUniforms.bhX = bhPosX;
     physicsUniforms.bhY = bhPosY;
     physicsUniforms.bhZ = bhPosZ;
@@ -1072,6 +1096,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                       value:0];
       [clearBlit fillBuffer:cellOffsetsBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
+                      value:0];
+      [clearBlit fillBuffer:radialMassBuffer   // 256-shell horizon profile, re-accumulated each frame
+                      range:NSMakeRange(0, 256 * sizeof(uint32_t))
                       value:0];
       [clearBlit endEncoding];
 
@@ -1332,6 +1359,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp setBuffer:particleBuffer offset:0 atIndex:0];
       [comp setBuffer:partialSumsBuffer offset:0 atIndex:1];
       [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
+      [comp setBuffer:radialMassBuffer offset:0 atIndex:3];
 
       NSUInteger tg = std::min(
           (NSUInteger)256, reduceStatsPipeline.maxTotalThreadsPerThreadgroup);
@@ -1390,6 +1418,28 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           if (sums[i].maxTemp > gMaxTemp) gMaxTemp = sums[i].maxTemp;
           if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
         }
+        // HONEST GEOMETRIC HORIZON (observe-only — full_physics_todo B2). From the
+        // radial mass profile (mass binned by distance from the BH candidate), find
+        // the largest r where r_s(M(<r)) ≥ r. This resolves r_s far below the coarse
+        // 1.0-sim cell, so a small dense core can show a REAL horizon. NOT yet wired
+        // to formation — just logged, so we can SEE r_h appear when a core crushes.
+        if (radialMassBuffer) {
+          const uint32_t *radial = (const uint32_t *)radialMassBuffer.contents;
+          const double dr = 5.0 / 256.0;           // RADIAL_MAX_R / RADIAL_SHELLS
+          const double kRsSimPerMsun = 1.6825e-6;  // units.h
+          double cum = 0.0, r_h = 0.0, mEncRh = 0.0;
+          for (int s = 0; s < 256; s++) {
+            cum += radial[s] / 256.0;              // un-scale fixed-point → M_sun
+            double r = (s + 1) * dr;
+            if (kRsSimPerMsun * cum >= r) { r_h = r; mEncRh = cum; } // horizon here
+          }
+          lastHorizonR = (float)r_h;   // → uniform next frame: pressure yields inside r_h
+          if ((physicsUniforms.frameCounter % 120u) == 0u) {
+            fprintf(stderr,
+                    "[HORIZON] r_h=%.4f sim  M(<r_h)=%.3e Msun  (honest geometric, observe-only)\n",
+                    r_h, mEncRh);
+          }
+        }
         // MASS-WEIGHTED centre of mass of the live stars (real IMF masses) →
         // next frame's self-gravity far-field monopole. Guard NaN/empty.
         if (totalSM > 0.5f && std::isfinite(totalPX) && std::isfinite(totalPY) &&
@@ -1443,7 +1493,19 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // would re-import the slosh); gMaxMass only grows via eating, so the
         // signal is monotonic and never flickers.
         bhSeedMass = gMaxMass;
-        float target = (float)(kRsSimPerMsun * bhSeedMass / kREnc);
+        float seedTarget = (float)(kRsSimPerMsun * bhSeedMass / kREnc); // slow at-rest accretion path (geometric, seed mass)
+        // DENSITY-POP (2026-06-20, Jamal's vision): the chord-snapback implosion
+        // crushes a large FRACTION of the field's mass into the core (R_ENC) all
+        // at once — "so many stars collide they gain all the mass at once and
+        // explode into a BH". Fire the horizon on that concentration (density
+        // proxy = enclosed mass / total). The literal Schwarzschild criterion at
+        // R_ENC=0.5 is unreachable at our field mass, so concentration is the
+        // honest trigger for the at-once collapse. Latched below → forms and stays.
+        float encFrac = bhMassEnc / std::max(physicsUniforms.massTotal, 1.0f);
+        float dt01 = (encFrac - 0.40f) / 0.30f;          // ramp 40%→70% gathered
+        dt01 = dt01 < 0.0f ? 0.0f : (dt01 > 1.0f ? 1.0f : dt01);
+        float densTarget = dt01 * dt01 * (3.0f - 2.0f * dt01); // smoothstep
+        float target = std::max(seedTarget, densTarget);
         (void)collapseFrac;                      // UI dial now unused by formation
         // SMOOTH + LATCH: the raw enclosure signal wobbles with disk slosh
         // and made the raytracer flicker on/off ("seconds of black hole
@@ -1461,6 +1523,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           bhFormedLatch = false;
         bhStrength = bhFormedLatch ? std::max(bhStrengthEma, 1.0f)
                                    : bhStrengthEma;
+        if ((physicsUniforms.frameCounter % 120u) == 0u) {
+          fprintf(stderr,
+                  "[BH-POP] encFrac=%.2f densTarget=%.2f seedTarget=%.3f -> bhStrength=%.2f%s\n",
+                  encFrac, densTarget, seedTarget, bhStrength,
+                  bhFormedLatch ? " LATCH" : "");
+        }
 
         // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
         // particle count and COM ≈ 0 at spawn, else the 48B reduce is broken.

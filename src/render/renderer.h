@@ -216,6 +216,9 @@ struct PhysicsUniforms {
   float bhY;
   float bhZ;
   float bhMass;             // stars (M_sun) enclosed within R_ENC of (bhX,bhY,bhZ)
+  float horizonR = 0.0f;    // honest geometric horizon r_h [sim] (0 = no hole); pressure yields inside it
+  float dtPrev = 1.0f / 120.0f; // previous frame's dt → time-corrected Verlet (framerate-independent orbits)
+  float centerGM = 0.0f;        // GM of the hard-coded central SMBH (Sgr A*) the cluster orbits
 };
 
 // Spatial hash uniforms for collision grid

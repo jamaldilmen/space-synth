@@ -178,10 +178,15 @@ constant float HEAT_K_PER_T  = 3000.0f;   // shock/play heat → Kelvin (sim tem
 // cam.tuneColorK (default 27000). Slide it to spread red↔blue.
 constant float PEAK_KELVIN   = 25000.0f;  // temperature that maps to the ramp's
                                           // peak (white/blue). High → white rare.
-constant float SN_TEMP_PEAK  = 6.0f;      // sim temp → supernova ramp peak. From
-                                          // the logged data: NOTE~0.85 (red),
-                                          // CHORD~3.4 (green [OIII]), spin spikes
-                                          // (blue-white X-ray).
+constant float SN_TEMP_PEAK  = 12.0f;     // sim temp → supernova ramp peak.
+                                          // MEASURED 2026-06-25 (COLOR-TEMP probe,
+                                          // main.cpp): during PLAY prevW.w avg≈6–10,
+                                          // MAX≈12, min≈3. The old 6.0 clamped
+                                          // temp/PEAK to 1.0 → ramp PINNED to BLUE,
+                                          // no sweep. 12 = the measured play max, so
+                                          // the real per-particle spread maps across
+                                          // the full ramp: cool→orange/red, mid→green
+                                          // [OIII], hot collision/node spots→cyan→blue.
 
 // ── Interstellar/DNGR disk maths (applied to particles, not a raytracer) ────
 constant float KERR_A    = 0.5f;   // BH spin in the Ω(r)=1/(r^1.5+a) speed law
@@ -439,7 +444,7 @@ vertex VertexOut particle_vertex(
     // Cap lowered 64 → 40: with sub-linear growth, hot particles at rho=25
     // hit ~40px naturally. A tighter cap keeps overdraw under control on
     // TBDR (each capped sprite is fewer tile-fragment ops).
-    out.pointSize = clamp(rawSize, 1.0f, 40.0f);
+    out.pointSize = clamp(rawSize, 1.0f, 150.0f);
 
     // HDR luminance from thermal energy (ODS-03). Particles render at full
     // brightness in ALL phases — they ARE the visual, both at rest (fast
@@ -449,7 +454,11 @@ vertex VertexOut particle_vertex(
     // Brightness from temperature, but the temp driving BRIGHTNESS is capped so
     // the densest/hottest core can't blow out to white (the COLOUR still uses
     // the full temp, so it stays a saturated hot plasma instead of going white).
-    out.luminance = 1.0f + min(max(0.0f, temp), 2.5f) * 2.0f;
+    // Per-particle luminance DROPPED (2026-06-25): at 1+temp·2 (≤6) the additive
+    // blend summed dense regions far past white → the temperature COLOUR washed
+    // out to white no matter the sliders. Lower per-particle brightness so the
+    // colour survives the sum; bloom/HDR still carry the overall glow.
+    out.luminance = 0.45f + min(max(0.0f, temp), 2.5f) * 0.7f;
 
     // ── Relativistic Doppler factor from the analytic Kerr orbital velocity ──
     // δ = 1 + β_los, β_los = line-of-sight component of the prograde orbital
@@ -531,24 +540,44 @@ vertex VertexOut particle_vertex(
         //   • kinetic — T ∝ |v|² (equipartition): fast matter hot, still cold
         //   • × Doppler colour shift × gravitational redshift (real observed-T)
         float rSim   = length(in.posW.xyz);
-        float diskK  = ssDiskTempShape(rSim, BH_R_IN_SIM) * DISK_T_STAR_K;
+        // REAL stellar temperature from the star's MASS (main-sequence Teff ≈
+        // 5772·(M/M☉)^0.55 K) — the OBAFGKM range: M-dwarf ~0.3 M☉ ≈ 2900 K
+        // (deep red), Sun 5772 K (white-yellow), O-star 50 M☉ ≈ 48000 K (blue).
+        // Replaces the disk-temperature baseline that pinned everything to
+        // orange/white (the "2D filter" — Jamal 2026-06-25). Shock/play heat
+        // (heatK) and kinetic add ON TOP, so collisions/supernovae go blue-white.
+        float diskK  = 5772.0f * pow(max(in.posW.w, 0.08f), 0.55f);
         float heatK  = clamp(temp, 0.0f, 5.0f) * cam.tuneHeatK;
         float ke     = dot(in.velW.xyz, in.velW.xyz);       // |v|² ∝ kinetic temperature
         float kelvin = clamp((diskK + heatK + ke * cam.tuneColorK)
                              * dopplerColor * gravShift, 1000.0f, 40000.0f);
         float thT    = clamp((kelvin - 1000.0f) / (40000.0f - 1000.0f), 0.0f, 1.0f);
-        float3 bbColor = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
+        float3 thermalCol = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
 
-        // Per-band RGB tint REMOVED (Jamal 2026-06-11): it painted the field
-        // in primary red/green/blue per voice — the "ocean of RGB" — and
-        // fought the physical blackbody continuum. Temperature is the only
-        // colour authority now. (bandId still tracked for future use.)
-        out.color = bbColor;
+        // ── NASA SUPERNOVA TRUE COLOUR RESTORED (2026-06-25) ─────────────────
+        // The play state is a SUPERNOVA — its colour is the discrete shock-
+        // ionization EMISSION-LINE spectrum (Hα/[SII] red → [OIII] GREEN → Hβ
+        // cyan → X-ray/synchrotron blue), NOT a blackbody continuum. That green
+        // is the physical tell — a blackbody is never green. An earlier session
+        // parked this ("green reads as arbitrary RGB") and forced blackbody-of-
+        // mass everywhere, which collapsed PLAY to a flat orange↔white wash
+        // (Jamal 2026-06-25: "we HAD the NASA data, true temp true colours").
+        // Driven by the per-particle sim shock temperature, normalised to
+        // SN_TEMP_PEAK. Cross-fade by envelope: SILENCE → thermal disk,
+        // PLAYING → the NASA supernova spectrum.
+        float3 snCol   = supernovaRamp(temp / SN_TEMP_PEAK);
+        float  playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
+        out.color = mix(thermalCol, snCol, playMix);
 
-        // Speed-based brightness boost (Doppler-like)
-        float speed = length(in.velW.xyz);
-        float boost = clamp(speed * 8.0f, 0.0f, 0.8f);
-        out.color += float3(boost * 0.3f, boost * 0.2f, boost * 0.1f);
+        // Speed-based warm boost REMOVED (2026-06-25): this added a warm
+        // (0.3,0.2,0.1)·boost wash to every moving particle, clamped to 0.8 and
+        // saturated almost instantly (speed*8). It is NOT slider-gated, so it
+        // painted the whole PLAY field orange-white even with Colour Spectrum +
+        // Plasma Heat all the way down (Jamal's "flat 2D filter"). It only ever
+        // affected PLAY (at rest the star-map mix overwrites out.color; BH seeds
+        // override). It was also a fake Doppler hack — the REAL relativistic
+        // Doppler shift is already applied above via dopplerColor. Colour is now
+        // blackbody-of-temperature ONLY during play.
     }
 
     // ── DEAD STARS (eaten by a merger): gone in EVERY phase ──────────────────
@@ -584,9 +613,15 @@ vertex VertexOut particle_vertex(
         // brightness — render at the minimum size, dimmed by the area ratio
         // (raw/min)². Distant dwarfs fade smoothly toward black, near giants
         // stay bold; the d-dependence rides the existing sizeScale zoom law.
-        float rawStar = cam.particleSize * (0.5f + 0.8f * sqrt(Rstar)) * sizeScale;
-        const float STAR_MIN_PX = 2.0f;   // ≥2px so the falloff can antialias
-        float starSize = clamp(rawStar, STAR_MIN_PX, 40.0f);
+        // REAL physical radius (Jamal): size is LINEAR in the true stellar radius
+        // R = (M/M☉)^0.8 in R☉ (Sun=1 R☉), not the old sqrt compression — so the
+        // ratios are EXACT (M-dwarf ~0.3 R☉, Sun 1, O-star ~20, giant ~50). The
+        // Size slider is then the px-per-R☉ scale (how big one solar radius reads).
+        float rawStar = cam.particleSize * Rstar * sizeScale;
+        const float STAR_MIN_PX = 1.0f;   // floor low so dwarfs stay small (real range)
+        float starSize = clamp(rawStar, STAR_MIN_PX, 150.0f); // ceiling raised 40→150 so
+                                          // giants/O-stars actually read BIG → the Size
+                                          // slider scales the full mass→size RANGE (Jamal)
         float starLum  = 0.6f + 2.5f * log2(1.0f + Lstar);          // compress huge L range
         if (rawStar < STAR_MIN_PX) {
             float f = rawStar / STAR_MIN_PX;
@@ -604,7 +639,7 @@ vertex VertexOut particle_vertex(
             starLum += flashT * 3.0f;
             starColor = mix(starColor, blackbodyRGB(Teff + flashT * 6000.0f),
                             clamp(flashT * 0.5f, 0.0f, 1.0f));
-            starSize = min(starSize * (1.0f + 0.3f * flashT), 40.0f);
+            starSize = min(starSize * (1.0f + 0.3f * flashT), 150.0f);
         }
         out.pointSize = mix(out.pointSize, starSize, starMix);
         out.color     = mix(out.color, starColor, starMix);
@@ -621,11 +656,15 @@ vertex VertexOut particle_vertex(
     // the global geometric signal trips. Overrides every phase.
     if (in.posW.w >= 50.0f) {
         float Mbh = in.posW.w;
-        float capR = 0.0313f * pow(Mbh * (1.0f / 0.3f), 1.0f / 3.0f); // sim units
-        float Req = capR / 0.0549f;                                    // in R_sun
+        // VISIBLE ACCUMULATION (2026-06-22): render radius grows on the REAL
+        // stellar relation R∝M^0.8 (the proof + the star branch + this file's
+        // own comment), NOT the weak M^(1/3) capture radius that kept a 8859 M☉
+        // seed a tiny dot. Cap raised 64→220 (heavy bodies are RARE → overdraw
+        // is fine) so a body that eats VISIBLY fattens into a giant.
+        float Req = pow(Mbh, 0.8f);                                    // R_sun, R∝M^0.8
         float flare = clamp(in.prevW.w - 2.5f, 0.0f, 5.0f);
         float sz = cam.particleSize * (0.5f + 0.8f * sqrt(Req)) * sizeScale;
-        out.pointSize = clamp(sz * (1.0f + 0.25f * flare), 3.0f, 64.0f);
+        out.pointSize = clamp(sz * (1.0f + 0.25f * flare), 3.0f, 220.0f);
         out.color     = blackbodyRGB(20000.0f + 4000.0f * flare);
         out.luminance = 10.0f + 4.0f * flare;
     }
@@ -738,15 +777,30 @@ fragment float4 particle_fragment(
     float dCore = sqrt(r2);
     float core = pow(max(0.0f, 1.0f - dCore), 3.0f);
 
+    // ── DIFFRACTION SPIKES — make bright STARS read as stars, not dots ───────
+    // A point source imaged through a telescope shows diffraction spikes (the
+    // JWST/Hubble "this is a star" signature); a faint dot does not. We draw a
+    // 4-point screen-axis cross whose strength scales with the star's brightness
+    // (in.luminance) and is GATED to slow, non-streaking particles via
+    // starness = 1 - elong — so the orbiting disk and supernova streaks (high
+    // elong) stay clean and only the star-map points spike. Uses the raw quad
+    // coord (pc), NOT the velocity-aligned frame, so spikes are screen-aligned.
+    // The spike length = the sprite radius, so big bright stars spike long and
+    // tiny dim dwarfs barely spike — physically consistent.
+    float starness = 1.0f - elong;
+    float spikeX = exp(-pc.y * pc.y * 90.0f) * pow(max(0.0f, 1.0f - abs(pc.x)), 1.5f);
+    float spikeY = exp(-pc.x * pc.x * 90.0f) * pow(max(0.0f, 1.0f - abs(pc.y)), 1.5f);
+    float spike  = max(spikeX, spikeY) * starness;
+
     // Emission multiplier reduced 1.8 → 0.5. With G=20 gravity, particles
     // orbit fast and the velocity-aligned streaks pile up under additive
     // blending → field saturated to white everywhere. Lower per-particle
     // emission lets dense regions glow bright but sparse stay dim, so the
     // BH void and disk structure remain visible against the field.
-    float3 emission = in.color * in.luminance * (glow * 0.5f + core);
+    float3 emission = in.color * in.luminance * (glow * 0.3f + core + spike * 0.6f);
 
     float baseAlpha = in.grainAlpha + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.06f;
-    float alpha = (glow * 0.5f + core) * baseAlpha;
+    float alpha = (glow * 0.3f + core + spike * 0.6f) * baseAlpha;
 
     float fadeDistance = 6.0f;
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));

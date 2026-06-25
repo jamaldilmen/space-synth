@@ -726,19 +726,9 @@ int main() {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Hide UI (TAB)");
       ImGui::End();
-    } else {
-      // Minimal restore button when HUD is hidden
-      ImGui::SetNextWindowPos(ImVec2(window.width() - 160, 20));
-      ImGui::SetNextWindowSize(ImVec2(140, 0));
-      ImGui::Begin("##restore_ui", nullptr,
-                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);
-      if (ImGui::Button("SHOW ARCHITECT", ImVec2(130, 30))) {
-        showHUD = true;
-      }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Restore UI (TAB)");
-      ImGui::End();
     }
+    // Hidden UI = fully clean output (vantablack, no lingering "SHOW ARCHITECT"
+    // restore button). Press TAB (keyCode 48, handled above) to bring it back.
 
 
     if (showHUD) {
@@ -912,10 +902,20 @@ int main() {
         ImGui::SetItemTooltip(
             "Toggle between Orthographic (HTML vibe) and Perspective");
 
-        UiSliderFloat("Size", &app.uiParticleSize, 0.5f, 10.0f, "%.2f");
+        // SIZE = real stellar radius. Anchor: 1 M☉ star = 1 R☉ (the Sun). The
+        // population spans the real IMF (0.08–150 M☉) → radius R=M^0.8 = 0.13–55
+        // R☉. The slider is the on-screen scale (×), and via the size↔mass↔gravity
+        // coupling it also scales how hard the cluster pulls.
+        UiSliderFloat("Star scale", &app.uiParticleSize, 0.5f, 10.0f, "×%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiParticleSize = 2.0f;
-        ImGui::SetItemTooltip("Physical radius of each particle");
+        ImGui::SetItemTooltip("On-screen scale of each star (1 M☉ = 1 R☉). "
+                              "Also scales the cluster's mass/gravity.");
+        {
+          float k = app.uiParticleSize; // ×scale
+          ImGui::TextDisabled("  1 star = 1 R☉ (Sun) | range 0.13–55 R☉ "
+                              "(0.08–150 M☉) | drawn ×%.1f", k);
+        }
 
         UiSliderInt("Amount", &app.uiParticleCount, 0, 10000000);
         if (ImGui::Button("Reset to Default")) {
@@ -1415,9 +1415,11 @@ int main() {
       ImGui::End();
     } // if (showHUD)
 
-    // ── MASTER PATCH — every valuable fader in one window, for dialing the
-    // default patch. Double-click any value to type it exactly. ──────────
-    if (showHUD) {
+    // ── MASTER PATCH — REMOVED from the UI per Jamal (2026-06-21). It was a
+    // redundant dev aggregator (16 faders that also live in PHYSICS ARCHITECT,
+    // plus a "Print Values to Log" defaults dumper). Gated off (if(false)) not
+    // deleted, so the dial-defaults tool is one line away if it's ever wanted.
+    if (false) {
       ImGui::SetNextWindowPos(ImVec2(390, 30), ImGuiCond_FirstUseEver);
       ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
       ImGui::Begin("MASTER PATCH");
@@ -1753,6 +1755,11 @@ int main() {
       renderer.readbackParticles(probe.data(), PROBE_N);
       int liveCount = 0, wallCount = 0, insideRS = 0, movingCount = 0;
       int liveBand[10] = {0};
+      // COLOR-TEMP probe (2026-06-25): the per-particle temperature (prevW.w)
+      // that drives supernovaRamp(temp/SN_TEMP_PEAK=6) at play and heatK. Need
+      // its real range at silence vs play to scale SN_TEMP_PEAK correctly (the
+      // color temp is a 0–8 sim scale, NOT the 1e12 K kinetic HUD readout).
+      float ctMin = 1e9f, ctMax = -1e9f, ctSum = 0.0f;
       for (int i = 0; i < PROBE_N; i++) {
         const auto &p = probe[i];
         bool isWall = p.mass < 0.001f;
@@ -1765,12 +1772,21 @@ int main() {
           if (v > 1e-5f) movingCount++;
           int bucket = std::min(9, (int)(r / 0.4f));
           liveBand[bucket]++;
+          float ct = p.temperature;
+          ctSum += ct;
+          if (ct < ctMin) ctMin = ct;
+          if (ct > ctMax) ctMax = ct;
         }
       }
+      float ctAvg = (liveCount > 0) ? ctSum / (float)liveCount : 0.0f;
       printf("\n  [PROBE-%d] live=%d walls=%d insideRS=%d moving=%d  "
              "envPhase=%.1f voices=%d\n",
              PROBE_N, liveCount, wallCount, insideRS, movingCount,
              config.envelopePhase, vc);
+      printf("  [COLOR-TEMP] prevW.w  avg=%.3f  min=%.3f  max=%.3f  "
+             "(SN_TEMP_PEAK=6 → ramp t=avg/6=%.3f)\n",
+             ctAvg, (liveCount ? ctMin : 0.0f), (liveCount ? ctMax : 0.0f),
+             ctAvg / 6.0f);
       printf("  [BAND] r<0.4:%d  0.4-0.8:%d  0.8-1.2:%d  1.2-1.6:%d  1.6-2.0:%d  2.0+:%d\n",
              liveBand[0], liveBand[1], liveBand[2], liveBand[3], liveBand[4],
              liveBand[5]+liveBand[6]+liveBand[7]+liveBand[8]+liveBand[9]);

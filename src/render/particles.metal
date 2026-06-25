@@ -79,6 +79,9 @@ struct PhysicsUniforms {
     float bhY;                   // 132
     float bhZ;                   // 136
     float bhMass;                // 140: stars enclosed within R_ENC of bh pos
+    float horizonR;              // 144: honest geometric horizon r_h (0 = no hole)
+    float dtPrev;                // 148: previous frame's dt → time-corrected Verlet (framerate-independent orbits)
+    float centerGM;              // 152: GM of the hard-coded central SMBH (Sgr A*) the cluster orbits
 };
 
 struct SpatialHashUniforms {
@@ -195,6 +198,15 @@ constant float ERUPT_THRESHOLD = 0.80f; // intermittency gate (per-cell flare cl
 constant float ERUPT_FORCE     = 80.0f; // outward burst velocity scale
 constant float ERUPT_TEMP      = 4.0f;  // flash temperature (hot plasma)
 
+// ── RADIAL ENCLOSED-MASS PROFILE (honest geometric horizon — full_physics_todo B2) ──
+// Bin live mass into fine radial shells around the BH candidate (u.bh*) so the
+// CPU can find the largest r where r_s(M(<r)) ≥ r = the REAL horizon radius —
+// resolving r_s far below the coarse 3D cell (1.0 sim at rest). OBSERVE-ONLY.
+constant uint  RADIAL_SHELLS     = 256u;
+constant float RADIAL_MAX_R      = 5.0f;                              // sim units
+constant float RADIAL_INV_DR     = float(RADIAL_SHELLS) / RADIAL_MAX_R; // shells per sim
+constant float RADIAL_MASS_SCALE = 256.0f;                            // M_sun → fixed-point uint
+
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
 kernel void compute_physics(
@@ -235,6 +247,11 @@ kernel void compute_physics(
     // particle returns at its star-map home as a weightless tracer and rejoins
     // the cymatics. (Jamal: "particles need to PUKE each other out when I play.")
     // Rest eats (the hole grows); play pukes the field back out, alive.
+    // NOTE (2026-06-22): reverted my mass-conservation edit here — dissolving the
+    // heavy SEED bodies on play also destroyed the seed accumulation that DRIVES
+    // the stars→BH collapse (the working months-old process). Only the dead walls
+    // revive; the seed keeps growing (the accretion engine). The 5.9e9 runaway is
+    // a separate concern to address WITHOUT breaking accretion.
     if (mass <= 0.001f && u.totalAmplitude > 0.02f) {
         float r_home = p.spinW.x;
         if (r_home > 0.001f) {
@@ -249,9 +266,17 @@ kernel void compute_physics(
     }
 
     // Velocity proxy: displacement from previous frame
-    float vpx = px - prevX;
-    float vpy = py - prevY;
-    float vpz = pz - prevZ;
+    // TIME-CORRECTED VERLET (2026-06-22): the per-frame velocity (pos-prev) is a
+    // displacement over the LAST frame's dt; rescale it by dt/dtPrev so the
+    // velocity↔gravity balance is FRAMERATE-INDEPENDENT (orbits hold at 53fps or
+    // 120fps alike, instead of infalling whenever FPS≠120). dtPrev is init to the
+    // spawn's 1/120, so frame 1 also corrects the spawn-bake↔runtime-dt mismatch
+    // that was making everything plunge radially to the centre. Clamped so a
+    // stall frame can't fling the velocity. At steady FPS the factor is ~1.
+    float tcv = clamp((u.dtPrev > 1e-6f) ? (u.dt / u.dtPrev) : 1.0f, 0.5f, 2.5f);
+    float vpx = (px - prevX) * tcv;
+    float vpy = (py - prevY) * tcv;
+    float vpz = (pz - prevZ) * tcv;
 
     // ── Phase 7: Deterministic Debug Mode ──────────────────────────
     float dt = (u.debugFlags & (1 << 6)) ? (1.0f / 60.0f) : u.dt;
@@ -267,12 +292,7 @@ kernel void compute_physics(
     // mechanism (slow inspiral toward the mass centre — the dynamical-friction
     // analog). Blend by amplitude: rest → conservative, play → damped.
     float fricPlay = pow(0.9f, dt);
-    // 0.99/s (e-fold ~100 s): conservative enough that inner orbits complete
-    // (period 19 s at r=3), dissipative enough to (a) damp the grid-binning
-    // force noise that otherwise slowly HEATS the map outward (measured:
-    // +0.19 sim/s drift at pow(0.997,dt)) and (b) drive the visible inspiral
-    // — the dynamical-friction analog that makes the untouched galaxy accrete.
-    float fricRest = pow(0.99f, dt);
+    float fricRest = pow(0.99f, dt);  // reverted from 0.9995 — see note below
     float baseFric = mix(fricRest, fricPlay,
                          clamp(u.totalAmplitude * 4.0f, 0.0f, 1.0f));
     // RELEASE = heavy-drag inspiral. Physically: the post-supernova gas is
@@ -769,6 +789,19 @@ kernel void compute_physics(
         float G1   = u.gravGM / Mtot;            // GM of ONE solar mass
         float3 gpos = float3(px, py, pz);
         float3 gacc = float3(0.0f);
+
+        // ── HARD-CODED CENTRAL SMBH (Sgr A*) at the origin (2026-06-22) ──────────
+        // The dominant mass the whole cluster ORBITS → fast clean Keplerian orbits
+        // around a real, pinned centre (replaces the diffuse 32-min self-collapse
+        // that read as "everything sucked to the middle"). centerGM = gmSim(4.297e6
+        // M☉) ≫ the field's GM, so it sets the orbits; the field self-gravity below
+        // is the secondary star↔star clumping. Small ε (point mass); the c·dt gkick
+        // cap below keeps deep infall relativistically bounded.
+        {
+            float3 toCen = -gpos;
+            float dc2 = dot(gpos, gpos) + 0.05f;
+            gacc += toCen * (u.centerGM * rsqrt(dc2) / dc2);
+        }
 
         // NEAR field. Skip during attack (hash not rebuilt there → stale
         // centroids) and outside the hash extent (binning clamps to edge
@@ -2225,6 +2258,7 @@ kernel void reduce_stats(
     device const Particle* particles [[buffer(0)]],
     device PartialStats* partialSums [[buffer(1)]],
     constant PhysicsUniforms& u [[buffer(2)]],
+    device atomic_uint* radialMass [[buffer(3)]],
     uint id [[thread_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
     uint tgSize [[threads_per_threadgroup]],
@@ -2327,6 +2361,16 @@ kernel void reduce_stats(
     // it against M_crit(R_ENC) = R_ENC·unit/r_s(M_sun).
     float3 encD = lpos - float3(u.bhX, u.bhY, u.bhZ);
     bool enc = real && (dot(encD, encD) < 0.25f);   // R_ENC² = 0.25
+    // RADIAL PROFILE: bin this star's mass into its shell around the candidate,
+    // so the CPU can find the honest horizon r_h (largest r with r_s(M(<r))≥r).
+    if (real && lm > 0.0f) {
+        float encDist = length(encD);
+        if (encDist < RADIAL_MAX_R) {
+            uint shell = min(uint(encDist * RADIAL_INV_DR), RADIAL_SHELLS - 1u);
+            atomic_fetch_add_explicit(&radialMass[shell],
+                                      uint(lm * RADIAL_MASS_SCALE), memory_order_relaxed);
+        }
+    }
     sharedEX[tid] = enc ? lpos.x * lm : 0.0f;
     sharedEY[tid] = enc ? lpos.y * lm : 0.0f;
     sharedEZ[tid] = enc ? lpos.z * lm : 0.0f;

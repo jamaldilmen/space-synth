@@ -1691,7 +1691,13 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // long-exposure arcs ARE the "spacetime flow" visual. Drawn when the
   // emergent hole exists (its horizon region is where Ω is fastest) or
   // when the user spins (the manual exposure gesture).
-  if (trajectoryPipeline &&
+  // STRIPPED 2026-06-25 (Jamal: "fake trails centered to a tube shape" — one of
+  // the stacked layers hiding the real physics). These are 22-vertex ANALYTIC
+  // Ω(r) arc ribbons per particle, NOT the particles' real paths — a fake tube
+  // shape painted over the field. Disabled so trails come ONLY from real motion
+  // (the velWorld screen-space streak + the post-fx frame-feedback). Set the
+  // gate back to (bhStrength>0.5f || oscAmount>0.01f) to restore. Pipeline kept.
+  if (false && trajectoryPipeline &&
       (bhStrength > 0.5f || config.oscAmount > 0.01f)) {
     [enc setRenderPipelineState:trajectoryPipeline];
     [enc setDepthStencilState:depthState];

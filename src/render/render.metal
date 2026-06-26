@@ -549,8 +549,13 @@ vertex VertexOut particle_vertex(
         float diskK  = 5772.0f * pow(max(in.posW.w, 0.08f), 0.55f);
         float heatK  = clamp(temp, 0.0f, 5.0f) * cam.tuneHeatK;
         float ke     = dot(in.velW.xyz, in.velW.xyz);       // |v|² ∝ kinetic temperature
-        float kelvin = clamp((diskK + heatK + ke * cam.tuneColorK)
-                             * dopplerColor * gravShift, 1000.0f, 40000.0f);
+        // INTRINSIC temperature → colour (2026-06-26). Doppler/gravShift are
+        // VIEW-DEPENDENT (line-of-sight); folding them into the colour made the
+        // whole field a screen-space red/blue gradient that ROTATED with the
+        // camera ("linear filter", not colour the particles own — Jamal). Colour
+        // now comes from the particle's OWN state only: mass + play-heat +
+        // kinetic. Doppler still drives BEAMING (out.luminance, above), not hue.
+        float kelvin = clamp(diskK + heatK + ke * cam.tuneColorK, 1000.0f, 40000.0f);
         float thT    = clamp((kelvin - 1000.0f) / (40000.0f - 1000.0f), 0.0f, 1.0f);
         float3 thermalCol = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
 
@@ -565,7 +570,16 @@ vertex VertexOut particle_vertex(
         // Driven by the per-particle sim shock temperature, normalised to
         // SN_TEMP_PEAK. Cross-fade by envelope: SILENCE → thermal disk,
         // PLAYING → the NASA supernova spectrum.
-        float3 snCol   = supernovaRamp(temp / SN_TEMP_PEAK);
+        // PLAY/supernova colour driven by the FULL observed temperature thT
+        // (2026-06-26, Jamal: "spectrum linked to our temps AND forces, like
+        // NASA — not 4 colours that switch"). thT = normalised kelvin =
+        // diskK(mass) + heatK(play heat) + ke·tuneColorK(KINETIC force), ×Doppler
+        // ×gravShift — so heat, motion and the relativistic shift ALL move the
+        // colour continuously up the emission-line ramp (Hα red → [OIII] green →
+        // Hβ cyan → X-ray blue). Replaces bare temp/SN_TEMP_PEAK which clustered
+        // everything at the red end. The Colour-Spectrum + Plasma-Heat sliders
+        // now actually drive this (they were inert before).
+        float3 snCol   = supernovaRamp(thT);
         float  playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
         out.color = mix(thermalCol, snCol, playMix);
 
@@ -605,6 +619,17 @@ vertex VertexOut particle_vertex(
         float Lstar = pow(Mstar, 3.5f);                             // L_sun
         float Rstar = pow(Mstar, 0.8f);                             // R_sun (size)
         float3 starColor = blackbodyRGB(Teff);
+        // SATURATE (2026-06-26). Main-sequence Teff for the BULK masses (0.3–0.5
+        // M☉ → 3000–3900 K) is a PALE warm white, e.g. (1.0,0.69,0.42) — at a
+        // 1–2px point with bloom it reads as plain WHITE, burying the colour
+        // spread (Jamal's "all white-blue"; confirmed: blackbody value is just
+        // too desaturated, not a pipeline bug). Push saturation so the real hue
+        // reads — deep-red dwarfs → orange → white sun-types → blue giants, the
+        // way astrophotography renders star colour. Hue preserved, only vivid.
+        {
+            float l = dot(starColor, float3(0.299f, 0.587f, 0.114f));
+            starColor = clamp(l + (starColor - l) * 2.2f, 0.0f, 1.0f);
+        }
         // ── SUB-PIXEL FLUX CONSERVATION = the depth cue ──────────────────────
         // The old clamp(…, 1.0, 40) gave every distant star a full-bright 1px
         // point → zoomed out, the field collapsed into a uniform noise carpet
@@ -617,15 +642,34 @@ vertex VertexOut particle_vertex(
         // R = (M/M☉)^0.8 in R☉ (Sun=1 R☉), not the old sqrt compression — so the
         // ratios are EXACT (M-dwarf ~0.3 R☉, Sun 1, O-star ~20, giant ~50). The
         // Size slider is then the px-per-R☉ scale (how big one solar radius reads).
-        float rawStar = cam.particleSize * Rstar * sizeScale;
+        // SIZE SCALE reined in (2026-06-26, Jamal: "too many big stars at launch,
+        // red-dwarf↔fused ratio off"). The IMF is ~89% tiny dwarfs (probe), but
+        // the old multiplier + 150px ceiling rendered too many big and let the
+        // rare massive ones balloon → big stars dominated. Halve the multiplier
+        // so the dwarf bulk sits at the 1px floor (few look big at launch) and
+        // drop the ceiling 150→48 so giants read bigger than dwarfs without
+        // taking over. Still physical R=M^0.8, just sanely scaled.
+        float rawStar = cam.particleSize * Rstar * sizeScale * 0.5f;
         const float STAR_MIN_PX = 1.0f;   // floor low so dwarfs stay small (real range)
-        float starSize = clamp(rawStar, STAR_MIN_PX, 150.0f); // ceiling raised 40→150 so
-                                          // giants/O-stars actually read BIG → the Size
-                                          // slider scales the full mass→size RANGE (Jamal)
-        float starLum  = 0.6f + 2.5f * log2(1.0f + Lstar);          // compress huge L range
+        float starSize = clamp(rawStar, STAR_MIN_PX, 48.0f);
+        // Brightness COMPRESSED (2026-06-25): L∝M^3.5 made giants ~37× brighter
+        // than red dwarfs, so the white/blue giants dominated the eye and the
+        // orange dwarfs were too dim for their COLOUR to read → field looked
+        // "all white-blue" (Jamal). Higher floor (1.2) + gentler slope (1.2)
+        // pulls dwarf and giant brightness closer (~14× not 37×) so the dwarfs'
+        // orange/red actually shows while giants still read brightest.
+        float starLum  = 1.2f + 1.2f * log2(1.0f + Lstar);
         if (rawStar < STAR_MIN_PX) {
             float f = rawStar / STAR_MIN_PX;
-            starLum *= f * f;             // flux conserved: smaller → dimmer
+            // Flux-conserve sub-pixel stars, but FLOOR it. The IMF is ~89% red
+            // dwarfs (<0.5 M☉ — always sub-pixel here); at the raw f² they
+            // dimmed to ≈0 and vanished, so only the bright white/blue giants
+            // showed → the field read as "all the same colour" (Jamal
+            // 2026-06-25, confirmed by the [MASS Msun] probe: spread is REAL,
+            // it just wasn't visible). Floor at 0.20 so dwarfs render as DIM RED
+            // points and the true stellar colour spread (deep-red dwarfs → blue
+            // giants) shows. Not a uniform white carpet — they keep their red.
+            starLum *= max(f * f, 0.45f);
         }
         // ── MERGER FLASH — the "sense of collision" ──────────────────────────
         // A star that just ATE carries a temperature spike (merge kernel,
@@ -636,10 +680,16 @@ vertex VertexOut particle_vertex(
         // field cools, only true fresh mergers flash.
         float flashT = clamp(temp - 2.5f, 0.0f, 5.0f);
         if (flashT > 0.01f) {
-            starLum += flashT * 3.0f;
-            starColor = mix(starColor, blackbodyRGB(Teff + flashT * 6000.0f),
-                            clamp(flashT * 0.5f, 0.0f, 1.0f));
-            starSize = min(starSize * (1.0f + 0.3f * flashT), 150.0f);
+            // COLOUR SHIFT REMOVED (2026-06-26). This used to push a hot star to
+            // blackbodyRGB(Teff + flashT·6000) → blue-white. At rest the engine's
+            // continuous collision heating kept a fraction of stars above the 2.5
+            // threshold AND this flash brightened them, so the blue-white flashers
+            // DOMINATED the field and buried the real mass-blackbody dwarf colours
+            // → "all white-blue" (Jamal 2026-06-26, found via the starMix/ramp
+            // diagnostics). Colour now stays the star's mass-blackbody; collision
+            // heat is a brightness flicker only, not a blue override.
+            starLum += flashT * 1.5f;
+            starSize = min(starSize * (1.0f + 0.2f * flashT), 150.0f);
         }
         out.pointSize = mix(out.pointSize, starSize, starMix);
         out.color     = mix(out.color, starColor, starMix);

@@ -1760,6 +1760,13 @@ int main() {
       // its real range at silence vs play to scale SN_TEMP_PEAK correctly (the
       // color temp is a 0–8 sim scale, NOT the 1e12 K kinetic HUD readout).
       float ctMin = 1e9f, ctMax = -1e9f, ctSum = 0.0f;
+      // MASS-SPREAD probe (2026-06-25): is there a real stellar mass spread
+      // (red dwarfs → giants), or are stars all ~one mass (Jamal: "only small
+      // and a bit larger, all same colour")? Buckets in M_sun. Tells us if the
+      // colour/size sameness is a RENDER gap (spread exists, dim dwarfs unseen)
+      // or a PHYSICS gap (collisions aren't growing a spread).
+      int massBucket[6] = {0}; // <0.5, 0.5-2, 2-10, 10-100, 100-1e3, 1e3+
+      float mMin = 1e30f, mMax = -1e30f;
       for (int i = 0; i < PROBE_N; i++) {
         const auto &p = probe[i];
         bool isWall = p.mass < 0.001f;
@@ -1776,6 +1783,12 @@ int main() {
           ctSum += ct;
           if (ct < ctMin) ctMin = ct;
           if (ct > ctMax) ctMax = ct;
+          float mm = p.mass;
+          if (mm < mMin) mMin = mm;
+          if (mm > mMax) mMax = mm;
+          int mb = (mm < 0.5f) ? 0 : (mm < 2.0f) ? 1 : (mm < 10.0f) ? 2
+                 : (mm < 100.0f) ? 3 : (mm < 1000.0f) ? 4 : 5;
+          massBucket[mb]++;
         }
       }
       float ctAvg = (liveCount > 0) ? ctSum / (float)liveCount : 0.0f;
@@ -1790,6 +1803,11 @@ int main() {
       printf("  [BAND] r<0.4:%d  0.4-0.8:%d  0.8-1.2:%d  1.2-1.6:%d  1.6-2.0:%d  2.0+:%d\n",
              liveBand[0], liveBand[1], liveBand[2], liveBand[3], liveBand[4],
              liveBand[5]+liveBand[6]+liveBand[7]+liveBand[8]+liveBand[9]);
+      printf("  [MASS Msun] min=%.2f max=%.1f | <0.5:%d  0.5-2:%d  2-10:%d  "
+             "10-100:%d  100-1k:%d  1k+:%d\n",
+             (liveCount ? mMin : 0.0f), (liveCount ? mMax : 0.0f),
+             massBucket[0], massBucket[1], massBucket[2], massBucket[3],
+             massBucket[4], massBucket[5]);
 
       fflush(stdout);
     }

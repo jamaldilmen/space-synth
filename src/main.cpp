@@ -830,7 +830,7 @@ int main() {
       }
       ImGui::Spacing();
 
-      if (ImGui::CollapsingHeader("PRESETS", ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (false && ImGui::CollapsingHeader("PRESETS", ImGuiTreeNodeFlags_DefaultOpen)) { // removed 2026-06-26 (non-functional)
         ImGui::Indent();
         const char *comboLabel = (selectedPresetIdx < 0)
                                      ? "Select..."
@@ -966,30 +966,17 @@ int main() {
                              "TIME x%.2f [shift+arrows]", timeWarp);
         }
 
-        UiSliderFloat("BH Size", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
-
-        ImGui::SeparatorText("BLACK HOLE TUNING");
-        UiSliderFloat("Lens Bend", &app.uiLensBend, 0.0f, 1.0f, "%.2f");
-        ImGui::SetItemTooltip("Spacetime bending strength (0 = off, 1 = full lens)");
-        UiSliderFloat("Arc Wrap", &app.uiArcWrap, 0.3f, 6.28f, "%.2f");
-        ImGui::SetItemTooltip("Max trail sweep in radians (6.28 = full circles)");
-        UiSliderFloat("Horizon Exposure", &app.uiArcGain, 0.0f, 16.0f, "%.1f");
-        ImGui::SetItemTooltip("Trail exposure near the event horizon");
-        UiSliderFloat("Trail Gain", &app.uiTrailGain, 0.0f, 4.0f, "%.2f");
-        ImGui::SetItemTooltip("Trail brightness multiplier");
-        UiSliderFloat("Streak Length", &app.uiStreakLen, 0.0f, 8.0f, "%.2f");
-        ImGui::SetItemTooltip("Motion-blur streak length for fast matter");
+        // BH-fakeness dials REMOVED (2026-06-26, Jamal "all the params from the
+        // black-hole fakeness gone, dead ends gone"): BH Size / Lens Bend / Arc
+        // Wrap / Horizon Exposure / Trail Gain drove the now-disabled fake
+        // lens/shadow/analytic-arc-trail layers (the de-stacking). Kept: the
+        // dials that drive REAL physics-colour/motion.
+        ImGui::SeparatorText("COLOUR");
         UiSliderFloat("Colour Spectrum", &app.uiColorTempK, 0.0f, 100000.0f, "%.0f");
         ImGui::SetItemTooltip("Speed->temperature colour gain: low = warm/red field, high = full red->blue spectrum (hot matter blue)");
         UiSliderFloat("Plasma Heat", &app.uiHeatGain, 0.0f, 6000.0f, "%.0f");
         ImGui::SetItemTooltip("Thermal heat->colour gain: low = warm/red field (white rare), high = play-heat drives white/blue plasma");
-        UiSliderFloat("Collapse %", &app.uiCollapseFrac, 0.05f, 1.0f, "%.2f");
-        ImGui::SetItemTooltip("Fraction of the field's mass in the core for the hole to fully form (pacing)");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          app.uiShadowRadius = 1.0f;
-        ImGui::SetItemTooltip(
-            "Black-hole shadow radius (sim coords). Physical value ~2.6; "
-            "lower reads proportional to the disk.");
+        // Streak Length + Collapse % REMOVED (2026-06-26, Jamal: dead).
 
         UiSliderFloat("Sharpness", &app.uiSharpness, 1.0f, 40.0f, "%.1f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -1008,7 +995,7 @@ int main() {
         ImGui::Unindent();
       }
 
-      if (ImGui::CollapsingHeader("NEW SCIENCE (Phase 9)",
+      if (false && ImGui::CollapsingHeader("NEW SCIENCE (Phase 9)", // removed 2026-06-26
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         ImGui::Checkbox("ODS-06 Black Holes", &app.uiBlackHoles);
@@ -1018,7 +1005,7 @@ int main() {
         ImGui::Unindent();
       }
 
-      if (ImGui::CollapsingHeader("INDUSTRY DEBUGGING (Phase 7)")) {
+      if (false && ImGui::CollapsingHeader("INDUSTRY DEBUGGING (Phase 7)")) { // removed 2026-06-26
         ImGui::Indent();
 
         auto stats = renderer.getPhysicsStats();
@@ -1071,7 +1058,7 @@ int main() {
         ImGui::Unindent();
       }
 
-      if (ImGui::CollapsingHeader("VJ MODE & AUDIO INPUT",
+      if (false && ImGui::CollapsingHeader("VJ MODE & AUDIO INPUT", // removed 2026-06-26
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         ImGui::Checkbox("Enable VJ Mode (Mic/System In)", &app.uiVJMode);
@@ -1118,17 +1105,9 @@ int main() {
         }
         ImGui::SetItemTooltip("Oscillator waveform type");
 
-        if (UiSliderFloat("Drive", &app.uiScale, 1.0f, 10.0f, "%.1f")) {
-          // This was previously mislabeled as
-          // 'Scale' in one place and 'Drive' in
-          // another. Let's use it for Scale (as
-          // requested) and move Drive to a separate
-          // slider if needed.
-          renderer.setScale(app.uiScale);
-        }
-        ImGui::SetItemTooltip("Filter saturation and analog clipping "
-                              "(Moog-style)");
-
+        // "Drive" slider REMOVED (2026-06-26, Jamal: "the drive button, gooo,
+        // destroyed everything anyways"). It was a mislabeled scale/speedCap dial
+        // that nuked the sim. Gone.
         if (ImGui::Checkbox("BBD Chorus", &app.uiChorus)) {
           synth.chorus().setEnabled(app.uiChorus);
         }
@@ -1178,16 +1157,10 @@ int main() {
         ImGui::Unindent();
       }
 
-      bool kbMode = synth.keyboardMode();
-      if (ImGui::Checkbox("Keyboard Mode", &kbMode)) {
-        synth.setKeyboardMode(kbMode);
-      }
-      ImGui::SetItemTooltip("Toggle between Piano layout (Keyboard) "
-                            "and "
-                            "linear mapping (Full Range)");
+      // Keyboard Mode toggle REMOVED (2026-06-26, Jamal).
       ImGui::Unindent();
 
-      if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (false && ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) { // removed 2026-06-26 (jitter unlinked, wave depth dead)
         ImGui::Indent();
         UiSliderFloat("Jitter (not linked)", &app.uiJitter, 0.0f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -1298,7 +1271,7 @@ int main() {
         ImGui::Unindent();
       }
 
-      if (ImGui::CollapsingHeader("VJ FX (Resolume-style)",
+      if (false && ImGui::CollapsingHeader("VJ FX (Resolume-style)", // removed 2026-06-26
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         const char *mirrorNames[] = {"Off", "Horizontal", "Vertical", "Quad"};
@@ -1347,7 +1320,7 @@ int main() {
         ImGui::Unindent();
       }
 
-      if (ImGui::CollapsingHeader("PHYSICS STATS")) {
+      if (false && ImGui::CollapsingHeader("PHYSICS STATS")) { // removed 2026-06-26
         ImGui::Indent();
         auto stats = renderer.getPhysicsStats();
         ImGui::Text("Kinetic Energy: %.4f", stats.kineticEnergy);
@@ -1423,7 +1396,7 @@ int main() {
         ImGui::Unindent();
       }
 
-      if (ImGui::CollapsingHeader("DEBUG GPU",
+      if (false && ImGui::CollapsingHeader("DEBUG GPU", // removed 2026-06-26
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         ImGui::Text("dt: %f | Particles: %d", dt, app.uiParticleCount);
@@ -1469,9 +1442,7 @@ int main() {
       UiSliderFloat("Grain##mp", &app.uiGrainAlpha, 0.01f, 1.0f, "%.3f");
       UiSliderFloat("Jitter##mp", &app.uiJitter, 0.0f, 5.0f, "%.2f");
 
-      ImGui::SeparatorText("Black Hole");
-      UiSliderFloat("BH Size##mp", &app.uiShadowRadius, 0.3f, 5.0f, "%.2f");
-      UiSliderFloat("Disk Thickness##mp", &app.uiDiskThickness, 0.02f, 1.0f, "%.3f");
+      // BH Size / Disk Thickness dials REMOVED (2026-06-26) — fake lens/disk.
 
       ImGui::SeparatorText("Motion");
       if (UiSliderFloat("Space Scale##mp", &app.uiScale, 10.0f, 2000.0f, "%.0f"))

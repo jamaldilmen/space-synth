@@ -14,6 +14,7 @@
 #include "core/resource_helper.h"
 #include "core/app_state.h"
 #include "core/physics_constants.h"
+#include "core/units.h" // space::units::kTimeLapse for the UNIVERSE TIME readout
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -272,6 +273,9 @@ int main() {
   // ── TIME WARP (SHIFT+←/→) — multiplicative ramp, rides key-repeat like
   // the camera arrows: hold to sweep. ×1.3 per tick, range 1/64× … 64×.
   float timeWarp = 1.0f;
+  // Running UNIVERSE CLOCK — accumulated PHYSICS time (real seconds), ticked in
+  // the sim loop (kTimeLapse·simDt per frame). Shown in adaptive human units.
+  double universeClockSec = 0.0;
 
   // ── Key events ──────────────────────────────────────────────────────
   window.setKeyCallback([&](const KeyEvent &e) {
@@ -746,6 +750,48 @@ int main() {
                             app.uiOrthoMode ? "Orthogonal" : "Perspective");
         ImGui::Unindent();
       }
+      ImGui::Spacing();
+
+      // ── UNIVERSE TIME — Universe-Sandbox-style speed control (Phase 2) ─────
+      // Pause + discrete speed presets wired to the existing simPaused/timeWarp
+      // (also space / shift+arrows). Live readout = how much PHYSICS time elapses
+      // per real second = kTimeLapse·timeWarp, in adaptive units.
+      ImGui::SeparatorText("UNIVERSE TIME");
+      ImGui::Indent();
+      {
+        if (ImGui::Button(simPaused ? " PLAY " : " PAUSE")) simPaused = !simPaused;
+        ImGui::SameLine();
+        const float kSpeeds[] = {0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 64.0f};
+        for (int i = 0; i < 8; ++i) {
+          bool active = !simPaused &&
+                        std::fabs(timeWarp - kSpeeds[i]) < 0.01f * kSpeeds[i] + 1e-4f;
+          if (active)
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 1.0f, 1.0f));
+          char lbl[12];
+          std::snprintf(lbl, sizeof(lbl), "%gx", kSpeeds[i]);
+          if (ImGui::SmallButton(lbl)) { timeWarp = kSpeeds[i]; simPaused = false; }
+          if (active) ImGui::PopStyleColor();
+          if (i < 7) ImGui::SameLine();
+        }
+        // Adaptive human-unit formatter for a duration in seconds.
+        auto fmtTime = [](double s, double &v, const char *&u) {
+          v = s; u = "sec";
+          if (s >= 31557600.0)   { v = s / 31557600.0; u = "years"; }
+          else if (s >= 86400.0) { v = s / 86400.0;    u = "days";  }
+          else if (s >= 3600.0)  { v = s / 3600.0;     u = "hours"; }
+          else if (s >= 60.0)    { v = s / 60.0;       u = "min";   }
+        };
+        // Running UNIVERSE CLOCK (cosmic time elapsed) + the rate per real second.
+        double cv; const char *cu; fmtTime(universeClockSec, cv, cu);
+        double rv; const char *ru;
+        fmtTime(simPaused ? 0.0 : space::units::kTimeLapse * (double)timeWarp, rv, ru);
+        if (simPaused)
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "PAUSED");
+        else
+          ImGui::Text("%g x real-time   ·   %.2f %s / real-sec", timeWarp, rv, ru);
+        ImGui::Text("Universe clock: %.2f %s elapsed", cv, cu);
+      }
+      ImGui::Unindent();
       ImGui::Spacing();
 
       // ── REAL SCALE: the Milky Way unit system, derived from the Sgr A*
@@ -1682,12 +1728,16 @@ int main() {
     // Above ~8× the Verlet integrator coarsens (forces are per-frame
     // impulses) — honest tradeoff for review speed.
     float simDt = dt * timeWarp;
-    if (!simPaused)
+    if (!simPaused) {
+      // Tick the universe clock by the PHYSICS time this frame represents
+      // (kTimeLapse maps integrator time → real physics seconds).
+      universeClockSec += (double)space::units::kTimeLapse * (double)simDt;
       renderer.computeStep(simDt, voiceData.data(), (int)voiceData.size(),
                            smoothedAmp, app.uiWaveDepth,
                            app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
                            app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,
                            app.uiRestLength, debugFlags);
+    }
 
     renderer.render(config, viewProj);
 

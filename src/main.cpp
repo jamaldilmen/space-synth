@@ -819,8 +819,23 @@ int main() {
         ImGui::Text("BH mass:  %.3e M_sun", bh.mass_Msun);
         ImGui::Text("Spin a*:  %.2f", a);
         ImGui::Text("r_g:      %.4f AU  (%.2e km)", rg_AU, bh.r_g_m / 1000.0);
-        ImGui::Text("Scale:    1 sim unit = %.4f AU", scale_AU);
-        ImGui::Text("Horizon:  %.4f AU", horizon_AU);
+        // Cosmic distance in LIGHT-units (light travels 1 AU in ~499 s). Adaptive
+        // so it reads in human light-distance (light-sec → light-min → ... →
+        // light-years) — the "light-years stuff" in honest units for this scale.
+        auto lightStr = [](double au, char *out, size_t n) {
+          double ls = au * 499.004784; // light-seconds per AU
+          double v = ls; const char *u = "light-sec";
+          if (ls >= 31557600.0)   { v = ls / 31557600.0; u = "light-yr";   }
+          else if (ls >= 86400.0) { v = ls / 86400.0;    u = "light-days"; }
+          else if (ls >= 3600.0)  { v = ls / 3600.0;     u = "light-hr";   }
+          else if (ls >= 60.0)    { v = ls / 60.0;       u = "light-min";  }
+          std::snprintf(out, n, "%.2f %s", v, u);
+        };
+        char lbuf[32];
+        lightStr(scale_AU, lbuf, sizeof(lbuf));
+        ImGui::Text("Scale:    1 sim unit = %.4f AU  (%s)", scale_AU, lbuf);
+        lightStr(horizon_AU, lbuf, sizeof(lbuf));
+        ImGui::Text("Horizon:  %.4f AU  (%s)", horizon_AU, lbuf);
         ImGui::Separator();
         ImGui::Text("Particle: 1.00 M_sun  (1 star)");
         ImGui::Text("Field:    %.2e stars = %.2e M_sun (Kroupa IMF)",

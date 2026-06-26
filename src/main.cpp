@@ -743,13 +743,59 @@ int main() {
       ImGui::Begin("PHYSICS ARCHITECT", nullptr,
                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-      if (ImGui::CollapsingHeader("GLOBALS", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Indent();
-        ImGui::Text("Performance View");
-        ImGui::TextDisabled("FPS: %.1f | Mode: %s", ImGui::GetIO().Framerate,
-                            app.uiOrthoMode ? "Orthogonal" : "Perspective");
-        ImGui::Unindent();
+      // ═══════════ HUD — STATUS (info-forward, always at top) ══════════════
+      // The values that matter, prominent — Stellaris/Elite style. Controls
+      // follow below. (Phase 3 redesign 2026-06-26.)
+      {
+        auto hs = renderer.getPhysicsStats();
+        float fieldM = std::max(hs.fieldMassMsun, 1.0f);
+        const ImVec4 accent(0.45f, 0.65f, 1.0f, 1.0f);
+        const ImVec4 amber(1.0f, 0.6f, 0.2f, 1.0f);
+        auto fmtT = [](double sec, double &v, const char *&u) {
+          v = sec; u = "sec";
+          if (sec >= 31557600.0) { v = sec / 31557600.0; u = "years"; }
+          else if (sec >= 86400.0) { v = sec / 86400.0; u = "days"; }
+          else if (sec >= 3600.0)  { v = sec / 3600.0;  u = "hours"; }
+          else if (sec >= 60.0)    { v = sec / 60.0;    u = "min"; }
+        };
+        auto Meter = [](const char *lbl, float frac, ImVec4 c, const char *val) {
+          frac = frac < 0.0f ? 0.0f : (frac > 1.0f ? 1.0f : frac);
+          ImGui::TextColored(ImVec4(1, 1, 1, 0.7f), "%-11s", lbl);
+          ImGui::SameLine();
+          ImGui::PushStyleColor(ImGuiCol_PlotHistogram, c);
+          ImGui::ProgressBar(frac, ImVec2(-1.0f, 14.0f), val);
+          ImGui::PopStyleColor();
+        };
+
+        double cv; const char *cu; fmtT(universeClockSec, cv, cu);
+        ImGui::PushStyleColor(ImGuiCol_Text, accent);
+        ImGui::Text("UNIVERSE   %.1f %s", cv, cu);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (simPaused)
+          ImGui::TextColored(amber, "  [ PAUSED ]");
+        else
+          ImGui::TextDisabled("   %g x  ·  %.0f fps", timeWarp,
+                              ImGui::GetIO().Framerate);
+
+        ImGui::Spacing();
+        char vb[40];
+        std::snprintf(vb, sizeof(vb), "%.1f%%", 100.0f * hs.coreMassMsun / fieldM);
+        Meter("COLLAPSE", hs.coreMassMsun / fieldM, ImVec4(0.4f, 0.9f, 1.0f, 1), vb);
+        if (hs.bhStrength >= 1.0f) std::snprintf(vb, sizeof(vb), "FORMED");
+        else std::snprintf(vb, sizeof(vb), "%.0f%%", 100.0f * hs.bhStrength);
+        Meter("BLACK HOLE", std::min(hs.bhStrength, 1.0f), amber, vb);
+        std::snprintf(vb, sizeof(vb), "%.3f c", hs.avgSpeed);
+        Meter("ORBITAL v", hs.avgSpeed, ImVec4(0.5f, 0.7f, 1.0f, 1), vb);
+        std::snprintf(vb, sizeof(vb), "%.1e K", (double)hs.avgTemp);
+        Meter("PLASMA T",
+              (float)(std::log10(std::max((double)hs.avgTemp, 1.0)) / 13.0),
+              ImVec4(1.0f, 0.7f, 0.3f, 1), vb);
+        ImGui::Spacing();
+        ImGui::TextDisabled("Field %.2e M_sun   ·   biggest %.0f M_sun",
+                            (double)hs.fieldMassMsun, hs.maxBodyMsun);
       }
+      ImGui::Separator();
       ImGui::Spacing();
 
       // ── UNIVERSE TIME — Universe-Sandbox-style speed control (Phase 2) ─────
@@ -887,6 +933,35 @@ int main() {
         ImGui::Text("  Plasma T (inner):  %.2e K  [%s]", tmax_K, stateOf(tmax_K));
         ImGui::Text("  Plasma T (mean):   %.2e K  [%s]", tavg_K, stateOf(tavg_K));
         ImGui::TextDisabled("  [sim] orbV max=%.4f avg=%.4f  KE=%.2f", s.maxSpeed, s.avgSpeed, s.kineticEnergy);
+
+        // ── LIVE METERS (Ableton-style bars) — the moving values at a glance ──
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "METERS");
+        auto Meter = [](const char *label, float frac, ImVec4 col,
+                        const char *val) {
+          frac = frac < 0.0f ? 0.0f : (frac > 1.0f ? 1.0f : frac);
+          ImGui::Text("%-12s", label);
+          ImGui::SameLine();
+          ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
+          ImGui::ProgressBar(frac, ImVec2(-1.0f, 12.0f), val);
+          ImGui::PopStyleColor();
+        };
+        float fieldM2 = std::max(s.fieldMassMsun, 1.0f);
+        char vb[32];
+        std::snprintf(vb, sizeof(vb), "%.1f%%", 100.0f * s.coreMassMsun / fieldM2);
+        Meter("Collapse", s.coreMassMsun / fieldM2, ImVec4(0.4f, 0.9f, 1.0f, 1), vb);
+        std::snprintf(vb, sizeof(vb), "%.0f%%", 100.0f * std::min(s.bhStrength, 1.0f));
+        Meter("Black hole", std::min(s.bhStrength, 1.0f), ImVec4(1.0f, 0.5f, 0.2f, 1), vb);
+        std::snprintf(vb, sizeof(vb), "%.3f c", vavg_c);
+        Meter("Orbital v", (float)vavg_c, ImVec4(0.5f, 0.7f, 1.0f, 1), vb);
+        std::snprintf(vb, sizeof(vb), "%.1e K", tavg_K);
+        Meter("Plasma T", (float)(std::log10(std::max(tavg_K, 1.0)) / 13.0),
+              ImVec4(1.0f, 0.7f, 0.3f, 1), vb);
+        std::snprintf(vb, sizeof(vb), "%g x", timeWarp);
+        Meter("Time warp",
+              (float)((std::log2(std::max((double)timeWarp, 1e-3)) + 6.0) / 12.0),
+              ImVec4(0.7f, 0.5f, 1.0f, 1), vb);
+
         ImGui::Unindent();
       }
       ImGui::Spacing();

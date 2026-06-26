@@ -82,6 +82,10 @@ struct PhysicsUniforms {
     float horizonR;              // 144: honest geometric horizon r_h (0 = no hole)
     float dtPrev;                // 148: previous frame's dt → time-corrected Verlet (framerate-independent orbits)
     float centerGM;              // 152: GM of the hard-coded central SMBH (Sgr A*) the cluster orbits
+    uint bhToggles;              // 156: BH-mechanism on/off bitmask (UI). Bits:
+                                 //  0 field self-gravity, 1 central SMBH,
+                                 //  2 seed capture, 3 seed↔seed merge,
+                                 //  4 origin-pin, 5 relaxation, 6 resurrection
 };
 
 struct SpatialHashUniforms {
@@ -252,7 +256,7 @@ kernel void compute_physics(
     // the stars→BH collapse (the working months-old process). Only the dead walls
     // revive; the seed keeps growing (the accretion engine). The 5.9e9 runaway is
     // a separate concern to address WITHOUT breaking accretion.
-    if (mass <= 0.001f && u.totalAmplitude > 0.02f) {
+    if ((u.bhToggles & 0x40u) && mass <= 0.001f && u.totalAmplitude > 0.02f) {  // bit6: resurrection
         float r_home = p.spinW.x;
         if (r_home > 0.001f) {
             float theta = as_type<float>(p.entanglement.z);
@@ -662,7 +666,7 @@ kernel void compute_physics(
     // stars piled at origin. The seed parks at the centre; the disk spins
     // around it. OFF during play (×(1-playGate)) — this origin spring was the
     // ball pinned dead-center while playing.
-    if (mass >= M_BH_SEED && mass < 1e8f) {
+    if ((u.bhToggles & 0x10u) && mass >= M_BH_SEED && mass < 1e8f) {  // bit4: origin-pin
         float3 toO = -float3(px, py, pz);
         float3 kick = toO * (0.3f * dt);
         float kl = length(kick);
@@ -683,7 +687,7 @@ kernel void compute_physics(
     // inside its capture radius (tidal + gravitational focusing), I am eaten:
     // I add my exact mass to the seed's accumulator and die, this thread, no
     // races. Seeds themselves and walls don't get eaten.
-    if (su.gridSize > 0 && mass > 0.001f && mass < M_BH_SEED &&
+    if ((u.bhToggles & 0x4u) && su.gridSize > 0 && mass > 0.001f && mass < M_BH_SEED &&  // bit2: seed capture
         playGate < 0.5f &&                              // no BH accretion while playing
         !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) &&
         fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
@@ -774,7 +778,7 @@ kernel void compute_physics(
     // distinct bodies, so they coalesce — this is what produces the runaway to
     // one giant and, with it, the geometric BH pop. Same phase/domain guards,
     // atomic accumulator and park-on-death as the star capture above.
-    if (su.gridSize > 0 && mass >= M_BH_SEED && mass < 1e8f &&
+    if ((u.bhToggles & 0x8u) && su.gridSize > 0 && mass >= M_BH_SEED && mass < 1e8f &&  // bit3: seed-seed merge
         playGate < 0.5f &&
         !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) &&
         fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
@@ -853,7 +857,7 @@ kernel void compute_physics(
         // M☉) ≫ the field's GM, so it sets the orbits; the field self-gravity below
         // is the secondary star↔star clumping. Small ε (point mass); the c·dt gkick
         // cap below keeps deep infall relativistically bounded.
-        {
+        if (u.bhToggles & 0x2u) {            // bit1: central SMBH pull (toggle)
             float3 toCen = -gpos;
             float dc2 = dot(gpos, gpos) + 0.05f;
             gacc += toCen * (u.centerGM * rsqrt(dc2) / dc2);
@@ -865,7 +869,8 @@ kernel void compute_physics(
         float nearM = 0.0f;
         float3 nearMP = float3(0.0f);
         bool hashFresh = !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f);
-        if (su.gridSize > 0 && hashFresh &&
+        if ((u.bhToggles & 0x1u) && su.gridSize > 0 && hashFresh &&  // bit0: field self-gravity
+            fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(pz) < su.halfExtent) {
             int gcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
@@ -917,7 +922,7 @@ kernel void compute_physics(
 
         // FAR field: everything not in the near cells, as one monopole.
         float farM = max(Mtot - nearM, 0.0f);
-        if (farM > 0.5f) {
+        if ((u.bhToggles & 0x1u) && farM > 0.5f) {   // bit0: field self-gravity
             float3 farCom = (float3(u.comX, u.comY, u.comZ) * Mtot - nearMP) / farM;
             float3 toC = farCom - gpos;
             float  d2  = dot(toC, toC) + 0.25f;              // ε² far (horizon scale)
@@ -1000,7 +1005,8 @@ kernel void compute_physics(
                 // Still spin-preserving (tangential untouched) → a settling
                 // DISK, not a ball; still density-gated (cnt/128) → only the
                 // dense core dissipates fast, the diffuse halo orbits free.
-                float relax = min(cnt * (1.0f / 128.0f), 1.0f) * (6.0f * dt) * (1.0f - playGate); // accretion damping OFF while playing
+                float relax = min(cnt * (1.0f / 128.0f), 1.0f) * (6.0f * dt) * (1.0f - playGate)
+                              * ((u.bhToggles & 0x20u) ? 1.0f : 0.0f); // bit5: relaxation damping toggle
                 // DYNAMICAL FRICTION / MASS SEGREGATION — the accretion
                 // accelerator. Chandrasekhar drag scales LINEARLY with the
                 // body's mass: a heavy body dumps its orbital energy into

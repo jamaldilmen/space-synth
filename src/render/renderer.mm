@@ -128,6 +128,7 @@ struct Renderer::Impl {
   // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
   bool collisionsEnabled = false;
+  unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI), default all-on
   bool bondNetworkEnabled = false;
 
   // Noether symmetry breaking
@@ -840,6 +841,8 @@ void Renderer::render(const RenderConfig &config) {
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
   cam.tuneHeatK = config.heatGain;
+  cam.bhToggles = config.bhToggles;
+  impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -963,6 +966,8 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
   cam.tuneHeatK = config.heatGain;
+  cam.bhToggles = config.bhToggles;
+  impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -1011,6 +1016,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // instead of plunging from inside it. 1e5 M☉ → ISCO ≈ 0.5 sim. TUNABLE knob:
     // bigger = faster/tighter orbits (ISCO grows), smaller = wider/slower.
     physicsUniforms.centerGM = (float)space::units::gmSim(4297000.0);
+    physicsUniforms.bhToggles = bhToggles;    // UI on/off bitmask → physics gates
     physicsUniforms.horizonR = lastHorizonR;  // honest r_h (1-frame lag) → pressure-yield in the kernel
     physicsUniforms.bhX = bhPosX;
     physicsUniforms.bhY = bhPosY;

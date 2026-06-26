@@ -38,6 +38,16 @@ struct AppState {
   bool  uiOrthoMode = true;
   bool  uiCollisions = false;
   bool  uiBondNetwork = false; // nervous-system-of-light bond lines (hardened state)
+  // ── BLACK-HOLE mechanism toggles (UI on/off, default all-on = current) ──
+  bool  uiTogFieldGravity = true;  // bit0  field self-gravity (near+far grid)
+  bool  uiTogCentralSMBH  = true;  // bit1  hard-coded central SMBH pull
+  bool  uiTogSeedCapture  = true;  // bit2  star→seed capture (eating)
+  bool  uiTogSeedMerge    = true;  // bit3  seed↔seed merge
+  bool  uiTogOriginPin    = true;  // bit4  seed origin-pin spring
+  bool  uiTogRelaxation   = true;  // bit5  accretion relaxation damping
+  bool  uiTogResurrection = true;  // bit6  revive eaten particles on play
+  bool  uiTogSeedRender   = true;  // bit7  bright discrete seed render (rest)
+  bool  uiTogLensShadow   = true;  // bit8  screen-space lens/shadow
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

@@ -36,6 +36,7 @@ struct CameraUniforms {
     float tuneStreakLen;     // motion-streak length multiplier (UI dial)
     float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (UI dial, was pad)
     float tuneHeatK;         // thermal heat→Kelvin gain (UI dial): low = warm/red, high = white plasma
+    uint bhToggles;          // BH-mechanism on/off bitmask (UI); bit7 seed-render, bit8 lens/shadow
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -305,7 +306,8 @@ vertex VertexOut particle_vertex(
     // full deflection as r_s(M_enc) approaches the enclosure radius. The
     // envelope phase no longer gates this: mass does.
     float lensRamp = smoothstep(0.2f, 0.9f, cam.bhStrength);
-    bool lensActive = (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f);
+    bool lensActive = (cam.bhToggles & 0x100u) &&  // bit8: lens/shadow toggle
+                      (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f);
     // No hole (no lens, or perspective) → the secondary image doesn't exist.
     if (isSecondary && !lensActive) cullThis = true;
     if (lensActive) {
@@ -703,8 +705,15 @@ vertex VertexOut particle_vertex(
     // size = the CAPTURE radius, which grows as M^(1/3) with every meal: the
     // object visibly fattens as it eats. Flares (fresh meals, temp spike)
     // surge it hotter, bluer and bigger; the raytracer shadow takes over once
-    // the global geometric signal trips. Overrides every phase.
-    if (in.posW.w >= 50.0f) {
+    // the global geometric signal trips.
+    // GATED TO REST (2026-06-26): only render the discrete bright accretion blob
+    // at REST (starMix high). During PLAY the star SUPERNOVAS — it must STOP
+    // being a discrete star and disperse into the ejecta GAS like everything
+    // else (the Veil Nebula has NO stars inside the remnant — Jamal). So during
+    // play this branch is skipped and the big star falls through to the play/gas
+    // colour path. Render-only: the physics mass is untouched, so rest-state
+    // accretion is unaffected.
+    if ((cam.bhToggles & 0x80u) && in.posW.w >= 50.0f && starMix > 0.5f) {  // bit7: seed render
         float Mbh = in.posW.w;
         // VISIBLE ACCUMULATION (2026-06-22): render radius grows on the REAL
         // stellar relation R∝M^0.8 (the proof + the star branch + this file's

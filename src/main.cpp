@@ -898,6 +898,30 @@ int main() {
         ImGui::SetItemTooltip(
             "Color particles by Feynman phase (action integral)");
 
+        // ── BLACK-HOLE MECHANISM TOGGLES (audit / follow-the-science) ─────────
+        // Each one on/off so we can isolate every piece of the BH and rebuild
+        // the lifecycle (star → supernova → BH) in honest order.
+        if (ImGui::CollapsingHeader("Black Hole — mechanisms")) {
+          ImGui::Checkbox("Field self-gravity", &app.uiTogFieldGravity);
+          ImGui::SetItemTooltip("Near+far grid gravity (star↔star clumping)");
+          ImGui::Checkbox("Central SMBH pull", &app.uiTogCentralSMBH);
+          ImGui::SetItemTooltip("Hard-coded Sgr A* the cluster orbits");
+          ImGui::Checkbox("Seed capture (eating)", &app.uiTogSeedCapture);
+          ImGui::SetItemTooltip("Stars eaten by a seed → parked (the 'vanish')");
+          ImGui::Checkbox("Seed-seed merge", &app.uiTogSeedMerge);
+          ImGui::SetItemTooltip("Seeds coalesce into one (runaway → BH)");
+          ImGui::Checkbox("Seed origin-pin", &app.uiTogOriginPin);
+          ImGui::SetItemTooltip("Spring pulling seeds to centre (scripted)");
+          ImGui::Checkbox("Relaxation damping", &app.uiTogRelaxation);
+          ImGui::SetItemTooltip("Accretion drag near the core (dissipative)");
+          ImGui::Checkbox("Resurrection on play", &app.uiTogResurrection);
+          ImGui::SetItemTooltip("Eaten particles revive at home when you play");
+          ImGui::Checkbox("Bright seed render", &app.uiTogSeedRender);
+          ImGui::SetItemTooltip("Discrete bright accretion blob at rest");
+          ImGui::Checkbox("Lens / shadow", &app.uiTogLensShadow);
+          ImGui::SetItemTooltip("Screen-space gravitational lens + shadow");
+        }
+
         ImGui::Checkbox("Ortho Camera", &app.uiOrthoMode);
         ImGui::SetItemTooltip(
             "Toggle between Orthographic (HTML vibe) and Perspective");
@@ -1512,6 +1536,17 @@ int main() {
     config.streakLen = app.uiStreakLen;
     config.colorTempK = app.uiColorTempK;
     config.heatGain = app.uiHeatGain;
+    // Pack the BH mechanism toggles into the bitmask uniform.
+    config.bhToggles =
+        ((app.uiTogFieldGravity ? 1u : 0u) << 0) |
+        ((app.uiTogCentralSMBH  ? 1u : 0u) << 1) |
+        ((app.uiTogSeedCapture  ? 1u : 0u) << 2) |
+        ((app.uiTogSeedMerge    ? 1u : 0u) << 3) |
+        ((app.uiTogOriginPin    ? 1u : 0u) << 4) |
+        ((app.uiTogRelaxation   ? 1u : 0u) << 5) |
+        ((app.uiTogResurrection ? 1u : 0u) << 6) |
+        ((app.uiTogSeedRender   ? 1u : 0u) << 7) |
+        ((app.uiTogLensShadow   ? 1u : 0u) << 8);
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

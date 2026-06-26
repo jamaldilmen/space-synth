@@ -79,6 +79,7 @@ struct RenderConfig {
   float invert = 0.0f;
   float posterize = 0.0f;
   float blurAmount = 0.0f; // multi-pass Gaussian blur (ping-pong)
+  unsigned int bhToggles = 0x1FFu; // BH-mechanism on/off bitmask (UI toggles), default all-on
 };
 
 // Debug bitmasks for PhysicsUniforms.debugFlags
@@ -154,6 +155,7 @@ struct CameraUniforms {
   float tuneStreakLen;     // motion-streak length multiplier (default 1)
   float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (live tune, was pad)
   float tuneHeatK;         // thermal heat→Kelvin gain (live tune): low = warm/red, high = white
+  unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI); bit7 seed-render, bit8 lens
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)
@@ -219,6 +221,7 @@ struct PhysicsUniforms {
   float horizonR = 0.0f;    // honest geometric horizon r_h [sim] (0 = no hole); pressure yields inside it
   float dtPrev = 1.0f / 120.0f; // previous frame's dt → time-corrected Verlet (framerate-independent orbits)
   float centerGM = 0.0f;        // GM of the hard-coded central SMBH (Sgr A*) the cluster orbits
+  unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI toggles); default all-on
 };
 
 // Spatial hash uniforms for collision grid

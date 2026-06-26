@@ -307,6 +307,9 @@ kernel void compute_physics(
     if (u.envelopePhase > 3.5f) baseFric = pow(0.95f, dt);
 
     float dynamicFric = baseFric;
+    // CORE-COLLAPSE COOLING factor (set in the self-gravity block once local
+    // density is known; applied at finalV). 1 = no cooling.
+    float coolMul = 1.0f;
 
     float currentTemp = p.prevW.w; // ODS-03: Thermal state
 
@@ -927,6 +930,27 @@ kernel void compute_physics(
             float3 toC = farCom - gpos;
             float  d2  = dot(toC, toC) + 0.25f;              // ε² far (horizon scale)
             gacc += toC * (G1 * farM * rsqrt(d2) / d2);
+        }
+
+        // ── CORE-COLLAPSE COOLING (gravothermal contraction) — bit5 ──────────
+        // Real core collapse: dense regions RADIATE orbital energy (collisional
+        // / radiative cooling) → lose kinetic support → CONTRACT → density rises
+        // → runaway → the crushed core reaches r_s ≥ radius = a real horizon.
+        // This is the honest "gravity does its thing → core collapse → black
+        // hole" (Jamal), replacing the fake relaxation/seed machinery. Energy
+        // changes STATE (kinetic → radiated), it is not deleted. Cooling rate
+        // scales with LOCAL density (nearM, mass in the 27 neighbour cells) so
+        // only the dense core collapses fast; the diffuse halo orbits free. Bled
+        // off the Verlet velocity at finalV via coolMul. Rest-only.
+        if (u.bhToggles & 0x20u) {
+            // [TEST 2026-06-26] GLOBAL strong cooling (not density-gated): the
+            // density-gated version never triggered (diffuse cluster never got
+            // dense → chicken-and-egg). Bleed energy everywhere so the cluster
+            // loses kinetic support and COLLAPSES → does it reach a horizon
+            // (collapse→BH works) or hit the softening/resolution wall? Plus a
+            // density boost so the core dissipates hardest.
+            float dens = clamp(nearM / 40.0f, 0.0f, 1.0f);
+            coolMul = 1.0f - (2.0f + 6.0f * dens) * dt * (1.0f - playGate);
         }
 
         // dt² — NOT the usual force convention here. shiftV is a PER-FRAME
@@ -1646,7 +1670,7 @@ kernel void compute_physics(
     // hardness only ridgePull acts; on the ridge it's ~0 → still AND sharp. The
     // speed cap below bounds it; the rigid spin folds in later (~1715) → trails live.
     float soften = 1.0f - hardness;
-    float3 finalV = (float3(vpx, vpy, vpz) * dynamicFric + float3(shiftVx, shiftVy, shiftVz)) * soften
+    float3 finalV = (float3(vpx, vpy, vpz) * dynamicFric * coolMul + float3(shiftVx, shiftVy, shiftVz)) * soften
                   + ridgePull * (hardness * 8.0f); // 8.0 = condense strength (lever)
 
     // PHYSICAL LIGHT-SPEED CAP (Phase A1, 2026-06-13 — fully physical). Nothing

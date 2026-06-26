@@ -28,8 +28,10 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   // Cluster orbits the dominant central SMBH (Sgr A* 4.297e6 M☉, r_g≈3.6 sim,
   // ISCO≈22 sim). Inner edge OUTSIDE the ISCO so orbits are stable + sub-c
   // (v/c=√(r_g/r): 0.38c at r=25 → 0.20c at r=60). Volumetric, not a disk.
-  const float r_inner   = 25.0f;  // just outside the central ISCO (~22)
-  const float r_outer   = 60.0f;  // volumetric galaxy outer radius
+  const float r_inner   = 25.0f;  // reverted from 2: the horizon-scale domain made
+  const float r_outer   = 60.0f;  // softening tiny → cap-ejection ("big bang"). The
+                                  // bound star-map scale; BH collapse needs adaptive
+                                  // sub-stepping, not a smaller domain.
   std::uniform_real_distribution<float> u01(0.0f, 1.0f);
   std::uniform_real_distribution<float> phiDist(0.0f, 2.0f * (float)M_PI);
   for (auto &p : particles_) {
@@ -94,9 +96,27 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     // Keplerian speed around (central SMBH + the field mass interior to r), so
     // spawn orbits exactly balance the gravity the stars live in → clean fast
     // circular orbits instead of radial plunge.
-    const float kCenterGM = (float)units::gmSim(4297000.0); // Sgr A* — MUST match the shader's u.centerGM
+    // SELF-BOUND spawn (2026-06-26): velocity from the FIELD's OWN gravity only.
+    // The old `kCenterGM + fieldEncGM` sized the orbit for the 4.3e6 M☉ central
+    // SMBH; with that crutch toggled OFF (the real-physics base), only the weak
+    // field self-gravity remains, so the over-sped cluster flew apart (meanR
+    // 60→660, unbound, never collapses). Using fieldEncGM alone (enclosed mass
+    // ∝ r³ inside the uniform ball → solid-body v∝r) makes the cluster bound by
+    // its OWN mass — the scale is now self-consistent, so gravity can hold and
+    // collapse it toward a real geometric horizon. Jamal: "scale must be correct".
     float fieldEncGM = (r3 < Rc) ? kGM * (r3 * r3 * r3) / (Rc * Rc * Rc) : kGM;
-    float vmag = std::sqrt((kCenterGM + fieldEncGM) / std::max(r3, 0.5f)) * kDt;
+    // COLD / SUB-VIRIAL spawn (2026-06-26): 0.3× the circular speed. At full
+    // v_circ the cluster still EXPANDED (the real grid+softening force is weaker
+    // than this smooth-r³ estimate → effectively super-virial → unbound). A
+    // sub-virial cloud lets self-gravity WIN: it collapses inward, density
+    // climbs, and at the anchored scale a crushed core reaches r_s ≥ radius = a
+    // real geometric horizon. This is the honest "gravity does its thing →
+    // core collapse → black hole" (Jamal). Factor tunable; lower = colder/faster.
+    const float kColdFactor = 0.05f; // near-radial: kill rotation so it collapses
+                                     // to the centre (no centrifugal ring) → the
+                                     // whole field crushes to ~1 sim where
+                                     // r_s(field)=1 ≥ radius = a real horizon.
+    float vmag = std::sqrt(fieldEncGM / std::max(r3, 0.5f)) * kDt * kColdFactor;
     if (lxz > 1e-4f) {
       p.vx =  vmag * p.z / lxz;
       p.vy =  0.0f;

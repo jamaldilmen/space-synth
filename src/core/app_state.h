@@ -38,16 +38,18 @@ struct AppState {
   bool  uiOrthoMode = true;
   bool  uiCollisions = false;
   bool  uiBondNetwork = false; // nervous-system-of-light bond lines (hardened state)
-  // ── BLACK-HOLE mechanism toggles (UI on/off, default all-on = current) ──
-  bool  uiTogFieldGravity = true;  // bit0  field self-gravity (near+far grid)
-  bool  uiTogCentralSMBH  = true;  // bit1  hard-coded central SMBH pull
-  bool  uiTogSeedCapture  = true;  // bit2  star→seed capture (eating)
-  bool  uiTogSeedMerge    = true;  // bit3  seed↔seed merge
-  bool  uiTogOriginPin    = true;  // bit4  seed origin-pin spring
-  bool  uiTogRelaxation   = true;  // bit5  accretion relaxation damping
-  bool  uiTogResurrection = true;  // bit6  revive eaten particles on play
-  bool  uiTogSeedRender   = true;  // bit7  bright discrete seed render (rest)
-  bool  uiTogLensShadow   = true;  // bit8  screen-space lens/shadow
+  // ── BLACK-HOLE mechanism toggles — DEFAULT ALL OFF (launch DRY: bare field,
+  //    no BH machinery; we rebuild the lifecycle on this honest base) ──
+  bool  uiTogFieldGravity = true;  // bit0  field self-gravity (near+far grid) — the real base, ON
+
+  bool  uiTogCentralSMBH  = false; // bit1  hard-coded central SMBH pull
+  bool  uiTogSeedCapture  = false; // bit2  star→seed capture (eating)
+  bool  uiTogSeedMerge    = false; // bit3  seed↔seed merge
+  bool  uiTogOriginPin    = false; // bit4  seed origin-pin spring
+  bool  uiTogRelaxation   = false; // bit5  core-collapse cooling — OFF (pure gravity collapses the horizon-scale cluster; cooling froze the infall)
+  bool  uiTogResurrection = false; // bit6  revive eaten particles on play
+  bool  uiTogSeedRender   = false; // bit7  bright discrete seed render (rest)
+  bool  uiTogLensShadow   = false; // bit8  screen-space lens/shadow
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

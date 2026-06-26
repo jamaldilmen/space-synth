@@ -1072,7 +1072,11 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       //   uniforms and scales with it.
       float ph = physicsUniforms.envelopePhase;
       bool tubePhase = (ph >= 1.5f && ph < 3.5f);
-      su.halfExtent = tubePhase ? 3.0f : 64.0f;
+      su.halfExtent = tubePhase ? 3.0f : 64.0f; // reverted from 8: fine cells made
+                                   // softening (cellSize²) tiny → sharp kicks hit
+                                   // the c-cap → ejection. The resolution↔stability
+                                   // trilemma needs adaptive sub-stepping, not a
+                                   // smaller domain. Back to the bound star-map base.
       lastHashExtent = su.halfExtent;
       su.particleCount = particleCount;
       su.cellSize = 2.0f * su.halfExtent / (float)kGridSize;

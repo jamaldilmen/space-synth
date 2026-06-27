@@ -706,9 +706,93 @@ int main() {
       presetsLoaded = true;
     }
 
+    // ═══ TOP STATUS BAR — Stellaris-style glowing telemetry strip (2026-06-27)
+    // First piece of the cockpit redesign: status lives in a glowing edge-anchored
+    // bar drawn with ImDrawList, NOT stacked rows in the control window. The
+    // control window below becomes the left rail in the next step. (Layout chosen
+    // 2026-06-27.)
+    if (showHUD) {
+      auto hs = renderer.getPhysicsStats();
+      float fieldM = std::max(hs.fieldMassMsun, 1.0f);
+      const float barH = 34.0f;
+      const float barW = (float)window.width();
+      ImGui::SetNextWindowPos(ImVec2(0, 0));
+      ImGui::SetNextWindowSize(ImVec2(barW, barH));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+      ImGui::Begin("##topbar", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
+                       ImGuiWindowFlags_NoBringToFrontOnFocus |
+                       ImGuiWindowFlags_NoSavedSettings);
+      ImDrawList *dl = ImGui::GetWindowDrawList();
+
+      // frosted backing + glowing accent underline (layered for bloom)
+      dl->AddRectFilled(ImVec2(0, 0), ImVec2(barW, barH), IM_COL32(8, 9, 14, 190));
+      for (int g = 3; g >= 0; --g)
+        dl->AddLine(ImVec2(0, barH - 1.0f + g), ImVec2(barW, barH - 1.0f + g),
+                    IM_COL32(110, 150, 255, 70 - g * 18), 1.0f);
+      dl->AddLine(ImVec2(0, barH - 1.0f), ImVec2(barW, barH - 1.0f),
+                  IM_COL32(150, 185, 255, 255), 1.5f);
+
+      const float cy = barH * 0.5f;
+      float x = 16.0f;
+      const ImU32 dim = IM_COL32(255, 255, 255, 110);
+      auto seg = [&](const char *label, ImU32 valCol, const char *val) {
+        if (label[0]) {
+          ImVec2 ls = ImGui::CalcTextSize(label);
+          dl->AddText(ImVec2(x, cy - ls.y * 0.5f), dim, label);
+          x += ls.x + 7.0f;
+        }
+        ImVec2 vs = ImGui::CalcTextSize(val);
+        dl->AddText(ImVec2(x, cy - vs.y * 0.5f), valCol, val);
+        x += vs.x + 16.0f;
+      };
+      auto divider = [&]() {
+        dl->AddLine(ImVec2(x - 4.0f, 8.0f), ImVec2(x - 4.0f, barH - 9.0f),
+                    IM_COL32(255, 255, 255, 45), 1.0f);
+        x += 14.0f;
+      };
+
+      char buf[48];
+      // UNIVERSE clock (adaptive units) + warp / pause
+      double cv = universeClockSec; const char *cu = "sec";
+      if (cv >= 31557600.0)   { cv /= 31557600.0; cu = "yr"; }
+      else if (cv >= 86400.0) { cv /= 86400.0;    cu = "days"; }
+      else if (cv >= 3600.0)  { cv /= 3600.0;     cu = "hr"; }
+      else if (cv >= 60.0)    { cv /= 60.0;       cu = "min"; }
+      std::snprintf(buf, sizeof(buf), "%.1f %s", cv, cu);
+      seg("UNIVERSE", IM_COL32(150, 185, 255, 255), buf);
+      if (simPaused) std::snprintf(buf, sizeof(buf), "PAUSED");
+      else std::snprintf(buf, sizeof(buf), "%gx", (double)timeWarp);
+      seg("", simPaused ? IM_COL32(255, 200, 60, 255)
+                        : IM_COL32(255, 255, 255, 150), buf);
+      divider();
+      std::snprintf(buf, sizeof(buf), "%.0f%%", 100.0f * hs.coreMassMsun / fieldM);
+      seg("COLLAPSE", IM_COL32(100, 220, 255, 255), buf);
+      divider();
+      if (hs.bhStrength >= 1.0f) std::snprintf(buf, sizeof(buf), "FORMED");
+      else std::snprintf(buf, sizeof(buf), "%.0f%%", 100.0f * hs.bhStrength);
+      seg("BH", IM_COL32(255, 160, 60, 255), buf);
+      divider();
+      std::snprintf(buf, sizeof(buf), "%.2f c", hs.avgSpeed);
+      seg("v", IM_COL32(130, 180, 255, 255), buf);
+      divider();
+      std::snprintf(buf, sizeof(buf), "%.1e K", (double)hs.avgTemp);
+      seg("T", IM_COL32(255, 180, 80, 255), buf);
+
+      // right-aligned FPS
+      std::snprintf(buf, sizeof(buf), "%.0f fps", ImGui::GetIO().Framerate);
+      ImVec2 fs = ImGui::CalcTextSize(buf);
+      dl->AddText(ImVec2(barW - fs.x - 16.0f, cy - fs.y * 0.5f),
+                  IM_COL32(255, 255, 255, 150), buf);
+
+      ImGui::End();
+      ImGui::PopStyleVar();
+    }
+
     // ── Top Right Overlay Control Panel ──────────────────────────────
     if (showHUD) {
-      ImGui::SetNextWindowPos(ImVec2(window.width() - 250, 20));
+      ImGui::SetNextWindowPos(ImVec2(window.width() - 250, 44));
       ImGui::SetNextWindowSize(ImVec2(230, 0));
       ImGui::Begin("##topright", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);

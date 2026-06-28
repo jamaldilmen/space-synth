@@ -920,7 +920,12 @@ kernel void compute_physics(
                         float softN = max(cellSoftFloor,
                                           4.0f * G1 * cm * dt / max(u.speedCap, 1e-6f));
                         float  d2  = dot(toC, toC) + softN;
-                        gacc += toC * (G1 * cm * rsqrt(d2) / d2); // GM_c/(d²+ε²)^1.5
+                        // Single-kick near gravity ONLY when NOT adaptive-substepping.
+                        // When bit9 is on, the near clump is integrated in the sub-step
+                        // below (via near-COM) so a star curves around it instead of
+                        // taking one saturated c·dt kick → ejection.
+                        if (!(u.bhToggles & 0x200u))
+                            gacc += toC * (G1 * cm * rsqrt(d2) / d2); // GM_c/(d²+ε²)^1.5
                     }
                 }
             }
@@ -952,10 +957,17 @@ kernel void compute_physics(
             // (bypasses the per-kick c·dt clamp; the final c-cap still bounds |v|).
             float GMc = (u.bhToggles & 0x2u) ? u.centerGM : 0.0f;  // central, if on
             float GMf = farOn ? (G1 * farM) : 0.0f;                // far COM monopole
-            if (GMc > 0.0f || GMf > 0.0f) {
+            // NEAR clump as an attractor: the local 27-cell mass at its COM. This is
+            // the force that ejects under a single fixed-dt kick; integrated in the
+            // sub-step a star CURVES around it (orbits/spirals in) instead of
+            // slingshotting out — the real fix for dense collapse without ejection.
+            float3 nearCom = nearMP / max(nearM, 1e-6f);
+            float  GMn = (nearM > 0.5f && (u.bhToggles & 0x1u)) ? (G1 * nearM) : 0.0f;
+            if (GMc > 0.0f || GMf > 0.0f || GMn > 0.0f) {
                 float3 a_now = float3(0.0f);
                 if (GMc > 0.0f) { float d2 = dot(gpos, gpos) + 0.05f; a_now += (-gpos) * (GMc * rsqrt(d2) / d2); }
                 if (GMf > 0.0f) { float3 t = farCom - gpos; float d2 = dot(t, t) + 0.25f; a_now += t * (GMf * rsqrt(d2) / d2); }
+                if (GMn > 0.0f) { float3 t = nearCom - gpos; float d2 = dot(t, t) + 0.10f; a_now += t * (GMn * rsqrt(d2) / d2); }
                 float k0    = length(a_now) * dt * dt;
                 float gkmax = u.speedCap * dt;
                 int   N     = clamp((int)ceil(k0 / (0.25f * gkmax + 1e-12f)), 1, 32);
@@ -967,6 +979,7 @@ kernel void compute_physics(
                     float3 acc = float3(0.0f);
                     if (GMc > 0.0f) { float d2 = dot(xs, xs) + 0.05f; acc += (-xs) * (GMc * rsqrt(d2) / d2); }
                     if (GMf > 0.0f) { float3 t = farCom - xs; float d2 = dot(t, t) + 0.25f; acc += t * (GMf * rsqrt(d2) / d2); }
+                    if (GMn > 0.0f) { float3 t = nearCom - xs; float d2 = dot(t, t) + 0.10f; acc += t * (GMn * rsqrt(d2) / d2); }
                     vs += acc * dts;                              // semi-implicit (symplectic)
                     xs += vs * dts;
                 }

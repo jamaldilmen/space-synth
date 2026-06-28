@@ -50,7 +50,7 @@ struct AppState {
   bool  uiTogResurrection = false; // bit6  revive eaten particles on play
   bool  uiTogSeedRender   = false; // bit7  bright discrete seed render (rest)
   bool  uiTogLensShadow   = false; // bit8  screen-space lens/shadow
-  bool  uiTogAdaptiveSubstep = false; // bit9  GMAT-style adaptive sub-step of the central field (orbit instead of c·dt plunge) — OFF by default
+  bool  uiTogAdaptiveSubstep = true; // TEST // bit9  GMAT-style adaptive sub-step of the central field (orbit instead of c·dt plunge) — OFF by default
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

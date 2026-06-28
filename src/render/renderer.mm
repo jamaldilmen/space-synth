@@ -45,8 +45,6 @@ struct Renderer::Impl {
   id<MTLRenderPipelineState> brightPipeline = nil;
   id<MTLTexture> bloomTexture = nil;  // finished glow, bound at texture(2)
   id<MTLTexture> bloomScratch = nil;  // ping-pong partner for the glow blur
-  // Real geodesic black-hole render (Approach A) — sole BH renderer in pose mode.
-  id<MTLRenderPipelineState> geodesicPipeline = nil;
 
   // Spatial hash pipelines
   id<MTLComputePipelineState> assignCellsPipeline = nil;
@@ -471,30 +469,7 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Bright-pass pipeline error: %@", error);
   }
 
-  // ── Geodesic black-hole pipeline (Approach A, 2026-06-28) ───────────
-  // Per-pixel REAL Schwarzschild null-geodesic render of the analytic disk.
-  // Replaces the deleted 2D-circle raytracer. Drawn only in the BH pose.
-  {
-    id<MTLFunction> gv = [impl_->library newFunctionWithName:@"geo_vertex"];
-    id<MTLFunction> gf = [impl_->library newFunctionWithName:@"geo_fragment"];
-    if (gv && gf) {
-      MTLRenderPipelineDescriptor *gd = [[MTLRenderPipelineDescriptor alloc] init];
-      gd.vertexFunction = gv;
-      gd.fragmentFunction = gf;
-      gd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-      gd.colorAttachments[0].blendingEnabled = YES;
-      gd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
-      gd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-      gd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-      gd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-      gd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-      impl_->geodesicPipeline =
-          [impl_->device newRenderPipelineStateWithDescriptor:gd error:&error];
-      if (error) NSLog(@"Geodesic BH pipeline error: %@", error);
-    } else {
-      NSLog(@"Geodesic BH shader functions not found");
-    }
-  }
+  // Geodesic BH pipeline DELETED (2026-06-28) — fullscreen disk shader, not particles.
 
   // ── Depth state for Particles ───────────────────────────────────────
   MTLDepthStencilDescriptor *depthDesc =
@@ -1722,41 +1697,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   id<MTLRenderCommandEncoder> enc =
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
-  // ── Geodesic black-hole render (Approach A) — sole BH renderer in pose mode.
-  // Per-pixel REAL Schwarzschild null geodesics through the analytic disk: the
-  // far side lenses over/under the round photon-capture shadow + photon ring.
-  if (bhPosed && geodesicPipeline) {
-    struct GeoUniforms {
-      float resX, resY;
-      float camX, camY, camZ;
-      float simScale, orthoFrustum, aspect;
-      float r_s, r_in, r_out, tempScale, poseTime;
-    };
-    CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
-    GeoUniforms gu;
-    gu.resX = (float)width;  gu.resY = (float)height;
-    gu.camX = camStruct->cameraPos[0];
-    gu.camY = camStruct->cameraPos[1];
-    gu.camZ = camStruct->cameraPos[2];
-    gu.simScale     = std::max(0.01f, config.plateRadius);
-    gu.orthoFrustum = config.orthoMode ? (config.cameraRho * 1.2f) : 0.0f;
-    gu.aspect       = (float)width / std::max(1, height);
-    gu.r_s   = 1.0f;    // units.h: r_s(field) = 1.0 sim
-    gu.r_in  = 3.0f;    // ISCO = 3·r_s (matches the posed disk)
-    gu.r_out = 12.0f;
-    gu.tempScale = 1.0f;
-    gu.poseTime  = (float)bhPoseTime;
-    [enc setRenderPipelineState:geodesicPipeline];
-    [enc setDepthStencilState:bgDepthState];
-    [enc setFragmentBytes:&gu length:sizeof(GeoUniforms) atIndex:0];
-    // REAL particle density (Σ M_sun×64 per cell) + hash layout → the disk is the
-    // actual particles, sampled volumetrically along the bent light.
-    [enc setFragmentBuffer:cellMassBuffer offset:0 atIndex:1];
-    [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-  }
+  // Geodesic fullscreen BH render DELETED (2026-06-28) — it was a shader painting
+  // a disk, NOT the particles. The black hole must be the actual particle cloud,
+  // gravitationally lensed. Particles always render.
 
-  // Draw Particles (skipped in BH pose — the geodesic render IS the black hole)
+  // Draw Particles — ALWAYS (the particles ARE the black hole)
   [enc setRenderPipelineState:particlePipeline];
   [enc setDepthStencilState:depthState];
   [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
@@ -1772,12 +1717,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // pass in the app every frame for nothing. Only instance the secondary when a
   // hole is actually present → no-hole (play/rest) runs 1×, halving the pass.
   NSUInteger particleInstances = (bhStrength > 0.5f) ? 2u : 1u;
-  if (!bhPosed) {
-    [enc drawPrimitives:MTLPrimitiveTypePoint
-            vertexStart:0
-            vertexCount:particleCount
-          instanceCount:particleInstances];
-  }
+  [enc drawPrimitives:MTLPrimitiveTypePoint
+          vertexStart:0
+          vertexCount:particleCount
+        instanceCount:particleInstances];
 
   // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
   // Only encoded when oscillation (spin) is active; the vertex shader also

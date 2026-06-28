@@ -1140,6 +1140,10 @@ int main() {
           ImGui::SetItemTooltip("Discrete bright accretion blob at rest");
           ImGui::Checkbox("Lens / shadow", &app.uiTogLensShadow);
           ImGui::SetItemTooltip("Screen-space gravitational lens + shadow");
+          ImGui::Checkbox("Adaptive sub-step (central)", &app.uiTogAdaptiveSubstep);
+          ImGui::SetItemTooltip("GMAT-style: sub-step the central pull near the core so "
+                                "a close pass ORBITS instead of plunging on a saturated "
+                                "c·dt kick. Needs 'Central SMBH pull' on. OFF = old single kick.");
         }
 
         ImGui::Checkbox("Ortho Camera", &app.uiOrthoMode);
@@ -1174,9 +1178,67 @@ int main() {
           particles.init(PARTICLE_COUNT, MAX_WAVE_DEPTH);
           auto freshData = packForGPU(particles);
           renderer.uploadParticles(freshData.data(), PARTICLE_COUNT);
+          renderer.setBlackHolePose(false, 0.0f); // release any posed BH latch
           printf("[SIM] FULL RESET — field respawned at t=0\n");
         }
         ImGui::SetItemTooltip("Respawn the entire field at its initial state");
+
+        // ── ANALYTIC BLACK HOLE — pose the end-state, don't evolve into it ──────
+        // "Make blue, don't generate it." We arrange the particles directly into
+        // the closed-form black-hole configuration — a thin Keplerian accretion
+        // disk with an empty shadow inside r_in — and grade the MASS hot-inner →
+        // cool-outer. The existing REST renderer (star-map path) colours by mass
+        // (Teff=5772·M^0.55 → red dwarf … blue giant), and the analytic Kerr Ω /
+        // Doppler / lensing already run off position. So this snaps a real,
+        // scale-anchored black hole onto the screen using only the maths the BH
+        // needs — no real-time collapse. Sim is paused so it stays posed.
+        // r_s(field) = 1.0 sim unit (units.h conservation anchor).
+        if (ImGui::Button("RENDER BLACK HOLE (analytic)")) {
+          const int N = PARTICLE_COUNT;
+          std::vector<space::GPUParticle> bh((size_t)N);
+          // Disk must sit OUTSIDE the geometric shadow (b = 2.6·r_s = 2.6 sim for
+          // the full field mass). Inner edge = ISCO ≈ 3·r_s = 3.0 sim.
+          const float r_in = 3.0f, r_out = 12.0f;  // disk span, sim units
+          const float M_hi = 18.0f, M_lo = 0.3f;   // inner blue-white → outer red
+          for (int i = 0; i < N; ++i) {
+            uint32_t hsh = (uint32_t)i * 2654435761u;          // Knuth hash → 3 deterministic uniforms
+            auto rnd = [&](uint32_t salt) {
+              uint32_t x = hsh ^ (salt * 0x9E3779B9u);
+              x ^= x >> 15; x *= 0x85EBCA6Bu; x ^= x >> 13;
+              return (float)(x & 0xFFFFFFu) / 16777216.0f;
+            };
+            float u1 = rnd(1), u2 = rnd(2), u3 = rnd(3);
+            float r   = r_in * std::pow(r_out / r_in, u1);     // log-uniform: inner-dense
+            float phi = u2 * 6.2831853f;
+            float hgt = 0.04f * r;                             // thin disk
+            float z   = (u3 - 0.5f) * 2.0f * hgt;
+            float x   = r * std::cos(phi);
+            float y   = r * std::sin(phi);
+            float frac = (r_out - r) / (r_out - r_in);         // 1 inner → 0 outer
+            float mass = M_lo * std::pow(M_hi / M_lo, frac);   // heavy inner → light outer
+            space::GPUParticle &p = bh[(size_t)i];
+            p.x = x; p.y = y; p.z = z; p.mass = mass;
+            p.vx = 0; p.vy = 0; p.vz = 0; p.phase = 0;
+            p.prevX = x; p.prevY = y; p.prevZ = z; p.temperature = 0.0f;
+            p.spinX = 0; p.spinY = 0; p.spinZ = 0; p.charge = 0;
+            p.entanglementID = (uint32_t)i; p.pad1 = 0; p.pad2 = 0; p.pad3 = 0;
+          }
+          renderer.uploadParticles(bh.data(), N);
+          // Drive the REAL lens from our geometry: declare a formed hole of the
+          // whole field mass (conservation anchor → r_s = 1.0 sim, shadow 2.6).
+          renderer.setBlackHolePose(true, (float)space::units::kMbhMsun);
+          app.uiTogLensShadow = true;   // bit8: lens + secondary image + raytracer
+          app.uiOrthoMode = true;       // lens shadow only computes in ortho
+          // NOT paused: the sim keeps running so the spatial hash rebuilds each
+          // frame for the geodesic raytracer — but renderer freezes the physics
+          // integrator while posed, so the disk stays analytically posed.
+          simPaused = false;
+          printf("[BH] analytic black-hole pose uploaded (%d particles, disk %.2f–%.2f sim); "
+                 "geodesic raytracer ON (M=%.3e M_sun)\n", N, r_in, r_out, space::units::kMbhMsun);
+        }
+        ImGui::SetItemTooltip("Pose particles into the closed-form BH disk + shadow (no sim). "
+                              "Turn ON 'Lens / shadow' for the lensed dark shadow.");
+
         if (simPaused) {
           ImGui::SameLine();
           ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "PAUSED [space]");
@@ -1737,7 +1799,8 @@ int main() {
         ((app.uiTogRelaxation   ? 1u : 0u) << 5) |
         ((app.uiTogResurrection ? 1u : 0u) << 6) |
         ((app.uiTogSeedRender   ? 1u : 0u) << 7) |
-        ((app.uiTogLensShadow   ? 1u : 0u) << 8);
+        ((app.uiTogLensShadow   ? 1u : 0u) << 8) |
+        ((app.uiTogAdaptiveSubstep ? 1u : 0u) << 9);
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

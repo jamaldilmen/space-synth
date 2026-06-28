@@ -860,7 +860,10 @@ kernel void compute_physics(
         // M☉) ≫ the field's GM, so it sets the orbits; the field self-gravity below
         // is the secondary star↔star clumping. Small ε (point mass); the c·dt gkick
         // cap below keeps deep infall relativistically bounded.
-        if (u.bhToggles & 0x2u) {            // bit1: central SMBH pull (toggle)
+        // Central SMBH single-kick path (origin). When adaptive sub-step (bit9) is
+        // ON, the central + far monopoles are integrated together below instead, so
+        // skip adding central to gacc here.
+        if ((u.bhToggles & 0x2u) && !(u.bhToggles & 0x200u)) { // bit1, non-adaptive
             float3 toCen = -gpos;
             float dc2 = dot(gpos, gpos) + 0.05f;
             gacc += toCen * (u.centerGM * rsqrt(dc2) / dc2);
@@ -925,11 +928,51 @@ kernel void compute_physics(
 
         // FAR field: everything not in the near cells, as one monopole.
         float farM = max(Mtot - nearM, 0.0f);
-        if ((u.bhToggles & 0x1u) && farM > 0.5f) {   // bit0: field self-gravity
-            float3 farCom = (float3(u.comX, u.comY, u.comZ) * Mtot - nearMP) / farM;
-            float3 toC = farCom - gpos;
-            float  d2  = dot(toC, toC) + 0.25f;              // ε² far (horizon scale)
-            gacc += toC * (G1 * farM * rsqrt(d2) / d2);
+        bool  farOn = (u.bhToggles & 0x1u) && farM > 0.5f;     // bit0: field self-gravity
+        float3 farCom = (float3(u.comX, u.comY, u.comZ) * Mtot - nearMP) / max(farM, 1e-6f);
+        if (!(u.bhToggles & 0x200u)) {
+            // Default single-kick far monopole.
+            if (farOn) {
+                float3 toC = farCom - gpos;
+                float  d2  = dot(toC, toC) + 0.25f;            // ε² far (horizon scale)
+                gacc += toC * (G1 * farM * rsqrt(d2) / d2);
+            }
+        } else {
+            // ── ADAPTIVE SUB-STEP (bit9) of the LONG-RANGE attractors ────────────
+            // The off-centre collapse blob is the cluster draining radially into its
+            // center-of-mass: the fixed-dt monopole kick saturates the c·dt clamp, so
+            // velocity becomes pure-radial → no orbit → pile-up. Here the body is
+            // mini-integrated through N sub-steps of dt/N against the analytic
+            // long-range field = central SMBH (origin, bit1) + far-field COM monopole
+            // (bit0), so the pull TURNS the velocity into an orbit around the COM
+            // instead of a straight plunge. N grows only when the single-step kick
+            // would saturate (else N=1 → no cost). The near-field 27-cell sum stays a
+            // single kick in gacc (the unresolved short range — the core blob is the
+            // grid-resolution/softening wall, a separate problem). Δv added directly
+            // (bypasses the per-kick c·dt clamp; the final c-cap still bounds |v|).
+            float GMc = (u.bhToggles & 0x2u) ? u.centerGM : 0.0f;  // central, if on
+            float GMf = farOn ? (G1 * farM) : 0.0f;                // far COM monopole
+            if (GMc > 0.0f || GMf > 0.0f) {
+                float3 a_now = float3(0.0f);
+                if (GMc > 0.0f) { float d2 = dot(gpos, gpos) + 0.05f; a_now += (-gpos) * (GMc * rsqrt(d2) / d2); }
+                if (GMf > 0.0f) { float3 t = farCom - gpos; float d2 = dot(t, t) + 0.25f; a_now += t * (GMf * rsqrt(d2) / d2); }
+                float k0    = length(a_now) * dt * dt;
+                float gkmax = u.speedCap * dt;
+                int   N     = clamp((int)ceil(k0 / (0.25f * gkmax + 1e-12f)), 1, 32);
+                float dts   = dt / (float)N;
+                float3 xs = gpos;
+                float3 v0 = float3(vpx, vpy, vpz) / dt;            // disp/frame → sim/s
+                float3 vs = v0;
+                for (int s = 0; s < N; ++s) {
+                    float3 acc = float3(0.0f);
+                    if (GMc > 0.0f) { float d2 = dot(xs, xs) + 0.05f; acc += (-xs) * (GMc * rsqrt(d2) / d2); }
+                    if (GMf > 0.0f) { float3 t = farCom - xs; float d2 = dot(t, t) + 0.25f; acc += t * (GMf * rsqrt(d2) / d2); }
+                    vs += acc * dts;                              // semi-implicit (symplectic)
+                    xs += vs * dts;
+                }
+                float3 dv = (vs - v0) * dt;                        // sim/s → disp/frame
+                shiftVx += dv.x; shiftVy += dv.y; shiftVz += dv.z;
+            }
         }
 
         // ── CORE-COLLAPSE COOLING (gravothermal contraction) — bit5 ──────────

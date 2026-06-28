@@ -37,6 +37,9 @@ struct CameraUniforms {
     float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (UI dial, was pad)
     float tuneHeatK;         // thermal heat→Kelvin gain (UI dial): low = warm/red, high = white plasma
     uint bhToggles;          // BH-mechanism on/off bitmask (UI); bit7 seed-render, bit8 lens/shadow
+    float bhDiskGM;          // posed BH: GM in sim units (0 = not posed → no disk spin)
+    float bhPoseTime;        // posed BH: elapsed seconds since pose (drives Ω(r)·t)
+    float bhPoseDt;          // posed BH: last frame dt (rotate prev by one frame less)
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -217,6 +220,30 @@ vertex VertexOut particle_vertex(
 {
     VertexOut out;
     Particle in = particlesIn[vid];
+
+    // ── POSED-BH DISK ROTATION — real Keplerian Ω(r), differential ───────────
+    // While a black hole is POSED (cam.bhDiskGM>0, sim paused), spin the disk in
+    // its plane (about Z) at the physical orbital rate Ω(r)=√(GM/r³): inner edge
+    // whips around (~0.4c at ISCO), outer crawls. Slowed near the hole by the
+    // relativistic time dilation √(1−r_s/r) (r_s=1.0 sim) — the inner edge nearly
+    // freezes, the BH altering time made visible. pos and prev are rotated (prev
+    // by one frame less) so the per-frame velocity stays the TRUE orbital motion,
+    // keeping the Doppler/streaks honest. No physics — pure analytic playback.
+    if (cam.bhDiskGM > 0.0f) {
+        float rxy = length(in.posW.xy);
+        if (rxy > 1e-3f) {
+            float omega = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
+            float tdil  = sqrt(max(0.4f, 1.0f - 1.0f / max(rxy, 1.0f + 1e-3f)));
+            float wEff  = omega * tdil;
+            float aNow  = wEff * cam.bhPoseTime;
+            float aPrev = wEff * (cam.bhPoseTime - cam.bhPoseDt);
+            float cN = cos(aNow),  sN = sin(aNow);
+            float cP = cos(aPrev), sP = sin(aPrev);
+            float2 p = in.posW.xy,  q = in.prevW.xy;
+            in.posW.xy  = float2(p.x * cN - p.y * sN, p.x * sN + p.y * cN);
+            in.prevW.xy = float2(q.x * cP - q.y * sP, q.x * sP + q.y * cP);
+        }
+    }
     // SECONDARY LENSED IMAGE (2026-06-13, Jamal: "secondary lensing, stick to
     // the science"). The point-mass lens has TWO solutions: the primary image
     // θ₊ (outside the Einstein ring, the current bend) and the SECONDARY θ₋

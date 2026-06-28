@@ -45,7 +45,8 @@ struct Renderer::Impl {
   id<MTLRenderPipelineState> brightPipeline = nil;
   id<MTLTexture> bloomTexture = nil;  // finished glow, bound at texture(2)
   id<MTLTexture> bloomScratch = nil;  // ping-pong partner for the glow blur
-  id<MTLRenderPipelineState> blackHolePipeline = nil;
+  // Real geodesic black-hole render (Approach A) — sole BH renderer in pose mode.
+  id<MTLRenderPipelineState> geodesicPipeline = nil;
 
   // Spatial hash pipelines
   id<MTLComputePipelineState> assignCellsPipeline = nil;
@@ -115,6 +116,10 @@ struct Renderer::Impl {
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
   bool bhFormedLatch = false; // once formed, stays formed (until reset)
+  bool bhPosed = false;       // analytic BH pose active → spin the posed disk
+  double bhPoseTime = 0.0;    // elapsed seconds since pose (render-clock driven)
+  double bhPoseClock = 0.0;   // last render timestamp, for the pose dt
+  float bhPoseMass = 0.0f;    // posed BH mass (M_sun) — re-pins bhSeedMass while posed
   float collapseFrac = 0.25f; // UI dial: core fraction = hole 100%
   uint32_t bhPeakCount = 0;   // densest single cell (true count, uncapped)
   float lastHashExtent = 64.0f; // extent the hash was actually built with
@@ -466,33 +471,29 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Bright-pass pipeline error: %@", error);
   }
 
-  // ── Black Hole Pipeline ─────────────────────────────────────────────
-  id<MTLFunction> bhVertexFunc =
-      [impl_->library newFunctionWithName:@"vertex_black_hole"];
-  id<MTLFunction> bhFragmentFunc =
-      [impl_->library newFunctionWithName:@"fragment_black_hole"];
-  if (bhVertexFunc && bhFragmentFunc) {
-    MTLRenderPipelineDescriptor *desc =
-        [[MTLRenderPipelineDescriptor alloc] init];
-    desc.vertexFunction = bhVertexFunc;
-    desc.fragmentFunction = bhFragmentFunc;
-    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-    // We want the black hole to "over" the clear color, but we also want to
-    // fade it out. Standard premultiplied alpha blending:
-    desc.colorAttachments[0].blendingEnabled = YES;
-    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
-    desc.colorAttachments[0].destinationRGBBlendFactor =
-        MTLBlendFactorOneMinusSourceAlpha;
-    desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-    desc.colorAttachments[0].destinationAlphaBlendFactor =
-        MTLBlendFactorOneMinusSourceAlpha;
-    desc.colorAttachments[0].destinationAlphaBlendFactor =
-        MTLBlendFactorOneMinusSourceAlpha;
-    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-    impl_->blackHolePipeline =
-        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (error)
-      NSLog(@"Black Hole pipeline error: %@", error);
+  // ── Geodesic black-hole pipeline (Approach A, 2026-06-28) ───────────
+  // Per-pixel REAL Schwarzschild null-geodesic render of the analytic disk.
+  // Replaces the deleted 2D-circle raytracer. Drawn only in the BH pose.
+  {
+    id<MTLFunction> gv = [impl_->library newFunctionWithName:@"geo_vertex"];
+    id<MTLFunction> gf = [impl_->library newFunctionWithName:@"geo_fragment"];
+    if (gv && gf) {
+      MTLRenderPipelineDescriptor *gd = [[MTLRenderPipelineDescriptor alloc] init];
+      gd.vertexFunction = gv;
+      gd.fragmentFunction = gf;
+      gd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      gd.colorAttachments[0].blendingEnabled = YES;
+      gd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+      gd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      gd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+      gd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      gd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->geodesicPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:gd error:&error];
+      if (error) NSLog(@"Geodesic BH pipeline error: %@", error);
+    } else {
+      NSLog(@"Geodesic BH shader functions not found");
+    }
   }
 
   // ── Depth state for Particles ───────────────────────────────────────
@@ -611,6 +612,28 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   // particles.metal (8 stats + COM/live-count + radius + BH-enclosure).
   allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 80);
   allocIfNeeded(impl_->radialMassBuffer, 256 * sizeof(uint32_t)); // 256-shell horizon profile
+}
+
+void Renderer::setBlackHolePose(bool on, float bhMassMsun) {
+  // Declare a formed hole of mass bhMassMsun so the EXISTING real-lens maths all
+  // activate on a posed disk: the shadow radius (b = 2.6·r_s(M) via bhSeedMass),
+  // the point-mass lens equation + secondary fold-over image (gated on
+  // bhStrength), and the raytracer (bhStrength>0.5). No per-frame maths is
+  // changed — we just feed the renderer's own BH state from our geometry. The
+  // sim must be paused while posed, else the collapse computation overwrites it.
+  if (on) {
+    impl_->bhSeedMass    = std::max(bhMassMsun, 0.0f); // → shadow b = 2.6·r_s(M)
+    impl_->bhStrength    = 1.0f;
+    impl_->bhStrengthEma = 1.0f;
+    impl_->bhFormedLatch = true;
+    impl_->bhPosed       = true;
+    impl_->bhPoseMass    = std::max(bhMassMsun, 0.0f); // re-pin target (anti-clobber)
+    impl_->bhPoseTime    = 0.0;   // restart the disk's orbital clock
+    impl_->bhPoseClock   = 0.0;
+  } else {
+    impl_->bhFormedLatch = false; // release: recompute when physics resumes
+    impl_->bhPosed       = false;
+  }
 }
 
 void Renderer::resetParticles() {
@@ -834,6 +857,23 @@ void Renderer::render(const RenderConfig &config) {
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
   cam.bhStrength = impl_->bhStrength;
+  // ── Posed-BH disk rotation: feed real Keplerian Ω(r) to the vertex shader ──
+  // Advance a render-clock (runs even while the sim is PAUSED) and pass GM +
+  // elapsed time so the shader spins the posed disk at Ω(r)=√(GM/r³). Zeroed
+  // when not posed → zero effect on the live sim. Only one render() overload
+  // runs per frame, so the clock advances once.
+  if (impl_->bhPosed) {
+    double now = CACurrentMediaTime();
+    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
+    impl_->bhPoseClock = now;
+    dtP = std::min(std::max(dtP, 0.0), 0.1);   // guard stalls
+    impl_->bhPoseTime += dtP;
+    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->bhSeedMass);
+    cam.bhPoseTime = (float)impl_->bhPoseTime;
+    cam.bhPoseDt   = (float)dtP;
+  } else {
+    cam.bhDiskGM = 0.0f; cam.bhPoseTime = 0.0f; cam.bhPoseDt = 0.0f;
+  }
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;
@@ -959,6 +999,23 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
   cam.bhStrength = impl_->bhStrength;
+  // ── Posed-BH disk rotation: feed real Keplerian Ω(r) to the vertex shader ──
+  // Advance a render-clock (runs even while the sim is PAUSED) and pass GM +
+  // elapsed time so the shader spins the posed disk at Ω(r)=√(GM/r³). Zeroed
+  // when not posed → zero effect on the live sim. Only one render() overload
+  // runs per frame, so the clock advances once.
+  if (impl_->bhPosed) {
+    double now = CACurrentMediaTime();
+    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
+    impl_->bhPoseClock = now;
+    dtP = std::min(std::max(dtP, 0.0), 0.1);   // guard stalls
+    impl_->bhPoseTime += dtP;
+    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->bhSeedMass);
+    cam.bhPoseTime = (float)impl_->bhPoseTime;
+    cam.bhPoseDt   = (float)dtP;
+  } else {
+    cam.bhDiskGM = 0.0f; cam.bhPoseTime = 0.0f; cam.bhPoseDt = 0.0f;
+  }
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;
@@ -1314,7 +1371,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Physics kernel ─────────────────────────────────────────────
-    {
+    // Posed-BH mode FREEZES the integrator (positions stay analytically posed)
+    // while the spatial hash above keeps rebuilding — so the geodesic raytracer
+    // has a fresh grid of the posed disk to sample. Skipped only when posed.
+    if (!bhPosed) {
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:physicsPipeline];
       [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1533,6 +1593,15 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           bhFormedLatch = false;
         bhStrength = bhFormedLatch ? std::max(bhStrengthEma, 1.0f)
                                    : bhStrengthEma;
+        // POSE OVERRIDE: a posed BH is declared formed of bhPoseMass — the posed
+        // disk has no central core, so the emergent computation above would
+        // un-form it (bhStrength→0, killing the lens + raytracer). Re-pin it.
+        if (bhPosed) {
+          bhSeedMass    = bhPoseMass;
+          bhStrengthEma = 1.0f;
+          bhStrength    = 1.0f;
+          bhFormedLatch = true;
+        }
         if ((physicsUniforms.frameCounter % 120u) == 0u) {
           fprintf(stderr,
                   "[BH-POP] encFrac=%.2f densTarget=%.2f seedTarget=%.3f -> bhStrength=%.2f%s\n",
@@ -1653,23 +1722,41 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   id<MTLRenderCommandEncoder> enc =
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
-  // 1. Draw Black Hole Background (raymarching)
-  // Re-enabled. The raytracer renders pure BLACK inside the Kerr geodesic
-  // event horizon — that's the dark central void the lensed accretion-disk
-  // lobes wrap around (Interstellar/Gargantua look). Without it the
-  // particle lensing arches around nothing visible.
-  // Run during silence, sustain, release. Attack + decay skip (shader-side
-  // opacity is 0 there anyway).
-  PhysicsUniforms *phys_gate = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-  // EMERGENT-BH render gate (Step 3): the shadow renders because the core
-  // approaches the geometric hole criterion — mass decides, not the phase.
-  bool needRaytracer = (bhStrength > 0.5f);
-  (void)phys_gate;
-  // (Black-hole shadow pass MOVED below — it must composite OVER the
-  // particle disk and the arcs: drawing it first let matter paint over the
-  // round shadow, leaving only the elliptical cull-gap = the '2D eye'.)
+  // ── Geodesic black-hole render (Approach A) — sole BH renderer in pose mode.
+  // Per-pixel REAL Schwarzschild null geodesics through the analytic disk: the
+  // far side lenses over/under the round photon-capture shadow + photon ring.
+  if (bhPosed && geodesicPipeline) {
+    struct GeoUniforms {
+      float resX, resY;
+      float camX, camY, camZ;
+      float simScale, orthoFrustum, aspect;
+      float r_s, r_in, r_out, tempScale, poseTime;
+    };
+    CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+    GeoUniforms gu;
+    gu.resX = (float)width;  gu.resY = (float)height;
+    gu.camX = camStruct->cameraPos[0];
+    gu.camY = camStruct->cameraPos[1];
+    gu.camZ = camStruct->cameraPos[2];
+    gu.simScale     = std::max(0.01f, config.plateRadius);
+    gu.orthoFrustum = config.orthoMode ? (config.cameraRho * 1.2f) : 0.0f;
+    gu.aspect       = (float)width / std::max(1, height);
+    gu.r_s   = 1.0f;    // units.h: r_s(field) = 1.0 sim
+    gu.r_in  = 3.0f;    // ISCO = 3·r_s (matches the posed disk)
+    gu.r_out = 12.0f;
+    gu.tempScale = 1.0f;
+    gu.poseTime  = (float)bhPoseTime;
+    [enc setRenderPipelineState:geodesicPipeline];
+    [enc setDepthStencilState:bgDepthState];
+    [enc setFragmentBytes:&gu length:sizeof(GeoUniforms) atIndex:0];
+    // REAL particle density (Σ M_sun×64 per cell) + hash layout → the disk is the
+    // actual particles, sampled volumetrically along the bent light.
+    [enc setFragmentBuffer:cellMassBuffer offset:0 atIndex:1];
+    [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
 
-  // 2. Draw Particles
+  // Draw Particles (skipped in BH pose — the geodesic render IS the black hole)
   [enc setRenderPipelineState:particlePipeline];
   [enc setDepthStencilState:depthState];
   [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
@@ -1685,10 +1772,12 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // pass in the app every frame for nothing. Only instance the secondary when a
   // hole is actually present → no-hole (play/rest) runs 1×, halving the pass.
   NSUInteger particleInstances = (bhStrength > 0.5f) ? 2u : 1u;
-  [enc drawPrimitives:MTLPrimitiveTypePoint
-          vertexStart:0
-          vertexCount:particleCount
-        instanceCount:particleInstances];
+  if (!bhPosed) {
+    [enc drawPrimitives:MTLPrimitiveTypePoint
+            vertexStart:0
+            vertexCount:particleCount
+          instanceCount:particleInstances];
+  }
 
   // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
   // Only encoded when oscillation (spin) is active; the vertex shader also
@@ -1724,59 +1813,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
             vertexCount:(NSUInteger)arcParticles * 22];
   }
 
-  // 3. Black-hole shadow + lens — LAST: the hole occludes the matter.
-  // BILLBOARD DELETED (Jamal): the raytraced shadow disc was a 2D layer
-  // composited over the particle world — it could never be one entity with
-  // it. The hole is the LENS now: the original particle lensing bends the
-  // light, and the darkness is wherever no light ends up. No overlay.
-  if (false && blackHolePipeline && needRaytracer) {
-    struct BlackHoleUniforms {
-      float resolution[2]; // 8
-      float cameraPos[3];  // 12
-      float time;          // 4
-      float envelopePhase; // 4
-      float rotationX;     // 4
-      float simScale;      // 4 — particle scale (plateRadius)
-      float orthoFrustum;  // 4 — ortho half-extent in world units (0 = persp)
-      float shadowRadius;  // 4 — black shadow radius in sim coords (user-tunable)
-      float bhStrength;    // 4 — emergent-hole signal (Step 3)
-    }; // 48 bytes
-
-    PhysicsUniforms *phys = (PhysicsUniforms *)uniformBuffer[frameIdx].contents;
-    BlackHoleUniforms bhUniforms;
-    bhUniforms.resolution[0] = (float)width;
-    bhUniforms.resolution[1] = (float)height;
-
-    CameraUniforms *camStruct =
-        (CameraUniforms *)cameraBuffer[frameIdx].contents;
-    bhUniforms.cameraPos[0] = camStruct->cameraPos[0];
-    bhUniforms.cameraPos[1] = camStruct->cameraPos[1];
-    bhUniforms.cameraPos[2] = camStruct->cameraPos[2];
-
-    bhUniforms.time = phys->time;
-    bhUniforms.envelopePhase = renderPhaseSmooth; // smoothed (render-only)
-    bhUniforms.rotationX = config.rotationX;
-    bhUniforms.simScale = std::max(0.01f, config.plateRadius);
-    // Ortho frustum half-extent = cameraRho * 1.2 (matches main.cpp:534).
-    // Was using plateRadius (constant 100) which made the raytracer ignore
-    // zoom entirely. cameraRho varies 50-2000 with the user's zoom.
-    bhUniforms.orthoFrustum = config.orthoMode ? (config.cameraRho * 1.2f) : 0.0f;
-    bhUniforms.shadowRadius = config.shadowRadius;
-    bhUniforms.bhStrength = bhStrength;
-
-    [enc setRenderPipelineState:blackHolePipeline];
-    [enc setFragmentBytes:&bhUniforms
-                   length:sizeof(BlackHoleUniforms)
-                  atIndex:0];
-
-    // Bind Spatial Hash Buffers for volumetric particle sampling
-    [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
-    [enc setFragmentBuffer:cellStartsBuffer offset:0 atIndex:2];
-    [enc setFragmentBuffer:sortedParticlesBuffer offset:0 atIndex:3];
-
-    [enc setDepthStencilState:bgDepthState];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-  }
+  // Black-hole raytracer shadow pass DELETED (2026-06-28). It was a screen-space
+  // 2D circle that sampled no useful disk. Real gravitational lensing is applied
+  // to the particles in the vertex shader (render.metal).
 
   [enc endEncoding];
 

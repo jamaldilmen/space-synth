@@ -156,6 +156,9 @@ struct CameraUniforms {
   float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (live tune, was pad)
   float tuneHeatK;         // thermal heat→Kelvin gain (live tune): low = warm/red, high = white
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI); bit7 seed-render, bit8 lens
+  float bhDiskGM = 0.0f;   // posed BH: GM in sim units (0 = not posed → no disk spin)
+  float bhPoseTime = 0.0f; // posed BH: elapsed seconds since pose (drives Ω(r)·t)
+  float bhPoseDt = 0.0f;   // posed BH: last frame dt (rotate prev by one frame less)
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)
@@ -261,6 +264,12 @@ public:
 
   void uploadParticles(const GPUParticle *data, int count);
   void resetParticles();
+  // Analytic-BH pose: declare a formed hole of the given mass so the EXISTING
+  // real lens maths (shadow radius b=2.6·r_s(M), point-mass lens equation,
+  // secondary fold-over image, raytracer) all activate on a posed disk instead
+  // of waiting for an emergent collapse. on=false releases it. Pause the sim
+  // while posed so the collapse computation doesn't overwrite these.
+  void setBlackHolePose(bool on, float bhMassMsun);
   // Compute physics step (runs async)
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                    float totalAmplitude, float maxWaveDepth, float jitterFactor,

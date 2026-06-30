@@ -361,13 +361,39 @@ kernel void compute_cell_centroids(
     // (per-cell momentum conserved) → dense matter settles into a DISK in
     // the plane ⊥ its net angular momentum. Real accretion-disk physics.
     float3 vsum = float3(0.0f);
+    // Velocity dispersion σ (for dynamical friction) is built from CLAMPED
+    // velocities, decoupled from the mean below. Reason: v = pos−prev is
+    // corrupted for teleporting particles (a revived/parked star carries a stale
+    // prevW ~4000 → a bogus ~4000/frame "velocity"). The mean averages that
+    // away, but the variance is dominated by it. Real per-frame motion ≪ 1 sim,
+    // so clamping to ±VCLAMP rejects the teleport spikes without touching real
+    // dispersion. The mean (.xyz, used by relaxation) stays UNCLAMPED = identical.
+    const float VCLAMP = 0.05f;    // sim/frame ≈ 1.7c (c·dt≈0.029); excludes superluminal
+                                   // respawn/teleport artifacts, keeps all real sub-c stars
+    float3 vrSum = float3(0.0f);   // Σ v of GENUINE-motion particles (teleports excluded)
+    float  v2rSum = 0.0f;
+    float  rCount = 0.0f;
     for (uint i = 0u; i < count; i++) {
         float3 pp = sortedParticles[start + i].posW.xyz;
+        float3 vv = pp - sortedParticles[start + i].prevW.xyz;
         sum  += pp;
-        vsum += pp - sortedParticles[start + i].prevW.xyz;
+        vsum += vv;                                   // mean: ALL, unclamped (relaxation unchanged)
+        if (all(abs(vv) < VCLAMP)) {                  // EXCLUDE teleport spikes from σ
+            vrSum  += vv;
+            v2rSum += dot(vv, vv);
+            rCount += 1.0f;
+        }
     }
+    float3 vmean = vsum / float(count);
     cellCentroids[cid] = float4(sum / float(count), float(count));
-    cellVelocities[cid] = float4(vsum / float(count), 0.0f);
+    // .w = velocity dispersion σ = sqrt(⟨|v|²⟩ − |⟨v⟩|²) over genuine-motion stars
+    // only, per-frame units. Feeds Chandrasekhar dynamical friction (X=|v_pec|/(√2·σ)).
+    float sigma2 = 0.0f;
+    if (rCount > 0.5f) {
+        float3 vrMean = vrSum / rCount;
+        sigma2 = max(v2rSum / rCount - dot(vrMean, vrMean), 0.0f);
+    }
+    cellVelocities[cid] = float4(vmean, sqrt(sigma2));
 }
 
 // ── Densest-cell reduce (the emergent-BH signal, Step 2) ────────────────────

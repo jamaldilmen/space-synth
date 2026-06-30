@@ -1017,6 +1017,17 @@ int main() {
         ImGui::Text("  Plasma T (inner):  %.2e K  [%s]", tmax_K, stateOf(tmax_K));
         ImGui::Text("  Plasma T (mean):   %.2e K  [%s]", tavg_K, stateOf(tavg_K));
         ImGui::TextDisabled("  [sim] orbV max=%.4f avg=%.4f  KE=%.2f", s.maxSpeed, s.avgSpeed, s.kineticEnergy);
+        // Step 2 measurement: how far the worst gravity kick exceeds the per-step
+        // accuracy budget. ratio>1 = integrator clamp firing (running inaccurate);
+        // sub-steps needed ≈ ceil(4·ratio). Diagnostic only — nothing capped yet.
+        {
+          float r = s.maxAccRatio;
+          int needSub = std::max(1, (int)std::ceil(4.0f * r));
+          ImGui::TextColored(r > 8.0f ? ImVec4(1.0f, 0.4f, 0.3f, 1.0f)
+                                      : ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
+                             "  [accuracy] worst kick = %.2e light-step  (sub-steps ~%d / cap 32)%s",
+                             r, needSub, r > 8.0f ? "  ACCURACY LOST" : "");
+        }
 
         // ── LIVE METERS (Ableton-style bars) — the moving values at a glance ──
         ImGui::Spacing();

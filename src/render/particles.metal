@@ -211,6 +211,19 @@ constant float RADIAL_MAX_R      = 5.0f;                              // sim uni
 constant float RADIAL_INV_DR     = float(RADIAL_SHELLS) / RADIAL_MAX_R; // shells per sim
 constant float RADIAL_MASS_SCALE = 256.0f;                            // M_sun → fixed-point uint
 
+// Chandrasekhar velocity factor G(X) = erf(X) − (2X/√π)·e^(−X²), X ≥ 0.
+// Used by dynamical friction. erf via Abramowitz-Stegun 7.1.26 (err < 1.5e-7)
+// so we don't depend on a Metal erf(); the small-X limit G→(4/3√π)X³ falls out,
+// which cancels the 1/v³ in the friction (self-regularizing as v→0).
+inline float chandraG(float X) {
+    float t   = 1.0f / (1.0f + 0.3275911f * X);
+    float ex  = exp(-X * X);
+    float erf = 1.0f - (((((1.061405429f * t - 1.453152027f) * t) +
+                          1.421413741f) * t - 0.284496736f) * t + 0.254829592f)
+                       * t * ex;
+    return max(erf - (2.0f * X / 1.7724538509f) * ex, 0.0f);
+}
+
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
 kernel void compute_physics(
@@ -228,6 +241,7 @@ kernel void compute_physics(
     device const uint* cellSeedMap [[buffer(11)]],   // 0=none, else seed slot+1
     device const uint* seedIds [[buffer(12)]],       // registry (count_cells)
     device atomic_uint* seedAccum [[buffer(13)]],    // per-slot meal accumulator
+    device atomic_uint* accDiag [[buffer(14)]],      // [0]=max accuracy ratio ×1000 (measurement slice, diagnostic-only)
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -970,6 +984,14 @@ kernel void compute_physics(
                 if (GMn > 0.0f) { float3 t = nearCom - gpos; float d2 = dot(t, t) + 0.10f; a_now += t * (GMn * rsqrt(d2) / d2); }
                 float k0    = length(a_now) * dt * dt;
                 float gkmax = u.speedCap * dt;
+                // ── ACCURACY MEASUREMENT (Step 2 slice, the ACTIVE bit9 path) ──
+                // k0/gkmax = fraction of a light-step the full-frame kick wants;
+                // the N below caps the sub-steps at 32, so k0/gkmax > 8 means
+                // accuracy is being lost (the cap is the "runs inaccurate" gap).
+                if (gkmax > 1e-12f) {
+                    uint rm = uint(min((k0 / gkmax) * 1.0e6f, 4.0e9f)); // ×1e6 fixed-point
+                    atomic_fetch_max_explicit(&accDiag[0], rm, memory_order_relaxed);
+                }
                 int   N     = clamp((int)ceil(k0 / (0.25f * gkmax + 1e-12f)), 1, 32);
                 float dts   = dt / (float)N;
                 float3 xs = gpos;
@@ -1028,9 +1050,57 @@ kernel void compute_physics(
         // (matter falls at up to c) rather than creeping at a magic number.
         // Plummer softening keeps gacc finite (d²+ε² > 0), so this can't make
         // inf; the norm-scale is guarded by the finite check.
+        // ── CHANDRASEKHAR DYNAMICAL FRICTION (RANK-1, the collapse keystone) ──
+        // Each star drags against the local stellar background: a_df =
+        // −4πG²ρ·lnΛ·m·G(X)·v̂/v², X=|v_pec|/(√2σ). Reinstates two-body
+        // relaxation (mass segregation → gravothermal core collapse) that the
+        // softened mean field erased. ρ from cellMass, σ from cellVelocities.w
+        // (A.1), v_pec = star velocity − local mean. f_relax compresses the real
+        // relaxation time (t_cc≈78 Myr ⇒ ~1000 sim-time units watchable) — a
+        // time-lapse choice, not a force cheat (per root-cause doc).
+        if (su.gridSize > 0 && hashFresh &&
+            fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+            fabs(pz) < su.halfExtent) {
+            int fcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+            int fcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+            int fcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+            uint fCell = uint((fcz * su.gridSize + fcy) * su.gridSize + fcx);
+            float rho   = (float(cellMass[fCell]) * (1.0f / 64.0f)) /
+                          max(su.cellSize * su.cellSize * su.cellSize, 1e-6f); // M_sun/sim³
+            float4 cv   = cellVelocities[fCell];
+            float  sigma = cv.w;                                  // per-frame dispersion (A.1)
+            float3 vpec = float3(vpx, vpy, vpz) - cv.xyz;         // peculiar velocity (per-frame)
+            float  speed = length(vpec);
+            if (rho > 1e-4f && sigma > 1e-5f && speed > 1e-6f) {
+                float X    = speed / (1.4142136f * sigma);
+                float Gx   = chandraG(X);
+                const float lnLambda = 13.6f;                     // ln(0.4N), N≈2e6
+                const float fRelax   = 4.0e11f;                   // derived time-compression
+                float speed3 = speed * speed * speed;
+                // Δ(per-frame displ) = a_df·dt²·f_relax; a_df∝dt²/speed³ (v=speed/dt)
+                float coef = (4.0f * 3.14159265f) * G1 * G1 * rho * lnLambda *
+                             mass * Gx * fRelax * (dt * dt * dt * dt) / speed3;
+                coef = min(coef, 0.5f);                           // never remove >50%/frame
+                shiftVx -= coef * vpec.x;
+                shiftVy -= coef * vpec.y;
+                shiftVz -= coef * vpec.z;
+            }
+        }
+
         float3 gkick = gacc * (dt * dt);
         float gkmag = length(gkick);
         float gkmax = u.speedCap * dt;       // c·dt — the physical per-step limit
+        // ── ACCURACY MEASUREMENT (Step 2 slice, DIAGNOSTIC ONLY) ─────────────
+        // gkmag/gkmax = the fraction of a light-step this single gravity kick
+        // WANTS to be before the clamp below truncates it. >0.25 means the
+        // existing N-substep threshold is exceeded; >1.0 means the clamp on the
+        // next line is firing (the "runs inaccurately" gap). Required accurate
+        // sub-steps ≈ ceil(4·ratio). Atomic-max the field-wide worst case ×1000.
+        // This does NOT change motion — the clamp below is unchanged.
+        if (gkmax > 1e-12f) {
+            uint ratioMilli = uint(min((gkmag / gkmax) * 1.0e6f, 4.0e9f)); // ×1e6 fixed-point
+            atomic_fetch_max_explicit(&accDiag[0], ratioMilli, memory_order_relaxed);
+        }
         if (gkmag > gkmax && gkmag > 1e-12f) gkick *= (gkmax / gkmag);
         gkick *= (1.0f - playGate);          // self-gravity OFF while playing (no center pull)
         shiftVx += gkick.x;

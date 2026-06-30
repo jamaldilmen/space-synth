@@ -253,6 +253,10 @@ struct PhysicsStats {
   float fieldMassMsun; // total field mass budget (M_sun)
   float maxBodyMsun;   // heaviest single body (M_sun)
   float bhStrength;    // 0..1 collapse fraction signal (1 = full shadow)
+  // ── Accuracy measurement (Step 2 slice) ──
+  float maxAccRatio;   // field-wide max gravity-kick / light-step (gkmag/gkmax),
+                       // 1-frame lag. >1 = integrator clamp firing (inaccurate);
+                       // required accurate sub-steps ≈ ceil(4·ratio).
 };
 
 class Renderer {

@@ -28,10 +28,12 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   // Cluster orbits the dominant central SMBH (Sgr A* 4.297e6 M☉, r_g≈3.6 sim,
   // ISCO≈22 sim). Inner edge OUTSIDE the ISCO so orbits are stable + sub-c
   // (v/c=√(r_g/r): 0.38c at r=25 → 0.20c at r=60). Volumetric, not a disk.
-  const float r_inner   = 25.0f;  // reverted from 2: the horizon-scale domain made
-  const float r_outer   = 60.0f;  // softening tiny → cap-ejection ("big bang"). The
-                                  // bound star-map scale; BH collapse needs adaptive
-                                  // sub-stepping, not a smaller domain.
+  const float r_inner   = 25.0f;  // diffuse star-map scale. NOTE (2026-06-30): too diffuse
+  const float r_outer   = 60.0f;  // for collapse (gravity ~1e-6 of a light-step here); but a
+                                  // dense spawn (r=3-10) just makes the cold-radial infall
+                                  // slam through the centre WITHOUT gathering mass (seed stalls
+                                  // ~50 M☉). The missing piece is dissipative ACCRETION, not a
+                                  // smaller domain. See docs handoff 2026-06-30.
   std::uniform_real_distribution<float> u01(0.0f, 1.0f);
   std::uniform_real_distribution<float> phiDist(0.0f, 2.0f * (float)M_PI);
   for (auto &p : particles_) {

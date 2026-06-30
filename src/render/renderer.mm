@@ -83,6 +83,7 @@ struct Renderer::Impl {
   id<MTLBuffer> seedIdsBuffer = nil;         // BH-seed particle ids (≤256)
   id<MTLBuffer> cellSeedMapBuffer = nil;     // per-cell seed slot (victim lookup)
   id<MTLBuffer> seedAccumBuffer = nil;       // per-seed meal accumulator (4 uints)
+  id<MTLBuffer> accDiagBuffer = nil;         // [0]=max accuracy ratio ×1000 (Step 2 measurement, diagnostic)
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
@@ -546,6 +547,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
   allocIfNeeded(impl_->seedAccumBuffer, 256 * 4 * sizeof(uint32_t));
+  allocIfNeeded(impl_->accDiagBuffer, sizeof(uint32_t)); // [0]=max accuracy ratio ×1e6
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
@@ -1136,6 +1138,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [clearBlit fillBuffer:seedAccumBuffer
                       range:NSMakeRange(0, 256 * 4 * sizeof(uint32_t))
                       value:0];
+      [clearBlit fillBuffer:accDiagBuffer    // accuracy measurement, re-maxed each frame
+                      range:NSMakeRange(0, sizeof(uint32_t))
+                      value:0];
       [clearBlit fillBuffer:cellOffsetsBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
@@ -1373,6 +1378,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellSeedMapBuffer offset:0 atIndex:11];
         [comp setBuffer:seedIdsBuffer offset:0 atIndex:12];
         [comp setBuffer:seedAccumBuffer offset:0 atIndex:13];
+        [comp setBuffer:accDiagBuffer offset:0 atIndex:14];
       }
 
       NSUInteger tg =
@@ -1639,6 +1645,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         latestStats.fieldMassMsun = physicsUniforms.massTotal;
         latestStats.maxBodyMsun = gMaxMass;
         latestStats.bhStrength = bhStrength;
+        // Accuracy measurement readback (1-frame lag, like seedAccum). uint
+        // milli-ratio → fraction of a light-step the worst gravity kick wanted.
+        if (accDiagBuffer) {
+          uint32_t micro = *(const uint32_t *)accDiagBuffer.contents;
+          latestStats.maxAccRatio = (float)micro * 1.0e-6f;
+        }
 
         // Physical Assert: Check for NaNs or Infinity (Energy Explosion)
         if (std::isnan(totalKE) || std::isinf(totalKE) || totalKE > 1e12f) {

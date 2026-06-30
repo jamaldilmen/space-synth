@@ -447,3 +447,54 @@ kernel void reduce_cell_max(
         partials[tgId].cid   = sI[0];
     }
 }
+
+// ── PM GRAVITY: red-black SOR sweep of the Poisson equation ∇²Φ = 4πG·ρ ──────
+// The honest energy-conserving self-gravity (2026-06-30). The old per-frame
+// centroid/COM attractors were a TIME-VARYING potential → energy was injected
+// every frame → the cold cluster heated to the speed cap and dispersed (proven
+// by 3-way isolation). Here Φ is a real potential FIELD on the 128³ grid; the
+// force in compute_physics is −∇Φ, conservative by construction. One sweep of
+// red-black successive-over-relaxation; the host dispatches K sweeps/frame,
+// WARM-STARTED from last frame's Φ (the field bares moves per frame → only the
+// small change re-converges → cheap and temporally smooth). ρ = cellMass (the
+// uncapped Σ of real IMF masses already deposited by count_cells). Dirichlet
+// monopole BC at the box edge: Φ = −G·M_tot/r (the field's far potential).
+//   sp.x = 4πG_sim   sp.y = gravGM (= G_sim·M_tot, sim units)   color: 0=red 1=black
+kernel void poisson_sor(
+    device const uint*  cellMass [[buffer(0)]],   // Σ M_sun ×64 per cell (ρ source)
+    device float*       phi      [[buffer(1)]],   // 128³ potential, updated IN PLACE
+    constant SpatialHashUniforms& u [[buffer(2)]],
+    constant float2&    sp       [[buffer(3)]],   // x=4πG_sim, y=gravGM(total)
+    constant uint&      color    [[buffer(4)]],   // red-black checkerboard parity
+    uint cid [[thread_position_in_grid]])
+{
+    int N = u.gridSize;
+    uint total = uint(N) * uint(N) * uint(u.gridSizeZ);
+    if (cid >= total) return;
+    int i = int(cid) % N;
+    int j = (int(cid) / N) % N;
+    int k = int(cid) / (N * N);
+    // Update only this pass's colour (red-black GS: disjoint, race-free in place).
+    if (((i + j + k) & 1) != int(color)) return;
+
+    float h = u.cellSize;
+    // Dirichlet monopole boundary: Φ = −G·M_tot / r at the box edge.
+    if (i == 0 || j == 0 || k == 0 || i == N - 1 || j == N - 1 || k == N - 1) {
+        float3 p = (float3(i, j, k) + 0.5f) * h - u.halfExtent;
+        float  r = max(length(p), h);
+        phi[cid] = -sp.y / r;
+        return;
+    }
+    // ρ in M_sun / sim³.
+    float rho = (float(cellMass[cid]) * (1.0f / 64.0f)) / (h * h * h);
+    // 7-point Laplacian: ∇²Φ = (Σ6 neighbours − 6Φ)/h² = 4πG·ρ
+    //   ⇒ Gauss-Seidel target Φ* = (Σ6 − 4πG·ρ·h²)/6.
+    float sum = phi[cid + 1u]            + phi[cid - 1u]
+              + phi[cid + uint(N)]       + phi[cid - uint(N)]
+              + phi[cid + uint(N * N)]   + phi[cid - uint(N * N)];
+    float phiStar = (sum - sp.x * rho * h * h) / 6.0f;
+    // SOR: over-relax toward the GS target (ω≈1.9, near-optimal for N=128 →
+    // ~10× faster low-frequency convergence than plain GS, which is what binds).
+    const float omega = 1.9f;
+    phi[cid] = phi[cid] + omega * (phiStar - phi[cid]);
+}

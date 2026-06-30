@@ -242,6 +242,7 @@ kernel void compute_physics(
     device const uint* seedIds [[buffer(12)]],       // registry (count_cells)
     device atomic_uint* seedAccum [[buffer(13)]],    // per-slot meal accumulator
     device atomic_uint* accDiag [[buffer(14)]],      // [0]=max accuracy ratio ×1000 (measurement slice, diagnostic-only)
+    device const float* phi [[buffer(15)]],          // PM gravity potential Φ on the 128³ grid (poisson_sor); force = −∇Φ
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -866,6 +867,33 @@ kernel void compute_physics(
         float G1   = u.gravGM / Mtot;            // GM of ONE solar mass
         float3 gpos = float3(px, py, pz);
         float3 gacc = float3(0.0f);
+        // Hoisted (shared by the PM branch below, the legacy near loop, and friction).
+        float nearM = 0.0f;
+        float3 nearMP = float3(0.0f);
+        bool hashFresh = !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f);
+
+        // ── PM GRAVITY (bit10): gacc = −∇Φ from the Poisson solve (poisson_sor) ─
+        // The honest energy-conserving self-gravity. Replaces the per-frame
+        // near-centroid + far-COM attractors — a TIME-VARYING potential that
+        // injected energy every frame and pumped the cold cluster to the speed
+        // cap (proven by 3-way isolation 2026-06-30). Φ is a real field on the
+        // 128³ grid; central differences give a conservative force.
+        if (u.bhToggles & 0x400u) {
+            if (hashFresh && su.gridSize > 0 &&
+                fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+                fabs(pz) < su.halfExtent) {
+                int Ng = su.gridSize;
+                int gi = clamp(int((px + su.halfExtent) * su.invCellSize), 1, Ng - 2);
+                int gj = clamp(int((py + su.halfExtent) * su.invCellSize), 1, Ng - 2);
+                int gk = clamp(int((pz + su.halfExtent) * su.invCellSize), 1, Ng - 2);
+                uint c = uint((gk * Ng + gj) * Ng + gi);
+                float inv2h = 0.5f * su.invCellSize;          // 1/(2h)
+                float ax = (phi[c + 1u]            - phi[c - 1u])            * inv2h;
+                float ay = (phi[c + uint(Ng)]      - phi[c - uint(Ng)])      * inv2h;
+                float az = (phi[c + uint(Ng * Ng)] - phi[c - uint(Ng * Ng)]) * inv2h;
+                gacc = -float3(ax, ay, az);                   // a = −∇Φ (attractive)
+            }
+        } else {
 
         // ── HARD-CODED CENTRAL SMBH (Sgr A*) at the origin (2026-06-22) ──────────
         // The dominant mass the whole cluster ORBITS → fast clean Keplerian orbits
@@ -886,9 +914,7 @@ kernel void compute_physics(
         // NEAR field. Skip during attack (hash not rebuilt there → stale
         // centroids) and outside the hash extent (binning clamps to edge
         // cells, meaningless for this particle → monopole only).
-        float nearM = 0.0f;
-        float3 nearMP = float3(0.0f);
-        bool hashFresh = !(u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f);
+        // (nearM / nearMP / hashFresh hoisted above the PM branch.)
         if ((u.bhToggles & 0x1u) && su.gridSize > 0 && hashFresh &&  // bit0: field self-gravity
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
@@ -1009,6 +1035,7 @@ kernel void compute_physics(
                 shiftVx += dv.x; shiftVy += dv.y; shiftVz += dv.z;
             }
         }
+        }   // ── end else: legacy (non-PM) near/far/substep force ──
 
         // ── CORE-COLLAPSE COOLING (gravothermal contraction) — bit5 ──────────
         // Real core collapse: dense regions RADIATE orbital energy (collisional

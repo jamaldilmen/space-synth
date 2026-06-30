@@ -51,6 +51,7 @@ struct AppState {
   bool  uiTogSeedRender   = false; // bit7  bright discrete seed render (rest)
   bool  uiTogLensShadow   = false; // bit8  screen-space lens/shadow
   bool  uiTogAdaptiveSubstep = true; // TEST // bit9  GMAT-style adaptive sub-step of the central field (orbit instead of c·dt plunge) — OFF by default
+  bool  uiTogPMGravity   = true;  // bit10 PM gravity: real Poisson solve ∇²Φ=4πGρ on the 128³ grid, force=−∇Φ (energy-conserving). Replaces the centroid/COM attractors that pumped the cold cluster to the speed cap (2026-06-30). When ON it overrides the bit0/bit9 legacy force.
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

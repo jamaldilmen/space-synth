@@ -1155,6 +1155,11 @@ int main() {
           ImGui::SetItemTooltip("GMAT-style: sub-step the central pull near the core so "
                                 "a close pass ORBITS instead of plunging on a saturated "
                                 "c·dt kick. Needs 'Central SMBH pull' on. OFF = old single kick.");
+          ImGui::Checkbox("PM gravity (Poisson −∇Φ)", &app.uiTogPMGravity);
+          ImGui::SetItemTooltip("Real energy-conserving self-gravity: solve ∇²Φ=4πGρ on the "
+                                "128³ grid each frame (red-black SOR), force = −∇Φ. Replaces the "
+                                "per-frame centroid/COM attractors that pumped the cold cluster to the "
+                                "speed cap. ON overrides the bit0/bit9 legacy force.");
         }
 
         ImGui::Checkbox("Ortho Camera", &app.uiOrthoMode);
@@ -1811,7 +1816,8 @@ int main() {
         ((app.uiTogResurrection ? 1u : 0u) << 6) |
         ((app.uiTogSeedRender   ? 1u : 0u) << 7) |
         ((app.uiTogLensShadow   ? 1u : 0u) << 8) |
-        ((app.uiTogAdaptiveSubstep ? 1u : 0u) << 9);
+        ((app.uiTogAdaptiveSubstep ? 1u : 0u) << 9) |
+        ((app.uiTogPMGravity    ? 1u : 0u) << 10);
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

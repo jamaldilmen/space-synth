@@ -54,6 +54,7 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> prefixSumAddPipeline = nil;
   id<MTLComputePipelineState> scatterPipeline = nil;
   id<MTLComputePipelineState> centroidPipeline = nil; // per-cell centroid (cohesion)
+  id<MTLComputePipelineState> poissonPipeline = nil;  // PM gravity: red-black SOR Poisson sweep
 
   // Conservation law reduction
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
@@ -91,6 +92,8 @@ struct Renderer::Impl {
   id<MTLBuffer> cellCentroidsBuffer = nil;   // float4 per cell: xyz centroid, w count
   id<MTLBuffer> cellVelocitiesBuffer = nil;  // float4 per cell: xyz mean velocity (per-frame)
   id<MTLBuffer> cellMaxPartialsBuffer = nil; // {count,cid} per threadgroup (densest cell)
+  id<MTLBuffer> phiBuffer = nil;             // PM gravity potential Φ per cell (float), warm-started across frames
+  bool phiInitialized = false;               // zero Φ once on first alloc (warm-start persists after)
   id<MTLBuffer> spatialHashUniformBuffer = nil;
 
   // Stats readback (partial sums from GPU reduction)
@@ -294,6 +297,19 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
             (unsigned long)(impl_->prefixSumAddPipeline
                                 ? impl_->prefixSumAddPipeline.maxTotalThreadsPerThreadgroup
                                 : 0));
+  }
+
+  // ── PM gravity Poisson solver pipeline (red-black SOR) ──────────────
+  id<MTLFunction> poissonFunc =
+      [impl_->library newFunctionWithName:@"poisson_sor"];
+  if (poissonFunc) {
+    impl_->poissonPipeline =
+        [impl_->device newComputePipelineStateWithFunction:poissonFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"Poisson pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing poisson_sor kernel");
   }
 
   // ── Density heatmap pipeline ────────────────────────────────────────
@@ -543,6 +559,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellIndicesBuffer, uintSize);
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellMassBuffer, cellSize);
+  allocIfNeeded(impl_->phiBuffer, Impl::kTotalCells * sizeof(float)); // PM gravity Φ (warm-started)
   allocIfNeeded(impl_->seedCountBuffer, 8 * sizeof(uint32_t)); // [0]=n [1]=meals [2]=eaten×64 [3]=scan [4..6]=probe
   allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
@@ -683,8 +700,19 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
 
   // Stage uniforms — will be dispatched in render()
   impl_->physicsUniforms = {};
+  // ENERGY-CONSERVATION FIX 2026-06-30 (INTERIM — pending the proper integrator
+  // decision): pin the physics dt to a FIXED step. The frame-rate-tied dt was
+  // swinging ~4× (0.0086–0.033); the Verlet velocity carry-over is only a
+  // first-order rescale (tcv=clamp(dt/dtPrev,0.5,2.5)), so ANY dt variation
+  // injects energy when a force is present → the cluster heated to the cap and
+  // dispersed. This was the root cause of the whole "no black hole" saga
+  // (proven: fixed dt → cold cluster holds; variable/clamped dt → heats).
+  // A 2:1 clamp still leaked (first-order correction); only a truly fixed step
+  // conserves. NOTE: fixed dt decouples the sim rate from real FPS — the proper
+  // fix is a fixed-dt accumulator (N substeps/frame) or velocity-Verlet; TBD.
+  dt = 0.0165f;
   impl_->physicsUniforms.dt = dt;
-  impl_->physicsUniforms.dtPrev = impl_->lastDt; // time-corrected Verlet: last frame's dt
+  impl_->physicsUniforms.dtPrev = 0.0165f; // tcv = dt/dtPrev = 1 exactly (fixed step)
   impl_->lastDt = dt;
   impl_->physicsUniforms.totalAmplitude =
       totalAmplitude; // Phase 17: Pass real synth amplitude for ADSR dynamics
@@ -1276,6 +1304,49 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
+      // Phase 5b: PM GRAVITY — solve ∇²Φ = 4πG·ρ on the grid (red-black SOR),
+      // warm-started from last frame's Φ. The force (−∇Φ) is sampled in
+      // compute_physics when bit10 is set. Energy-conserving, replaces the
+      // per-frame centroid/COM attractors that pumped the cluster apart.
+      bool pmGravityOn = (bhToggles & 0x400u) != 0u;
+      if (poissonPipeline && phiBuffer && pmGravityOn &&
+          physicsUniforms.totalAmplitude < 0.02f) {  // rest only (matches centroids)
+        // Zero Φ once on first use; afterward it persists (warm start).
+        if (!phiInitialized) {
+          id<MTLBlitCommandEncoder> zb = [cmdBuf blitCommandEncoder];
+          [zb fillBuffer:phiBuffer range:NSMakeRange(0, Impl::kTotalCells * sizeof(float)) value:0];
+          [zb endEncoding];
+          phiInitialized = true;
+        }
+        float Gsim = physicsUniforms.gravGM / std::max(physicsUniforms.massTotal, 1.0f);
+        // float2 {x=4πG_sim, y=gravGM(total)} — matches `constant float2&` in poisson_sor.
+        float solverParams[2] = {(float)(4.0 * 3.14159265358979) * Gsim, physicsUniforms.gravGM};
+        const int kSorSweeps = 80;  // warm-started; sub-ms on M-series. ω=1.9 in-kernel.
+        NSUInteger tgP = std::min((NSUInteger)256,
+                                  poissonPipeline.maxTotalThreadsPerThreadgroup);
+        for (int sweep = 0; sweep < kSorSweeps; sweep++) {
+          for (uint color = 0; color < 2u; color++) {
+            id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+            [comp setComputePipelineState:poissonPipeline];
+            [comp setBuffer:cellMassBuffer offset:0 atIndex:0];
+            [comp setBuffer:phiBuffer offset:0 atIndex:1];
+            [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+            [comp setBytes:&solverParams length:sizeof(solverParams) atIndex:3];
+            [comp setBytes:&color length:sizeof(color) atIndex:4];
+            [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(tgP, 1, 1)];
+            [comp endEncoding];
+          }
+        }
+      }
+
+      // [PM] confirm the PM path is live + Φ depth (reads last frame's Φ).
+      if ((physicsUniforms.frameCounter % 240u) == 0u && phiBuffer && pmGravityOn) {
+        const float *ph = (const float *)phiBuffer.contents;
+        fprintf(stderr, "[PM] on dt=%.4f phi[ctr]=%.5f\n",
+                physicsUniforms.dt, ph[(64 * 128 + 64) * 128 + 64]);
+      }
+
       // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
       if (reduceCellMaxPipeline && cellMaxPartialsBuffer) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
@@ -1379,6 +1450,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:seedIdsBuffer offset:0 atIndex:12];
         [comp setBuffer:seedAccumBuffer offset:0 atIndex:13];
         [comp setBuffer:accDiagBuffer offset:0 atIndex:14];
+        [comp setBuffer:phiBuffer offset:0 atIndex:15]; // PM gravity Φ (force = −∇Φ)
       }
 
       NSUInteger tg =

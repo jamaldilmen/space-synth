@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "core/imf.h"
 #include "core/units.h"
+#include "spacetime/spacetime.h"  // thermodynamics: kUFloorSim (SPH internal energy floor)
 #include "backends/imgui_impl_metal.h"
 #include "imgui.h"
 #include <Metal/Metal.h>
@@ -55,6 +56,9 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> scatterPipeline = nil;
   id<MTLComputePipelineState> centroidPipeline = nil; // per-cell centroid (cohesion)
   id<MTLComputePipelineState> poissonPipeline = nil;  // PM gravity: red-black SOR Poisson sweep
+  id<MTLComputePipelineState> sphDensityPipeline = nil; // SPH ρ per particle (reaction engine slice 1)
+  id<MTLComputePipelineState> sphPressurePipeline = nil; // SPH EOS pressure (reaction engine slice 2)
+  id<MTLComputePipelineState> sphForcePipeline = nil;    // SPH pressure force (reaction engine slice 2b)
 
   // Conservation law reduction
   id<MTLComputePipelineState> reduceStatsPipeline = nil;
@@ -94,6 +98,14 @@ struct Renderer::Impl {
   id<MTLBuffer> cellMaxPartialsBuffer = nil; // {count,cid} per threadgroup (densest cell)
   id<MTLBuffer> phiBuffer = nil;             // PM gravity potential Φ per cell (float), warm-started across frames
   bool phiInitialized = false;               // zero Φ once on first alloc (warm-start persists after)
+  // SPH reaction engine (slice 0 plumbing): per-particle smoothed density ρ and
+  // EOS pressure P, float each, sized to particle count (~28 MB at the 7M peak).
+  // Written by sph_density (slice 1) / sph EOS (slice 2); inert until then.
+  id<MTLBuffer> densityBuffer = nil;         // ρ_i = Σ_j m_j W(|r_ij|,h)  (M_sun / sim³)
+  id<MTLBuffer> pressureBuffer = nil;        // P_i from the equation of state (sim units)
+  id<MTLBuffer> uBuffer = nil;               // specific internal energy u_i (sim units, c²); PERSISTENT
+  bool uInitialized = false;                 // seed u to the cold floor once, then it evolves
+  id<MTLBuffer> sphForceBuffer = nil;        // float4/particle: SPH pressure acceleration (slice 2b)
   id<MTLBuffer> spatialHashUniformBuffer = nil;
 
   // Stats readback (partial sums from GPU reduction)
@@ -310,6 +322,45 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Poisson pipeline error: %@", error);
   } else {
     NSLog(@"Missing poisson_sor kernel");
+  }
+
+  // ── SPH density pipeline (reaction engine slice 1) ──────────────────
+  id<MTLFunction> sphDensityFunc =
+      [impl_->library newFunctionWithName:@"sph_density"];
+  if (sphDensityFunc) {
+    impl_->sphDensityPipeline =
+        [impl_->device newComputePipelineStateWithFunction:sphDensityFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"SPH density pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing sph_density kernel");
+  }
+
+  // ── SPH EOS pressure pipeline (reaction engine slice 2) ─────────────
+  id<MTLFunction> sphPressureFunc =
+      [impl_->library newFunctionWithName:@"sph_pressure"];
+  if (sphPressureFunc) {
+    impl_->sphPressurePipeline =
+        [impl_->device newComputePipelineStateWithFunction:sphPressureFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"SPH pressure pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing sph_pressure kernel");
+  }
+
+  // ── SPH pressure-force pipeline (reaction engine slice 2b) ──────────
+  id<MTLFunction> sphForceFunc =
+      [impl_->library newFunctionWithName:@"sph_force"];
+  if (sphForceFunc) {
+    impl_->sphForcePipeline =
+        [impl_->device newComputePipelineStateWithFunction:sphForceFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"SPH force pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing sph_force kernel");
   }
 
   // ── Density heatmap pipeline ────────────────────────────────────────
@@ -560,6 +611,26 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellMassBuffer, cellSize);
   allocIfNeeded(impl_->phiBuffer, Impl::kTotalCells * sizeof(float)); // PM gravity Φ (warm-started)
+  allocIfNeeded(impl_->densityBuffer, count * sizeof(float));  // SPH ρ per particle (slice 0 plumbing)
+  allocIfNeeded(impl_->pressureBuffer, count * sizeof(float)); // SPH P per particle (slice 0 plumbing)
+  {
+    // SPH internal energy u: allocate + seed the WHOLE buffer to the cold floor
+    // (persistent; shocks heat it, radiation cools it). Re-seed on (re)alloc/upload.
+    bool grew = (!impl_->uBuffer || (size_t)impl_->uBuffer.length < count * sizeof(float));
+    allocIfNeeded(impl_->uBuffer, count * sizeof(float));
+    if (grew || !impl_->uInitialized) {
+      float *up = (float *)impl_->uBuffer.contents;
+      float uf = (float)space::spacetime::kUFloorSim; // cold floor (rest ≈ collisionless)
+      for (size_t i = 0; i < count; ++i) up[i] = uf;
+      impl_->uInitialized = true;
+    }
+  }
+  {
+    bool grew = (!impl_->sphForceBuffer ||
+                 (size_t)impl_->sphForceBuffer.length < count * 4 * sizeof(float));
+    allocIfNeeded(impl_->sphForceBuffer, count * 4 * sizeof(float)); // float4/particle
+    if (grew) memset(impl_->sphForceBuffer.contents, 0, count * 4 * sizeof(float));
+  }
   allocIfNeeded(impl_->seedCountBuffer, 8 * sizeof(uint32_t)); // [0]=n [1]=meals [2]=eaten×64 [3]=scan [4..6]=probe
   allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
@@ -1304,6 +1375,63 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
+      // Phase 5a2: SPH DENSITY — ρ_i per particle (27-cell ≤32/cell neighbour
+      // scan, cubic spline, h=cellSize). Rest only for now (matches centroids;
+      // the play-state Chladni pattern explodes the neighbour scan — ungated
+      // later at slice 5). SLICE 1 = measurement: densityBuffer is written but
+      // nothing reads it yet (pressure force = slice 2).
+      if (sphDensityPipeline && densityBuffer &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:sphDensityPipeline];
+        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:1];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:2];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+        [comp setBuffer:densityBuffer offset:0 atIndex:4];
+        // One threadgroup per cell, 32 threads (one per home-cell slot).
+        [comp dispatchThreadgroups:MTLSizeMake(Impl::kTotalCells, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 5a3: SPH EOS PRESSURE — P_i=(γ−1)ρ_i u_i (cheap per-particle). Needs
+      // ρ (above) + u. Rest only. SLICE 2: written but not yet applied (force = next).
+      if (sphPressurePipeline && pressureBuffer && densityBuffer && uBuffer &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:sphPressurePipeline];
+        [comp setBuffer:densityBuffer offset:0 atIndex:0];
+        [comp setBuffer:uBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        [comp setBuffer:pressureBuffer offset:0 atIndex:3];
+        NSUInteger tgP2 = std::min(
+            (NSUInteger)256, sphPressurePipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgP2, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 5a4: SPH PRESSURE FORCE (bit11) — tiled, a_i=−Σ m_j(P_i/ρ_i²+P_j/ρ_j²)∇W.
+      // Writes sphForceBuffer; compute_physics adds it to gacc when bit11 is set.
+      // Rest only. Gated OFF by default until verified (needs u>0 to do anything).
+      bool sphPressureForceOn = (bhToggles & 0x800u) != 0u;
+      if (sphForcePipeline && sphForceBuffer && densityBuffer && pressureBuffer &&
+          sphPressureForceOn && physicsUniforms.totalAmplitude < 0.02f) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:sphForcePipeline];
+        [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellStartsBuffer offset:0 atIndex:1];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:2];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+        [comp setBuffer:densityBuffer offset:0 atIndex:4];
+        [comp setBuffer:pressureBuffer offset:0 atIndex:5];
+        [comp setBuffer:sphForceBuffer offset:0 atIndex:6];
+        [comp dispatchThreadgroups:MTLSizeMake(Impl::kTotalCells, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+        [comp endEncoding];
+      }
+
       // Phase 5b: PM GRAVITY — solve ∇²Φ = 4πG·ρ on the grid (red-black SOR),
       // warm-started from last frame's Φ. The force (−∇Φ) is sampled in
       // compute_physics when bit10 is set. Energy-conserving, replaces the
@@ -1346,6 +1474,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         fprintf(stderr, "[PM] on dt=%.4f phi[ctr]=%.5f\n",
                 physicsUniforms.dt, ph[(64 * 128 + 64) * 128 + 64]);
       }
+
 
       // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
       if (reduceCellMaxPipeline && cellMaxPartialsBuffer) {
@@ -1451,6 +1580,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:seedAccumBuffer offset:0 atIndex:13];
         [comp setBuffer:accDiagBuffer offset:0 atIndex:14];
         [comp setBuffer:phiBuffer offset:0 atIndex:15]; // PM gravity Φ (force = −∇Φ)
+        [comp setBuffer:sphForceBuffer offset:0 atIndex:16]; // SPH pressure accel (bit11, slice 2b)
       }
 
       NSUInteger tg =

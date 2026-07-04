@@ -1156,6 +1156,7 @@ int main() {
                                 "a close pass ORBITS instead of plunging on a saturated "
                                 "c·dt kick. Needs 'Central SMBH pull' on. OFF = old single kick.");
           ImGui::Checkbox("PM gravity (Poisson −∇Φ)", &app.uiTogPMGravity);
+          ImGui::Checkbox("SPH pressure force (bit11)", &app.uiTogSphPressure);
           ImGui::SetItemTooltip("Real energy-conserving self-gravity: solve ∇²Φ=4πGρ on the "
                                 "128³ grid each frame (red-black SOR), force = −∇Φ. Replaces the "
                                 "per-frame centroid/COM attractors that pumped the cold cluster to the "
@@ -1817,7 +1818,8 @@ int main() {
         ((app.uiTogSeedRender   ? 1u : 0u) << 7) |
         ((app.uiTogLensShadow   ? 1u : 0u) << 8) |
         ((app.uiTogAdaptiveSubstep ? 1u : 0u) << 9) |
-        ((app.uiTogPMGravity    ? 1u : 0u) << 10);
+        ((app.uiTogPMGravity    ? 1u : 0u) << 10) |
+        ((app.uiTogSphPressure  ? 1u : 0u) << 11);
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

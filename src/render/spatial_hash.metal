@@ -396,6 +396,201 @@ kernel void compute_cell_centroids(
     cellVelocities[cid] = float4(vmean, sqrt(sigma2));
 }
 
+// ── SPH DENSITY (reaction engine, slice 1) ──────────────────────────────────
+// Smoothed density ρ_i = Σ_j m_j W(|r_ij|, h), cubic-spline kernel (Monaghan
+// 1992), h = cellSize. Per particle: scan the 27 neighbour cells, ≤32 samples/
+// cell from the sorted buffer → O(N), same cap as every other neighbour pass.
+// Includes the self term (j=i, r=0 → W max), which is correct SPH. ρ in
+// M_sun / sim³. SLICE 1 = MEASUREMENT ONLY: nothing reads densityOut yet
+// (pressure/force = slice 2). Support 2h ≈ 2 cells; the ±1 scan covers the bulk
+// (h ≤ cellSize keeps us inside the 27-cell budget — see the plan §3.1).
+static inline float sphW(float r, float h) {
+    float q = r / h;
+    float f;
+    if (q < 1.0f)      f = 1.0f - 1.5f * q * q + 0.75f * q * q * q;
+    else if (q < 2.0f) { float a = 2.0f - q; f = 0.25f * a * a * a; }
+    else               return 0.0f;
+    return f / (3.14159265f * h * h * h);
+}
+
+// Cubic-spline kernel radial derivative dW/dr (Monaghan 1992), 3D norm 1/(π h⁴).
+// ∇_i W_ij = (dW/dr)·(r_ij/|r_ij|). Returns 0 at r=0 (self, no self-force).
+static inline float sphGradW(float r, float h) {
+    if (r < 1e-8f) return 0.0f;
+    float q = r / h;
+    float g;
+    if (q < 1.0f)      g = -3.0f * q + 2.25f * q * q;
+    else if (q < 2.0f) { float a = 2.0f - q; g = -0.75f * a * a; }
+    else               return 0.0f;
+    return g / (3.14159265f * h * h * h * h);
+}
+
+// TILED: one threadgroup per cell (32 threads = one per home-cell slot). Each of the
+// 27 neighbour cells is loaded ONCE into threadgroup memory and reused by all home
+// particles → 6× faster than the naive per-particle scattered gather (25.7ms vs
+// 158ms, measured 2026-07-02). Home particle read from the SORTED buffer (origin id
+// in .entanglement.y). Control flow is threadgroup-uniform → all threads hit every
+// barrier. OOB write-guard: originId is a read value; a stale slot would fault the GPU.
+kernel void sph_density(
+    device const Particle* sortedParticles [[buffer(0)]],
+    device const uint*     cellStarts      [[buffer(1)]],
+    device const uint*     cellCounts      [[buffer(2)]],
+    constant SpatialHashUniforms& u        [[buffer(3)]],
+    device float*          densityOut      [[buffer(4)]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint tid  [[thread_position_in_threadgroup]])
+{
+    threadgroup float4 sh[32];   // one neighbour cell's pos+mass, reused per home particle
+
+    uint totalCells = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
+    if (tgid >= totalCells) return;
+
+    uint homeCount = min(cellCounts[tgid], 32u);
+    if (homeCount == 0u) return;   // skip empty cells (uniform → no barrier deadlock)
+    int cx = int(tgid % uint(u.gridSize));
+    int cy = int((tgid / uint(u.gridSize)) % uint(u.gridSize));
+    int cz = int(tgid / (uint(u.gridSize) * uint(u.gridSize)));
+
+    bool active = tid < homeCount;
+    float3 ri = float3(0.0f);
+    uint originId = 0u;
+    if (active) {
+        Particle self = sortedParticles[cellStarts[tgid] + tid];
+        ri = self.posW.xyz;
+        originId = self.entanglement.y;   // scatter stored the original particle id here
+    }
+    float h = u.cellSize;
+    float rho = 0.0f;
+
+    for (int dz = -1; dz <= 1; dz++) {
+        int nz = cz + dz; if (nz < 0 || nz >= u.gridSizeZ) continue;
+        for (int dy = -1; dy <= 1; dy++) {
+            int ny = cy + dy; if (ny < 0 || ny >= u.gridSize) continue;
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx; if (nx < 0 || nx >= u.gridSize) continue;
+                uint ncID    = uint((nz * u.gridSize + ny) * u.gridSize + nx);
+                uint ncCount = min(cellCounts[ncID], 32u);
+                uint ncStart = cellStarts[ncID];
+                threadgroup_barrier(mem_flags::mem_threadgroup); // prev cell's readers done
+                if (tid < ncCount) sh[tid] = sortedParticles[ncStart + tid].posW;
+                threadgroup_barrier(mem_flags::mem_threadgroup); // loads visible
+                if (active) {
+                    for (uint k = 0u; k < ncCount; k++) {
+                        float3 d = ri - sh[k].xyz;
+                        rho += sh[k].w * sphW(length(d), h);
+                    }
+                }
+            }
+        }
+    }
+    if (active && originId < uint(u.particleCount)) densityOut[originId] = rho;
+}
+
+// ── SPH EOS PRESSURE (reaction engine slice 2) ──────────────────────────────
+// Ideal gas P_i = (γ−1)·ρ_i·u_i, γ=5/3. Per-particle, cheap (no neighbours). u =
+// specific internal energy (sim units, persistent, cold floor seeded). ρ from
+// sph_density. Radiation pressure (a_rad·T⁴/3) deferred to slice 4. Feeds the
+// tiled pressure-force pass. SLICE 2 = measurement until the force pass applies it.
+kernel void sph_pressure(
+    device const float* densityIn   [[buffer(0)]],
+    device const float* uIn         [[buffer(1)]],
+    constant SpatialHashUniforms& u [[buffer(2)]],
+    device float* pressureOut       [[buffer(3)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (int(id) >= u.particleCount) return;
+    const float gm1 = 2.0f / 3.0f;   // γ−1, γ = 5/3 monatomic ideal gas
+    float rho = densityIn[id];
+    float ui  = uIn[id];
+    pressureOut[id] = gm1 * rho * max(ui, 0.0f);
+}
+
+// ── SPH PRESSURE FORCE (reaction engine slice 2b) ───────────────────────────
+// Tiled (same structure as sph_density): one threadgroup per cell, 32 threads.
+// a_i = −Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇_i W_ij  (symmetric SPH momentum eqn).
+// The tile carries neighbour pos+mass (from sorted) AND ρ,P (gathered by origin
+// id from densityIn/pressureIn). Output forceOut[originId] = pressure accel; it is
+// ADDED to gacc in compute_physics (gated bit11) and applied as a·dt² (Verlet).
+kernel void sph_force(
+    device const Particle* sortedParticles [[buffer(0)]],
+    device const uint*     cellStarts      [[buffer(1)]],
+    device const uint*     cellCounts      [[buffer(2)]],
+    constant SpatialHashUniforms& u        [[buffer(3)]],
+    device const float*    densityIn       [[buffer(4)]],
+    device const float*    pressureIn      [[buffer(5)]],
+    device float4*         forceOut        [[buffer(6)]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint tid  [[thread_position_in_threadgroup]])
+{
+    threadgroup float4 sh_posm[32];  // neighbour pos.xyz + mass
+    threadgroup float  sh_rho[32];   // neighbour ρ
+    threadgroup float  sh_P[32];     // neighbour P
+
+    uint totalCells = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
+    if (tgid >= totalCells) return;
+
+    uint homeCount = min(cellCounts[tgid], 32u);
+    if (homeCount == 0u) return;
+    int cx = int(tgid % uint(u.gridSize));
+    int cy = int((tgid / uint(u.gridSize)) % uint(u.gridSize));
+    int cz = int(tgid / (uint(u.gridSize) * uint(u.gridSize)));
+
+    bool active = tid < homeCount;
+    float3 ri = float3(0.0f);
+    uint originId = 0u;
+    float rhoI = 1.0f, Pi = 0.0f;
+    if (active) {
+        Particle self = sortedParticles[cellStarts[tgid] + tid];
+        ri = self.posW.xyz;
+        originId = self.entanglement.y;
+        if (originId < uint(u.particleCount)) {
+            rhoI = max(densityIn[originId], 1e-12f);
+            Pi   = pressureIn[originId];
+        }
+    }
+    float h = u.cellSize;
+    float PiOverRhoI2 = Pi / (rhoI * rhoI);
+    float3 acc = float3(0.0f);
+
+    for (int dz = -1; dz <= 1; dz++) {
+        int nz = cz + dz; if (nz < 0 || nz >= u.gridSizeZ) continue;
+        for (int dy = -1; dy <= 1; dy++) {
+            int ny = cy + dy; if (ny < 0 || ny >= u.gridSize) continue;
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx; if (nx < 0 || nx >= u.gridSize) continue;
+                uint ncID    = uint((nz * u.gridSize + ny) * u.gridSize + nx);
+                uint ncCount = min(cellCounts[ncID], 32u);
+                uint ncStart = cellStarts[ncID];
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (tid < ncCount) {
+                    Particle nb = sortedParticles[ncStart + tid];
+                    sh_posm[tid] = nb.posW;
+                    uint oj = nb.entanglement.y;
+                    if (oj < uint(u.particleCount)) {
+                        sh_rho[tid] = max(densityIn[oj], 1e-12f);
+                        sh_P[tid]   = pressureIn[oj];
+                    } else { sh_rho[tid] = 1e-12f; sh_P[tid] = 0.0f; }
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (active) {
+                    for (uint k = 0u; k < ncCount; k++) {
+                        float3 rij = ri - sh_posm[k].xyz;
+                        float  r   = length(rij);
+                        if (r < 1e-8f) continue;                  // skip self
+                        float mj   = sh_posm[k].w;
+                        float rhoJ = sh_rho[k];
+                        float term = mj * (PiOverRhoI2 + sh_P[k] / (rhoJ * rhoJ));
+                        float dWdr = sphGradW(r, h);
+                        acc += (-term * dWdr) * (rij / r);        // ∇_i W along r_ij
+                    }
+                }
+            }
+        }
+    }
+    if (active && originId < uint(u.particleCount))
+        forceOut[originId] = float4(acc, 0.0f);
+}
+
 // ── Densest-cell reduce (the emergent-BH signal, Step 2) ────────────────────
 // Finds the single densest grid cell (max particle count + its cell id).
 // The CPU reads this back, sums the mass in the surrounding neighbourhood,

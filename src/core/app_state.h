@@ -52,6 +52,7 @@ struct AppState {
   bool  uiTogLensShadow   = false; // bit8  screen-space lens/shadow
   bool  uiTogAdaptiveSubstep = true; // TEST // bit9  GMAT-style adaptive sub-step of the central field (orbit instead of c·dt plunge) — OFF by default
   bool  uiTogPMGravity   = true;  // bit10 PM gravity: real Poisson solve ∇²Φ=4πGρ on the 128³ grid, force=−∇Φ (energy-conserving). Replaces the centroid/COM attractors that pumped the cold cluster to the speed cap (2026-06-30). When ON it overrides the bit0/bit9 legacy force.
+  bool  uiTogSphPressure = false; // bit11 SPH pressure force (reaction engine slice 2b): a=−Σ m_j(P_i/ρ_i²+P_j/ρ_j²)∇W added to gravity. ≈0 at rest (cold u); matters when heated. Toggle in the mod menu.
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

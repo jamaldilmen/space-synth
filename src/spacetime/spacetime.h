@@ -94,6 +94,25 @@ static_assert(detail::approx(kSimSeconds, 5.8547, 1e-3),
 static_assert(detail::approx(tgSeconds(kMfieldMsun), 2.927, 1e-3),
               "t_g(field) must be GM/c³ ≈ 2.93 s");
 
+// ── THERMODYNAMICS (EOS anchor — physical, NOT feel-tuned) ───────────────────
+// Specific internal energy u is carried in SIM units (velocity = c, so u is in
+// units of c²). Temperature in Kelvin is DERIVED, never stored:
+//   ideal gas:  u = (1/(γ−1))·k_B·T / (μ·m_H)
+//   →  T[K] = (γ−1)·μ·m_H·c² / k_B · u_sim = kKelvinPerUSim · u_sim
+// All constants are physical (SI); μ = ionized solar H/He. No arbitrary scale.
+inline constexpr double kBoltzSI      = 1.380649e-23;       // k_B, J/K (exact)
+inline constexpr double kProtonMassSI = 1.67262192369e-27;  // m_H, kg
+inline constexpr double kMuIonized    = 0.62;               // mean molecular weight (ionized solar)
+inline constexpr double kGammaAdiab   = 5.0 / 3.0;          // monatomic ideal gas
+inline constexpr double kKelvinPerUSim =
+    (kGammaAdiab - 1.0) * kMuIonized * kProtonMassSI * kCsqSI / kBoltzSI; // ≈ 4.500e12 K
+inline constexpr double kUSimPerKelvin = 1.0 / kKelvinPerUSim;
+// Cold thermal floor so rest stays ≈ collisionless (u≈0 → pressure≈0).
+inline constexpr double kTFloorKelvin = 10.0;               // cold ISM-ish
+inline constexpr double kUFloorSim    = kTFloorKelvin * kUSimPerKelvin; // ≈ 2.2e-12
+static_assert(detail::approx(kKelvinPerUSim, 4.500e12, 2e-3),
+              "T[K] = kKelvinPerUSim·u_sim must be ≈ 4.5e12 (γ=5/3, μ=0.62)");
+
 // ── OPEN INTERFACE (UNWIRED — decisions the user owns; see SPACETIME_UNITS.md) ─
 // T_lapse: sim-time units advanced per screen-second (the watchability warp).
 //   It is NOT part of the unit definition above and must NOT be a feel-tuned

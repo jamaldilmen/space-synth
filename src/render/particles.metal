@@ -137,8 +137,12 @@ constant int MAX_PER_CELL = 128; // Read-site SCAN clamp only: bounds the
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
 
 // ── Stellar scale + FATE LADDER constants (used by physics, merge, seeds) ───
-// 1 R_sun in sim units (6.96e8 m / 1.269e10 m, the Sgr A* anchor).
-constant float MERGE_RSUN_SIM = 0.0549f;
+// 1 R_sun in sim units. Honest anchor: kUnitMeters = 1.755e9 m (spacetime.h),
+// so 1 R_sun = 6.957e8 m / 1.755e9 m = 0.397 sim. The old 0.0549 used the stale
+// Sgr A* anchor (1.269e10 m) → stars 7.2× too small → contact cross-section ~52×
+// too small → "nothing merges". v_esc(Sun)=√(2GM/R) lands on 615 km/s=0.002c only
+// with R=0.397 (with 0.0549 it read ~1650 km/s). Fixed 2026-07-01.
+constant float MERGE_RSUN_SIM = 0.397f;
 // The Kroupa draw tops out at 50 M_sun, so any body ABOVE it can only be a
 // merger product — and a merger remnant that heavy collapses: it IS a black
 // hole (single-scalar mass→fate, physics canon). Seeds are dark (render
@@ -243,6 +247,7 @@ kernel void compute_physics(
     device atomic_uint* seedAccum [[buffer(13)]],    // per-slot meal accumulator
     device atomic_uint* accDiag [[buffer(14)]],      // [0]=max accuracy ratio ×1000 (measurement slice, diagnostic-only)
     device const float* phi [[buffer(15)]],          // PM gravity potential Φ on the 128³ grid (poisson_sor); force = −∇Φ
+    device const float4* sphForce [[buffer(16)]],    // SPH pressure acceleration (sph_force, slice 2b); added to gacc under bit11
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -1112,6 +1117,14 @@ kernel void compute_physics(
                 shiftVy -= coef * vpec.y;
                 shiftVz -= coef * vpec.z;
             }
+        }
+
+        // ── SPH PRESSURE FORCE (bit11): add the pre-computed pressure accel to
+        // gravity so it's applied as a·dt² in the same Verlet kick. At rest with
+        // u at the cold floor this is ≈0 (collisionless unchanged); it matters
+        // once shocks/heating raise u. sphForce is written by the sph_force pass.
+        if (u.bhToggles & 0x800u) {
+            gacc += sphForce[id].xyz;
         }
 
         float3 gkick = gacc * (dt * dt);

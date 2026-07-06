@@ -1726,7 +1726,13 @@ kernel void compute_physics(
     // always-on (the replacement for optional pairwise collisions).
     // SKIP during play: it fights the Chladni pattern (pushes particles OUT of
     // the dense nodes) and the O(N·27) scan is expensive on the packed pattern.
-    if (su.gridSize > 0 && playGate < 0.5f) {
+    // bit14 (TEMP A/B, substrate-noise hunt 2026-07-07): disable entirely. This
+    // force is COUNT-DIFFERENCE repulsion (not an EOS — no temperature, no ρu):
+    // cell-count Poisson noise (±4 of ~15) → random ~0.1c/frame kicks in the
+    // bulk, and the real edge gradient → coherent ~0.5c/frame outward push.
+    // Prime suspect for the baseline 1c noise floor + escaper fountain. The
+    // real replacement is the slice-2/3 SPH pressure (bit11/12).
+    if (su.gridSize > 0 && playGate < 0.5f && (u.bhToggles & 0x4000u) == 0u) {
         int pcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int pcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
         int pcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);

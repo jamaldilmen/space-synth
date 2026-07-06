@@ -233,6 +233,8 @@ int main() {
     app.uiTogSphVisc = !getenv("SS_SPH_NOVISC");     // bit12 (A/B control: off)
     app.uiTogSphCool = getenv("SS_SPH_COOL") != nullptr;  // bit13 (slice-4 A/B)
   }
+  // TEMP substrate-noise hunt: kill the legacy grid pressure for baseline A/B.
+  if (getenv("SS_NO_LEGACY_PRESSURE")) app.uiTogNoLegacyPressure = true;
 
   // Arrow-key PHYSICAL spin: hold to ramp torque on the particle body, with
   // momentum/drag. The max is PHYSICAL, not arbitrary: M87*'s real Kerr horizon
@@ -1842,7 +1844,8 @@ int main() {
         ((app.uiTogPMGravity    ? 1u : 0u) << 10) |
         ((app.uiTogSphPressure  ? 1u : 0u) << 11) |
         ((app.uiTogSphVisc      ? 1u : 0u) << 12) |
-        ((app.uiTogSphCool      ? 1u : 0u) << 13);
+        ((app.uiTogSphCool      ? 1u : 0u) << 13) |
+        ((app.uiTogNoLegacyPressure ? 1u : 0u) << 14);
     config.sphCoolTau = app.uiSphCoolTau;
     config.collapseFrac = app.uiCollapseFrac;
 

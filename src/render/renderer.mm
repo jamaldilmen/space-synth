@@ -135,6 +135,7 @@ struct Renderer::Impl {
   double bhPoseClock = 0.0;   // last render timestamp, for the pose dt
   float bhPoseMass = 0.0f;    // posed BH mass (M_sun) — re-pins bhSeedMass while posed
   float collapseFrac = 0.25f; // UI dial: core fraction = hole 100%
+  float lastSphCoolTau = 2.0f; // slice-4 cooling τ₀ [simt] (mod-menu slider)
   uint32_t bhPeakCount = 0;   // densest single cell (true count, uncapped)
   float lastHashExtent = 64.0f; // extent the hash was actually built with
   // RENDER-side smoothed envelope phase: the raw phase is a DISCRETE state
@@ -595,6 +596,53 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   }
   memcpy(impl_->particleBuffer.contents, data, size);
 
+  // TEMP-SLICE3 shock-tube harness (remove after slice-3 verdict). Env
+  // SS_SPH_TEST=<v_rel in c> reseeds the field into TWO uniform spheres
+  // (r=28, centers ±33 on x, 10 sim gap) closing at v_rel. Verlet encodes
+  // velocity as prev = pos − v·dt (dt fixed 0.0165). Zero effect unless set.
+  if (const char *tv = getenv("SS_SPH_TEST")) {
+    float vrel = (float)atof(tv);
+    if (vrel > 0.0f) {
+      const float kDtFixed = 0.0165f;  // matches the pinned dt (renderer.mm computeStep)
+      const float R = 28.0f, CX = 33.0f, vHalf = 0.5f * vrel;
+      GPUParticle *p = (GPUParticle *)impl_->particleBuffer.contents;
+      uint32_t rng = 0x9E3779B9u;
+      auto frand = [&rng]() {  // xorshift → [0,1)
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return (float)(rng & 0x00FFFFFFu) / 16777216.0f;
+      };
+      // Only the RUNTIME live set goes in the blobs: the app runs the FIRST
+      // 2M indices of the packed 10M buffer (measured: stride-97 mass>0
+      // samples ≡ 2M/97 across all runs); the rest are killed after spawn.
+      // Seeding all 10M put 54/cell in the blobs — over the ≤32 slot cap —
+      // and poisoned every neighbour pass (measured). 2M at r=28 ≈ 11/cell.
+      const int kLiveSet = 2000000;
+      int nLive = 0;
+      for (int i = 0; i < count && i < kLiveSet; ++i) {
+        if (p[i].mass <= 0.0f) continue;
+        float side = (nLive & 1) ? 1.0f : -1.0f;  // alternate LIVE → equal blobs
+        nLive++;
+        float x, y, z;
+        do {  // uniform in the unit sphere (rejection)
+          x = 2.0f * frand() - 1.0f;
+          y = 2.0f * frand() - 1.0f;
+          z = 2.0f * frand() - 1.0f;
+        } while (x * x + y * y + z * z > 1.0f);
+        p[i].x = side * CX + R * x;
+        p[i].y = R * y;
+        p[i].z = R * z;
+        float vx = -side * vHalf;              // blobs close on each other
+        p[i].prevX = p[i].x - vx * kDtFixed;
+        p[i].prevY = p[i].y;
+        p[i].prevZ = p[i].z;
+      }
+      fprintf(stderr,
+              "[SPH] TEST HARNESS: 2 blobs r=%.0f centers ±%.0f, v_rel=%.3fc "
+              "(live=%d of N=%d, masses/fields untouched)\n",
+              R, CX, vrel, nLive, count);
+    }
+  }
+
   // Allocate spatial hash buffers (sized to particle count)
   size_t uintSize = count * sizeof(uint32_t);
   size_t cellSize = Impl::kTotalCells * sizeof(uint32_t);
@@ -847,6 +895,7 @@ void Renderer::render(const RenderConfig &config) {
   impl_->renderPhaseSmooth +=
       (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
   impl_->collapseFrac = config.collapseFrac;
+  impl_->lastSphCoolTau = config.sphCoolTau;
   impl_->lastParticleSize = config.particleSize; // → mass/gravity scale in runComputePass
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
@@ -968,6 +1017,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   impl_->renderPhaseSmooth +=
       (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
   impl_->collapseFrac = config.collapseFrac;
+  impl_->lastSphCoolTau = config.sphCoolTau;
   impl_->lastParticleSize = config.particleSize; // → mass/gravity scale in runComputePass
   if (impl_->particleCount == 0 || !impl_->particlePipeline)
     return;
@@ -1112,6 +1162,26 @@ void Renderer::setScale(float s) { impl_->physicsUniforms.plateRadius = s; }
 void Renderer::triggerReset() { impl_->resetPending = true; }
 
 void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
+  // TEMP-PERF: SS_SPH_SKIP="density,pressure,force,centroid,merge,cellmax,stats"
+  // (any subset) skips individual passes so [PROFILE/120f] deltas give exact
+  // per-kernel cost. Measurement only — skipped passes leave stale buffers.
+  // Function scope: guards live both inside and after the hash block.
+  static bool sphSkipDensity = false, sphSkipPressure = false,
+              sphSkipForce = false, sphSkipParsed = false;
+  static bool skipCentroid = false, skipMerge = false, skipCellMax = false,
+              skipStats = false;
+  if (!sphSkipParsed) {
+    sphSkipParsed = true;
+    if (const char *sk = getenv("SS_SPH_SKIP")) {
+      sphSkipDensity  = strstr(sk, "density") != nullptr;
+      sphSkipPressure = strstr(sk, "pressure") != nullptr;
+      sphSkipForce    = strstr(sk, "force") != nullptr;
+      skipCentroid    = strstr(sk, "centroid") != nullptr;
+      skipMerge       = strstr(sk, "merge") != nullptr;
+      skipCellMax     = strstr(sk, "cellmax") != nullptr;
+      skipStats       = strstr(sk, "stats") != nullptr;
+    }
+  }
   if (hasCompute && physicsPipeline) {
     // Preserve debugFlags set by computeStep(); only add reset bit if needed
     if (resetPending) {
@@ -1358,7 +1428,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // play — so during play this builds 2.1M-cell aggregates that nothing
       // reads. Pure wasted compute every play frame. (No feature lost: unused
       // during play; runs normally at rest where the BH physics needs it.)
-      if (centroidPipeline && cellCentroidsBuffer &&
+      if (centroidPipeline && cellCentroidsBuffer && !skipCentroid &&
           physicsUniforms.totalAmplitude < 0.02f) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:centroidPipeline];
@@ -1375,12 +1445,28 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
+      // SPH CADENCE: at rest the passes run every kSphCadence-th frame — rest
+      // dynamical times are hundreds of frames, so a 2-frame-stale force field
+      // is well inside the integration error already accepted. The force
+      // buffer PERSISTS between passes (zeroed only right before a rewrite —
+      // the phantom-thruster fix stays intact) and is applied every frame;
+      // the energy integration uses dtU = dt·cadence to cover skipped frames.
+      static uint32_t kSphCadence = 0;  // TEMP-PERF: SS_SPH_CADENCE overrides (A/B)
+      if (kSphCadence == 0u) {
+        kSphCadence = 2;
+        if (const char *cd = getenv("SS_SPH_CADENCE")) {
+          int v = atoi(cd);
+          if (v >= 1 && v <= 8) kSphCadence = (uint32_t)v;
+        }
+      }
+      bool sphFrame = (physicsUniforms.frameCounter % kSphCadence) == 0u;
+
       // Phase 5a2: SPH DENSITY — ρ_i per particle (27-cell ≤32/cell neighbour
       // scan, cubic spline, h=cellSize). Rest only for now (matches centroids;
       // the play-state Chladni pattern explodes the neighbour scan — ungated
       // later at slice 5). SLICE 1 = measurement: densityBuffer is written but
       // nothing reads it yet (pressure force = slice 2).
-      if (sphDensityPipeline && densityBuffer &&
+      if (sphDensityPipeline && densityBuffer && !sphSkipDensity && sphFrame &&
           physicsUniforms.totalAmplitude < 0.02f) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:sphDensityPipeline];
@@ -1398,6 +1484,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // Phase 5a3: SPH EOS PRESSURE — P_i=(γ−1)ρ_i u_i (cheap per-particle). Needs
       // ρ (above) + u. Rest only. SLICE 2: written but not yet applied (force = next).
       if (sphPressurePipeline && pressureBuffer && densityBuffer && uBuffer &&
+          !sphSkipPressure && sphFrame &&
           physicsUniforms.totalAmplitude < 0.02f) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:sphPressurePipeline];
@@ -1412,12 +1499,73 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
-      // Phase 5a4: SPH PRESSURE FORCE (bit11) — tiled, a_i=−Σ m_j(P_i/ρ_i²+P_j/ρ_j²)∇W.
+      // Phase 5a4: SPH FORCE + VISCOSITY + ENERGY (bit11 force, bit12 Π+du) —
+      // tiled, a_i=−Σ m_j(P_i/ρ_i²+P_j/ρ_j²+Π_ij)∇W; bit12 adds Monaghan
+      // viscosity + the energy equation (PdV + ½Π shock heating → uBuffer).
       // Writes sphForceBuffer; compute_physics adds it to gacc when bit11 is set.
       // Rest only. Gated OFF by default until verified (needs u>0 to do anything).
       bool sphPressureForceOn = (bhToggles & 0x800u) != 0u;
+      bool sphViscosityOn = (bhToggles & 0x1000u) != 0u;
       if (sphForcePipeline && sphForceBuffer && densityBuffer && pressureBuffer &&
-          sphPressureForceOn && physicsUniforms.totalAmplitude < 0.02f) {
+          uBuffer && sphPressureForceOn && !sphSkipForce && sphFrame &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        // u ceiling = min(physics, CFL):
+        // PHYSICS: a relativistic ideal gas cannot exceed c_s = c/√3 → u ≤
+        //   (c²/3)/(γ(γ−1)) = 0.3 sim (T ≈ 1.35e12 K, supernova-core scale).
+        //   Without this, one hot outlier carries a superluminal c̄ and the
+        //   α·c̄·μ viscosity turns it into a runaway infection center
+        //   (measured 2026-07-06: rest cluster → 800+ particles at cap,
+        //   c_s = 15c, E pumped 70k+; with PdV only it stayed ~clean).
+        // CFL: fixed dt also demands c_s·dt/h ≤ C. At rest h=1 the physics
+        //   cap is the binding one; at play h≈0.047 CFL binds. Proper hot-gas
+        //   fix remains the sub-step accumulator (owed debt).
+        float hSph = 2.0f * lastHashExtent / (float)Impl::kGridSize;  // = cellSize
+        const float kCflC = 0.25f;
+        float csMax = kCflC * hSph / physicsUniforms.dt;
+        float uMax = (csMax * csMax) / ((5.0f / 3.0f) * (2.0f / 3.0f)); // c_s²/(γ(γ−1))
+        const float kURelMax = (1.0f / 3.0f) / ((5.0f / 3.0f) * (2.0f / 3.0f)); // = 0.3
+        uMax = std::min(uMax, kURelMax);
+        // TEMP-SLICE3 debug: SS_SPH_AB="a,b" overrides α,β to isolate which
+        // term pumps (PdV-only = "0,0"). Remove with the harness.
+        static float sphAlpha = 1.0f, sphBeta = 2.0f;  // Monaghan (plan §3.4)
+        static bool sphAbParsed = false;
+        if (!sphAbParsed) {
+          sphAbParsed = true;
+          if (const char *ab = getenv("SS_SPH_AB"))
+            sscanf(ab, "%f,%f", &sphAlpha, &sphBeta);
+        }
+        // Viscous-stability μ clamp: dt ≤ 0.25·h/v_sig, v_sig ≈ c̄+0.6(αc̄+βμ)
+        // (Monaghan). Solve for μ at c̄=c/√3 and halve for margin.
+        float csRelMax = 0.57735f;  // c/√3
+        float muMax = ((kCflC * hSph / physicsUniforms.dt) -
+                       csRelMax * (1.0f + 0.6f * sphAlpha)) /
+                      std::max(0.6f * sphBeta, 1e-3f) * 0.5f;
+        muMax = std::max(muMax, csRelMax);  // never clamp below the sound scale
+        bool sphCoolingOn = (bhToggles & 0x2000u) != 0u;  // bit13 (slice 4)
+        struct { float dt, dtU, alpha, beta, uFloor, uMax, viscOn, muMax,
+                 coolOn, coolTau; } sphParams = {
+            physicsUniforms.dt,
+            physicsUniforms.dt * (float)kSphCadence,  // du + brake cover skipped frames
+            sphAlpha,
+            sphBeta,
+            (float)space::spacetime::kUFloorSim,
+            uMax,
+            sphViscosityOn ? 1.0f : 0.0f,
+            muMax,
+            sphCoolingOn ? 1.0f : 0.0f,
+            lastSphCoolTau};  // τ₀ [simt] from the mod-menu slider (~1 simt ≈ 1 s wall)
+        // ZERO the force buffer first — sph_force only writes the ≤32 scattered
+        // particles per cell; without the clear, a particle that drops out of
+        // the sorted set (overflowing cell) REPLAYS its last kick every frame —
+        // a phantom thruster (measured 2026-07-06: linear E growth + steady
+        // 0.05c outflow at rest that no Π/μ clamp touched).
+        {
+          id<MTLBlitCommandEncoder> zf = [cmdBuf blitCommandEncoder];
+          [zf fillBuffer:sphForceBuffer
+                   range:NSMakeRange(0, (NSUInteger)particleCount * 4 * sizeof(float))
+                   value:0];
+          [zf endEncoding];
+        }
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:sphForcePipeline];
         [comp setBuffer:sortedParticlesBuffer offset:0 atIndex:0];
@@ -1427,6 +1575,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:densityBuffer offset:0 atIndex:4];
         [comp setBuffer:pressureBuffer offset:0 atIndex:5];
         [comp setBuffer:sphForceBuffer offset:0 atIndex:6];
+        [comp setBytes:&sphParams length:sizeof(sphParams) atIndex:7];
+        [comp setBuffer:uBuffer offset:0 atIndex:8];
         [comp dispatchThreadgroups:MTLSizeMake(Impl::kTotalCells, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
         [comp endEncoding];
@@ -1437,7 +1587,17 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // compute_physics when bit10 is set. Energy-conserving, replaces the
       // per-frame centroid/COM attractors that pumped the cluster apart.
       bool pmGravityOn = (bhToggles & 0x400u) != 0u;
-      if (poissonPipeline && phiBuffer && pmGravityOn &&
+      // SOR CADENCE: Φ is persistent + warm-started and the −∇Φ force samples
+      // it EVERY frame; the mass field it solves for changes over hundreds of
+      // frames at rest. Full 80-sweep convergence every 2nd frame beats
+      // degraded sweeps every frame (measured: 10 sweeps/frame → meanR drift
+      // 3× the verified-good rate; cadence keeps convergence quality).
+      // OFFSET vs the SPH frames: each frame carries one heavy block instead
+      // of one frame carrying both — steadier pacing. (First aligned-vs-offset
+      // comparison was invalidated by stray app instances sharing the GPU;
+      // re-measured clean.)
+      bool sorFrame = (physicsUniforms.frameCounter % 2u) == 1u;
+      if (poissonPipeline && phiBuffer && pmGravityOn && sorFrame &&
           physicsUniforms.totalAmplitude < 0.02f) {  // rest only (matches centroids)
         // Zero Φ once on first use; afterward it persists (warm start).
         if (!phiInitialized) {
@@ -1449,7 +1609,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float Gsim = physicsUniforms.gravGM / std::max(physicsUniforms.massTotal, 1.0f);
         // float2 {x=4πG_sim, y=gravGM(total)} — matches `constant float2&` in poisson_sor.
         float solverParams[2] = {(float)(4.0 * 3.14159265358979) * Gsim, physicsUniforms.gravGM};
-        const int kSorSweeps = 80;  // warm-started; sub-ms on M-series. ω=1.9 in-kernel.
+        // TEMP-PERF: SS_SOR_SWEEPS overrides (measurement). 80 sweeps = 160
+        // compute encoders/frame — encoder overhead is a prime suspect.
+        static int kSorSweeps = 0;
+        if (kSorSweeps == 0) {
+          kSorSweeps = 80;  // warm-started; ω=1.9 in-kernel.
+          if (const char *sw = getenv("SS_SOR_SWEEPS")) {
+            int v = atoi(sw);
+            if (v >= 1 && v <= 200) kSorSweeps = v;
+          }
+        }
         NSUInteger tgP = std::min((NSUInteger)256,
                                   poissonPipeline.maxTotalThreadsPerThreadgroup);
         for (int sweep = 0; sweep < kSorSweeps; sweep++) {
@@ -1477,7 +1646,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
 
 
       // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
-      if (reduceCellMaxPipeline && cellMaxPartialsBuffer) {
+      if (reduceCellMaxPipeline && cellMaxPartialsBuffer && !skipCellMax) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:reduceCellMaxPipeline];
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:0];
@@ -1503,7 +1672,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // (mergers + seed feeding) is OFF — no eating, no new bodies. Pure
       // cymatics. The BH only grows at rest/silence. (Jamal, 2026-06-14.)
       bool notPlaying = (physicsUniforms.totalAmplitude < 0.02f);
-      if (mergeStarsPipeline && countStable && notPlaying) {
+      if (mergeStarsPipeline && countStable && notPlaying && !skipMerge) {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:mergeStarsPipeline];
         [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1606,7 +1775,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Stats reduction ────────────────────────────────────────────
-    if (reduceStatsPipeline && partialSumsBuffer) {
+    if (reduceStatsPipeline && partialSumsBuffer && !skipStats) {
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:reduceStatsPipeline];
       [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -1833,6 +2002,54 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                   physicsUniforms.envelopePhase,
                   physicsUniforms.totalAmplitude, physicsUniforms.gravGM,
                   bhPosX, bhPosY, bhPosZ, bhMassEnc, bhPeakCount);
+        }
+        // TEMP-SLICE3 [SPH] conservation watchdog (remove after slice-3 verdict):
+        // sampled momentum / KE / internal energy from the live particle buffer
+        // (shared memory, 1-frame lag like every readback here). Viscosity must
+        // MOVE energy KE→U, not create it: E=KE+U ≈ flat, p ≈ flat through a shock.
+        if ((physicsUniforms.bhToggles & 0x800u) != 0u &&
+            (physicsUniforms.frameCounter % 240u) == 0u && particleBuffer &&
+            uBuffer) {
+          const GPUParticle *pp = (const GPUParticle *)particleBuffer.contents;
+          const float *up = (const float *)uBuffer.contents;
+          const int stride = 97;  // ~1% sample, prime stride → unbiased
+          // TWO LEDGERS: interior (r<64, the physical domain) vs escapers
+          // (r≥64, clamped/ejected). If the momentum drift lives only in the
+          // escaper bin, the interior book is clean and the question is "who
+          // ejects, and why asymmetric" — not a force error in the bulk.
+          double m = 0, px = 0, py = 0, pz = 0, ke = 0, uu = 0, umax = 0;
+          double opx = 0, opy = 0, opz = 0, oke = 0;
+          int nOut = 0;
+          double rMaxU = 0;
+          float invDt = 1.0f / physicsUniforms.dt;
+          int n = 0;
+          for (int i = 0; i < particleCount; i += stride) {
+            const GPUParticle &q = pp[i];
+            if (q.mass <= 0.0f) continue;
+            n++;
+            float vx = (q.x - q.prevX) * invDt;
+            float vy = (q.y - q.prevY) * invDt;
+            float vz = (q.z - q.prevZ) * invDt;
+            double r = std::sqrt((double)q.x * q.x + (double)q.y * q.y +
+                                 (double)q.z * q.z);
+            if (r < 64.0) {
+              m += q.mass;
+              px += q.mass * vx; py += q.mass * vy; pz += q.mass * vz;
+              ke += 0.5 * q.mass * (vx * vx + vy * vy + vz * vz);
+              uu += q.mass * up[i];
+            } else {
+              nOut++;
+              opx += q.mass * vx; opy += q.mass * vy; opz += q.mass * vz;
+              oke += 0.5 * q.mass * (vx * vx + vy * vy + vz * vz);
+            }
+            if (up[i] > umax) { umax = up[i]; rMaxU = r; }
+          }
+          fprintf(stderr,
+                  "[SPH] f=%u nIn=%d m=%.0f pIn=(%.4g %.4g %.4g) KEin=%.6g U=%.6g "
+                  "Ein=%.6g | nOut=%d pOut=(%.4g %.4g %.4g) KEout=%.6g | "
+                  "umax=%.4g@r=%.1f\n",
+                  physicsUniforms.frameCounter, n - nOut, m, px, py, pz, ke, uu,
+                  ke + uu, nOut, opx, opy, opz, oke, umax, rMaxU);
         }
         latestStats.kineticEnergy = totalKE;
         latestStats.momentumX = totalMX;

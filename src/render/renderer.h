@@ -55,6 +55,7 @@ struct RenderConfig {
   float colorTempK = 27000.0f; // colour spectrum: |v|²→Kelvin gain (live tune)
   float heatGain = 3000.0f;    // thermal heat→Kelvin gain (live tune; was HEAT_K_PER_T)
   float collapseFrac = 0.25f; // fraction of field mass in core = hole 100%
+  float sphCoolTau = 2.0f;    // slice-4 radiative cooling τ₀ [simt] at T_cap, ρ=1 (~1 simt ≈ 1 s wall)
 
   // Black-hole shadow radius (sim coords). The physical photon-capture
   // value is 3√3·M ≈ 2.6, but the disk here is scaled tight (r≈3), so a

@@ -450,6 +450,16 @@ kernel void sph_density(
     int cx = int(tgid % uint(u.gridSize));
     int cy = int((tgid / uint(u.gridSize)) % uint(u.gridSize));
     int cz = int(tgid / (uint(u.gridSize) * uint(u.gridSize)));
+    // BOUNDARY SHELL EXCLUDED (same rule as merge_stars/reduce_cell_max):
+    // assign_cells clamps every escaper outside ±halfExtent into the outermost
+    // cells — artificial pileups, not physical density. SPH there produced a
+    // systematic momentum drift (measured 2026-07-07: p_z −500 by f≈5000 in
+    // every viscosity-on run; none with SPH off).
+    {
+        int g = u.gridSize;
+        if (cx == 0 || cy == 0 || cz == 0 ||
+            cx == g - 1 || cy == g - 1 || cz == g - 1) return;
+    }
 
     bool active = tid < homeCount;
     float3 ri = float3(0.0f);
@@ -470,6 +480,9 @@ kernel void sph_density(
                 int nx = cx + dx; if (nx < 0 || nx >= u.gridSize) continue;
                 uint ncID    = uint((nz * u.gridSize + ny) * u.gridSize + nx);
                 uint ncCount = min(cellCounts[ncID], 32u);
+                if (ncCount == 0u) continue;   // empty tile: skip both barriers
+                                               // (ncCount is threadgroup-uniform
+                                               // → uniform control flow, safe)
                 uint ncStart = cellStarts[ncID];
                 threadgroup_barrier(mem_flags::mem_threadgroup); // prev cell's readers done
                 if (tid < ncCount) sh[tid] = sortedParticles[ncStart + tid].posW;
@@ -505,12 +518,46 @@ kernel void sph_pressure(
     pressureOut[id] = gm1 * rho * max(ui, 0.0f);
 }
 
-// ── SPH PRESSURE FORCE (reaction engine slice 2b) ───────────────────────────
+// ── SPH FORCE + VISCOSITY + ENERGY (reaction engine slices 2b + 3, FUSED) ───
 // Tiled (same structure as sph_density): one threadgroup per cell, 32 threads.
-// a_i = −Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇_i W_ij  (symmetric SPH momentum eqn).
-// The tile carries neighbour pos+mass (from sorted) AND ρ,P (gathered by origin
-// id from densityIn/pressureIn). Output forceOut[originId] = pressure accel; it is
-// ADDED to gacc in compute_physics (gated bit11) and applied as a·dt² (Verlet).
+// Momentum (Monaghan 1992):
+//   a_i = −Σ_j m_j (P_i/ρ_i² + P_j/ρ_j² + Π_ij) ∇_i W_ij
+// Π_ij = artificial viscosity — the shock-capture term (slice 3, bit12):
+//   approaching (v_ij·r_ij < 0): Π_ij = (−α c̄ μ_ij + β μ_ij²)/ρ̄,
+//   μ_ij = h(v_ij·r_ij)/(|r_ij|²+0.01h²), else 0. α, β from params.
+// Energy (slice 3, bit12): du_i/dt = Σ_j m_j (P_i/ρ_i² + ½Π_ij)(v_ij·∇_i W_ij)
+//   — PdV work + irreversible shock heating (Rankine–Hugoniot entropy). Writes
+//   uInOut[originId] directly (each origin id appears once in sorted → race-free).
+//   u clamped to [uFloor, uMax]; uMax is the CFL guard (fixed dt can't take
+//   arbitrary c_s — proper fix = sub-step accumulator, an owed debt).
+// Velocities from the Verlet state: v = (pos − prev)/dt (dt fixed, tcv = 1).
+// With params.viscOn == 0 this is EXACTLY the slice-2 kernel (u untouched).
+// Output forceOut[originId] = total SPH accel; ADDED to gacc in compute_physics
+// (gated bit11) and applied as a·dt² (Verlet).
+struct SphForceParams {
+    float dt;      // fixed timestep (simt); velocity reconstruction ONLY
+    float dtU;     // du integration step = dt × SPH cadence (the passes run
+                   // every Nth frame at rest; heat must integrate the skipped
+                   // frames too, forces persist in the buffer between passes)
+    float alpha;   // Monaghan bulk viscosity coefficient (≈1)
+    float beta;    // Monaghan quadratic viscosity coefficient (≈2)
+    float uFloor;  // cold floor for u (kUFloorSim)
+    float uMax;    // u ceiling: min(relativistic c_s ≤ c/√3, CFL) — see renderer
+    float viscOn;  // >0.5 → bit12: viscosity + energy equation active
+    float muMax;   // viscous-stability clamp on |μ_ij|: fixed dt can only
+                   // integrate v_sig = c̄+0.6(αc̄+βμ) up to ~0.25h/dt; beyond
+                   // it the Verlet kick OVERSHOOTS the approach and ejects
+                   // pairs (measured 2026-07-06: KE 5.7× baseline at rest).
+                   // Clamping μ resolves faster shocks over 2+ frames instead.
+    float coolOn;  // >0.5 → bit13 (slice 4): radiative cooling active
+    float coolTau; // τ₀ [simt]: cooling e-fold time at T = T_cap and ρ = 1.
+                   // Λ ∝ ρT⁴ (optically-thin, plan §3.5): τ(ρ,T) = τ₀/(ρ·(T/T_cap)³)
+                   // so du/dt = −(u−floor)/τ ∝ ρT³·u ∝ ρT⁴. Integrated
+                   // IMPLICITLY (decay factor) → unconditionally stable, never
+                   // undershoots the floor. Replaces the u-cap discard as the
+                   // honest energy sink; hot plasma radiates, cold gas untouched.
+};
+
 kernel void sph_force(
     device const Particle* sortedParticles [[buffer(0)]],
     device const uint*     cellStarts      [[buffer(1)]],
@@ -519,12 +566,16 @@ kernel void sph_force(
     device const float*    densityIn       [[buffer(4)]],
     device const float*    pressureIn      [[buffer(5)]],
     device float4*         forceOut        [[buffer(6)]],
+    constant SphForceParams& p             [[buffer(7)]],
+    device float*          uInOut          [[buffer(8)]],
     uint tgid [[threadgroup_position_in_grid]],
     uint tid  [[thread_position_in_threadgroup]])
 {
     threadgroup float4 sh_posm[32];  // neighbour pos.xyz + mass
+    threadgroup float3 sh_vel[32];   // neighbour velocity (pos − prev)/dt
     threadgroup float  sh_rho[32];   // neighbour ρ
     threadgroup float  sh_P[32];     // neighbour P
+    threadgroup float  sh_c[32];     // neighbour sound speed c_s = √(γP/ρ)
 
     uint totalCells = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
     if (tgid >= totalCells) return;
@@ -534,23 +585,36 @@ kernel void sph_force(
     int cx = int(tgid % uint(u.gridSize));
     int cy = int((tgid / uint(u.gridSize)) % uint(u.gridSize));
     int cz = int(tgid / (uint(u.gridSize) * uint(u.gridSize)));
+    // BOUNDARY SHELL EXCLUDED — same rule and reason as sph_density above.
+    {
+        int g = u.gridSize;
+        if (cx == 0 || cy == 0 || cz == 0 ||
+            cx == g - 1 || cy == g - 1 || cz == g - 1) return;
+    }
+
+    const float gamma = 5.0f / 3.0f;
+    float invDt = 1.0f / max(p.dt, 1e-8f);
+    bool viscOn = p.viscOn > 0.5f;
 
     bool active = tid < homeCount;
-    float3 ri = float3(0.0f);
+    float3 ri = float3(0.0f), vi = float3(0.0f);
     uint originId = 0u;
-    float rhoI = 1.0f, Pi = 0.0f;
+    float rhoI = 1.0f, Pi = 0.0f, ci = 0.0f;
     if (active) {
         Particle self = sortedParticles[cellStarts[tgid] + tid];
         ri = self.posW.xyz;
+        vi = (self.posW.xyz - self.prevW.xyz) * invDt;
         originId = self.entanglement.y;
         if (originId < uint(u.particleCount)) {
             rhoI = max(densityIn[originId], 1e-12f);
             Pi   = pressureIn[originId];
         }
+        ci = sqrt(gamma * max(Pi, 0.0f) / rhoI);
     }
     float h = u.cellSize;
     float PiOverRhoI2 = Pi / (rhoI * rhoI);
     float3 acc = float3(0.0f);
+    float dudt = 0.0f;
 
     for (int dz = -1; dz <= 1; dz++) {
         int nz = cz + dz; if (nz < 0 || nz >= u.gridSizeZ) continue;
@@ -560,16 +624,23 @@ kernel void sph_force(
                 int nx = cx + dx; if (nx < 0 || nx >= u.gridSize) continue;
                 uint ncID    = uint((nz * u.gridSize + ny) * u.gridSize + nx);
                 uint ncCount = min(cellCounts[ncID], 32u);
+                if (ncCount == 0u) continue;   // empty tile: skip both barriers
+                                               // (threadgroup-uniform → safe)
                 uint ncStart = cellStarts[ncID];
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 if (tid < ncCount) {
                     Particle nb = sortedParticles[ncStart + tid];
                     sh_posm[tid] = nb.posW;
+                    sh_vel[tid]  = (nb.posW.xyz - nb.prevW.xyz) * invDt;
                     uint oj = nb.entanglement.y;
+                    float rhoJ = 1e-12f, Pj = 0.0f;
                     if (oj < uint(u.particleCount)) {
-                        sh_rho[tid] = max(densityIn[oj], 1e-12f);
-                        sh_P[tid]   = pressureIn[oj];
-                    } else { sh_rho[tid] = 1e-12f; sh_P[tid] = 0.0f; }
+                        rhoJ = max(densityIn[oj], 1e-12f);
+                        Pj   = pressureIn[oj];
+                    }
+                    sh_rho[tid] = rhoJ;
+                    sh_P[tid]   = Pj;
+                    sh_c[tid]   = sqrt(gamma * max(Pj, 0.0f) / rhoJ);
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 if (active) {
@@ -579,16 +650,57 @@ kernel void sph_force(
                         if (r < 1e-8f) continue;                  // skip self
                         float mj   = sh_posm[k].w;
                         float rhoJ = sh_rho[k];
-                        float term = mj * (PiOverRhoI2 + sh_P[k] / (rhoJ * rhoJ));
+                        float Pij  = 0.0f;                        // Π_ij
+                        float3 vij = vi - sh_vel[k];
+                        float vdotr = dot(vij, rij);
                         float dWdr = sphGradW(r, h);
+                        if (viscOn && vdotr < 0.0f) {             // approaching → shock term
+                            float mu   = h * vdotr / (r * r + 0.01f * h * h);
+                            mu = max(mu, -p.muMax);               // viscous-stability clamp
+                            float cbar = 0.5f * (ci + sh_c[k]);
+                            float rbar = 0.5f * (rhoI + rhoJ);
+                            Pij = (-p.alpha * cbar * mu + p.beta * mu * mu) / rbar;
+                            // PHYSICAL BRAKE BOUND: an explicit viscous impulse
+                            // can at most STAGNATE the pair's approach this
+                            // step (perfectly inelastic limit) — never reverse
+                            // it. Each side may remove ≤ half the approach
+                            // speed, so the pair's worst case is exact
+                            // cancellation. Without this, fixed-dt overshoot
+                            // turns dissipation into a thruster (measured
+                            // 2026-07-06: rest cluster E +45%/960f, expanding;
+                            // with it the ½Π heating ≤ the KE actually removed
+                            // → energy books close by construction).
+                            float absdW = max(fabs(dWdr), 1e-12f);
+                            // dtU: the force persists for the whole cadence
+                            // window, so bound the TOTAL impulse over it.
+                            float PijBrake = 0.5f * (-vdotr) /
+                                             (r * mj * absdW * p.dtU);
+                            Pij = min(Pij, PijBrake);
+                        }
+                        float term = mj * (PiOverRhoI2 + sh_P[k] / (rhoJ * rhoJ) + Pij);
                         acc += (-term * dWdr) * (rij / r);        // ∇_i W along r_ij
+                        if (viscOn)                               // PdV + ½Π shock heating
+                            dudt += mj * (PiOverRhoI2 + 0.5f * Pij) * dWdr * vdotr / r;
                     }
                 }
             }
         }
     }
-    if (active && originId < uint(u.particleCount))
+    if (active && originId < uint(u.particleCount)) {
         forceOut[originId] = float4(acc, 0.0f);
+        if (viscOn) {
+            float ui = uInOut[originId] + dudt * p.dtU;
+            if (p.coolOn > 0.5f && p.coolTau > 1e-6f) {
+                // Radiative cooling (slice 4): decay toward the cold floor with
+                // τ = τ₀/(ρ·(T/T_cap)³); T/T_cap = u/uMax (same linear map).
+                // Implicit: u ← floor + (u−floor)/(1 + dtU/τ). ∝ρT⁴ overall.
+                float tRel = clamp(ui / p.uMax, 0.0f, 1.0f);
+                float invTau = (rhoI * tRel * tRel * tRel) / p.coolTau;
+                ui = p.uFloor + (ui - p.uFloor) / (1.0f + p.dtU * invTau);
+            }
+            uInOut[originId] = clamp(ui, p.uFloor, p.uMax);
+        }
+    }
 }
 
 // ── Densest-cell reduce (the emergent-BH signal, Step 2) ────────────────────

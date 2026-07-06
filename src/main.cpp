@@ -225,6 +225,15 @@ int main() {
   static bool showHUD = true;
   static space::AppState app;
 
+  // TEMP-SLICE3 (remove after slice-3 verdict): the headless shock-tube run
+  // (SS_SPH_TEST, see renderer.mm uploadParticles) needs the SPH force +
+  // viscosity toggles ON without a hand on the mod menu.
+  if (getenv("SS_SPH_TEST")) {
+    app.uiTogSphPressure = true;                     // bit11
+    app.uiTogSphVisc = !getenv("SS_SPH_NOVISC");     // bit12 (A/B control: off)
+    app.uiTogSphCool = getenv("SS_SPH_COOL") != nullptr;  // bit13 (slice-4 A/B)
+  }
+
   // Arrow-key PHYSICAL spin: hold to ramp torque on the particle body, with
   // momentum/drag. The max is PHYSICAL, not arbitrary: M87*'s real Kerr horizon
   // angular velocity Ω_H = a/(r₊²+a²)·c = 9.79e-6 rad/s (one rotation ≈ 7.43
@@ -1161,6 +1170,18 @@ int main() {
                                 "128³ grid each frame (red-black SOR), force = −∇Φ. Replaces the "
                                 "per-frame centroid/COM attractors that pumped the cold cluster to the "
                                 "speed cap. ON overrides the bit0/bit9 legacy force.");
+          ImGui::Checkbox("SPH viscosity + shock heat (bit12)", &app.uiTogSphVisc);
+          ImGui::SetItemTooltip("Slice 3: Monaghan artificial viscosity + energy equation. "
+                                "Approaching gas shocks: KE converts to internal energy u "
+                                "(heat), pressure resists interpenetration. Needs bit11 on.");
+          ImGui::Checkbox("SPH radiative cooling (bit13)", &app.uiTogSphCool);
+          ImGui::SetItemTooltip("Slice 4: optically-thin sink, du/dt ∝ −ρT⁴. Hot plasma "
+                                "radiates u away toward the cold floor; cold gas untouched "
+                                "(T⁴ steepness). The honest energy sink — lets shocked gas "
+                                "cool, lose pressure and recollapse. Needs bit12 on.");
+          UiSliderFloat("Cooling tau (s)", &app.uiSphCoolTau, 0.1f, 30.0f, "%.1f");
+          ImGui::SetItemTooltip("Cooling e-fold time at cap temperature (1.35e12 K) and "
+                                "density 1: small = radiates fast.");
         }
 
         ImGui::Checkbox("Ortho Camera", &app.uiOrthoMode);
@@ -1819,7 +1840,10 @@ int main() {
         ((app.uiTogLensShadow   ? 1u : 0u) << 8) |
         ((app.uiTogAdaptiveSubstep ? 1u : 0u) << 9) |
         ((app.uiTogPMGravity    ? 1u : 0u) << 10) |
-        ((app.uiTogSphPressure  ? 1u : 0u) << 11);
+        ((app.uiTogSphPressure  ? 1u : 0u) << 11) |
+        ((app.uiTogSphVisc      ? 1u : 0u) << 12) |
+        ((app.uiTogSphCool      ? 1u : 0u) << 13);
+    config.sphCoolTau = app.uiSphCoolTau;
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

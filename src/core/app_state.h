@@ -53,6 +53,9 @@ struct AppState {
   bool  uiTogAdaptiveSubstep = true; // TEST // bit9  GMAT-style adaptive sub-step of the central field (orbit instead of c·dt plunge) — OFF by default
   bool  uiTogPMGravity   = true;  // bit10 PM gravity: real Poisson solve ∇²Φ=4πGρ on the 128³ grid, force=−∇Φ (energy-conserving). Replaces the centroid/COM attractors that pumped the cold cluster to the speed cap (2026-06-30). When ON it overrides the bit0/bit9 legacy force.
   bool  uiTogSphPressure = false; // bit11 SPH pressure force (reaction engine slice 2b): a=−Σ m_j(P_i/ρ_i²+P_j/ρ_j²)∇W added to gravity. ≈0 at rest (cold u); matters when heated. Toggle in the mod menu.
+  bool  uiTogSphVisc = false;     // bit12 SPH viscosity + shock heating (slice 3): Monaghan Π_ij in the momentum eqn + energy eqn du/dt = PdV + ½Π·(v_ij·∇W) → KE becomes heat in uBuffer. Needs bit11 (same fused kernel).
+  bool  uiTogSphCool = false;     // bit13 SPH radiative cooling (slice 4): Λ∝ρT⁴ optically-thin sink, u decays toward the cold floor with τ=τ₀/(ρ·(T/T_cap)³). The honest energy sink (replaces the u-cap discard). Needs bit12.
+  float uiSphCoolTau = 2.0f;      // τ₀ [simt] cooling e-fold at T_cap, ρ=1 (~1 simt ≈ 1 s wall at 60fps)
   bool  uiPhaseViz = false;
 
   // ── Envelope (ADSR) ──

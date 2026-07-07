@@ -43,7 +43,7 @@ struct AppState {
   bool  uiTogFieldGravity = true;  // bit0  field self-gravity (near+far grid) — the real base, ON
 
   bool  uiTogCentralSMBH  = false; // bit1  hard-coded central SMBH pull
-  bool  uiTogSeedCapture  = false; // bit2  star→seed capture (eating)
+  bool  uiTogSeedCapture  = true;  // bit2 — DEFAULT ON (2026-07-07): victim-initiated star→seed capture. Was OFF since the dry-launch rebuild — THE reason feed=0 in every window (seedAccum is written ONLY by the bit2/bit3 paths); seeds grew solely via merge_stars' tidal branch, so the formed-hole plunge/disruption regime split never applied.
   bool  uiTogSeedMerge    = false; // bit3  seed↔seed merge
   bool  uiTogOriginPin    = false; // bit4  seed origin-pin spring
   bool  uiTogRelaxation   = false; // bit5  core-collapse cooling — OFF (pure gravity collapses the horizon-scale cluster; cooling froze the infall)

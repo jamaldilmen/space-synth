@@ -667,24 +667,43 @@ vertex VertexOut particle_vertex(
         // brightness — render at the minimum size, dimmed by the area ratio
         // (raw/min)². Distant dwarfs fade smoothly toward black, near giants
         // stay bold; the d-dependence rides the existing sizeScale zoom law.
-        // REAL physical radius (Jamal): size is LINEAR in the true stellar radius
-        // R = (M/M☉)^0.8 in R☉ (Sun=1 R☉), not the old sqrt compression — so the
-        // ratios are EXACT (M-dwarf ~0.3 R☉, Sun 1, O-star ~20, giant ~50). The
-        // Size slider is then the px-per-R☉ scale (how big one solar radius reads).
-        // SIZE SCALE reined in (2026-06-26, Jamal: "too many big stars at launch,
-        // red-dwarf↔fused ratio off"). The IMF is ~89% tiny dwarfs (probe), but
-        // the old multiplier + 150px ceiling rendered too many big and let the
-        // rare massive ones balloon → big stars dominated. Halve the multiplier
-        // so the dwarf bulk sits at the 1px floor (few look big at launch) and
-        // drop the ceiling 150→48 so giants read bigger than dwarfs without
-        // taking over. Still physical R=M^0.8, just sanely scaled.
-        float rawStar = cam.particleSize * Rstar * sizeScale * 0.5f;
+        // ── PSF SIZE LAW (2026-07-07, Jamal: "the scale is so broken — sub-pixel
+        // invisible, mergers become same-size squares forever"). A camera never
+        // images a star's RADIUS — at any real distance every star is a point
+        // source; the apparent size in a Hubble/JWST frame is its BRIGHTNESS
+        // spread by the optics (PSF + diffraction). The old R∝M^0.8 law was so
+        // flat that the dwarf bulk never left 1px and everything 50–400 M☉
+        // pinned identical in the tanh ceiling (a seed tripling its mass didn't
+        // change a pixel — "same size for the rest of their lifetime").
+        // Apparent size now follows log-luminosity: L∝M^3.5 spans 9 decades, so
+        // log2 turns EVERY mass doubling into a visible size step across the
+        // whole ladder — a body that eats keeps visibly growing, forever.
+        // R∝M^0.8 stays in the PHYSICS (contact/merge radii) — render-only.
+        //
+        // SATURATION ZERO-POINT (2026-07-07 second pass, Jamal: "vastly
+        // oversized, doesn't read as a starmap at all"): in a real frame the
+        // size is CONSTANT — the PSF width, ~1px — until the sensor
+        // SATURATES; only past saturation does the halo bloom, ∝ log flux.
+        // The first pass sized ALL stars by log L, so every 2 M☉ star
+        // ballooned to ~9px and the field stopped being a starmap. Below
+        // L_SAT brightness lives in INTENSITY (starLum), not size — dwarfs
+        // dim red points, sun-types bright points, and only the genuinely
+        // massive (≳4 M☉, the rare IMF tail) grow halos: 10 M☉ ~12px,
+        // 100 M☉ ~40px, each further doubling still a visible step.
+        // CALIBRATION 3rd pass (2026-07-07, "still fucked / goofy"): L_SAT=100
+        // let the whole 4–5 M☉ IMF crowd (tens of thousands of stars in 2M)
+        // grow halos, and the full slider·sizeScale slope (≈2.55px/step) made
+        // each one 6–15px → a field of fat diamonds, not a starmap. Bar raised
+        // to ~5 M☉ and slope halved: 10 M☉ ~4px, 100 M☉ ~19px, 400 M☉ ~27px,
+        // 99.9% of the field stays a 1px point with brightness carrying mass.
+        const float L_SAT = 316.0f;
+        float psf = max(0.0f, log2(Lstar * (1.0f / L_SAT)));
+        float rawStar = 0.5f * cam.particleSize * psf * sizeScale;
         const float STAR_MIN_PX = 1.0f;   // floor low so dwarfs stay small (real range)
-        // SOFT CEILING (2026-07-07): the hard 48px clamp made EVERY massive
-        // star identical at high Size scale (uniform cubes, no sense of mass).
-        // tanh compresses instead — ordering by true radius survives at any
-        // slider setting, the ceiling is approached, never flattened into.
-        float starSize = max(48.0f * tanh(rawStar * (1.0f / 48.0f)), STAR_MIN_PX);
+        // SOFT CEILING (2026-07-07): tanh compresses instead of clamping —
+        // ordering survives at any slider setting, the ceiling (raised 48→64
+        // for the PSF law's wider range) is approached, never flattened into.
+        float starSize = max(64.0f * tanh(rawStar * (1.0f / 64.0f)), STAR_MIN_PX);
         // Brightness COMPRESSED (2026-06-25): L∝M^3.5 made giants ~37× brighter
         // than red dwarfs, so the white/blue giants dominated the eye and the
         // orange dwarfs were too dim for their COLOUR to read → field looked
@@ -692,8 +711,13 @@ vertex VertexOut particle_vertex(
         // pulls dwarf and giant brightness closer (~14× not 37×) so the dwarfs'
         // orange/red actually shows while giants still read brightest.
         float starLum  = 1.2f + 1.2f * log2(1.0f + Lstar);
-        if (rawStar < STAR_MIN_PX) {
-            float f = rawStar / STAR_MIN_PX;
+        // Flux-conserve dimming keys on the PHYSICAL radius footprint (the
+        // old R∝M^0.8 measure), NOT the saturation-halo size above — under
+        // the saturation law rawStar is 0 for every sub-saturation star and
+        // would have dimmed sun-types identically to dwarfs.
+        float fRad = cam.particleSize * Rstar * sizeScale * 0.5f;
+        if (fRad < STAR_MIN_PX) {
+            float f = fRad / STAR_MIN_PX;
             // Flux-conserve sub-pixel stars, but FLOOR it. The IMF is ~89% red
             // dwarfs (<0.5 M☉ — always sub-pixel here); at the raw f² they
             // dimmed to ≈0 and vanished, so only the bright white/blue giants
@@ -721,8 +745,22 @@ vertex VertexOut particle_vertex(
             // → "all white-blue" (Jamal 2026-06-26, found via the starMix/ramp
             // diagnostics). Colour now stays the star's mass-blackbody; collision
             // heat is a brightness flicker only, not a blue override.
-            starLum += flashT * 1.5f;
-            starSize = min(starSize * (1.0f + 0.2f * flashT), 150.0f);
+            //
+            // LUMINOUS RED NOVA (2026-07-07): a merger physically BALLOONS —
+            // V838 Mon / V1309 Sco went ~1 → several hundred R☉ within days;
+            // at our time-lapse that is a visible swell-and-fade, not a
+            // flicker. The old ×(1+0.2·flashT) multiplier on a ~2px dot was
+            // sub-perceptual — every merge read as silent deletion (Jamal
+            // 2026-07-07: "stars just keep disappearing out of nowhere").
+            // Size is now ADDITIVE pixels driven by the flash temp, which the
+            // T⁴ cooling decays → the nova swells at the eat and shrinks back
+            // over seconds. Colour stays the star's own mass-blackbody.
+            // Nova size reined in (3rd pass): the merge cascade keeps ~20k
+            // remnants simultaneously above the flash threshold (36 merges/
+            // frame × ~10s of T⁴ decay) — at +12px each they consumed the
+            // field. +4px/flashT still swells a 1px star to 5-9px at the eat.
+            starLum += flashT * 2.0f;
+            starSize = min(starSize + flashT * 4.0f, 150.0f);
         }
         out.pointSize = mix(out.pointSize, starSize, starMix);
         out.color     = mix(out.color, starColor, starMix);

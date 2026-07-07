@@ -801,6 +801,14 @@ kernel void compute_physics(
                         uint(int(mass * (py - prevY) * 65536.0f)), memory_order_relaxed);
                     atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 4u],
                         uint(int(mass * (pz - prevZ) * 65536.0f)), memory_order_relaxed);
+                    // KE rides along: seed_apply books the exact inelastic loss
+                    // (thermalized energy) → drives the TDE flare.
+                    {
+                        float3 dvv = float3(px - prevX, py - prevY, pz - prevZ);
+                        atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 5u],
+                            uint(0.5f * mass * dot(dvv, dvv) * 65536.0f + 0.5f),
+                            memory_order_relaxed);
+                    }
                     float park = 4000.0f + float(id % 1024);
                     p.posW = float4(park, park, park, 0.0f);
                     p.prevW = float4(park, park, park, p.prevW.w);
@@ -864,6 +872,14 @@ kernel void compute_physics(
                         uint(int(mass * (py - prevY) * 65536.0f)), memory_order_relaxed);
                     atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 4u],
                         uint(int(mass * (pz - prevZ) * 65536.0f)), memory_order_relaxed);
+                    // KE rides along: seed_apply books the exact inelastic loss
+                    // (thermalized energy) → drives the TDE flare.
+                    {
+                        float3 dvv = float3(px - prevX, py - prevY, pz - prevZ);
+                        atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 5u],
+                            uint(0.5f * mass * dot(dvv, dvv) * 65536.0f + 0.5f),
+                            memory_order_relaxed);
+                    }
                     float park = 4000.0f + float(id % 1024);
                     p.posW = float4(park, park, park, 0.0f);
                     p.prevW = float4(park, park, park, p.prevW.w);
@@ -2440,7 +2456,8 @@ kernel void seed_mark(
 }
 
 // seedAccum layout per slot (8 uints): [0] mass ×64, [1] meals,
-// [2,3,4] momentum ×65536 (signed, two's-complement wrap), [5..7] reserved.
+// [2,3,4] momentum ×65536 (signed, two's-complement wrap), [5] KE ×65536,
+// [6,7] reserved.
 kernel void seed_apply(
     device Particle* particles [[buffer(0)]],
     device const uint* seedMeta [[buffer(1)]],
@@ -2472,9 +2489,21 @@ kernel void seed_apply(
     if (notFinite3(vNew)) vNew = vSeed;        // poisoned deposit: keep mass books, skip kick
     particles[sid].posW.w = m + gain;
     particles[sid].prevW.xyz = particles[sid].posW.xyz - vNew;
-    // TDE FLARE scaled by the meal; T⁴ cooling fades it back to dark.
+    // TDE FLARE from the EXACT thermalized energy of the inelastic swallow:
+    // ΔE = (KE_seed + ΣKE_victims) − KE_after ≥ 0 (momentum-conserving merge
+    // always loses KE; clamp guards fixed-point rounding). The flare scales
+    // with the meal's SPECIFIC energy against the engine's relativistic u-cap
+    // (0.3 sim — keep in sync with spatial_hash.metal): a violent plunge
+    // flares to the top of the range, a gentle drift-in glows just above the
+    // render threshold (2.5). Replaces the old mass-ratio heuristic (gain/m).
+    // T⁴ cooling fades it back to dark.
+    float keDep = float(atomic_load_explicit(&seedAccum[tid * 8u + 5u],
+                                             memory_order_relaxed)) * (1.0f / 65536.0f);
+    float dE = max(0.0f, (0.5f * m * dot(vSeed, vSeed) + keDep) -
+                         0.5f * (m + gain) * dot(vNew, vNew));
+    float uMeal = dE / gain;                   // specific energy of the meal
     float t = particles[sid].prevW.w;
-    particles[sid].prevW.w = max(t, 3.0f + 2.0f * min(1.0f, gain / m));
+    particles[sid].prevW.w = max(t, 3.0f + 5.0f * min(1.0f, uMeal / 0.3f));
 }
 
 // ── (v1 sample-based seed_feed below: NOT dispatched — kept for reference) ───

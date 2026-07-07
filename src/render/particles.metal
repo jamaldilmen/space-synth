@@ -2404,7 +2404,7 @@ kernel void seed_mark(
     // Mirror the final registry count into the uncleared half of the buffer
     // so the CPU's log read can never land mid-clear and report a false 0.
     if (tid == 0u) seedMeta[4] = seedMeta[0];
-    if (tid >= min(seedMeta[0], 256u)) return;
+    if (tid >= min(seedMeta[0], 1024u)) return;
     if (su.gridSize <= 0) return;
     uint sid = seedIds[tid];
     if (sid >= uint(u.particleCount)) return;
@@ -2429,7 +2429,7 @@ kernel void seed_apply(
     constant PhysicsUniforms& u [[buffer(4)]],
     uint tid [[thread_position_in_grid]])
 {
-    if (tid >= min(seedMeta[0], 256u)) return;
+    if (tid >= min(seedMeta[0], 1024u)) return;
     uint sid = seedIds[tid];
     if (sid >= uint(u.particleCount)) return;
     float gain = float(atomic_load_explicit(&seedAccum[tid * 4u + 0u],
@@ -2472,7 +2472,7 @@ kernel void seed_feed(
     if (tid == 0u)
         atomic_store_explicit(&seedMeta[7], 100u + min(nSeeds, 99u),
                               memory_order_relaxed);
-    if (tid >= min(nSeeds, 256u)) return;
+    if (tid >= min(nSeeds, 1024u)) return;
     if (su.gridSize <= 0) return;
     if (tid == 0u) atomic_store_explicit(&seedMeta[7], 200u, memory_order_relaxed);
     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return; // stale hash

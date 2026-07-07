@@ -117,7 +117,7 @@ kernel void count_cells(
                       bx == g - 1 || by == g - 1 || bz == g - 1);
         if (!shell) {
             uint slot = atomic_fetch_add_explicit(seedCount, 1u, memory_order_relaxed);
-            if (slot < 256u) seedIds[slot] = id;
+            if (slot < 1024u) seedIds[slot] = id;
         }
     }
 }

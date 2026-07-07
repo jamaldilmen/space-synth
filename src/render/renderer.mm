@@ -683,9 +683,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
     if (grew) memset(impl_->sphForceBuffer.contents, 0, count * 4 * sizeof(float));
   }
   allocIfNeeded(impl_->seedCountBuffer, 8 * sizeof(uint32_t)); // [0]=n [1]=meals [2]=eaten×64 [3]=scan [4..6]=probe
-  allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
+  allocIfNeeded(impl_->seedIdsBuffer, 1024 * sizeof(uint32_t)); // registry 256→1024 (2026-07-07: 347 live seeds measured, cap saturated)
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
-  allocIfNeeded(impl_->seedAccumBuffer, 256 * 4 * sizeof(uint32_t));
+  allocIfNeeded(impl_->seedAccumBuffer, 1024 * 4 * sizeof(uint32_t));
   allocIfNeeded(impl_->accDiagBuffer, 2 * sizeof(uint32_t)); // [0]=max accuracy ratio ×1e6, [1]=over-budget count
   allocIfNeeded(impl_->sphClosureBuffer, 8 * sizeof(int32_t)); // TEMP-CLOSURE window ledger (+poison count)
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
@@ -1309,7 +1309,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:seedAccumBuffer
-                      range:NSMakeRange(0, 256 * 4 * sizeof(uint32_t))
+                      range:NSMakeRange(0, 1024 * 4 * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:accDiagBuffer    // accuracy measurement, re-maxed each frame
                       range:NSMakeRange(0, 2 * sizeof(uint32_t))
@@ -1704,7 +1704,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellSeedMapBuffer offset:0 atIndex:3];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
         [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:5];
-        [comp dispatchThreads:MTLSizeMake(256, 1, 1)
+        [comp dispatchThreads:MTLSizeMake(1024, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
         [comp endEncoding];
       }
@@ -1773,7 +1773,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp setBuffer:seedIdsBuffer offset:0 atIndex:2];
       [comp setBuffer:seedAccumBuffer offset:0 atIndex:3];
       [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:4];
-      [comp dispatchThreads:MTLSizeMake(256, 1, 1)
+      [comp dispatchThreads:MTLSizeMake(1024, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
       [comp endEncoding];
     }

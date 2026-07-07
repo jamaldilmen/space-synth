@@ -36,8 +36,8 @@ struct AppState {
   // ── Camera / render mode ──
   bool  uiChorus = true;
   bool  uiOrthoMode = true;
-  bool  uiCollisions = true;   // engine-permanent (UI toggle removed 2026-07-07)
-  bool  uiBondNetwork = true;  // engine-permanent (UI toggle removed 2026-07-07)
+  bool  uiCollisions = false;  // LEGACY FAKE retired 2026-07-07 (real = SPH+merging)
+  bool  uiBondNetwork = false; // LEGACY FAKE retired 2026-07-07
   // ── BLACK-HOLE mechanism toggles — DEFAULT ALL OFF (launch DRY: bare field,
   //    no BH machinery; we rebuild the lifecycle on this honest base) ──
   bool  uiTogFieldGravity = true;  // bit0  field self-gravity (near+far grid) — the real base, ON

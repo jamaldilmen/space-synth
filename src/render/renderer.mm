@@ -149,9 +149,9 @@ struct Renderer::Impl {
   // G_sim·M_total is DERIVED, not tuned: N stars × 1 M_sun each, through the
   // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
-  bool collisionsEnabled = true;   // ENGINE-PERMANENT (Jamal 2026-07-07): not optional
+  bool collisionsEnabled = false;  // LEGACY FAKE — retired 2026-07-07: per-particle 27-cell scan cost ~170ms @2M (4fps). Real collisions = SPH + cross-cell merging. Delete the corpse in the cleanup pass.
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI), default all-on
-  bool bondNetworkEnabled = true;  // ENGINE-PERMANENT (Jamal 2026-07-07): not optional
+  bool bondNetworkEnabled = false; // LEGACY FAKE — retired 2026-07-07 with the fake collisions. Delete the corpse in the cleanup pass.
 
   // Noether symmetry breaking
   uint32_t prevVoiceHash = 0;

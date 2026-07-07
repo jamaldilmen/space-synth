@@ -2366,6 +2366,7 @@ kernel void merge_stars(
         // capture (either mass ≥ M_BH_SEED) stays ungated — separate channel.
         // Units: per-second² via the ×120 seed-capture convention (G1s·M/r
         // and |dv·120|² match — same expression as the focusing term above).
+        float mergeViolence = 0.0f;            // (v_rel/v_esc)² ∈ [0,1) for the flash below
         if (ma < M_BH_SEED && mb < M_BH_SEED) {
             float3 vrel = (a.posW.xyz - a.prevW.xyz) - (b.posW.xyz - b.prevW.xyz);
             float vrel2 = dot(vrel, vrel) * (120.0f * 120.0f);
@@ -2373,6 +2374,7 @@ kernel void merge_stars(
             float G1s   = u.gravGM / max(u.massTotal, 1.0f);
             float vesc2 = 2.0f * G1s * (ma + mb) / max(rcAB, 1e-4f);
             if (vrel2 >= vesc2) continue;      // unbound: fly-through, no fusion
+            mergeViolence = vrel2 / max(vesc2, 1e-20f);
         }
         // CLAIM PROTOCOL: own both participants atomically before writing.
         // Each pair has one initiator, but a PARTICLE can appear in pairs
@@ -2406,15 +2408,15 @@ kernel void merge_stars(
         float mNew = mW + mL;
         float3 posNew = (w.posW.xyz * mW + l.posW.xyz * mL) / mNew;
         float3 vNew = (vw * mW + vl * mL) / mNew;
-        // NOVA FLASH: the merger's thermalized energy, scaled by violence —
-        // q = mL/mNew ∈ (0, 0.5], ½ = equal-mass head-on (brightest), tiny
-        // snack ≈ +1. The T⁴ radiative cooling decays it over seconds; the
-        // render shows it as a luminous-red-nova surge (the eat made visible).
-        float q = mL / mNew;
-        // Base 2.0 lifts every flash above the post-play residual heat
-        // (~1-2 after T⁴ cooling) so the render threshold (2.5) separates
-        // real novae from ambient warmth.
-        float tNew = max(w.prevW.w, l.prevW.w) + 2.0f + 6.0f * q;
+        // NOVA FLASH from MEASURED dynamics (2026-07-07, rung 2 — replaces
+        // the +2+6q mass-ratio heuristic, the spec's named debt §4.9): base
+        // 2.0 = the binding-energy release every real merger radiates (the
+        // luminous-red-nova transient, present even for the gentlest bound
+        // capture); + 4·(v_rel/v_esc)² = exactly how violently the pair hit,
+        // straight from the bound-pair gate's own numbers, ∈ [0,4). The T⁴
+        // cooling decays it over seconds. Base clears the render threshold
+        // (2.5 vs post-play residual ~1-2) so every true merger is visible.
+        float tNew = max(w.prevW.w, l.prevW.w) + 2.0f + 4.0f * mergeViolence;
         // Stale ids can exceed the current buffer (count switched 5M→2M).
         if (wOrig >= uint(u.particleCount) || lOrig >= uint(u.particleCount))
             continue;

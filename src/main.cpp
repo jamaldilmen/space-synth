@@ -1032,12 +1032,19 @@ int main() {
         // accuracy budget. ratio>1 = integrator clamp firing (running inaccurate);
         // sub-steps needed ≈ ceil(4·ratio). Diagnostic only — nothing capped yet.
         {
+          // Honest form: ONE rogue particle out of 2M is not "accuracy lost" —
+          // report HOW MANY kicks exceeded the c·dt budget (clamp fired) plus
+          // the worst offender; red only when the over-budget POPULATION is
+          // significant (>0.01% of live).
           float r = s.maxAccRatio;
-          int needSub = std::max(1, (int)std::ceil(4.0f * r));
-          ImGui::TextColored(r > 8.0f ? ImVec4(1.0f, 0.4f, 0.3f, 1.0f)
-                                      : ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
-                             "  [accuracy] worst kick = %.2e light-step  (sub-steps ~%d / cap 32)%s",
-                             r, needSub, r > 8.0f ? "  ACCURACY LOST" : "");
+          int over = s.accOverCount;
+          int liveN = std::max(app.uiParticleCount, 1);
+          float overPct = 100.0f * (float)over / (float)liveN;
+          bool bad = overPct > 0.01f;
+          ImGui::TextColored(bad ? ImVec4(1.0f, 0.4f, 0.3f, 1.0f)
+                                 : ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
+                             "  [accuracy] clamped kicks: %d (%.3f%%)  worst %.1e c*dt%s",
+                             over, overPct, r, bad ? "  DEGRADED" : "");
         }
 
         // ── LIVE METERS (Ableton-style bars) — the moving values at a glance ──
@@ -1124,17 +1131,7 @@ int main() {
 
         // Removed SimMode and SphereMode
 
-        if (ImGui::Checkbox("Collisions", &app.uiCollisions)) {
-          renderer.setCollisionsEnabled(app.uiCollisions);
-        }
-        ImGui::SetItemTooltip("Enable particle-particle elastic collisions");
-
-        if (ImGui::Checkbox("Bond Network", &app.uiBondNetwork)) {
-          renderer.setBondNetworkEnabled(app.uiBondNetwork);
-        }
-        ImGui::SetItemTooltip(
-            "Nervous-system-of-light: link adjacent particles in the "
-            "hardened (sustain) state");
+        // Collisions + Bond Network: engine-permanent (toggles removed 2026-07-07).
 
         ImGui::Checkbox("Phase Viz", &app.uiPhaseViz);
         ImGui::SetItemTooltip(

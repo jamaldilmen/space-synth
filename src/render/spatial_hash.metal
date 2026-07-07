@@ -478,6 +478,17 @@ kernel void sph_density(
             int ny = cy + dy; if (ny < 0 || ny >= u.gridSize) continue;
             for (int dx = -1; dx <= 1; dx++) {
                 int nx = cx + dx; if (nx < 0 || nx >= u.gridSize) continue;
+                // BOUNDARY-SHELL NEIGHBOURS EXCLUDED — the shell is outside the
+                // physical domain for EVERY SPH pass (home cells return above),
+                // so shell residents' ρ/P/u are never computed: stale-or-zero ρ
+                // with frozen cap-hot u makes a neighbour's P/ρ² = (γ−1)u/ρ
+                // singular (~1e10). Reading them as neighbours made every
+                // fringe encounter a max-strength kick + a clamp-absorbed du
+                // bomb (measured 2026-07-07, [CLOSURE]: dyn/clamp ±1.5e7,
+                // anti-correlated — the escaper-fountain pump). Nothing may
+                // couple across the shell. (Uniform condition → barrier-safe.)
+                if (nx == 0 || ny == 0 || nz == 0 || nx == u.gridSize - 1 ||
+                    ny == u.gridSize - 1 || nz == u.gridSizeZ - 1) continue;
                 uint ncID    = uint((nz * u.gridSize + ny) * u.gridSize + nx);
                 uint ncCount = min(cellCounts[ncID], 32u);
                 if (ncCount == 0u) continue;   // empty tile: skip both barriers
@@ -568,6 +579,7 @@ kernel void sph_force(
     device float4*         forceOut        [[buffer(6)]],
     constant SphForceParams& p             [[buffer(7)]],
     device float*          uInOut          [[buffer(8)]],
+    device atomic_int*     closure         [[buffer(9)]],   // TEMP-CLOSURE ledger ×1e6: [1]=du dyn, [2]=du cool, [3]=du clamp
     uint tgid [[threadgroup_position_in_grid]],
     uint tid  [[thread_position_in_threadgroup]])
 {
@@ -599,11 +611,12 @@ kernel void sph_force(
     bool active = tid < homeCount;
     float3 ri = float3(0.0f), vi = float3(0.0f);
     uint originId = 0u;
-    float rhoI = 1.0f, Pi = 0.0f, ci = 0.0f;
+    float rhoI = 1.0f, Pi = 0.0f, ci = 0.0f, mi = 0.0f;
     if (active) {
         Particle self = sortedParticles[cellStarts[tgid] + tid];
         ri = self.posW.xyz;
         vi = (self.posW.xyz - self.prevW.xyz) * invDt;
+        mi = self.posW.w;
         originId = self.entanglement.y;
         if (originId < uint(u.particleCount)) {
             rhoI = max(densityIn[originId], 1e-12f);
@@ -612,7 +625,32 @@ kernel void sph_force(
         ci = sqrt(gamma * max(Pi, 0.0f) / rhoI);
     }
     float h = u.cellSize;
-    float PiOverRhoI2 = Pi / (rhoI * rhoI);
+    // ── SUB-STEP ACCUMULATOR (plan §3.6b, 2026-07-07) ────────────────────────
+    // The pair exchange is STIFF at hot close pairs: at fixed dtU the booked
+    // |du| reaches the whole thermal budget per step (measured, [CLOSURE] —
+    // u telegraphs floor↔cap; residue = the escaper-fountain pump). Positions
+    // move ≤3% of h per frame even at c — geometry is resolved; the u↔v
+    // exchange is what needs sub-cycling. So: N sub-steps with FROZEN tile
+    // geometry (neighbour pos/vel/ρ/P Jacobi-frozen at window start), the
+    // particle's OWN velocity and u advanced each sub-step, its P re-derived
+    // from the local EOS so the u→P→force feedback is resolved. N is
+    // per-cell adaptive from the CFL ratio (threadgroup-uniform via simd_max
+    // over the cell's 32 lanes = one simdgroup → barriers stay uniform);
+    // cold cells pay nothing (N=1).
+    float myR = active ? (ci + length(vi)) * p.dtU / max(h, 1e-6f) : 0.0f;
+    uint NSub = uint(clamp(ceil(simd_max(myR) * 4.0f), 1.0f, 8.0f));
+    float dtSub = p.dtU / float(NSub);
+    float u0 = (active && originId < uint(u.particleCount)) ? uInOut[originId]
+                                                            : 0.0f;
+    float3 viCur = vi;
+    float uiCur = u0;
+    float3 accSum = float3(0.0f);
+    bool subPoison = false;
+
+    for (uint nSub = 0u; nSub < NSub; nSub++) {
+    float PiCur = (gamma - 1.0f) * rhoI * uiCur;   // local EOS refresh (= sph_pressure)
+    float ciCur = sqrt(gamma * max(PiCur, 0.0f) / rhoI);
+    float PiOverRhoI2 = PiCur / (rhoI * rhoI);
     float3 acc = float3(0.0f);
     float dudt = 0.0f;
 
@@ -622,6 +660,12 @@ kernel void sph_force(
             int ny = cy + dy; if (ny < 0 || ny >= u.gridSize) continue;
             for (int dx = -1; dx <= 1; dx++) {
                 int nx = cx + dx; if (nx < 0 || nx >= u.gridSize) continue;
+                // BOUNDARY-SHELL NEIGHBOURS EXCLUDED — same rule and reason as
+                // sph_density above: shell residents' ρ/P/u are unmaintained,
+                // their P/ρ² is singular, and coupling to them was the
+                // fringe kick/du-bomb pump. Nothing crosses the shell.
+                if (nx == 0 || ny == 0 || nz == 0 || nx == u.gridSize - 1 ||
+                    ny == u.gridSize - 1 || nz == u.gridSizeZ - 1) continue;
                 uint ncID    = uint((nz * u.gridSize + ny) * u.gridSize + nx);
                 uint ncCount = min(cellCounts[ncID], 32u);
                 if (ncCount == 0u) continue;   // empty tile: skip both barriers
@@ -651,13 +695,13 @@ kernel void sph_force(
                         float mj   = sh_posm[k].w;
                         float rhoJ = sh_rho[k];
                         float Pij  = 0.0f;                        // Π_ij
-                        float3 vij = vi - sh_vel[k];
+                        float3 vij = viCur - sh_vel[k];
                         float vdotr = dot(vij, rij);
                         float dWdr = sphGradW(r, h);
                         if (viscOn && vdotr < 0.0f) {             // approaching → shock term
                             float mu   = h * vdotr / (r * r + 0.01f * h * h);
                             mu = max(mu, -p.muMax);               // viscous-stability clamp
-                            float cbar = 0.5f * (ci + sh_c[k]);
+                            float cbar = 0.5f * (ciCur + sh_c[k]);
                             float rbar = 0.5f * (rhoI + rhoJ);
                             Pij = (-p.alpha * cbar * mu + p.beta * mu * mu) / rbar;
                             // PHYSICAL BRAKE BOUND: an explicit viscous impulse
@@ -674,32 +718,115 @@ kernel void sph_force(
                             // dtU: the force persists for the whole cadence
                             // window, so bound the TOTAL impulse over it.
                             float PijBrake = 0.5f * (-vdotr) /
-                                             (r * mj * absdW * p.dtU);
+                                             (r * mj * absdW * dtSub);
                             Pij = min(Pij, PijBrake);
                         }
-                        float term = mj * (PiOverRhoI2 + sh_P[k] / (rhoJ * rhoJ) + Pij);
+                        // FREE-EXPANSION BOUND on the PRESSURE impulse — mirror
+                        // of the viscous brake above, for the other sign: a
+                        // rarefaction cannot accelerate gas beyond the
+                        // free-expansion terminal speed 2c̄/(γ−1) = 3c̄. Without
+                        // it, a cap-pinned hot pair rides sustained P/ρ² pushes
+                        // to ~2.4c escapers, and the start-of-step PdV debit
+                        // underpays the work actually done during the kick —
+                        // measured 2026-07-07 (PE-instrumented ledger): U climbs
+                        // 77→140/8640f and escaper KE 26→452 with PE FLAT =
+                        // energy created, cadence-independent (nOut 689 vs 674
+                        // @f3600 at cadence 1 vs 2). Bound: this window's
+                        // pressure Δv (per side ≤ half) may not push the pair's
+                        // separation rate past 3c̄; the du debit uses the SAME
+                        // scaled pressure so the books stay closed.
+                        float sumP = PiOverRhoI2 + sh_P[k] / (rhoJ * rhoJ);
+                        float scaleP = 1.0f;
+                        {
+                            float aP  = -sumP * mj * dWdr;        // ≥0, repulsive
+                            float dvP = aP * dtSub;               // per-side Δv/sub-step
+                            float cbar2 = 0.5f * (ciCur + sh_c[k]);
+                            float head = max(0.0f, 3.0f * cbar2 - vdotr / r);
+                            if (dvP > 0.5f * head)
+                                scaleP = 0.5f * head / max(dvP, 1e-20f);
+                        }
+                        float term = mj * (scaleP * sumP + Pij);
                         acc += (-term * dWdr) * (rij / r);        // ∇_i W along r_ij
                         if (viscOn)                               // PdV + ½Π shock heating
-                            dudt += mj * (PiOverRhoI2 + 0.5f * Pij) * dWdr * vdotr / r;
+                            dudt += mj * (scaleP * PiOverRhoI2 + 0.5f * Pij) * dWdr * vdotr / r;
+                        // TESTED AND REVERTED (2026-07-07): (a) midpoint-velocity
+                        // du (KDK-style) — correction is ~4% at measured kick
+                        // sizes, no effect on the pump; (b) EXACT exponential
+                        // PdV integration u·e^{k·dtU} — stable and honest but
+                        // RETAINS the pumped heat the explicit form was
+                        // discarding at the u-cap: U climbed ~2× faster
+                        // (109→201 vs 99→125 per 5760f). The pump itself is
+                        // upstream: cross-cell contact pairs merge_stars cannot
+                        // see (same-cell pairing only) grind at r≪h forever —
+                        // see docs/ejector_hunt_2026-07-07.md.
                     }
                 }
             }
         }
     }
+    // ── sub-step advance ──
+    // NaN HYGIENE: a poisoned pair (NaN neighbour position/velocity) must not
+    // poison viCur/uiCur — zero this sub-step's contribution and count it.
+    if (!isfinite(acc.x + acc.y + acc.z)) { acc = float3(0.0f); subPoison = true; }
+    if (!isfinite(dudt))                  { dudt = 0.0f;        subPoison = true; }
+    accSum += acc;
+    // PROVISIONAL KICK CAP — same physical limit the integrator applies
+    // (compute_physics clamps real kicks at c·dt). Without it a hot pair adds
+    // >c per sub-step and viCur runs away to inf across sub-steps (measured:
+    // poison 8–9.7M/window). Δv ≤ c per sub-step; provisional speed ≤ 4c
+    // (observed engine states ≤ 2.4c).
+    float3 kick = acc * dtSub;
+    float kmag = length(kick);
+    if (kmag > 1.0f) kick *= 1.0f / kmag;
+    viCur += kick;
+    float vmag = length(viCur);
+    if (vmag > 4.0f) viCur *= 4.0f / vmag;
+    if (viscOn)
+        uiCur = clamp(uiCur + dudt * dtSub, p.uFloor, p.uMax);
+    }  // end sub-step loop
+
+    // TEMP-CLOSURE instrumentation: m-weighted du splits for the energy-closure
+    // ledger ([CLOSURE] watchdog line) — dynamics (PdV+Π), cooling, clamp.
+    float cDyn = 0.0f, cCool = 0.0f, cClamp = 0.0f;
+    bool poisoned = subPoison;
     if (active && originId < uint(u.particleCount)) {
-        forceOut[originId] = float4(acc, 0.0f);
+        float3 accMean = accSum / float(NSub);   // mean force over the window
+        if (!isfinite(accMean.x + accMean.y + accMean.z)) accMean = float3(0.0f);
+        forceOut[originId] = float4(accMean, 0.0f);
         if (viscOn) {
-            float ui = uInOut[originId] + dudt * p.dtU;
+            float uDynRaw = uiCur - u0;   // net dynamics over all sub-steps
+            if (!isfinite(uDynRaw)) { poisoned = true; uDynRaw = 0.0f; }
+            float ui = u0 + uDynRaw;
+            float uc = ui;
             if (p.coolOn > 0.5f && p.coolTau > 1e-6f) {
                 // Radiative cooling (slice 4): decay toward the cold floor with
                 // τ = τ₀/(ρ·(T/T_cap)³); T/T_cap = u/uMax (same linear map).
                 // Implicit: u ← floor + (u−floor)/(1 + dtU/τ). ∝ρT⁴ overall.
-                float tRel = clamp(ui / p.uMax, 0.0f, 1.0f);
+                float tRel = clamp(uc / p.uMax, 0.0f, 1.0f);
                 float invTau = (rhoI * tRel * tRel * tRel) / p.coolTau;
-                ui = p.uFloor + (ui - p.uFloor) / (1.0f + p.dtU * invTau);
+                uc = p.uFloor + (uc - p.uFloor) / (1.0f + p.dtU * invTau);
             }
-            uInOut[originId] = clamp(ui, p.uFloor, p.uMax);
+            float uf = clamp(uc, p.uFloor, p.uMax);
+            uInOut[originId] = uf;
+            cDyn   = mi * uDynRaw;
+            cCool  = mi * (uc - ui);
+            cClamp = mi * (uf - uc);
         }
+    }
+    // One atomic add per cell-threadgroup (32 lanes = one simdgroup).
+    // NON-FINITE GUARD: a single NaN/inf lane turns simd_sum into NaN and
+    // int(NaN) slams the counter to ±2^31 (measured: every scale choice
+    // reported totals pinned at the int32 boundary). Poisoned lanes are
+    // counted in closure[4] instead — the NaN rate is itself diagnostic.
+    bool bad = poisoned || !isfinite(cDyn) || !isfinite(cCool) || !isfinite(cClamp);
+    if (bad) { cDyn = 0.0f; cCool = 0.0f; cClamp = 0.0f; }
+    float sDyn = simd_sum(cDyn), sCool = simd_sum(cCool), sClamp = simd_sum(cClamp);
+    uint nBad = simd_sum(bad ? 1u : 0u);
+    if (simd_is_first()) {
+        atomic_fetch_add_explicit(&closure[1], int(sDyn   * 1.0e2f), memory_order_relaxed);
+        atomic_fetch_add_explicit(&closure[2], int(sCool  * 1.0e2f), memory_order_relaxed);
+        atomic_fetch_add_explicit(&closure[3], int(sClamp * 1.0e2f), memory_order_relaxed);
+        atomic_fetch_add_explicit(&closure[4], int(nBad), memory_order_relaxed);
     }
 }
 

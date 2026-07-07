@@ -89,6 +89,8 @@ struct Renderer::Impl {
   id<MTLBuffer> cellSeedMapBuffer = nil;     // per-cell seed slot (victim lookup)
   id<MTLBuffer> seedAccumBuffer = nil;       // per-seed meal accumulator (4 uints)
   id<MTLBuffer> accDiagBuffer = nil;         // [0]=max accuracy ratio ×1000 (Step 2 measurement, diagnostic)
+  id<MTLBuffer> sphClosureBuffer = nil;      // TEMP-CLOSURE ×1e6 int: [0]=W_sph, [1]=du dyn, [2]=du cool, [3]=du clamp (240f window)
+  id<MTLBuffer> mergeClaimBuffer = nil;      // per-particle merge claim flags (cross-cell merging, zeroed each frame)
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
   id<MTLBuffer> blockSumsBuffer = nil;       // block sums for parallel scan
   id<MTLBuffer> cellOffsetsBuffer = nil;     // atomic write offsets for scatter
@@ -147,9 +149,9 @@ struct Renderer::Impl {
   // G_sim·M_total is DERIVED, not tuned: N stars × 1 M_sun each, through the
   // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
-  bool collisionsEnabled = false;
+  bool collisionsEnabled = true;   // ENGINE-PERMANENT (Jamal 2026-07-07): not optional
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI), default all-on
-  bool bondNetworkEnabled = false;
+  bool bondNetworkEnabled = true;  // ENGINE-PERMANENT (Jamal 2026-07-07): not optional
 
   // Noether symmetry breaking
   uint32_t prevVoiceHash = 0;
@@ -660,6 +662,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellMassBuffer, cellSize);
   allocIfNeeded(impl_->phiBuffer, Impl::kTotalCells * sizeof(float)); // PM gravity Φ (warm-started)
   allocIfNeeded(impl_->densityBuffer, count * sizeof(float));  // SPH ρ per particle (slice 0 plumbing)
+  allocIfNeeded(impl_->mergeClaimBuffer, count * sizeof(uint32_t)); // cross-cell merge claims
   allocIfNeeded(impl_->pressureBuffer, count * sizeof(float)); // SPH P per particle (slice 0 plumbing)
   {
     // SPH internal energy u: allocate + seed the WHOLE buffer to the cold floor
@@ -683,7 +686,8 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->seedIdsBuffer, 256 * sizeof(uint32_t));
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
   allocIfNeeded(impl_->seedAccumBuffer, 256 * 4 * sizeof(uint32_t));
-  allocIfNeeded(impl_->accDiagBuffer, sizeof(uint32_t)); // [0]=max accuracy ratio ×1e6
+  allocIfNeeded(impl_->accDiagBuffer, 2 * sizeof(uint32_t)); // [0]=max accuracy ratio ×1e6, [1]=over-budget count
+  allocIfNeeded(impl_->sphClosureBuffer, 8 * sizeof(int32_t)); // TEMP-CLOSURE window ledger (+poison count)
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
@@ -1308,8 +1312,18 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                       range:NSMakeRange(0, 256 * 4 * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:accDiagBuffer    // accuracy measurement, re-maxed each frame
-                      range:NSMakeRange(0, sizeof(uint32_t))
+                      range:NSMakeRange(0, 2 * sizeof(uint32_t))
                       value:0];
+      [clearBlit fillBuffer:mergeClaimBuffer // cross-cell merge claims, re-claimed each frame
+                      range:NSMakeRange(0, (NSUInteger)particleCount * sizeof(uint32_t))
+                      value:0];
+      // TEMP-CLOSURE: zero the window ledger right AFTER the watchdog read
+      // (%240==0) so each [CLOSURE] line integrates exactly one 240f window.
+      if ((physicsUniforms.frameCounter % 240u) == 1u) {
+        [clearBlit fillBuffer:sphClosureBuffer
+                        range:NSMakeRange(0, 8 * sizeof(int32_t))
+                        value:0];
+      }
       [clearBlit fillBuffer:cellOffsetsBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
@@ -1577,6 +1591,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:sphForceBuffer offset:0 atIndex:6];
         [comp setBytes:&sphParams length:sizeof(sphParams) atIndex:7];
         [comp setBuffer:uBuffer offset:0 atIndex:8];
+        [comp setBuffer:sphClosureBuffer offset:0 atIndex:9]; // TEMP-CLOSURE du splits
         [comp dispatchThreadgroups:MTLSizeMake(Impl::kTotalCells, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
         [comp endEncoding];
@@ -1681,6 +1696,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:cellCountsBuffer offset:0 atIndex:3];
         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
         [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:5];
+        [comp setBuffer:mergeClaimBuffer offset:0 atIndex:6]; // cross-cell claims
         // One thread per CELL (see merge_stars) — only dense cells do work.
         NSUInteger tgMg = std::min(
             tgSize, mergeStarsPipeline.maxTotalThreadsPerThreadgroup);
@@ -1750,6 +1766,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:accDiagBuffer offset:0 atIndex:14];
         [comp setBuffer:phiBuffer offset:0 atIndex:15]; // PM gravity Φ (force = −∇Φ)
         [comp setBuffer:sphForceBuffer offset:0 atIndex:16]; // SPH pressure accel (bit11, slice 2b)
+        [comp setBuffer:sphClosureBuffer offset:0 atIndex:17]; // TEMP-CLOSURE W_sph
       }
 
       NSUInteger tg =
@@ -2023,6 +2040,17 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           double rMaxU = 0;
           float invDt = 1.0f / physicsUniforms.dt;
           int n = 0;
+          // PE from the PM Poisson Φ (same field the force kernel differentiates,
+          // so same energy units as KE): PE = ½Σ m·Φ over the interior sample.
+          // Decides honest-vs-leak for interior KE bursts: a core collapse pays
+          // for its KE out of PE (grand total flat); a numerics pump does not.
+          const float *ph = ((physicsUniforms.bhToggles & 0x400u) && phiBuffer)
+                                ? (const float *)phiBuffer.contents
+                                : nullptr;
+          double pe = 0;
+          const int NgW = Impl::kGridSize;
+          const float heW = lastHashExtent;
+          const float invCsW = (heW > 0.0f) ? (float)NgW / (2.0f * heW) : 0.0f;
           for (int i = 0; i < particleCount; i += stride) {
             const GPUParticle &q = pp[i];
             if (q.mass <= 0.0f) continue;
@@ -2037,6 +2065,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
               px += q.mass * vx; py += q.mass * vy; pz += q.mass * vz;
               ke += 0.5 * q.mass * (vx * vx + vy * vy + vz * vz);
               uu += q.mass * up[i];
+              if (ph && invCsW > 0.0f) {
+                int gi = std::min(std::max(int((q.x + heW) * invCsW), 1), NgW - 2);
+                int gj = std::min(std::max(int((q.y + heW) * invCsW), 1), NgW - 2);
+                int gk = std::min(std::max(int((q.z + heW) * invCsW), 1), NgW - 2);
+                pe += 0.5 * q.mass * ph[(gk * NgW + gj) * NgW + gi];
+              }
             } else {
               nOut++;
               opx += q.mass * vx; opy += q.mass * vy; opz += q.mass * vz;
@@ -2046,10 +2080,24 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           }
           fprintf(stderr,
                   "[SPH] f=%u nIn=%d m=%.0f pIn=(%.4g %.4g %.4g) KEin=%.6g U=%.6g "
-                  "Ein=%.6g | nOut=%d pOut=(%.4g %.4g %.4g) KEout=%.6g | "
-                  "umax=%.4g@r=%.1f\n",
+                  "Ein=%.6g PEin=%.6g Etot=%.6g | nOut=%d pOut=(%.4g %.4g %.4g) "
+                  "KEout=%.6g | umax=%.4g@r=%.1f\n",
                   physicsUniforms.frameCounter, n - nOut, m, px, py, pz, ke, uu,
-                  ke + uu, nOut, opx, opy, opz, oke, umax, rMaxU);
+                  ke + uu, pe, ke + uu + pe + oke, nOut, opx, opy, opz, oke,
+                  umax, rMaxU);
+          // TEMP-CLOSURE: window-integrated books. Honest pairwise physics ⇒
+          // S = W + dyn ≈ 0 (the force's work is exactly the heat's source).
+          // Persistent S > 0 = energy created inside the SPH pair machinery.
+          if (sphClosureBuffer) {
+            const int32_t *cl = (const int32_t *)sphClosureBuffer.contents;
+            double W = cl[0] * 1e-2, dyn = cl[1] * 1e-2, cool = cl[2] * 1e-2,
+                   clmp = cl[3] * 1e-2;
+            fprintf(stderr,
+                    "[CLOSURE] f=%u W=%.4g dyn=%.4g S=%.4g cool=%.4g clamp=%.4g "
+                    "poison=%d\n",
+                    physicsUniforms.frameCounter, W, dyn, W + dyn, cool, clmp,
+                    cl[4]);
+          }
         }
         latestStats.kineticEnergy = totalKE;
         latestStats.momentumX = totalMX;
@@ -2069,6 +2117,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         if (accDiagBuffer) {
           uint32_t micro = *(const uint32_t *)accDiagBuffer.contents;
           latestStats.maxAccRatio = (float)micro * 1.0e-6f;
+          latestStats.accOverCount =
+              (int)((const uint32_t *)accDiagBuffer.contents)[1];
         }
 
         // Physical Assert: Check for NaNs or Infinity (Energy Explosion)

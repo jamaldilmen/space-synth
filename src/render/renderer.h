@@ -256,6 +256,7 @@ struct PhysicsStats {
   float bhStrength;    // 0..1 collapse fraction signal (1 = full shadow)
   // ── Accuracy measurement (Step 2 slice) ──
   float maxAccRatio;   // field-wide max gravity-kick / light-step (gkmag/gkmax),
+  int   accOverCount;  // particles whose kick exceeded the c·dt budget this frame (clamp fired)
                        // 1-frame lag. >1 = integrator clamp firing (inaccurate);
                        // required accurate sub-steps ≈ ceil(4·ratio).
 };

@@ -680,7 +680,11 @@ vertex VertexOut particle_vertex(
         // taking over. Still physical R=M^0.8, just sanely scaled.
         float rawStar = cam.particleSize * Rstar * sizeScale * 0.5f;
         const float STAR_MIN_PX = 1.0f;   // floor low so dwarfs stay small (real range)
-        float starSize = clamp(rawStar, STAR_MIN_PX, 48.0f);
+        // SOFT CEILING (2026-07-07): the hard 48px clamp made EVERY massive
+        // star identical at high Size scale (uniform cubes, no sense of mass).
+        // tanh compresses instead — ordering by true radius survives at any
+        // slider setting, the ceiling is approached, never flattened into.
+        float starSize = max(48.0f * tanh(rawStar * (1.0f / 48.0f)), STAR_MIN_PX);
         // Brightness COMPRESSED (2026-06-25): L∝M^3.5 made giants ~37× brighter
         // than red dwarfs, so the white/blue giants dominated the eye and the
         // orange dwarfs were too dim for their COLOUR to read → field looked
@@ -855,7 +859,13 @@ fragment float4 particle_fragment(
     // instead of looking like individual chunks. The continuous-band
     // appearance comes from particle DENSITY (overlap), not from each
     // sprite's individual falloff being soft.
-    float glow = exp(-r2 * in.sharpness);
+    // QUAD WINDOW (2026-07-07, Jamal: "2D cubes, no mass/depth"): the Gaussian
+    // was truncated by the sprite rectangle (still ~0.13 at the edge) so every
+    // big star rendered as a SQUARE. Force the profile to true zero before the
+    // quad boundary — round core + soft halo, corners gone. Radial window so
+    // streaks stay smooth too.
+    float window = 1.0f - smoothstep(0.68f, 0.97f, length(pc));
+    float glow = exp(-r2 * in.sharpness) * window;
     // Crisp bright CORE — restored from the pre-impostor render. This sharp
     // center is what makes each particle read as a crisp point instead of a
     // soft sprite-ball. Tinted by the particle color (not pure white) so dense

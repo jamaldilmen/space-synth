@@ -248,6 +248,7 @@ kernel void compute_physics(
     device atomic_uint* accDiag [[buffer(14)]],      // [0]=max accuracy ratio ×1000 (measurement slice, diagnostic-only)
     device const float* phi [[buffer(15)]],          // PM gravity potential Φ on the 128³ grid (poisson_sor); force = −∇Φ
     device const float4* sphForce [[buffer(16)]],    // SPH pressure acceleration (sph_force, slice 2b); added to gacc under bit11
+    device atomic_int* sphClosure [[buffer(17)]],    // TEMP-CLOSURE ledger ×1e6: [0]=W done by the SPH force (F·Δx)
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -257,6 +258,8 @@ kernel void compute_physics(
     float py = p.posW.y;
     float pz = p.posW.z;
     float mass = p.posW.w;
+    // TEMP-CLOSURE: entry position (px/py/pz get mutated mid-kernel).
+    float3 posEntry = float3(px, py, pz);
 
     // ── Störmer-Verlet: derive velocity from position history ────────
     float prevX = p.prevW.x;
@@ -1140,6 +1143,8 @@ kernel void compute_physics(
         if (gkmax > 1e-12f) {
             uint ratioMilli = uint(min((gkmag / gkmax) * 1.0e6f, 4.0e9f)); // ×1e6 fixed-point
             atomic_fetch_max_explicit(&accDiag[0], ratioMilli, memory_order_relaxed);
+            if (ratioMilli > 1000000u)   // ratio > 1 → the c·dt clamp fires
+                atomic_fetch_add_explicit(&accDiag[1], 1u, memory_order_relaxed);
         }
         if (gkmag > gkmax && gkmag > 1e-12f) gkick *= (gkmax / gkmag);
         gkick *= (1.0f - playGate);          // self-gravity OFF while playing (no center pull)
@@ -2110,6 +2115,19 @@ kernel void compute_physics(
         float3 comShift = float3(u.comX, u.comY, u.comZ) * 0.02f;
         comShift = clamp(comShift, -0.02f, 0.02f);
         if (notFinite3(comShift)) comShift = float3(0.0f);
+        // TEMP-CLOSURE: work done BY the SPH pressure force this frame — exact
+        // F·Δx for a force held constant over the frame (comShift excluded: it
+        // moves pos and prev equally, no velocity change). Honest books demand
+        // Σ W_sph = −Σ m·du(dynamics); the [CLOSURE] watchdog line prints both.
+        if (u.bhToggles & 0x800u) {
+            float3 dxW = nextPos - posEntry;
+            float wSph = mass * dot(sphForce[id].xyz, dxW);
+            if (!isfinite(wSph)) wSph = 0.0f;  // NaN guard — else int(NaN) slams the counter
+            float wSum = simd_sum(wSph);
+            if (simd_is_first())
+                atomic_fetch_add_explicit(&sphClosure[0], int(wSum * 1.0e2f),
+                                          memory_order_relaxed);
+        }
         p.prevW = float4(float3(px, py, pz) - comShift, currentTemp);
         p.posW = float4(nextPos - comShift, mass);
         // Wrap phase into [0, 2π) before packing — a clamp here saturated every
@@ -2158,6 +2176,7 @@ kernel void merge_stars(
     device const uint* cellCounts [[buffer(3)]],
     constant SpatialHashUniforms& su [[buffer(4)]],
     constant PhysicsUniforms& u [[buffer(5)]],
+    device atomic_uint* claimed [[buffer(6)]],         // per-particle merge claim (zeroed each frame)
     uint cid [[thread_position_in_grid]])
 {
     uint totalCells = uint(su.gridSize) * uint(su.gridSize) * uint(su.gridSizeZ);
@@ -2180,14 +2199,32 @@ kernel void merge_stars(
             bx == g - 1 || by == g - 1 || bz == g - 1) return;
     }
     uint count = min(cellCounts[cid], 32u);            // scatter writes ≤32
-    if (count < 2u) return;
+    if (count < 1u) return;   // cross-cell: a lone star can touch a neighbour-cell partner
     uint start = cellStarts[cid];
 
-    bool used[32];
-    for (uint i = 0; i < count; i++) used[i] = false;
+    // CROSS-CELL MERGING (2026-07-07): the old same-cell-only pairing left
+    // every contact pair straddling a cell boundary INVISIBLE — at contact
+    // radius ~0.3–0.6 and cellSize 1 that is roughly HALF of all touching
+    // pairs. They ground at r≪h in the SPH kernel forever, booking du of
+    // order the whole thermal budget per step — the measured escaper-fountain
+    // pump (docs/ejector_hunt_2026-07-07.md). Pairing now scans the own cell
+    // (later slots) + the 13 FORWARD neighbour cells, so every pair has
+    // exactly ONE initiator; per-particle atomic claims replace used[] so no
+    // participant can merge twice in a frame (cross-cell pairs are contested
+    // by other initiator cells).
+    int g = su.gridSize;
+    int bxh = int(cid) % g;
+    int byh = (int(cid) / g) % g;
+    int bzh = int(cid) / (g * g);
+    const int3 fwd[13] = {
+        int3(1, 0, 0),
+        int3(-1, 1, 0), int3(0, 1, 0), int3(1, 1, 0),
+        int3(-1, -1, 1), int3(0, -1, 1), int3(1, -1, 1),
+        int3(-1, 0, 1),  int3(0, 0, 1),  int3(1, 0, 1),
+        int3(-1, 1, 1),  int3(0, 1, 1),  int3(1, 1, 1)
+    };
 
     for (uint i = 0; i < count; i++) {
-        if (used[i]) continue;
         Particle a = sorted[start + i];
         float ma = a.posW.w;
         // Seeds neither merge nor get merged here — they grow ONLY via the
@@ -2195,46 +2232,80 @@ kernel void merge_stars(
         // them immortal: a dead seed would leak its in-flight accumulator.
         if (ma <= 0.001f || ma >= M_BH_SEED) continue; // dead / seed / wall
         if (notFinite3(a.posW.xyz)) continue;
+        uint aOrig = a.entanglement.y;                 // original id (scatter)
+        if (aOrig >= uint(u.particleCount)) continue;  // stale id (count switch)
         float aR = MERGE_RSUN_SIM * pow(ma, 0.8f);     // main-sequence R ∝ M^0.8
 
-        // Nearest unused contact partner among the LATER entries.
-        int best = -1;
+        // Nearest contact partner: own cell's LATER entries (scan 0) + the 13
+        // forward neighbour cells (scans 1..13).
+        uint bestRef = 0xFFFFFFFFu;
         float bestD2 = 1e30f;
-        for (uint j = i + 1; j < count; j++) {
-            if (used[j]) continue;
-            Particle b = sorted[start + j];
-            float mb = b.posW.w;
-            if (mb <= 0.001f || mb >= 1e8f) continue;
-            float3 d = b.posW.xyz - a.posW.xyz;
-            float d2 = dot(d, d);
-            float rc;
-            if (ma >= M_BH_SEED || mb >= M_BH_SEED) {
-                // BH-SEED CAPTURE: tidal-disruption radius — the hole
-                // shreds and swallows anything inside
-                // R_t = R_star·(M_BH/m_star)^(1/3), far beyond stellar
-                // contact; ×1.5 for gravitational focusing. Grows with
-                // every meal → THE runaway breaker: the first seed
-                // out-eats every competing cluster.
-                float mBig = max(ma, mb), mSmall = min(ma, mb);
-                float rStar = MERGE_RSUN_SIM * pow(mSmall, 0.8f);
-                rc = 1.5f * rStar * pow(mBig / mSmall, 1.0f / 3.0f);
+        for (uint s = 0u; s <= 13u; s++) {
+            uint scanStart, scanFrom, scanCount;
+            if (s == 0u) {
+                scanStart = start; scanFrom = i + 1u; scanCount = count;
             } else {
-                // Stellar contact: separation < R_a + R_b — real radii.
-                rc = aR + MERGE_RSUN_SIM * pow(mb, 0.8f);
+                int nx = bxh + fwd[s - 1u].x;
+                int ny = byh + fwd[s - 1u].y;
+                int nz = bzh + fwd[s - 1u].z;
+                if (nx < 0 || ny < 0 || nz < 0 ||
+                    nx >= g || ny >= g || nz >= su.gridSizeZ) continue;
+                // Boundary shell excluded — same rule as the home cell.
+                if (nx == 0 || ny == 0 || nz == 0 || nx == g - 1 ||
+                    ny == g - 1 || nz == su.gridSizeZ - 1) continue;
+                uint ncID = uint((nz * g + ny) * g + nx);
+                scanStart = cellStarts[ncID]; scanFrom = 0u;
+                scanCount = min(cellCounts[ncID], 32u);
             }
-            if (d2 < rc * rc && d2 < bestD2) {
-                bestD2 = d2;
-                best = int(j);
+            for (uint j = scanFrom; j < scanCount; j++) {
+                Particle cand = sorted[scanStart + j];
+                float mb = cand.posW.w;
+                if (mb <= 0.001f || mb >= 1e8f) continue;
+                float3 d = cand.posW.xyz - a.posW.xyz;
+                float d2 = dot(d, d);
+                float rc;
+                if (ma >= M_BH_SEED || mb >= M_BH_SEED) {
+                    // BH-SEED CAPTURE: tidal-disruption radius — the hole
+                    // shreds and swallows anything inside
+                    // R_t = R_star·(M_BH/m_star)^(1/3), far beyond stellar
+                    // contact; ×1.5 for gravitational focusing. Grows with
+                    // every meal → THE runaway breaker: the first seed
+                    // out-eats every competing cluster.
+                    float mBig = max(ma, mb), mSmall = min(ma, mb);
+                    float rStar = MERGE_RSUN_SIM * pow(mSmall, 0.8f);
+                    rc = 1.5f * rStar * pow(mBig / mSmall, 1.0f / 3.0f);
+                } else {
+                    // Stellar contact: separation < R_a + R_b — real radii.
+                    rc = aR + MERGE_RSUN_SIM * pow(mb, 0.8f);
+                }
+                if (d2 < rc * rc && d2 < bestD2) {
+                    bestD2 = d2;
+                    bestRef = scanStart + j;
+                }
             }
         }
-        if (best < 0) continue;
-        used[i] = true;
-        used[uint(best)] = true;
+        if (bestRef == 0xFFFFFFFFu) continue;
 
-        Particle b = sorted[start + uint(best)];
+        Particle b = sorted[bestRef];
         float mb = b.posW.w;
-        uint aOrig = a.entanglement.y;                 // original ids (scatter)
         uint bOrig = b.entanglement.y;
+        if (bOrig >= uint(u.particleCount)) continue;  // stale id
+        // CLAIM PROTOCOL: own both participants atomically before writing.
+        // Each pair has one initiator, but a PARTICLE can appear in pairs
+        // from several initiator cells — first claimant wins, losers retry
+        // next frame. Release a if b is contested (no deadlock: CAS never
+        // blocks; no double-eat: claims are never released after a merge).
+        uint expected = 0u;
+        if (!atomic_compare_exchange_weak_explicit(
+                &claimed[aOrig], &expected, 1u,
+                memory_order_relaxed, memory_order_relaxed)) continue;
+        expected = 0u;
+        if (!atomic_compare_exchange_weak_explicit(
+                &claimed[bOrig], &expected, 1u,
+                memory_order_relaxed, memory_order_relaxed)) {
+            atomic_store_explicit(&claimed[aOrig], 0u, memory_order_relaxed);
+            continue;
+        }
         // The heavier eats (tie → lower id).
         bool aWins = (ma > mb) || (ma == mb && aOrig < bOrig);
         uint wOrig = aWins ? aOrig : bOrig;

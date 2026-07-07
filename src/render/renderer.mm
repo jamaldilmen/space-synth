@@ -1332,21 +1332,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                       value:0];
       [clearBlit endEncoding];
 
-      // Phase 1: assign_cells
-      {
-        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
-        [comp setComputePipelineState:assignCellsPipeline];
-        [comp setBuffer:particleBufferRead offset:0 atIndex:0];
-        [comp setBuffer:cellIndicesBuffer offset:0 atIndex:1];
-        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
-        NSUInteger tg =
-            std::min(tgSize, assignCellsPipeline.maxTotalThreadsPerThreadgroup);
-        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
-        [comp endEncoding];
-      }
-
-      // Phase 2: count_cells (atomic)
+      // Phase 1+2 FUSED (2026-07-07): count_cells computes cell ids itself —
+      // the separate assign pass (full extra particle read+write) is gone.
       {
         id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
         [comp setComputePipelineState:countCellsPipeline];

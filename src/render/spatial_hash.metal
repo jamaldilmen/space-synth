@@ -59,8 +59,12 @@ kernel void assign_cells(
 // uint32 headroom: 10M stars × 0.30 M_sun mean × 64 ≈ 1.9e8 ≪ 4.3e9.
 constant float MASS_FP = 64.0f;
 
+// FUSED assign+count (fps sprint 2026-07-07): this kernel already read the
+// particle for its mass — computing the cell id here too makes the separate
+// assign_cells pass (a full extra read+write over 2M particles) redundant.
+// Same buffer indices as before; cellIndices is now the OUTPUT.
 kernel void count_cells(
-    device const uint* cellIndices [[buffer(0)]],
+    device uint* cellIndices [[buffer(0)]],        // OUT: cell id per particle
     device atomic_uint* cellCounts [[buffer(1)]],
     constant SpatialHashUniforms& u [[buffer(2)]],
     device atomic_uint* cellMass [[buffer(3)]],
@@ -71,7 +75,12 @@ kernel void count_cells(
 {
     if (int(id) >= u.particleCount) return;
 
-    uint cellID = cellIndices[id];
+    float4 pw4 = particles[id].posW;
+    int cellX = clamp(int((pw4.x + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    int cellY = clamp(int((pw4.y + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    int cellZ = clamp(int((pw4.z + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    uint cellID = uint((cellZ * u.gridSize + cellY) * u.gridSize + cellX);
+    cellIndices[id] = cellID;
     // UNCAPPED — cellCounts is the TRUE count, cellMass the TRUE stellar mass
     // (M_sun, fixed-point ×64) for self-gravity. The old `if (current < 128)`
     // guard silently clipped gravity: 50k stars piled in a cell read as mass
@@ -83,7 +92,7 @@ kernel void count_cells(
     // posW.w = stellar mass in M_sun. Dead stars (eaten by a merger, mass 0)
     // and walls are invisible to the grid: neither counted nor weighed. NaN-
     // poisoned stars must not poison the cell: integer test, fast-math-proof.
-    float m = particles[id].posW.w;
+    float m = pw4.w;
     uint mb = as_type<uint>(m);
     bool finite = ((mb >> 23) & 0xFFu) != 0xFFu;
     if (!finite || m <= 0.001f) return;

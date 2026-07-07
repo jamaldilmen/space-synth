@@ -122,3 +122,8 @@ closure*/shellfix/nanfix/exactpdv/reverted_check.log.
 ⚠️ One cadence-1 run was contaminated at f3840 by PLAY MODE — the app's mic
 heard something. Unattended measurement runs must expect this; check
 KEin~1e7/nOut→0 as the signature and discard.
+
+## VERDICT LOG 2026-07-07 14:45:00 (Jamal): toggles-off = 'no true collision like
+with the toggles on' — the legacy-toggle dynamic IS the collision feel he wants,
+but NOT the priority now. When re-enabled: both loops already have selective loads;
+tiling still owed. Parked.

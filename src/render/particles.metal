@@ -1540,11 +1540,19 @@ kernel void compute_physics(
                     uint startIdx = cellStarts[cID];
 
                     for (uint i = 0; i < count; i++) {
-                        Particle np = sortedParticles[startIdx + i];
+                        // SELECTIVE NEIGHBOUR LOADS (2026-07-07 fps sprint): the
+                        // full 80-byte struct copy here was the engine's hottest
+                        // traffic (27 cells x 32 x 2M = the measured ~170ms @2M).
+                        // This loop touches ONLY posW + spinW + entanglement.y
+                        // (36B) - load exactly those, like the SPH tiles do.
+                        device const Particle* npp = &sortedParticles[startIdx + i];
+                        float4 npPos  = npp->posW;
+                        float4 npSpin = npp->spinW;
+                        uint   npOrig = npp->entanglement.y;
 
-                        float ddx = orig_px - np.posW.x;
-                        float ddy = orig_py - np.posW.y;
-                        float ddz = pz - np.posW.z;
+                        float ddx = orig_px - npPos.x;
+                        float ddy = orig_py - npPos.y;
+                        float ddz = pz - npPos.z;
                         float dist2 = ddx * ddx + ddy * ddy + ddz * ddz;
 
                         // ODS-06: Schwarzschild Singularity (Black Hole)
@@ -1564,12 +1572,11 @@ kernel void compute_physics(
                         
                         // 1. The Inverse-Square Law (E-Field)
                         // float r2_clamped = max(dist2, 1e-7f); // This line is now part of the new block
-                        float q1q2 = selfCharge * np.spinW.w;
+                        float q1q2 = selfCharge * npSpin.w;
                         // float eForce = (u.eFieldStiffness * q1q2) / r2_clamped; // This line is now part of the new block
                         float3 r_vec = float3(ddx, ddy, ddz);
                         float r2 = dist2; // Use dist2 directly
-                        Particle p2 = np; // Alias for clarity in new code
-                        uint p2_orig_id = p2.entanglement.y;
+                        uint p2_orig_id = npOrig;
 
                         if (r2 > 1e-12f && r2 < min_dist2 && p2_orig_id != id) {
                             min_dist2 = r2;
@@ -1597,7 +1604,7 @@ kernel void compute_physics(
                             // Biot-Savart circulation analog (B-Field)
                             if (u.debugFlags & (1 << 1)) {
                                 float3 spin1 = p.spinW.xyz;
-                                float3 spin2 = p2.spinW.xyz;
+                                float3 spin2 = npSpin.xyz;
                                 float r3 = r2_clamped * r;
                                 float3 bForceVec = cross(spin1 + spin2, normalize(r_vec)) * u.bFieldCirculation / r3 * dt;
                                 shiftVx += bForceVec.x; shiftVy += bForceVec.y; shiftVz += bForceVec.z;
@@ -1613,7 +1620,7 @@ kernel void compute_physics(
 
                             // Newtonian Self-Gravity (1/r^2)
                             if (u.debugFlags & (1 << 2)) {
-                                float massProd = dynamicMass * p2.posW.w;
+                                float massProd = dynamicMass * npPos.w;
                                 if (massProd != 0.0f) { // Skip gravity for zero-mass particles (walls)
                                     float gravForce = u.gravityConstant * massProd / r2_clamped;
                                     float3 fG = normalize(-r_vec) * gravForce * dt;

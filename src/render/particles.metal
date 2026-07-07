@@ -784,11 +784,23 @@ kernel void compute_physics(
                     }
                     if (dS2 >= rt2) continue;
                     // EATEN: exact mass to the seed's plate, then die parked.
-                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 0u],
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 0u],
                                               uint(mass * 64.0f + 0.5f),
                                               memory_order_relaxed);
-                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 1u],
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 1u],
                                               1u, memory_order_relaxed);
+                    // MOMENTUM LEDGER (2026-07-07): my m·v goes with my mass —
+                    // seed_apply re-derives the seed's velocity from the sum,
+                    // so eating no longer creates momentum from nothing. Raw
+                    // per-frame displacement (pos−prev), the same velocity
+                    // definition seed_apply uses; signed fixed-point ×65536
+                    // via two's-complement wrapping atomic adds.
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 2u],
+                        uint(int(mass * (px - prevX) * 65536.0f)), memory_order_relaxed);
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 3u],
+                        uint(int(mass * (py - prevY) * 65536.0f)), memory_order_relaxed);
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 4u],
+                        uint(int(mass * (pz - prevZ) * 65536.0f)), memory_order_relaxed);
                     float park = 4000.0f + float(id % 1024);
                     p.posW = float4(park, park, park, 0.0f);
                     p.prevW = float4(park, park, park, p.prevW.w);
@@ -840,11 +852,18 @@ kernel void compute_physics(
                     float3 dS = float3(px, py, pz) - sp;
                     if (dot(dS, dS) >= mergeR2) continue;
                     // I am the smaller seed → hand my mass to the larger, die.
-                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 0u],
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 0u],
                                               uint(mass * 64.0f + 0.5f),
                                               memory_order_relaxed);
-                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 4u + 1u],
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 1u],
                                               1u, memory_order_relaxed);
+                    // Momentum travels with the mass (same ledger as star capture).
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 2u],
+                        uint(int(mass * (px - prevX) * 65536.0f)), memory_order_relaxed);
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 3u],
+                        uint(int(mass * (py - prevY) * 65536.0f)), memory_order_relaxed);
+                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 4u],
+                        uint(int(mass * (pz - prevZ) * 65536.0f)), memory_order_relaxed);
                     float park = 4000.0f + float(id % 1024);
                     p.posW = float4(park, park, park, 0.0f);
                     p.prevW = float4(park, park, park, p.prevW.w);
@@ -2420,7 +2439,8 @@ kernel void seed_mark(
     cellSeedMap[uint((cz * su.gridSize + cy) * su.gridSize + cx)] = tid + 1u;
 }
 
-// seedAccum layout per slot (4 uints): [0] mass ×64, [1] meals, [2,3] reserved.
+// seedAccum layout per slot (8 uints): [0] mass ×64, [1] meals,
+// [2,3,4] momentum ×65536 (signed, two's-complement wrap), [5..7] reserved.
 kernel void seed_apply(
     device Particle* particles [[buffer(0)]],
     device const uint* seedMeta [[buffer(1)]],
@@ -2432,12 +2452,26 @@ kernel void seed_apply(
     if (tid >= min(seedMeta[0], 1024u)) return;
     uint sid = seedIds[tid];
     if (sid >= uint(u.particleCount)) return;
-    float gain = float(atomic_load_explicit(&seedAccum[tid * 4u + 0u],
+    float gain = float(atomic_load_explicit(&seedAccum[tid * 8u + 0u],
                                             memory_order_relaxed)) * (1.0f / 64.0f);
     if (gain <= 0.0f) return;
     float m = particles[sid].posW.w;
     if (m < M_BH_SEED || m >= 1e8f) return;   // seeds are immortal; safety only
+    // MOMENTUM-CONSERVING SWALLOW (2026-07-07): the victims' summed m·v rides
+    // in with their mass. New velocity = total momentum / total mass — same
+    // inelastic-merge rule as merge_stars, so eating no longer manufactures
+    // momentum (old path: mass grew, velocity untouched ⇒ p appeared from
+    // nothing). Velocity = per-frame displacement; applied via prevW.
+    float3 pEat = float3(
+        float(int(atomic_load_explicit(&seedAccum[tid * 8u + 2u], memory_order_relaxed))),
+        float(int(atomic_load_explicit(&seedAccum[tid * 8u + 3u], memory_order_relaxed))),
+        float(int(atomic_load_explicit(&seedAccum[tid * 8u + 4u], memory_order_relaxed))))
+        * (1.0f / 65536.0f);
+    float3 vSeed = particles[sid].posW.xyz - particles[sid].prevW.xyz;
+    float3 vNew = (vSeed * m + pEat) / (m + gain);
+    if (notFinite3(vNew)) vNew = vSeed;        // poisoned deposit: keep mass books, skip kick
     particles[sid].posW.w = m + gain;
+    particles[sid].prevW.xyz = particles[sid].posW.xyz - vNew;
     // TDE FLARE scaled by the meal; T⁴ cooling fades it back to dark.
     float t = particles[sid].prevW.w;
     particles[sid].prevW.w = max(t, 3.0f + 2.0f * min(1.0f, gain / m));

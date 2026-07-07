@@ -87,7 +87,7 @@ struct Renderer::Impl {
   id<MTLBuffer> seedCountBuffer = nil;       // BH-seed registry counter (atomic, per frame)
   id<MTLBuffer> seedIdsBuffer = nil;         // BH-seed particle ids (≤256)
   id<MTLBuffer> cellSeedMapBuffer = nil;     // per-cell seed slot (victim lookup)
-  id<MTLBuffer> seedAccumBuffer = nil;       // per-seed meal accumulator (4 uints)
+  id<MTLBuffer> seedAccumBuffer = nil;       // per-seed meal accumulator (8 uints: mass, meals, momentum ×3, reserved)
   id<MTLBuffer> accDiagBuffer = nil;         // [0]=max accuracy ratio ×1000 (Step 2 measurement, diagnostic)
   id<MTLBuffer> sphClosureBuffer = nil;      // TEMP-CLOSURE ×1e6 int: [0]=W_sph, [1]=du dyn, [2]=du cool, [3]=du clamp (240f window)
   id<MTLBuffer> mergeClaimBuffer = nil;      // per-particle merge claim flags (cross-cell merging, zeroed each frame)
@@ -685,7 +685,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->seedCountBuffer, 8 * sizeof(uint32_t)); // [0]=n [1]=meals [2]=eaten×64 [3]=scan [4..6]=probe
   allocIfNeeded(impl_->seedIdsBuffer, 1024 * sizeof(uint32_t)); // registry 256→1024 (2026-07-07: 347 live seeds measured, cap saturated)
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
-  allocIfNeeded(impl_->seedAccumBuffer, 1024 * 4 * sizeof(uint32_t));
+  allocIfNeeded(impl_->seedAccumBuffer, 1024 * 8 * sizeof(uint32_t));
   allocIfNeeded(impl_->accDiagBuffer, 2 * sizeof(uint32_t)); // [0]=max accuracy ratio ×1e6, [1]=over-budget count
   allocIfNeeded(impl_->sphClosureBuffer, 8 * sizeof(int32_t)); // TEMP-CLOSURE window ledger (+poison count)
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
@@ -1309,7 +1309,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:seedAccumBuffer
-                      range:NSMakeRange(0, 1024 * 4 * sizeof(uint32_t))
+                      range:NSMakeRange(0, 1024 * 8 * sizeof(uint32_t))
                       value:0];
       [clearBlit fillBuffer:accDiagBuffer    // accuracy measurement, re-maxed each frame
                       range:NSMakeRange(0, 2 * sizeof(uint32_t))
@@ -1984,14 +1984,15 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                     if (!seedAccumBuffer) return 0;
                     const uint32_t *a = (const uint32_t *)seedAccumBuffer.contents;
                     uint32_t meals = 0;
-                    for (int i = 0; i < 256; i++) meals += a[i * 4 + 1];
+                    // full 1024-slot registry (256 was stale from the old cap)
+                    for (int i = 0; i < 1024; i++) meals += a[i * 8 + 1];
                     return meals;
                   }(),
                   [&]() -> float {
                     if (!seedAccumBuffer) return 0.0f;
                     const uint32_t *a = (const uint32_t *)seedAccumBuffer.contents;
                     uint64_t fp = 0;
-                    for (int i = 0; i < 256; i++) fp += a[i * 4 + 0];
+                    for (int i = 0; i < 1024; i++) fp += a[i * 8 + 0];
                     return (float)fp / 64.0f;
                   }(),
                   seedCountBuffer ? ((const uint32_t *)seedCountBuffer.contents)[3] : 0u,

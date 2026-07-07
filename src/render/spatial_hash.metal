@@ -13,6 +13,15 @@ struct Particle {
     uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
+// HOT SORTED RECORD (fps sprint 2026-07-07): every neighbour consumer reads
+// ONLY posW + prevW + entanglement — 48B vs the 80B Particle. velW/spinW stay
+// in the live buffer (read via entanglement.y when a path truly needs them).
+struct SortedHot {
+    float4 posW;        // x, y, z, mass
+    float4 prevW;       // prev pos + temperature
+    uint4  entanglement;// .y = ORIGIN ID (written by scatter)
+};
+
 struct SpatialHashUniforms {
     int gridSize;       // 64 (kGridSize)
     int particleCount;
@@ -291,7 +300,7 @@ kernel void scatter_particles(
     device const uint* cellIndices [[buffer(1)]],
     device uint* cellStarts [[buffer(2)]],         // read (prefix sums)
     device atomic_uint* cellOffsets [[buffer(3)]], // atomic per-cell write offset
-    device Particle* sortedParticles [[buffer(4)]], // output: physical sorted structs
+    device SortedHot* sortedParticles [[buffer(4)]], // output: HOT sorted records (48B)
     constant SpatialHashUniforms& u [[buffer(5)]],
     uint id [[thread_position_in_grid]])
 {
@@ -320,10 +329,14 @@ kernel void scatter_particles(
             uint writePos = cellStarts[cellID] + offset;
             
             if (int(writePos) < u.particleCount) {
-                // Physical memory copy to ensure contiguous access during collisions!
-                Particle p = particlesInput[id];
-                p.entanglement.y = id; // Store original ID for entanglement tracking
-                sortedParticles[writePos] = p;
+                // HOT copy only — posW/prevW/entanglement (48B, was 80B).
+                device const Particle* src = &particlesInput[id];
+                SortedHot h;
+                h.posW = src->posW;
+                h.prevW = src->prevW;
+                h.entanglement = src->entanglement;
+                h.entanglement.y = id; // original ID
+                sortedParticles[writePos] = h;
             }
         }
     }
@@ -337,7 +350,7 @@ kernel void scatter_particles(
 // can't hit the collision wall. w = particle count (the weight). Scatter caps
 // at 32 written per cell, so we only average those.
 kernel void compute_cell_centroids(
-    device const Particle* sortedParticles [[buffer(0)]],
+    device const SortedHot* sortedParticles [[buffer(0)]],
     device const uint* cellStarts [[buffer(1)]],
     device const uint* cellCounts [[buffer(2)]],
     device float4* cellCentroids [[buffer(3)]],
@@ -432,7 +445,7 @@ static inline float sphGradW(float r, float h) {
 // in .entanglement.y). Control flow is threadgroup-uniform → all threads hit every
 // barrier. OOB write-guard: originId is a read value; a stale slot would fault the GPU.
 kernel void sph_density(
-    device const Particle* sortedParticles [[buffer(0)]],
+    device const SortedHot* sortedParticles [[buffer(0)]],
     device const uint*     cellStarts      [[buffer(1)]],
     device const uint*     cellCounts      [[buffer(2)]],
     constant SpatialHashUniforms& u        [[buffer(3)]],
@@ -465,7 +478,7 @@ kernel void sph_density(
     float3 ri = float3(0.0f);
     uint originId = 0u;
     if (active) {
-        Particle self = sortedParticles[cellStarts[tgid] + tid];
+        SortedHot self = sortedParticles[cellStarts[tgid] + tid];
         ri = self.posW.xyz;
         originId = self.entanglement.y;   // scatter stored the original particle id here
     }
@@ -570,7 +583,7 @@ struct SphForceParams {
 };
 
 kernel void sph_force(
-    device const Particle* sortedParticles [[buffer(0)]],
+    device const SortedHot* sortedParticles [[buffer(0)]],
     device const uint*     cellStarts      [[buffer(1)]],
     device const uint*     cellCounts      [[buffer(2)]],
     constant SpatialHashUniforms& u        [[buffer(3)]],
@@ -613,7 +626,7 @@ kernel void sph_force(
     uint originId = 0u;
     float rhoI = 1.0f, Pi = 0.0f, ci = 0.0f, mi = 0.0f;
     if (active) {
-        Particle self = sortedParticles[cellStarts[tgid] + tid];
+        SortedHot self = sortedParticles[cellStarts[tgid] + tid];
         ri = self.posW.xyz;
         vi = (self.posW.xyz - self.prevW.xyz) * invDt;
         mi = self.posW.w;
@@ -673,7 +686,7 @@ kernel void sph_force(
                 uint ncStart = cellStarts[ncID];
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 if (tid < ncCount) {
-                    Particle nb = sortedParticles[ncStart + tid];
+                    SortedHot nb = sortedParticles[ncStart + tid];
                     sh_posm[tid] = nb.posW;
                     sh_vel[tid]  = (nb.posW.xyz - nb.prevW.xyz) * invDt;
                     uint oj = nb.entanglement.y;

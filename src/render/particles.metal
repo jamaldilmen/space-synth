@@ -21,6 +21,13 @@ struct Particle {
     uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
+// HOT SORTED RECORD — must match spatial_hash.metal (scatter writes it).
+struct SortedHot {
+    float4 posW;
+    float4 prevW;
+    uint4  entanglement; // .y = origin id
+};
+
 struct VoiceData {
     int m;
     int n;
@@ -235,7 +242,7 @@ kernel void compute_physics(
     device const VoiceData* voices [[buffer(1)]],
     constant PhysicsUniforms& u [[buffer(2)]],
     device const Particle* prevParticles [[buffer(3)]],
-    device const Particle* sortedParticles [[buffer(4)]],
+    device const SortedHot* sortedParticles [[buffer(4)]],
     device const uint* cellStarts [[buffer(5)]],
     device const uint* cellCounts [[buffer(6)]],
     constant SpatialHashUniforms& su [[buffer(7)]],
@@ -1545,10 +1552,14 @@ kernel void compute_physics(
                         // traffic (27 cells x 32 x 2M = the measured ~170ms @2M).
                         // This loop touches ONLY posW + spinW + entanglement.y
                         // (36B) - load exactly those, like the SPH tiles do.
-                        device const Particle* npp = &sortedParticles[startIdx + i];
+                        device const SortedHot* npp = &sortedParticles[startIdx + i];
                         float4 npPos  = npp->posW;
-                        float4 npSpin = npp->spinW;
                         uint   npOrig = npp->entanglement.y;
+                        // spinW lives in the COLD (live) buffer — lazy fetch by
+                        // origin id; only this loop wants it.
+                        float4 npSpin = (npOrig < uint(u.particleCount))
+                                            ? prevParticles[npOrig].spinW
+                                            : float4(0.0f);
 
                         float ddx = orig_px - npPos.x;
                         float ddy = orig_py - npPos.y;
@@ -1685,7 +1696,7 @@ kernel void compute_physics(
                         // (compute 175ms @2M measured in Jamal's live session
                         // while rest-only runs showed 27ms). posW + one
                         // entanglement word is all it reads.
-                        device const Particle* npp = &sortedParticles[startIdx + i];
+                        device const SortedHot* npp = &sortedParticles[startIdx + i];
                         float4 npPos = npp->posW;
                         uint npBond = npp->entanglement.w;
                         if (npBond == selfOrig) continue; // skip self
@@ -2186,7 +2197,7 @@ kernel void compute_physics(
 // it. Cross-cell contact pairs are missed (rate-limit only, conservation safe).
 kernel void merge_stars(
     device Particle* particles [[buffer(0)]],          // written by ORIGINAL id
-    device const Particle* sorted [[buffer(1)]],       // immutable snapshot
+    device const SortedHot* sorted [[buffer(1)]],      // immutable HOT snapshot (48B)
     device const uint* cellStarts [[buffer(2)]],
     device const uint* cellCounts [[buffer(3)]],
     constant SpatialHashUniforms& su [[buffer(4)]],
@@ -2240,7 +2251,7 @@ kernel void merge_stars(
     };
 
     for (uint i = 0; i < count; i++) {
-        Particle a = sorted[start + i];
+        SortedHot a = sorted[start + i];
         float ma = a.posW.w;
         // Seeds neither merge nor get merged here — they grow ONLY via the
         // victim-initiated feeding path (seed_mark/seed_apply), which keeps
@@ -2273,7 +2284,7 @@ kernel void merge_stars(
                 scanCount = min(cellCounts[ncID], 32u);
             }
             for (uint j = scanFrom; j < scanCount; j++) {
-                Particle cand = sorted[scanStart + j];
+                SortedHot cand = sorted[scanStart + j];
                 float mb = cand.posW.w;
                 if (mb <= 0.001f || mb >= 1e8f) continue;
                 float3 d = cand.posW.xyz - a.posW.xyz;
@@ -2301,7 +2312,7 @@ kernel void merge_stars(
         }
         if (bestRef == 0xFFFFFFFFu) continue;
 
-        Particle b = sorted[bestRef];
+        SortedHot b = sorted[bestRef];
         float mb = b.posW.w;
         uint bOrig = b.entanglement.y;
         if (bOrig >= uint(u.particleCount)) continue;  // stale id
@@ -2325,8 +2336,8 @@ kernel void merge_stars(
         bool aWins = (ma > mb) || (ma == mb && aOrig < bOrig);
         uint wOrig = aWins ? aOrig : bOrig;
         uint lOrig = aWins ? bOrig : aOrig;
-        Particle w = aWins ? a : b;
-        Particle l = aWins ? b : a;
+        SortedHot w = aWins ? a : b;
+        SortedHot l = aWins ? b : a;
 
         // INELASTIC MERGE: barycentre, momentum conserved, relative KE
         // thermalizes → temperature bump (full Rankine-Hugoniot shock heating
@@ -2445,7 +2456,7 @@ kernel void seed_apply(
 kernel void seed_feed(
     device Particle* particles [[buffer(0)]],          // live state
     device atomic_uint* particlesA [[buffer(1)]],      // SAME buffer, atomic view
-    device const Particle* sorted [[buffer(2)]],       // immutable snapshot
+    device const SortedHot* sorted [[buffer(2)]],      // immutable HOT snapshot (48B)
     device const uint* cellStarts [[buffer(3)]],
     device const uint* cellCounts [[buffer(4)]],
     device atomic_uint* seedMeta [[buffer(5)]],        // [0]=count [1]=meals [2]=eaten×64
@@ -2504,7 +2515,7 @@ kernel void seed_feed(
                 uint count = min(cellCounts[cID], 32u);
                 uint start = cellStarts[cID];
                 for (uint i = 0; i < count && meals < MAX_MEALS; i++) {
-                    Particle v = sorted[start + i];
+                    SortedHot v = sorted[start + i];
                     float mv = v.posW.w;
                     if (mv <= 0.001f || mv >= M_BH_SEED) continue;  // seeds don't eat seeds here
                     uint vOrig = v.entanglement.y;
@@ -2562,7 +2573,7 @@ kernel void seed_feed(
         atomic_store_explicit(&seedMeta[4], cellCounts[myCell], memory_order_relaxed);
         // Raw first sorted entry of my cell: its mass ×1000 and its orig id —
         // decodes WHY every candidate fails the gates.
-        Particle p0 = sorted[cellStarts[myCell]];
+        SortedHot p0 = sorted[cellStarts[myCell]];
         atomic_store_explicit(&seedMeta[5],
                               uint(clamp(p0.posW.w, 0.0f, 4000000.0f) * 1000.0f),
                               memory_order_relaxed);

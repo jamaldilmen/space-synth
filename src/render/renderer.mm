@@ -692,7 +692,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
   allocIfNeeded(impl_->blockSumsBuffer, blockSumsSize);
   allocIfNeeded(impl_->cellOffsetsBuffer, cellSize);
-  allocIfNeeded(impl_->sortedParticlesBuffer, size);
+  allocIfNeeded(impl_->sortedParticlesBuffer, (NSUInteger)count * 48); // HOT sorted records (48B, was 80B Particle)
   allocIfNeeded(impl_->cellCentroidsBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellVelocitiesBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellMaxPartialsBuffer,

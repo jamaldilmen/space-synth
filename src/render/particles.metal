@@ -1679,15 +1679,23 @@ kernel void compute_physics(
                     uint count = min(cellCounts[cID], uint(MAX_PER_CELL));
                     uint startIdx = cellStarts[cID];
                     for (uint i = 0; i < count; i++) {
-                        Particle np = sortedParticles[startIdx + i];
-                        if (np.entanglement.w == selfOrig) continue; // skip self
-                        float dx = px - np.posW.x;
-                        float dy = py - np.posW.y;
-                        float dz = pz - np.posW.z;
+                        // SELECTIVE LOADS (2026-07-07): this loop runs every
+                        // frame once a note has entered SUSTAIN — the full
+                        // 80-byte copy was the "same 5fps after playing"
+                        // (compute 175ms @2M measured in Jamal's live session
+                        // while rest-only runs showed 27ms). posW + one
+                        // entanglement word is all it reads.
+                        device const Particle* npp = &sortedParticles[startIdx + i];
+                        float4 npPos = npp->posW;
+                        uint npBond = npp->entanglement.w;
+                        if (npBond == selfOrig) continue; // skip self
+                        float dx = px - npPos.x;
+                        float dy = py - npPos.y;
+                        float dz = pz - npPos.z;
                         float d2 = dx * dx + dy * dy + dz * dz;
                         if (d2 < best2 && d2 > 1e-12f) {
                             best2 = d2;
-                            bestOrig = np.entanglement.w;
+                            bestOrig = npBond;
                         }
                     }
                 }

@@ -149,9 +149,9 @@ struct Renderer::Impl {
   // G_sim·M_total is DERIVED, not tuned: N stars × 1 M_sun each, through the
   // Sgr A* unit anchor + K=130 time-lapse in core/units.h. At N = 2e6 this
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
-  bool collisionsEnabled = true;   // ON (Jamal 2026-07-07: "it created these god-like forms — keep it on"). NOTE: also switches compute_physics input to particleBufferRead (changes dynamics everywhere) and costs ~170ms @2M at rest — the perf sprint must make it fast, not remove it.
+  bool collisionsEnabled = false;  // OFF (Jamal 2026-07-07 14:25, A/B vs the god-forms look)
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI), default all-on
-  bool bondNetworkEnabled = true;  // ON (Jamal 2026-07-07) — part of the god-forms verdict.
+  bool bondNetworkEnabled = false; // OFF (Jamal 2026-07-07 14:25, A/B)
 
   // Noether symmetry breaking
   uint32_t prevVoiceHash = 0;

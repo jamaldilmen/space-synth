@@ -499,15 +499,18 @@ kernel void compute_physics(
             // RS_CULL still hides them while inside but they re-emerge on
             // the other side or get pulled back out by disk confinement.
 
-            // ═══ OPTICAL EFFECTS ═══
-            if (distFromDisk < diskThickness) {
-                float diskTemp = 5.0f / (rXY + 0.2f);
-                currentTemp = mix(currentTemp, diskTemp, 0.1f * dt);
-            }
-            float approachingVel = -(vpx * py - vpy * px) / (rXY + 0.001f);
-            if (approachingVel > 0.0f) {
-                currentTemp *= (1.0f + approachingVel * 0.3f);
-            }
+            // ═══ OPTICAL EFFECTS — DELETED (2026-07-07, Jamal: "constant
+            // flashing of phase-changing stars — stars must never change
+            // state for no reason"). Two scripted heaters from the 0.45-unit
+            // posed-disk era ran here EVERY frame AT REST in the ±64 field:
+            // (a) diskTemp 5/(rXY+0.2) glow near an origin torus that no
+            // longer exists; (b) currentTemp *= (1+approachingVel·0.3) —
+            // MULTIPLICATIVE per-frame heating for ~half the field (one
+            // xy-angular-momentum sign), exponential until it balanced T⁴
+            // cooling at temp≈7 — far above the 2.5 nova threshold. Half the
+            // stars slowly ignited and flickered over minutes for no reason.
+            // Temperature now comes ONLY from real channels: merge novae,
+            // TDE flares, SPH shock heating (uBuffer), T⁴/radiative cooling.
         } else {
             // Particle at exact origin: freeze
             vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
@@ -2351,6 +2354,26 @@ kernel void merge_stars(
         float mb = b.posW.w;
         uint bOrig = b.entanglement.y;
         if (bOrig >= uint(u.particleCount)) continue;  // stale id
+
+        // ── REACTION LADDER rung 1 — the BOUND-PAIR gate (2026-07-07) ────────
+        // Contact fuses ONLY if the pair is gravitationally bound at contact:
+        // v_rel < v_esc = √(2G(mₐ+m_b)/(Rₐ+R_b)). The gate-less rule merged
+        // every geometric touch (~36/frame at rest; the disk-IC experiment
+        // showed the cascade devouring all structure before shear could draw
+        // arms). An unbound pair flies THROUGH — and the SPH viscosity+shock
+        // rungs (slices 3+4, live) book that encounter honestly as heat.
+        // Disrupt/plasma rungs come later (reaction-engine spec). Seed tidal
+        // capture (either mass ≥ M_BH_SEED) stays ungated — separate channel.
+        // Units: per-second² via the ×120 seed-capture convention (G1s·M/r
+        // and |dv·120|² match — same expression as the focusing term above).
+        if (ma < M_BH_SEED && mb < M_BH_SEED) {
+            float3 vrel = (a.posW.xyz - a.prevW.xyz) - (b.posW.xyz - b.prevW.xyz);
+            float vrel2 = dot(vrel, vrel) * (120.0f * 120.0f);
+            float rcAB  = MERGE_RSUN_SIM * (pow(ma, 0.8f) + pow(mb, 0.8f));
+            float G1s   = u.gravGM / max(u.massTotal, 1.0f);
+            float vesc2 = 2.0f * G1s * (ma + mb) / max(rcAB, 1e-4f);
+            if (vrel2 >= vesc2) continue;      // unbound: fly-through, no fusion
+        }
         // CLAIM PROTOCOL: own both participants atomically before writing.
         // Each pair has one initiator, but a PARTICLE can appear in pairs
         // from several initiator cells — first claimant wins, losers retry

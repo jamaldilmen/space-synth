@@ -1,9 +1,13 @@
 #include "core/particles.h"
 #include "core/imf.h"
 #include "core/units.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <unordered_map>
+#include <vector>
 
 namespace space {
 
@@ -36,6 +40,77 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
                                   // smaller domain. See docs handoff 2026-06-30.
   std::uniform_real_distribution<float> u01(0.0f, 1.0f);
   std::uniform_real_distribution<float> phiDist(0.0f, 2.0f * (float)M_PI);
+
+  // ── MIN-SEPARATION SPAWN (2026-07-08, Jamal: "open it. star map. period.
+  // slow progression on mergers — not a blinking orange blob"). Random
+  // placement at our density gives a mean neighbour gap (~0.42 sim) BELOW the
+  // stellar contact radius (0.3 dwarf–dwarf, ~0.7 sun-pair): thousands of
+  // stars spawned already touching → guaranteed merge storm + nova flashes in
+  // the first seconds. Real clusters have no overlapping stars. Jittered
+  // lattice: same ball, same mean density, but a HARD separation floor
+  // (0.7·a ≈ 0.52 sim) so launch mergers are zero by construction and pair
+  // contact only develops from real dynamics.
+  // BLUE-NOISE dart throwing, not a lattice (2026-07-08: the jittered lattice
+  // kept its crystal PLANES — visible as sliced-ball stripes on screen, Jamal's
+  // pic. Dart throwing has no periodic structure by construction). Hash-grid
+  // acceleration: cell = rMin, check 27 neighbours; points come out in random
+  // order so no shuffle is needed. ~8% packing → acceptance stays high.
+  std::vector<std::array<float, 3>> latticePts;
+  {
+    const float rIn = 25.0f, rOut = 60.0f; // must match r_inner/r_outer below
+    // Min gap scaled to the REQUESTED density: this bakes the FULL buffer
+    // (count = 10M, not the 2M live), and a fixed 0.4 gap at 10M is past
+    // random-packing saturation — the spawn stalled for minutes (measured
+    // 2026-07-08). 0.6× the mean spacing keeps acceptance high (~seconds)
+    // and the resulting gap (0.26 @10M / 0.45 @2M) stays ≥4× every stellar
+    // contact radius (max ~0.067 sim for a 10 M☉ star at MERGE_RSUN 0.01).
+    const double shellVol =
+        4.0 / 3.0 * M_PI * ((double)rOut * rOut * rOut - (double)rIn * rIn * rIn);
+    const float rMin =
+        std::min(0.4f, 0.6f * (float)cbrt(shellVol / std::max(count, 1)));
+    const float cell = rMin;
+    const int G = (int)std::ceil(2.0f * rOut / cell) + 2; // ~302 cells/axis
+    auto cellIx = [&](float v) {
+      return std::min(G - 1, std::max(0, (int)((v + rOut) / cell) + 1));
+    };
+    // Flat chained grid (no hashing, no per-cell heap): head[cell] → first
+    // point index, next[i] → chain. 302³ ints ≈ 110 MB, freed after spawn.
+    std::vector<int32_t> head((size_t)G * G * G, -1);
+    std::vector<int32_t> next; next.reserve((size_t)count);
+    latticePts.reserve((size_t)count);
+    const uint64_t maxAttempts = (uint64_t)count * 60ull;
+    uint64_t attempts = 0;
+    while (latticePts.size() < (size_t)count && attempts < maxAttempts) {
+      attempts++;
+      float px = (2.0f * u01(rng) - 1.0f) * rOut;
+      float py = (2.0f * u01(rng) - 1.0f) * rOut;
+      float pz = (2.0f * u01(rng) - 1.0f) * rOut;
+      float r2 = px * px + py * py + pz * pz;
+      if (r2 < rIn * rIn || r2 > rOut * rOut) continue;
+      int cx = cellIx(px), cy = cellIx(py), cz = cellIx(pz);
+      bool ok = true;
+      for (int dx = -1; dx <= 1 && ok; dx++)
+        for (int dy = -1; dy <= 1 && ok; dy++)
+          for (int dz = -1; dz <= 1 && ok; dz++) {
+            size_t c = ((size_t)(cx + dx) * G + (size_t)(cy + dy)) * G + (size_t)(cz + dz);
+            for (int32_t idx = head[c]; idx >= 0; idx = next[idx]) {
+              float ddx = latticePts[idx][0] - px, ddy = latticePts[idx][1] - py,
+                    ddz = latticePts[idx][2] - pz;
+              if (ddx * ddx + ddy * ddy + ddz * ddz < rMin * rMin) { ok = false; break; }
+            }
+          }
+      if (!ok) continue;
+      size_t c = ((size_t)cx * G + (size_t)cy) * G + (size_t)cz;
+      next.push_back(head[c]);
+      head[c] = (int32_t)latticePts.size();
+      latticePts.push_back({px, py, pz});
+    }
+    printf("[SPAWN] blue-noise: %zu/%d placed, %llu attempts (min gap %.2f)\n",
+           latticePts.size(), count, (unsigned long long)attempts, rMin);
+    fflush(stdout);
+  }
+  size_t latticeIdx = 0;
+
   for (auto &p : particles_) {
     // Uniform BOX, not a sphere → the field fills the frame CORNER-TO-CORNER
     // (no circular edge, no "tube"/radius limitation at rest). That tube only
@@ -54,12 +129,23 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     // This matches the stated intent at the top of this function ("uniform
     // density in the ball").
     float rr2;
-    do {
-      p.x = (2.0f * u01(rng) - 1.0f) * boxL;
-      p.y = (2.0f * u01(rng) - 1.0f) * boxL;
-      p.z = (2.0f * u01(rng) - 1.0f) * boxL;
+    if (latticeIdx < latticePts.size()) {
+      // Jittered-lattice site: hard min-separation, no spawn contacts.
+      p.x = latticePts[latticeIdx][0];
+      p.y = latticePts[latticeIdx][1];
+      p.z = latticePts[latticeIdx][2];
+      latticeIdx++;
       rr2 = p.x * p.x + p.y * p.y + p.z * p.z;
-    } while (rr2 < r_inner * r_inner || rr2 > r_outer * r_outer);
+    } else {
+      // Lattice exhausted (discretization shortfall, few thousand at most):
+      // fall back to the old rejection sample for the remainder.
+      do {
+        p.x = (2.0f * u01(rng) - 1.0f) * boxL;
+        p.y = (2.0f * u01(rng) - 1.0f) * boxL;
+        p.z = (2.0f * u01(rng) - 1.0f) * boxL;
+        rr2 = p.x * p.x + p.y * p.y + p.z * p.z;
+      } while (rr2 < r_inner * r_inner || rr2 > r_outer * r_outer);
+    }
 
     // KEPLERIAN rest velocity: each star starts on a circular orbit about +Y
     // around the cluster's mass centre (≈ origin at spawn), v_circ = √(GM/r).

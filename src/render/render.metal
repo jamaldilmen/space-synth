@@ -644,21 +644,21 @@ vertex VertexOut particle_vertex(
     float starMix = 1.0f - smoothstep(0.0f, 0.5f, cam.envelopePhase); // 1 at silence
     if (starMix > 0.001f) {
         float Mstar = min(in.posW.w, 500.0f);            // M_sun, merger-grown
-        float Teff  = 5772.0f * pow(Mstar, 0.55f);                   // K (main-seq)
         float Lstar = pow(Mstar, 3.5f);                             // L_sun
         float Rstar = pow(Mstar, 0.8f);                             // R_sun (size)
-        float3 starColor = blackbodyRGB(Teff);
-        // SATURATE (2026-06-26). Main-sequence Teff for the BULK masses (0.3–0.5
-        // M☉ → 3000–3900 K) is a PALE warm white, e.g. (1.0,0.69,0.42) — at a
-        // 1–2px point with bloom it reads as plain WHITE, burying the colour
-        // spread (Jamal's "all white-blue"; confirmed: blackbody value is just
-        // too desaturated, not a pipeline bug). Push saturation so the real hue
-        // reads — deep-red dwarfs → orange → white sun-types → blue giants, the
-        // way astrophotography renders star colour. Hue preserved, only vivid.
-        {
-            float l = dot(starColor, float3(0.299f, 0.587f, 0.114f));
-            starColor = clamp(l + (starColor - l) * 2.2f, 0.0f, 1.0f);
-        }
+        // ── UNIFIED COLOUR LAW (Checkpoint A2, 2026-07-08, Jamal: "UNIFIED.
+        // not phases.") — the SAME kelvin law the play path uses (line ~610):
+        // mass-Teff baseline + collision/play heat × Plasma-Heat slider +
+        // kinetic |v|² × Colour-Spectrum slider. One continuum for every
+        // state; the sliders are live on the star map (they were play-only —
+        // the star branch overrode colour with a slider-blind blackbody).
+        // At rest the mass term dominates (OBAFGKM spread); hot merger
+        // remnants shift blue-white through the same law, no phase gate.
+        float kelvinU = clamp(5772.0f * pow(Mstar, 0.55f)
+                              + clamp(temp, 0.0f, 5.0f) * cam.tuneHeatK
+                              + dot(in.velW.xyz, in.velW.xyz) * cam.tuneColorK,
+                              1000.0f, 40000.0f);
+        float3 starColor = blackbodyRGB(kelvinU);
         // ── SUB-PIXEL FLUX CONSERVATION = the depth cue ──────────────────────
         // The old clamp(…, 1.0, 40) gave every distant star a full-bright 1px
         // point → zoomed out, the field collapsed into a uniform noise carpet
@@ -696,38 +696,37 @@ vertex VertexOut particle_vertex(
         // each one 6–15px → a field of fat diamonds, not a starmap. Bar raised
         // to ~5 M☉ and slope halved: 10 M☉ ~4px, 100 M☉ ~19px, 400 M☉ ~27px,
         // 99.9% of the field stays a 1px point with brightness carrying mass.
-        const float L_SAT = 316.0f;
-        float psf = max(0.0f, log2(Lstar * (1.0f / L_SAT)));
-        float rawStar = 0.5f * cam.particleSize * psf * sizeScale;
-        const float STAR_MIN_PX = 1.0f;   // floor low so dwarfs stay small (real range)
-        // SOFT CEILING (2026-07-07): tanh compresses instead of clamping —
-        // ordering survives at any slider setting, the ceiling (raised 48→64
-        // for the PSF law's wider range) is approached, never flattened into.
-        float starSize = max(64.0f * tanh(rawStar * (1.0f / 64.0f)), STAR_MIN_PX);
-        // Brightness COMPRESSED (2026-06-25): L∝M^3.5 made giants ~37× brighter
-        // than red dwarfs, so the white/blue giants dominated the eye and the
-        // orange dwarfs were too dim for their COLOUR to read → field looked
-        // "all white-blue" (Jamal). Higher floor (1.2) + gentler slope (1.2)
-        // pulls dwarf and giant brightness closer (~14× not 37×) so the dwarfs'
-        // orange/red actually shows while giants still read brightest.
-        float starLum  = 1.2f + 1.2f * log2(1.0f + Lstar);
-        // Flux-conserve dimming keys on the PHYSICAL radius footprint (the
-        // old R∝M^0.8 measure), NOT the saturation-halo size above — under
-        // the saturation law rawStar is 0 for every sub-saturation star and
-        // would have dimmed sun-types identically to dwarfs.
-        float fRad = cam.particleSize * Rstar * sizeScale * 0.5f;
-        if (fRad < STAR_MIN_PX) {
-            float f = fRad / STAR_MIN_PX;
-            // Flux-conserve sub-pixel stars, but FLOOR it. The IMF is ~89% red
-            // dwarfs (<0.5 M☉ — always sub-pixel here); at the raw f² they
-            // dimmed to ≈0 and vanished, so only the bright white/blue giants
-            // showed → the field read as "all the same colour" (Jamal
-            // 2026-06-25, confirmed by the [MASS Msun] probe: spread is REAL,
-            // it just wasn't visible). Floor at 0.20 so dwarfs render as DIM RED
-            // points and the true stellar colour spread (deep-red dwarfs → blue
-            // giants) shows. Not a uniform white carpet — they keep their red.
-            starLum *= max(f * f, 0.45f);
-        }
+        // ── TRUE-FLUX CAMERA MODEL (2026-07-08, Jamal: "THE SCIENCE IS OFF") ──
+        // L∝M^3.5 spans ~9 decades; the old starLum log-compressed it to ~14×
+        // (plus a 0.45 sub-pixel floor and the ×2.2 saturation hack above) —
+        // 2M stars all within a decade of brightness = the uniform golden
+        // carpet. A real cluster frame looks real BECAUSE of the violent
+        // luminosity function: a handful of stars dominate, thousands sit
+        // near-invisible, and the unresolved dwarf bulk is the soft background
+        // glow. So luminance IS the relative flux in solar units — no
+        // compression, no floors. The display transform is the honest camera:
+        // Exposure iris (postfx) + tonemap + sensor bleach. Full-well cap 4096
+        // keeps half-float additive accumulation finite (a >10 M☉ star is
+        // bleached white + PSF-haloed anyway — nothing left to preserve).
+        // The sub-pixel f² dimming is GONE for a physical reason too: a camera
+        // never resolves a stellar radius — every star is a point source whose
+        // ENTIRE flux lands in the PSF regardless of physical size.
+        // EXPOSURE CALIBRATION (Checkpoint A3, 2026-07-08). True relative flux
+        // (L∝M^3.5, no compression) but the DEFAULT exposure is the deliverable:
+        // giants-at-peak hid the whole field (the dead "weird blob" launch).
+        // Calibrated so at Exposure 1.0 the sun-type population reads as visible
+        // points (lum 2.5 × grain 0.08 ≈ 0.2), the dwarf bulk is a faint
+        // collective glow, and everything ≥~5 M☉ saturates → bleaches white.
+        // Full well 1000 keeps half-float accumulation + bloom energy sane.
+        float starLum = min(Lstar * 2.5f, 1000.0f);
+        // SIZE = the approved law (Checkpoint A1): linear in the true stellar
+        // radius R∝M^0.8, tanh soft ceiling so ordering survives at any slider
+        // setting (bbbe6c8, Jamal: "looks amazing"). The saturation-PSF law
+        // (99.9% of stars at exactly 1px) is out — his on-screen verdict:
+        // "all stars weirdly the same size".
+        float rawStar = cam.particleSize * Rstar * sizeScale * 0.5f;
+        const float STAR_MIN_PX = 1.0f;
+        float starSize = max(48.0f * tanh(rawStar * (1.0f / 48.0f)), STAR_MIN_PX);
         // ── MERGER FLASH — the "sense of collision" ──────────────────────────
         // A star that just ATE carries a temperature spike (merge kernel,
         // base 2.0 + violence) that the T⁴ cooling decays over seconds:
@@ -759,7 +758,13 @@ vertex VertexOut particle_vertex(
             // remnants simultaneously above the flash threshold (36 merges/
             // frame × ~10s of T⁴ decay) — at +12px each they consumed the
             // field. +4px/flashT still swells a 1px star to 5-9px at the eat.
-            starLum += flashT * 2.0f;
+            // True-flux units: +2 was calibrated against the compressed scale
+            // (dwarf≈1.2) and would now be invisible. A luminous red nova
+            // peaks 1e4–1e6 L☉; we book ~250 L☉ max deliberately UNDER-real
+            // because the rest-state heating keeps ~20k remnants above the
+            // flash threshold at once — at physical LRN flux they would fog
+            // the field. Raise toward real once that regime is cleaned up.
+            starLum += flashT * 20.0f; // nova peak ≈ 40 suns in calibrated units — clearly visible transient, far below giant full-well
             starSize = min(starSize + flashT * 4.0f, 150.0f);
         }
         out.pointSize = mix(out.pointSize, starSize, starMix);
@@ -933,7 +938,11 @@ fragment float4 particle_fragment(
     // BH void and disk structure remain visible against the field.
     float3 emission = in.color * in.luminance * (glow * 0.3f + core + spike * 0.6f);
 
-    float baseAlpha = in.grainAlpha + clamp(in.luminance - 1.0f, 0.0f, 2.0f) * 0.06f;
+    // Luminance boost DELETED from alpha (2026-07-08): alpha is COVERAGE,
+    // emission carries the energy. The old `+ clamp(lum-1,0,2)·0.06` term
+    // dominated grainAlpha for every star ≥1 M☉ — it's why the Grain fader
+    // measurably did nothing (Jamal). Grain is now an honest iris again.
+    float baseAlpha = in.grainAlpha;
     float alpha = (glow * 0.3f + core + spike * 0.6f) * baseAlpha;
 
     float fadeDistance = 6.0f;

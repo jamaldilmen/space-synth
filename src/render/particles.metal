@@ -145,11 +145,19 @@ constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
 
 // ── Stellar scale + FATE LADDER constants (used by physics, merge, seeds) ───
 // 1 R_sun in sim units. Honest anchor: kUnitMeters = 1.755e9 m (spacetime.h),
-// so 1 R_sun = 6.957e8 m / 1.755e9 m = 0.397 sim. The old 0.0549 used the stale
-// Sgr A* anchor (1.269e10 m) → stars 7.2× too small → contact cross-section ~52×
-// too small → "nothing merges". v_esc(Sun)=√(2GM/R) lands on 615 km/s=0.002c only
-// with R=0.397 (with 0.0549 it read ~1650 km/s). Fixed 2026-07-01.
-constant float MERGE_RSUN_SIM = 0.397f;
+// so 1 R_sun = 6.957e8 m / 1.755e9 m = 0.397 sim (v_esc(Sun)=615 km/s ✓).
+// BUT (2026-07-08): the cluster is drawn ~1e5× DENSER than a real one — 2M
+// stars inside ~300 R☉ of space (a real cluster this populous spans ~1e8 R☉).
+// Honest radii × fake density = every heavy star permanently in CONTACT with
+// dozens of neighbours (10 M☉ ⇒ contact 2.6 sim vs 0.5 spawn gap): the launch
+// merge storm, 36 merges/frame, the blinking field. Jamal's verdict: "open it.
+// star map. period. slow progression on mergers." Two individually-honest
+// anchors are mutually impossible; the domain can't grow 1e5×, so the radius
+// carries the compression: scaled down so the merger RATE is the physical-
+// looking quantity (zero at launch, slow visible events from real dynamics).
+// Calibration pass 1: 0.397 → 0.01 (cross-section ↓~1600×). Note v_esc at
+// contact rises ×6.3 — watch the v_rel/v_esc reaction-ladder split.
+constant float MERGE_RSUN_SIM = 0.01f;
 // The Kroupa draw tops out at 50 M_sun, so any body ABOVE it can only be a
 // merger product — and a merger remnant that heavy collapses: it IS a black
 // hole (single-scalar mass→fate, physics canon). Seeds are dark (render
@@ -1373,21 +1381,32 @@ kernel void compute_physics(
             
             // Biot-Savart induced velocity
             float3 inducedV = cross(emitterSpin, rVec) / (r2 * r);
-            shiftVx += inducedV.x * 0.15f;
-            shiftVy += inducedV.y * 0.15f;
-            shiftVz += inducedV.z * 0.1f;
+            if (!(u.debugFlags & (1u << 19))) { // TEMP-DIAG SS_PLAY_SKIP=swirl
+                shiftVx += inducedV.x * 0.15f;
+                shiftVy += inducedV.y * 0.15f;
+                shiftVz += inducedV.z * 0.1f;
+            }
 
             // Phase 4 & 12: Mechanical Point Source Impulse + Shockwaves
             // Base impulse uses deltaAmp (transient-only), not raw amp.
             // This prevents continuous outward push during sustain.
             float pushRadius = 2.0f;
-            if (r < pushRadius) {
+            if (r < pushRadius && !(u.debugFlags & (1u << 18))) { // TEMP-DIAG SS_PLAY_SKIP=impulse
                 float3 radialDir = float3(dx / r, dy / r, dz / r);
                 float impulseForce = voices[vi].deltaAmp * 80.0f * (1.0f - r / pushRadius);
 
                 float densityScale = 1.0f / max(0.1f, u.plateRadius / 400.0f);
                 float shockwave = voices[vi].deltaAmp * 400.0f * (1.0f - r / pushRadius) * densityScale;
                 impulseForce += shockwave;
+                // ── ACOUSTIC-LIMIT CLAMP (2026-07-08 19:20 — CONVICTED BY THE
+                // DRIFT HUNT: SS_PLAY_SKIP sweep, baseline mean drifted to
+                // (0,-10,-8) while impulse-off stayed centered/spherical). At
+                // default Space Scale, deltaAmp*400*densityScale(=4) = kicks up
+                // to ~1600*deltaAmp/frame: any sustained audio ROCKETS the
+                // cluster core to the walls -> the persistent crescent. The
+                // onset thump stays; it obeys the same speed limit as every
+                // other play force.
+                impulseForce = min(impulseForce, 1.0f);
                 
                 shiftVx += radialDir.x * impulseForce;
                 shiftVy += radialDir.y * impulseForce;
@@ -1464,7 +1483,7 @@ kernel void compute_physics(
         }
 
         // ── Phase 18: Chord Webbing (Inter-Harmonic Connectivity) ────────
-        if (numVoices > 1) {
+        if (numVoices > 1 && !(u.debugFlags & (1u << 20))) { // TEMP-DIAG SS_PLAY_SKIP=web
             float cross_dYdth = sum_Y * sum_dYdth - sum_YdYdth;
             float cross_dYdphi = sum_Y * sum_dYdphi - sum_YdYdphi;
             
@@ -1893,6 +1912,7 @@ kernel void compute_physics(
         vpy *= lock;
         vpz *= lock;
     }
+
 
     // ── VJ Silence Damping ──────────────────────────────────────────────
     // When amplitude drops, apply extra friction so particles return to sphere

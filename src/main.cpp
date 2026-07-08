@@ -1481,7 +1481,7 @@ int main() {
 
       if (false && ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) { // removed 2026-06-26 (jitter unlinked, wave depth dead)
         ImGui::Indent();
-        UiSliderFloat("Jitter (not linked)", &app.uiJitter, 0.0f, 5.0f, "%.2f");
+        UiSliderFloat("Jitter", &app.uiJitter, 0.0f, 5.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiJitter = 1.0f;
         ImGui::SetItemTooltip("WARNING: not properly linked yet — no reliable "
@@ -1551,6 +1551,14 @@ int main() {
 
       if (ImGui::CollapsingHeader("POST-FX", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
+        UiSliderFloat("Exposure", &app.uiExposure, 0.01f, 100.0f, "%.3f",
+                      ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          app.uiExposure = 1.0f;
+        ImGui::SetItemTooltip("Global camera iris: scales ALL light before the "
+                              "tonemap. Stop down (<1) until the cluster core "
+                              "resolves instead of burning to a blob");
+
         UiSliderFloat("Bloom", &app.uiBloom, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiBloom = 0.0f;
@@ -1851,6 +1859,7 @@ int main() {
     synth.envelopeParams().release = app.uiRelease / 1000.0f;
     // Supernova adds on top of user slider values
     config.bloomIntensity = app.uiBloom;
+    config.exposure = app.uiExposure;
     // Spin blurs into a solid disk at high RPM: boost the motion-blur feedback
     // with spin speed so fast rotation smears instead of strobing.
     // Trails are the user's Fluidity slider ONLY. The spin must stay a CRISP
@@ -1924,6 +1933,25 @@ int main() {
       debugFlags |= DEBUG_ODS01;
     if (app.uiBlackHoles)
       debugFlags |= DEBUG_ODS06;
+    // TEMP-DIAG: SS_PLAY_SKIP="sculpt,wave,impulse,swirl,web" (any subset)
+    // disables play-force families (bits 16-20) so the [VEL]/[SHAPE] drift
+    // names its own culprit. Measurement only — mirrors SS_SPH_SKIP.
+    {
+      static uint32_t playSkipBits = 0;
+      static bool playSkipParsed = false;
+      if (!playSkipParsed) {
+        playSkipParsed = true;
+        if (const char *sk = getenv("SS_PLAY_SKIP")) {
+          if (strstr(sk, "sculpt"))  playSkipBits |= (1u << 16);
+          if (strstr(sk, "wave"))    playSkipBits |= (1u << 17);
+          if (strstr(sk, "impulse")) playSkipBits |= (1u << 18);
+          if (strstr(sk, "swirl"))   playSkipBits |= (1u << 19);
+          if (strstr(sk, "web"))     playSkipBits |= (1u << 20);
+          printf("[PLAY-SKIP] %s -> bits 0x%x\n", sk, playSkipBits);
+        }
+      }
+      debugFlags |= playSkipBits;
+    }
 
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
     auto stats = renderer.getPhysicsStats();
@@ -2103,6 +2131,11 @@ int main() {
       // or a PHYSICS gap (collisions aren't growing a spread).
       int massBucket[6] = {0}; // <0.5, 0.5-2, 2-10, 10-100, 100-1e3, 1e3+
       float mMin = 1e30f, mMax = -1e30f;
+      // SHAPE probe (TEMP 2026-07-08, Jamal: "entire star map spawns as a
+      // giant tube... center is not a proper center"): per-axis mean + σ of
+      // the live population. A ball reads σx≈σy≈σz, mean≈0; a capsule/tube
+      // shows one axis σ far larger. Answers spawn-vs-dynamics deformation.
+      double sxm = 0, sym = 0, szm = 0, sx2 = 0, sy2 = 0, sz2 = 0;
       for (int i = 0; i < PROBE_N; i++) {
         const auto &p = probe[i];
         bool isWall = p.mass < 0.001f;
@@ -2125,6 +2158,9 @@ int main() {
           int mb = (mm < 0.5f) ? 0 : (mm < 2.0f) ? 1 : (mm < 10.0f) ? 2
                  : (mm < 100.0f) ? 3 : (mm < 1000.0f) ? 4 : 5;
           massBucket[mb]++;
+          sxm += p.x; sym += p.y; szm += p.z;
+          sx2 += (double)p.x * p.x; sy2 += (double)p.y * p.y;
+          sz2 += (double)p.z * p.z;
         }
       }
       float ctAvg = (liveCount > 0) ? ctSum / (float)liveCount : 0.0f;
@@ -2144,6 +2180,23 @@ int main() {
              (liveCount ? mMin : 0.0f), (liveCount ? mMax : 0.0f),
              massBucket[0], massBucket[1], massBucket[2], massBucket[3],
              massBucket[4], massBucket[5]);
+      if (liveCount > 0) {
+        double n = (double)liveCount;
+        double mx = sxm / n, my = sym / n, mz = szm / n;
+        printf("  [SHAPE] mean=(%.1f %.1f %.1f)  sigma=(%.1f %.1f %.1f)\n",
+               mx, my, mz,
+               std::sqrt(std::max(0.0, sx2 / n - mx * mx)),
+               std::sqrt(std::max(0.0, sy2 / n - my * my)),
+               std::sqrt(std::max(0.0, sz2 / n - mz * mz)));
+        // Net drift = the smoking gun for any one-sided force (2026-07-08).
+        double svx = 0, svy = 0, svz = 0;
+        for (int i = 0; i < PROBE_N; i++) {
+          if (probe[i].mass < 0.001f) continue;
+          svx += probe[i].vx; svy += probe[i].vy; svz += probe[i].vz;
+        }
+        printf("  [VEL] mean v=(%.4f %.4f %.4f) sim/frame  voices=%d\n",
+               svx / n, svy / n, svz / n, vc);
+      }
 
       fflush(stdout);
     }

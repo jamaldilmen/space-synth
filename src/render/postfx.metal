@@ -25,6 +25,8 @@ struct PostFXUniforms {
     float posterize;        // 0 off, else colour levels (2-16)
     float edrHeadroom;      // display EDR headroom (1.0 = SDR), drives HDR glow
     float pixelStretch;     // 0-1 "5D look" radial pixel-stretch (driven by spin)
+    float exposure;         // global HDR exposure multiplier (1.0 = neutral)
+    float _pad0;            // 24 scalars = 96 B → float4x4 16-byte aligned on both sides
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
@@ -197,6 +199,23 @@ fragment float4 postfx_fragment(
     // headroom]× (genuine HDR above paper-white) WITH the ACES shoulder keeping
     // definition — instead of everything hot clipping to featureless white.
     // On SDR (headroom=1) this is identical to plain ACES.
+    // ── SCENE-REFERRED GLOW (Checkpoint A4, 2026-07-08) ────────────────────
+    // The glow is scene light: composite it BEFORE exposure/tonemap/bleach so
+    // it stops down, tonemaps and BLEACHES like everything else. It used to be
+    // added AFTER the bleach (scaled ×headroom) — the blurred un-bleached
+    // orange core got repainted on top every frame: the immortal yellow blob.
+    if (u.bloomIntensity > 0.0) {
+        float3 glow = bloomTex.sample(s, in.uv).rgb;
+        color.rgb += glow * (u.bloomIntensity * (1.5 + u.audioLevel));
+    }
+
+    // ── GLOBAL EXPOSURE (2026-07-07, Jamal: core blob unchanged by Grain) ──
+    // The fragment shader's alpha is grainAlpha + a luminance boost that
+    // DOMINATED for stars ≥1 M☉ — so the Grain slider never actually stopped
+    // the sensor down. This is the real iris: scales the WHOLE HDR scene
+    // before the tonemap, no per-sprite term can bypass it. 1.0 = neutral.
+    color.rgb *= max(u.exposure, 0.0f);
+
     float hdrPeak = max(1.0f, u.edrHeadroom);
     // HUE-PRESERVING tonemap. Per-channel ACES desaturates every highlight to
     // white — so dense particle clusters blew out to flat white instead of
@@ -216,19 +235,22 @@ fragment float4 postfx_fragment(
     maxc = max(maxc, 1e-4f);
     float tonedMax = acesTonemap(float3(maxc / hdrPeak)).x * hdrPeak;
     color.rgb = color.rgb * (tonedMax / maxc);
+    // SENSOR BLEACH (2026-07-07, Jamal: "still the ugly ass yellow"). Pure
+    // hue-preservation pins a 50×-overexposed cluster core at max-saturation
+    // yellow forever — but a real sensor BLEACHES saturated highlights to
+    // white (Hubble cluster cores burn white; colour survives only in the
+    // fringe where the exposure drops). Bleach ∝ log2 overexposure: hue fully
+    // intact below 2× display peak (every isolated star), white by ~32×
+    // (the stacked core). This is the middle between the old per-channel
+    // ACES (EVERYTHING bleached → "ugly white") and the pure max-channel
+    // preserve (NOTHING bleaches → the yellow fog).
+    float over = maxc / hdrPeak;
+    float bleach = smoothstep(1.0f, 5.0f, log2(max(over, 1.0f)));
+    color.rgb = mix(color.rgb, float3(tonedMax), bleach);
 
-    // ── HDR glow — composite the pre-blurred bright-pass into headroom ────
-    // The glow is built in dedicated passes: a bright-pass extracts HDR pixels
-    // >threshold, then a wide ping-pong Gaussian softens it. Here we add that
-    // finished glow — the modern split (extract → blur cheap → composite)
-    // instead of a fat per-pixel sample loop. Audio-boosted so it blooms
-    // harder on beats; headroom-scaled so on XDR it goes genuinely brighter
-    // than white instead of clipping at SDR.
-    if (u.bloomIntensity > 0.0) {
-        float3 glow = bloomTex.sample(s, in.uv).rgb;
-        float boost = u.bloomIntensity * (1.5 + u.audioLevel * 1.0);
-        color.rgb += glow * boost * max(1.0, u.edrHeadroom);
-    }
+    // (HDR glow composite moved ABOVE the tonemap — scene-referred, Checkpoint
+    // A4. It must never be added post-bleach again: that repaints the
+    // un-bleached core on top and resurrects the yellow blob.)
 
     // ── Neon cyberpunk color grade ───────────────────────────────────────
     // Remaps tonal range to a synth palette: shadows → deep indigo, mids →

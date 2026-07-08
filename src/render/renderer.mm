@@ -2378,6 +2378,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.invert = config.invert;
   post.posterize = config.posterize;
   post.pixelStretch = config.pixelStretch; // "5D look" radial pixel-stretch (spin)
+  post.exposure = config.exposure; // global iris — scales the HDR scene pre-tonemap
   // EDR headroom: how far above SDR white this display can currently go
   // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
   // Drives how hard the HDR glow punches past white. Queried live because it
@@ -2429,7 +2430,12 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // into [0,1] keeping COLOUR at brightness (vibrant SDR, not blown white) and
   // computes the alpha key. Publish THIS, not the EDR drawable. Reads the same
   // last-frame prevFrameTexture as the screen pass → run BEFORE the blit below.
-  if (syphonTexture && postPipeline) {
+  // Only when someone is actually listening: with no Syphon client connected
+  // this whole SDR re-tonemap pass + publish was pure waste every frame
+  // (~0.25ms measured 2026-07-07). hasClients flips the moment Resolume/Arena
+  // connects, so the feed appears on the next frame — nothing to configure.
+  bool syphonLive = (syphonServer != nil) && syphonServer.hasClients;
+  if (syphonLive && syphonTexture && postPipeline) {
     PostFXUniforms postSdr = post;
     postSdr.edrHeadroom = 1.0f;            // SDR: no headroom above white
     memcpy(postUniformSyphonBuffer[frameIdx].contents, &postSdr, sizeof(postSdr));
@@ -2456,7 +2462,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
 
 #if HAS_SYPHON
   // Publish the dedicated SDR feed (vibrant, alpha-keyed, no UI) to Syphon.
-  if (syphonServer && syphonTexture) {
+  if (syphonLive && syphonTexture) {
     [syphonServer publishFrameTexture:syphonTexture
                       onCommandBuffer:cmdBuf
                           imageRegion:NSMakeRect(0, 0, width, height)

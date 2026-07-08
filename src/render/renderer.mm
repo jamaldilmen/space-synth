@@ -1754,6 +1754,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:phiBuffer offset:0 atIndex:15]; // PM gravity Φ (force = −∇Φ)
         [comp setBuffer:sphForceBuffer offset:0 atIndex:16]; // SPH pressure accel (bit11, slice 2b)
         [comp setBuffer:sphClosureBuffer offset:0 atIndex:17]; // TEMP-CLOSURE W_sph
+        [comp setBuffer:uBuffer offset:0 atIndex:18]; // SPH u → display radiance-temp bridge
       }
 
       NSUInteger tg =

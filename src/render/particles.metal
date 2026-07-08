@@ -256,6 +256,7 @@ kernel void compute_physics(
     device const float* phi [[buffer(15)]],          // PM gravity potential Φ on the 128³ grid (poisson_sor); force = −∇Φ
     device const float4* sphForce [[buffer(16)]],    // SPH pressure acceleration (sph_force, slice 2b); added to gacc under bit11
     device atomic_int* sphClosure [[buffer(17)]],    // TEMP-CLOSURE ledger ×1e6: [0]=W done by the SPH force (F·Δx)
+    device const float* sphU [[buffer(18)]],         // SPH specific internal energy u_i (id-indexed, persistent)
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -2140,6 +2141,36 @@ kernel void compute_physics(
     // played/supernova matter (fading blue→red over time = the Crab's evolution)
     // and barely touches the cool ambient disk. Only positive temps cool;
     // stealth's negative temp is left alone. Floored at 0.
+    // ── TEMPERATURE UNIFICATION slice A (2026-07-07, spec §8: one honest
+    // temp unit). The SPH energy ledger u (c² sim units, ceiling 0.3 ↔
+    // T≈1.35e12 K) is THE temperature; the display channel shows its
+    // RADIANCE temperature: displayT = 12·(u/u_cap)^¼ — Stefan-Boltzmann
+    // flux compression, because honest gas temps here span 1e6–1e12 K and
+    // a linear Kelvin map would pin the whole field blue-white. Anchors:
+    // substrate u~4e-5 → 1.3 (warm, below the 2.5 nova threshold); real
+    // shock u~0.01 → 5.1 (glowing plasma); cap → 12 = SN_TEMP_PEAK. The
+    // glow follows the real energy: slice-4 cooling decays u, display
+    // follows; novae/TDE flashes ride on top via max(). Shock-heated
+    // fly-through gas (reaction ladder) is finally VISIBLE — no scripts.
+    if ((u.bhToggles & 0x1000u) && mass > 0.001f && mass < 1e8f) {  // bit12: SPH heat live
+        float ui = sphU[id];
+        if (ui > 0.0f && !notFinite1(ui)) {
+            // AMBIENT-SUBTRACTED exposure (2026-07-07 3rd pass — MEASURED):
+            // the [SPH] ledger samples ~19.7k particles at U≈100 → substrate
+            // u_avg ≈ 5.1e-3 (2nd pass used 5e-5: divided by the full 2M
+            // instead of the ledger's sample → 100× under → whole field
+            // golden, then white-hot as heat concentrated). Ambient set just
+            // ABOVE the measured average: the bulk field renders dark in its
+            // mass-blackbody colours; only genuinely above-ambient pockets
+            // (shocked gas, feeding cores, umax=0.3 bombs) glow. DEBT: this
+            // ambient (T~2e10 K!) is the substrate-noise pump, not honest
+            // cluster physics — the dissipation thread owns the real cure.
+            const float U_AMBIENT = 6e-3f;
+            float uEx = max(ui - U_AMBIENT, 0.0f);
+            float bridgeT = 12.0f * pow(min(uEx, 0.3f) * (1.0f / 0.3f), 0.25f);
+            currentTemp = max(currentTemp, bridgeT);
+        }
+    }
     if (currentTemp > 0.0f) {
         float T = currentTemp;
         currentTemp -= dt * 0.0005f * (T * T * T * T);

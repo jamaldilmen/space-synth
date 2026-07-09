@@ -1933,20 +1933,24 @@ int main() {
       debugFlags |= DEBUG_ODS01;
     if (app.uiBlackHoles)
       debugFlags |= DEBUG_ODS06;
-    // TEMP-DIAG: SS_PLAY_SKIP="sculpt,wave,impulse,swirl,web" (any subset)
-    // disables play-force families (bits 16-20) so the [VEL]/[SHAPE] drift
-    // names its own culprit. Measurement only — mirrors SS_SPH_SKIP.
+    // TEMP-DIAG: SS_PLAY_SKIP="sculpt,impulse,web,jitter,symbreak"
+    // (any subset) disables individual play-force families (bits 16-22) so the
+    // [VEL]/[SHAPE] drift names its own culprit. This is the play-stack
+    // rationalization instrument — one gate per LIVE additive play force.
+    // Measurement only — mirrors SS_SPH_SKIP.
     {
       static uint32_t playSkipBits = 0;
       static bool playSkipParsed = false;
       if (!playSkipParsed) {
         playSkipParsed = true;
         if (const char *sk = getenv("SS_PLAY_SKIP")) {
-          if (strstr(sk, "sculpt"))  playSkipBits |= (1u << 16);
-          if (strstr(sk, "wave"))    playSkipBits |= (1u << 17);
-          if (strstr(sk, "impulse")) playSkipBits |= (1u << 18);
-          if (strstr(sk, "swirl"))   playSkipBits |= (1u << 19);
-          if (strstr(sk, "web"))     playSkipBits |= (1u << 20);
+          if (strstr(sk, "sculpt"))    playSkipBits |= (1u << 16); // Atom-Model gradient (core Chladni)
+          // bit17 (breathing) + bit19 (swirl) retired 2026-07-09 — both forces
+          // deleted after the rationalization sweep proved zero shape effect.
+          if (strstr(sk, "impulse"))   playSkipBits |= (1u << 18); // point-source impulse/shockwave
+          if (strstr(sk, "web"))       playSkipBits |= (1u << 20); // chord webbing (inter-harmonic)
+          if (strstr(sk, "jitter"))    playSkipBits |= (1u << 21); // Brownian shimmer
+          if (strstr(sk, "symbreak"))  playSkipBits |= (1u << 22); // Noether symmetry-break impulse
           printf("[PLAY-SKIP] %s -> bits 0x%x\n", sk, playSkipBits);
         }
       }

@@ -1370,22 +1370,11 @@ kernel void compute_physics(
             float localEnergy = (voices[vi].frequency * amp) / (r2 * 0.5f + 1.0f);
             massAdd += localEnergy * 0.005f; 
 
-            // Emitters induce a strong coherent spin field (B-field)
-            float spinMag = amp * 50.0f * (m_f == 0.0f ? 1.0f : sign(m_f));
-            float3 emitterSpin = float3(
-                sin(n_f * th) * spinMag * 0.5f, 
-                cos(n_f * th) * spinMag * 0.5f, 
-                spinMag * cos(m_f * r * 0.1f)
-            );
-            float3 rVec = float3(dx, dy, dz);
-            
-            // Biot-Savart induced velocity
-            float3 inducedV = cross(emitterSpin, rVec) / (r2 * r);
-            if (!(u.debugFlags & (1u << 19))) { // TEMP-DIAG SS_PLAY_SKIP=swirl
-                shiftVx += inducedV.x * 0.15f;
-                shiftVy += inducedV.y * 0.15f;
-                shiftVz += inducedV.z * 0.1f;
-            }
+            // ── Biot-Savart swirl REMOVED 2026-07-09: the play-stack
+            // rationalization sweep (SS_PLAY_SKIP) proved it contributed nothing
+            // to the sculpted shape — chord σ and the on-screen pattern were
+            // identical with it off. An arbitrary induced-velocity patch, not a
+            // law. See NOTES.md (play-stack rationalization).
 
             // Phase 4 & 12: Mechanical Point Source Impulse + Shockwaves
             // Base impulse uses deltaAmp (transient-only), not raw amp.
@@ -1431,9 +1420,11 @@ kernel void compute_physics(
             float visualAmp = pow(amp, 0.4f); 
             float sculptStrength = visualAmp * voices[vi].alpha * 25.0f * acMod * polyNorm;
             
-            shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
-            shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
-            shiftVz += (dYdth * thetaDir.z + dYdphi * phiDir.z) * sculptStrength;
+            if (!(u.debugFlags & (1u << 16))) { // TEMP-DIAG SS_PLAY_SKIP=sculpt
+                shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
+                shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
+                shiftVz += (dYdth * thetaDir.z + dYdphi * phiDir.z) * sculptStrength;
+            }
 
             // Track dominant band for per-band coloring
             float fMag = abs(dYdth) + abs(dYdphi);
@@ -1442,16 +1433,9 @@ kernel void compute_physics(
                 bestBand = voices[vi].bandGroup;
             }
 
-            // Radial breathing
-            float radialForce = visualAmp * Y_here * 12.0f * polyNorm;
-            float3 centerVec = float3(px, py, pz);
-            float cLen = length(centerVec);
-            if (cLen > 0.0001f) {
-                float3 cDir = centerVec / cLen;
-                shiftVx += cDir.x * radialForce;
-                shiftVy += cDir.y * radialForce;
-                shiftVz += cDir.z * radialForce;
-            }
+            // ── Radial breathing REMOVED 2026-07-09: rationalization sweep
+            // showed no shape contribution (visual + σ identical with it off).
+            // Y_here is retained below — the webbing accumulation needs it.
 
             Y_total += visualAmp * Y_here;
             jitterTotal += visualAmp;
@@ -1560,7 +1544,7 @@ kernel void compute_physics(
 
     // ── Noether Symmetry Breaking ─────────────────────────────────────
     // Constantly adds a subtle ambient swirl to prevent perfect dead-center grid-lock if needed
-    if (u.symmetryBreakImpulse > 0.0f) {
+    if (u.symmetryBreakImpulse > 0.0f && !(u.debugFlags & (1u << 22))) { // TEMP-DIAG SS_PLAY_SKIP=symbreak
         float angle = noise(id * 3u, u.time) * M_PI_F;
         float strength = u.symmetryBreakImpulse * (0.1f + noise(id * 7u, u.time) * 0.1f);
         shiftVx += cos(angle) * strength;
@@ -1956,7 +1940,7 @@ kernel void compute_physics(
 
     // Jitter (UI slider — now wired). Per-particle Brownian shimmer added as a
     // small position delta. u.jitterFactor was uploaded all along but never read.
-    if (u.jitterFactor > 0.0001f) {
+    if (u.jitterFactor > 0.0001f && !(u.debugFlags & (1u << 21))) { // TEMP-DIAG SS_PLAY_SKIP=jitter
         float3 jit = float3(noise(id, u.frameCounter + 11u),
                             noise(id + 7919u, u.frameCounter + 23u),
                             noise(id + 104729u, u.frameCounter + 37u));

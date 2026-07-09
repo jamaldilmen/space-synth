@@ -243,6 +243,131 @@ inline float chandraG(float X) {
     return max(erf - (2.0f * X / 1.7724538509f) * ex, 0.0f);
 }
 
+// ── Bessel J_m(x) — cylindrical eigenmode primitive (play-stack re-land) ─────
+// Power series J_m(x) = Σ_k (-1)^k (x/2)^(2k+n) / (k!(k+n)!), evaluated as a
+// running-product recurrence (no pow, no big factorials): T_k = T_{k-1}·
+// (-hx²)/(k(k+n)). Faithful float32 port of src/core/bessel.cpp — verified vs
+// known values (err <1e-5 for x≤10, ~0.05% by x=13; keep k_ρρ in low zeros).
+// Small-x branch. FIXED 20-iteration loop (no data-dependent break):
+// deterministic → the Metal compiler unrolls it cleanly. A variable-length
+// break inlined 7× hung PSO creation (2026-07-09).
+inline float besselSeries(int n, float x) {
+    float hx = x * 0.5f;
+    float term = 1.0f;
+    for (int i = 1; i <= n; i++) term *= hx / float(i); // hx^n / n!
+    float sum = term;
+    float hx2 = hx * hx;
+    for (int k = 1; k <= 20; k++) {
+        term *= -hx2 / (float(k) * float(k + n));
+        sum += term;
+    }
+    return sum;
+}
+
+// Large-x branch: Hankel asymptotic expansion (Abramowitz & Stegun 9.2.1),
+// P through 2 terms, Q through 2 terms. Loop-free (cannot retrigger the PSO
+// hang). REQUIRED, not an optimization: past x≈14 the power series above loses
+// ALL precision to float32 cancellation — its max term reaches ~1e7 while the
+// true |J| ≤ 1, so no term count can recover it (measured: J_6(20.32) returned
+// 0.186 instead of 0, i.e. the nodal shell at the cavity wall dissolved).
+inline float besselAsym(int n, float x) {
+    float mu = 4.0f * float(n) * float(n);
+    float t  = 8.0f * x;
+    float m1 = mu - 1.0f, m9 = mu - 9.0f, m25 = mu - 25.0f, m49 = mu - 49.0f;
+    float P = 1.0f - (m1 * m9) / (2.0f * t * t)
+                   + (m1 * m9 * m25 * m49) / (24.0f * t * t * t * t);
+    float Q = m1 / t - (m1 * m9 * m25) / (6.0f * t * t * t);
+    float chi = x - (0.5f * float(n) + 0.25f) * M_PI_F;
+    return sqrt(2.0f / (M_PI_F * x)) * (P * cos(chi) - Q * sin(chi));
+}
+
+// Crossover measured against the true J_n over n=0..6, x∈[0,21.5]: worst abs
+// err 1.28e-3 at x=14; at every ZEROS[] wall |J| ≤ 1.1e-4. Verified on CPU
+// with the identical float32 code (tools/measure/, 2026-07-09).
+constant float BESSEL_ASYM_X = 14.0f;
+
+// J_m(x) over the FULL cavity range x∈[0, 20.4] (= max ZEROS[6][3] = 20.3208).
+inline float besselJm(int n, float x) {
+    float ax = fabs(x);
+    if (ax < 1e-6f) return (n == 0) ? 1.0f : 0.0f;
+    float J = (ax < BESSEL_ASYM_X) ? besselSeries(n, ax) : besselAsym(n, ax);
+    // J_n(-x) = (-1)^n J_n(x); call sites pass x ≥ 0, kept for correctness.
+    return (x < 0.0f && (n & 1)) ? -J : J;
+}
+
+// J_m(x) AND its derivative J_m'(x) in one shot (analytic Gor'kov gradient).
+// J_m' = (J_{m-1} − J_{m+1})/2. J_{m-1} comes from the DIRECT power series, not
+// the recurrence (2m/x)J_m−J_{m+1}: that 1/x blows to Inf/NaN on the cylinder
+// axis (x→0, m≥1) and a NaN force zeroes the whole sim (found 2026-07-09).
+// J_{-1} = −J_1. Three stable besselJm evals.
+inline float2 besselJmD(int m, float x) {
+    float Jm  = besselJm(m, x);
+    float Jp1 = besselJm(m + 1, x);
+    float Jm1 = (m == 0) ? -Jp1 : besselJm(m - 1, x); // J_{m-1}, with J_{-1}=−J_1
+    return float2(Jm, 0.5f * (Jm1 - Jp1));            // (J_m, J_m')
+}
+
+// ── Cylindrical cavity eigenmode Ψ(ρ,θ,z) = J_m(k_ρρ)·cos(mθ)·cos(k_z z) ─────
+// The physically-correct 3D acoustic standing wave (play-stack re-land). Sand
+// collects on the Ψ=0 nodal shells via the Gor'kov force F=−Ψ∇Ψ. k_ρ is
+// quantized by the cavity (k_ρ=alpha/R, alpha=the mode's Bessel zero) so k_ρρ
+// stays in besselJm's accurate range; k_z comes from dispersion downstream.
+// Play-stack re-land tuning (increment 1 — visual A/B, values to be refined).
+// Zeros of J_m: ZEROS[m][k] = (k+1)-th zero. Verbatim from src/core/bessel.cpp
+// (Abramowitz & Stegun). Flat [m*4 + (n-1)]. THE cavity quantization: k_ρ =
+// α_{m,n}/R, so at the wall k_ρR = α ⇒ J_m = 0 ⇒ Ψ = 0. Max is 20.3208.
+// NOTE: VoiceData.alpha is NOT a Bessel zero — modes.cpp fills it with the
+// note's FREQUENCY IN HZ ("mostly vestigial"), despite modes.h claiming
+// "Bessel zero value". Using it as k_ρ·R drove x=k_ρρ into the hundreds and
+// the power series to ±1e17 → Inf force → the finite-guard froze the field
+// (root cause of the 2026-07-09 eigenmode freeze).
+constant float BESSEL_ZEROS[28] = {
+    2.4048f,  5.5201f,  8.6537f, 11.7915f,   // J_0
+    3.8317f,  7.0156f, 10.1735f, 13.3237f,   // J_1
+    5.1356f,  8.4172f, 11.6198f, 14.7960f,   // J_2
+    6.3802f,  9.7610f, 13.0152f, 16.2235f,   // J_3
+    7.5883f, 11.0647f, 14.3725f, 17.6160f,   // J_4
+    8.7715f, 12.3386f, 15.7002f, 18.9801f,   // J_5
+    9.9361f, 13.5893f, 17.0038f, 20.3208f,   // J_6
+};
+
+// Cavity wall = the play cap itself: the radius clamp at the bottom of this
+// kernel is cylindrical (rXY vs ORBIT_R_CHLADNI), which is what makes the play
+// world a TUBE about world Z. So the acoustic cavity IS that tube.
+constant float EIGEN_R        = ORBIT_R_CHLADNI; // 3.0 sim units
+
+// AXIAL STRUCTURE — this is the depth. Ψ ∝ cos(k_z·z); k_z=0 ⇒ the pattern is a
+// 2D cross-section extruded along the tube (flat), which is what "it's still
+// just a tube" was. k_z needs a tube LENGTH, and that length is DERIVED, not chosen.
+//
+// THE JEANS LENGTH sets it. For a self-gravitating cloud, λ_J is how far a sound
+// wave travels before gravity closes the region: below λ_J pressure waves stand,
+// above it the region collapses. Demand the tube be exactly as long as sound can
+// cross it (L = λ_J), with the cloud virialised at the cavity radius
+// (σ_v² = GM/R) and its density set by the cavity it fills (ρ = M/πR²L):
+//     λ_J² = σ_v²·π/(Gρ) = (GM/R)·π·(πR²L/GM) = π²·R·L
+//     L = λ_J   ⟹   L = π²·R          ← the MASS CANCELS
+// Verified against the repo's own SI anchor (spacetime.h: kMfieldMsun=5.94276e5,
+// 1 sim length = 2·r_g = 1.75504e9 m): closed form and an independent numeric
+// fixed point on L = λ_J(ρ(L)) both give L = 29.6088 sim = 0.347 AU. 2026-07-10.
+//
+// The old EIGEN_C=5000 dispersion (k_z=√(K²−k_ρ²), K=2πf/c) is DEAD: it clamped
+// to 0 for every voice, and any c that frees the low notes drives k_z ∝ f, giving
+// 240 nodal planes at C5 — sub-particle-spacing haze, not depth. Don't retry it.
+constant float EIGEN_L = M_PI_F * M_PI_F * EIGEN_R;  // = π²R = 29.6088 sim (Jeans)
+// FORCE GAIN IS NOT FREE — the integrator dictates it.
+// nextPos = pos + finalV (no dt), so the time unit is ONE FRAME. Linearising the
+// Gor'kov force about a nodal surface gives a discrete damped oscillator
+//     x⁺ = x + v⁺,   v⁺ = f·v − K·x,   K = S·k²   (k = the mode's wavenumber)
+// which is stable only for K < 2(1+f). Hence S is FIXED by k, and since k varies
+// per mode (k_ρ = α_mn/R spans 0.80→6.77), the gain must be per-voice:
+//     S_v = EIGEN_KAPPA / (k_ρ² + k_z²)
+// EIGEN_KAPPA is the dimensionless per-frame trap stiffness — the only number,
+// and it is bounded, not tuned. The old S=30 gave K = 30·6.77² = 1376, i.e. 344×
+// past the stability limit: particles were flung across their nodal sheet every
+// frame. That was the drift, the heating, and the blur (measured 2026-07-09).
+constant float EIGEN_KAPPA = 0.25f;      // K ≤ 0.25 ⇒ well inside K < 2(1+f)
+
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
 kernel void compute_physics(
@@ -1424,6 +1549,50 @@ kernel void compute_physics(
                 shiftVx += (dYdth * thetaDir.x + dYdphi * phiDir.x) * sculptStrength;
                 shiftVy += (dYdth * thetaDir.y + dYdphi * phiDir.y) * sculptStrength;
                 shiftVz += (dYdth * thetaDir.z + dYdphi * phiDir.z) * sculptStrength;
+            }
+
+            // ── CYLINDRICAL EIGENMODE + GOR'KOV (play-stack re-land, increment 1)
+            // The physically-correct 3D standing wave: particles collect onto
+            // the Ψ=0 nodal shells via the acoustic radiation force F=−Ψ∇Ψ.
+            // Single-voice, world-frame cavity (axis = world Z), ∇Ψ by central
+            // difference. Gated behind SS_EIGENMODE (bit23) to A/B vs sculpt.
+            if (u.debugFlags & (1u << 23)) {
+                float rho = sqrt(px * px + py * py);
+                // Outside the cavity wall there is NO mode → no radiation force.
+                // This also bounds k_ρρ ≤ α ≤ 20.3208, inside besselJm's range.
+                if (rho < EIGEN_R) {
+                    rho = max(rho, 1e-4f);                              // axis guard
+                    int   mm   = clamp(int(voices[vi].m), 0, 6);
+                    int   nn   = clamp(int(voices[vi].n), 1, 4);
+                    float alphaZero = BESSEL_ZEROS[mm * 4 + (nn - 1)];  // J_m(α)=0
+                    float kRho = alphaZero / EIGEN_R;                   // cavity-quantized
+                    // Axial mode number p: an integer, so the standing wave FITS
+                    // the tube (k_z = pπ/L). p is a musical mapping — same status
+                    // as pitchClass→m and octave→n in modes.cpp — NOT a physical
+                    // constant. Tied to n so structure thickens with pitch.
+                    float kZ   = float(nn) * M_PI_F / EIGEN_L;          // p·π/L, real by construction
+                    float cth  = px / rho, sth = py / rho;              // cosθ, sinθ
+                    float mth  = float(mm) * atan2(py, px);
+                    float2 JJ  = besselJmD(mm, kRho * rho);             // (J_m, J_m')
+                    float cA = cos(mth), sA = sin(mth);
+                    float cZ = cos(kZ * pz), sZ = sin(kZ * pz);
+                    float psi = JJ.x * cA * cZ;                         // Ψ
+                    // ∇Ψ (cylindrical → Cartesian): ρ̂·∂ρ + θ̂·(1/ρ)∂θ + ẑ·∂z
+                    // The 1/ρ term is finite as ρ→0: J_m ~ ρ^m kills it for m≥1,
+                    // and the sinθ factor carries m=0 to zero.
+                    float dPdrho = kRho * JJ.y * cA * cZ;
+                    float dPdth  = JJ.x * (-float(mm) * sA) * cZ / rho;
+                    float dPdz   = JJ.x * cA * (-kZ * sZ);
+                    float3 grad  = float3(cth * dPdrho - sth * dPdth,
+                                          sth * dPdrho + cth * dPdth,
+                                          dPdz);
+                    // Gain dictated by the mode's own wavenumbers (see EIGEN_KAPPA).
+                    float Sv = EIGEN_KAPPA / (kRho * kRho + kZ * kZ);
+                    float3 gork = -psi * grad * (Sv * visualAmp * polyNorm);
+                    shiftVx += gork.x;
+                    shiftVy += gork.y;
+                    shiftVz += gork.z;
+                }
             }
 
             // Track dominant band for per-band coloring

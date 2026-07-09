@@ -1957,6 +1957,22 @@ int main() {
       debugFlags |= playSkipBits;
     }
 
+    // SS_EIGENMODE=1 → enable the cylindrical cavity eigenmode + Gor'kov force
+    // (bit23, play-stack re-land). A/B: combine with SS_PLAY_SKIP=sculpt to see
+    // the eigenmode ALONE vs the current sculpt. Set-once, latched.
+    {
+      static uint32_t eigenBit = 0;
+      static bool eigenParsed = false;
+      if (!eigenParsed) {
+        eigenParsed = true;
+        if (getenv("SS_EIGENMODE")) {
+          eigenBit = (1u << 23);
+          printf("[EIGENMODE] ON (bit23) — cylindrical cavity + Gor'kov\n");
+        }
+      }
+      debugFlags |= eigenBit;
+    }
+
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
     auto stats = renderer.getPhysicsStats();
     if (app.uiAutoMode && stats.errorState > 0) {

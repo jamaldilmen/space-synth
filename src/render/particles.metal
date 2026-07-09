@@ -1575,7 +1575,13 @@ kernel void compute_physics(
                     float mth  = float(mm) * atan2(py, px);
                     float2 JJ  = besselJmD(mm, kRho * rho);             // (J_m, J_m')
                     float cA = cos(mth), sA = sin(mth);
-                    float cZ = cos(kZ * pz), sZ = sin(kZ * pz);
+                    // Axial phase is referenced to the cavity WALL, not the origin.
+                    // cos(k_z·z) puts its p=1 zeros at z=±L/2 — i.e. ON the two end
+                    // faces, so the rings collected on the faces instead of inside
+                    // (Jamal, 2026-07-10 01:00). A rigid-wall cavity on [−L/2, L/2]
+                    // has modes cos(pπ(z+L/2)/L): p nodal planes strictly INSIDE.
+                    float zeta = pz + 0.5f * EIGEN_L;
+                    float cZ = cos(kZ * zeta), sZ = sin(kZ * zeta);
                     float psi = JJ.x * cA * cZ;                         // Ψ
                     // ∇Ψ (cylindrical → Cartesian): ρ̂·∂ρ + θ̂·(1/ρ)∂θ + ẑ·∂z
                     // The 1/ρ term is finite as ρ→0: J_m ~ ρ^m kills it for m≥1,

@@ -654,8 +654,16 @@ vertex VertexOut particle_vertex(
         // the star branch overrode colour with a slider-blind blackbody).
         // At rest the mass term dominates (OBAFGKM spread); hot merger
         // remnants shift blue-white through the same law, no phase gate.
+        // HEAT TERM REMOVED (2026-07-10). `clamp(temp,0,5)*tuneHeatK` added a
+        // flat pedestal to every star's Kelvin: at the rest temp the field
+        // settles to (~1.5, see particles.metal:1700 targetTemp, and the T⁴
+        // cooling at :2355 is ~0.0025/s there — it never cools back) that is
+        // +4500 K on a 3000 K dwarf → white. The mass Teff spread, which IS
+        // the OBAFGKM colour, was buried under it after the first note.
+        // Lupton 2004 (PASP 116,133), the standard NASA/SDSS composite: an
+        // object's COLOUR must not depend on its brightness — stretch the
+        // intensity, never the hue. Heat belongs in luminance, not in Kelvin.
         float kelvinU = clamp(5772.0f * pow(Mstar, 0.55f)
-                              + clamp(temp, 0.0f, 5.0f) * cam.tuneHeatK
                               + dot(in.velW.xyz, in.velW.xyz) * cam.tuneColorK,
                               1000.0f, 40000.0f);
         float3 starColor = blackbodyRGB(kelvinU);

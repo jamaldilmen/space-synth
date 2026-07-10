@@ -2157,16 +2157,16 @@ kernel void compute_physics(
                                   -home.x * sa + home.z * ca);
 
             float voiceMute = clamp(u.totalAmplitude, 0.0f, 1.0f);
-            // Blend toward the analytic home orbit. The OLD code SNAPPED
-            // (nextPos = target) the instant amplitude crossed 0.01 — that hard
-            // switch was the release "pop" (shape → disk → ring). Now the weight
-            // eases CONTINUOUSLY: ~0 during play (voice forces make the shape),
-            // then smoothstep up to 1 as the note fades, so particles draw
-            // smoothly onto the rest orbits and land exactly at rest (alpha→1,
-            // pure analytic, no tug/pulse).
+            // Blend toward the analytic home orbit as a RATE, never a teleport.
+            // A `conv = smoothstep(0.6,1,toHome)` term used to force alpha→1
+            // below amp 0.4, to land particles exactly on the analytic rest
+            // orbits. Those rest orbits no longer exist — the pin is off at
+            // rest and gravity governs (see above) — and amp<0.4 is BOTH the
+            // start of the attack and the tail of the release, so it pinned
+            // particles at onset and released them mid-flight as amp crossed
+            // 0.4. That handoff was the "jumps unnaturally further in".
             float toHome = 1.0f - voiceMute;
-            float conv = smoothstep(0.6f, 1.0f, toHome); // 0 in play → 1 at rest
-            float alpha = max(0.5f * toHome * dt, conv);
+            float alpha = 0.5f * toHome * dt;
             // Spin yields the home-orbit pull: ~0 while spinning, ramping back as
             // the spin coasts down → smooth re-engage (no snap from spin to rest).
             alpha *= spinSuppress;

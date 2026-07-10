@@ -2015,25 +2015,27 @@ int main() {
     // finishes, ramps collapseT 0→1 slowly (the slow collapse), holds at the BH,
     // and resets to the supernova/star map only when a new note plays.
     {
-        static bool  playedCycle = false;
-        static bool  collapsed   = false;
-        static float collapseT   = 0.0f;
-        float ph = envState.phase;
-        if (ph >= 0.5f) {            // a note is active → supernova (reset)
-            playedCycle = true;
-            collapsed   = false;
-            collapseT   = 0.0f;
-        } else if (playedCycle) {    // note finished → collapse into the BH
-            collapsed = true;
-        }
-        if (collapsed) {
-            collapseT = std::min(1.0f, collapseT + 1.0f / 300.0f); // ~2.5s slow collapse
-            config.envelopePhase    = 4.0f;       // held black-hole phase (gates on)
-            config.envelopeProgress = collapseT;  // drives the collapse + BH ramp
-        } else {
-            config.envelopePhase    = envState.phase;    // 0 = star map, else playing
-            config.envelopeProgress = envState.progress;
-        }
+        // HELD-BH LATCH REMOVED (2026-07-10). `collapsed` was set true the first
+        // time a note finished and was cleared ONLY by starting another note, so
+        // envelopePhase was pinned at 4.0 for the rest of the session. Downstream
+        // that meant, permanently, after ONE note:
+        //   particles.metal:505  isSilence = (phase < 0.5) -> false: the rest /
+        //                        lifecycle branch never ran again
+        //   render.metal:644     starMix = 0: star-map colour AND the seed render
+        //                        (:790, gated starMix>0.5) were both dead
+        //   particles.metal:2056 release damping never released
+        //   particles.metal:2010 the "collapse into the BH" gravity, gated to
+        //                        phase>3.5, ran forever at envelopeProgress=1
+        // i.e. the sim jammed in its endgame state and the star map never came
+        // back. envelopePhase now follows the real envelope: 0 at silence.
+        //
+        // The collapse gesture this latch was faking belongs on a THRESHOLD
+        // (density / geometric horizon), not on a phase — see :2015, which
+        // already states the intent: "ALWAYS-ON central gravity -> the galaxy
+        // self-collapses over time (the BH is the EMERGENT physical sum of the
+        // mass falling in, no note required)." That is the next change.
+        config.envelopePhase    = envState.phase;    // 0 = star map, else playing
+        config.envelopeProgress = envState.progress;
     }
 
     float effectiveTotalAmp = synth.totalAmplitude();

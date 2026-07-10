@@ -32,7 +32,15 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   // Cluster orbits the dominant central SMBH (Sgr A* 4.297e6 M☉, r_g≈3.6 sim,
   // ISCO≈22 sim). Inner edge OUTSIDE the ISCO so orbits are stable + sub-c
   // (v/c=√(r_g/r): 0.38c at r=25 → 0.20c at r=60). Volumetric, not a disk.
-  const float r_inner   = 25.0f;  // diffuse star-map scale. NOTE (2026-06-30): too diffuse
+  // FILLED CENTRE (2026-07-10). r_inner was 25 → an empty ball of radius 25.
+  // A uniform shell is LIMB-BRIGHTENED at its inner edge when projected: the
+  // measured column density ran 167/area at screen centre up to 254 at rho=27
+  // — a bright ring, which is what read as the "weird formation". It also
+  // contradicted this function's own header ("centre-filled sphere, NOT the
+  // old ring with an empty hole"). A filled ball projects brightest at the
+  // middle. Still UNIFORM density — a real cluster is centrally concentrated
+  // (King/Plummer); that is the next, separate change.
+  const float r_inner   = 0.0f;   // diffuse star-map scale. NOTE (2026-06-30): too diffuse
   const float r_outer   = 60.0f;  // for collapse (gravity ~1e-6 of a light-step here); but a
                                   // dense spawn (r=3-10) just makes the cold-radial infall
                                   // slam through the centre WITHOUT gathering mass (seed stalls
@@ -57,7 +65,7 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   // order so no shuffle is needed. ~8% packing → acceptance stays high.
   std::vector<std::array<float, 3>> latticePts;
   {
-    const float rIn = 25.0f, rOut = 60.0f; // must match r_inner/r_outer below
+    const float rIn = 0.0f, rOut = 60.0f; // must match r_inner/r_outer below
     // Min gap scaled to the REQUESTED density: this bakes the FULL buffer
     // (count = 10M, not the 2M live), and a fixed 0.4 gap at 10M is past
     // random-packing saturation — the spawn stalled for minutes (measured

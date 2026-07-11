@@ -954,3 +954,32 @@ kernel void poisson_sor(
     const float omega = 1.9f;
     phi[cid] = phi[cid] + omega * (phiStar - phi[cid]);
 }
+
+// ── AMR SLICE 1 (2026-07-11): FINE-GRID MASS BINNING ────────────────────────
+// Bins stellar mass into a SECOND, fine 128³ grid over ±halfExtent = R_fine at
+// the origin (the core, pinned there by comShift). Unlike count_cells this does
+// NOT edge-clamp: a particle OUTSIDE the fine box is SKIPPED, not folded onto
+// the boundary — the fine source must be the true interior mass only. The fine
+// Φ is then solved by the SAME poisson_sor with these fine uniforms; its BC
+// monopole (sp.y) is gmSim(M within R_fine), computed CPU-side. Force wiring is
+// Slice 2 — this pass is measurement-only (does the fine well resolve deeper?).
+kernel void bin_fine_mass(
+    device const Particle* particles [[buffer(0)]],
+    device atomic_uint*    fineCellMass [[buffer(1)]],
+    constant SpatialHashUniforms& fu [[buffer(2)]],   // FINE uniforms (halfExtent=R_fine)
+    uint id [[thread_position_in_grid]])
+{
+    if (int(id) >= fu.particleCount) return;
+    float4 pw = particles[id].posW;
+    float m = pw.w;
+    uint mb = as_type<uint>(m);
+    bool finite = ((mb >> 23) & 0xFFu) != 0xFFu;
+    if (!finite || m <= 0.001f) return;                       // dead/wall/NaN
+    if (fabs(pw.x) >= fu.halfExtent || fabs(pw.y) >= fu.halfExtent ||
+        fabs(pw.z) >= fu.halfExtent) return;                  // OUTSIDE the fine box → skip (no clamp)
+    int cx = clamp(int((pw.x + fu.halfExtent) * fu.invCellSize), 0, fu.gridSize - 1);
+    int cy = clamp(int((pw.y + fu.halfExtent) * fu.invCellSize), 0, fu.gridSize - 1);
+    int cz = clamp(int((pw.z + fu.halfExtent) * fu.invCellSize), 0, fu.gridSize - 1);
+    uint cID = uint((cz * fu.gridSize + cy) * fu.gridSize + cx);
+    atomic_fetch_add_explicit(&fineCellMass[cID], uint(m * MASS_FP + 0.5f), memory_order_relaxed);
+}

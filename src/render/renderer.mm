@@ -81,6 +81,11 @@ struct Renderer::Impl {
                                         // the rest.
   static constexpr int kTotalCells =
       kGridSize * kGridSize * kGridSize;     // 2,097,152
+  // AMR (nested-mesh gravity): a 2nd 128³ grid over ±kAmrFineExtent at the
+  // origin (the core, pinned there by comShift) → cellSize 2·2/128 = 0.03125
+  // sim, ~32× finer than the coarse 1.0-sim cell, finally below the horizon
+  // scale. Slice 1 = plumbing/measurement (SS_AMR); force wiring is Slice 2.
+  static constexpr float kAmrFineExtent = 2.0f;
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
   id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
   id<MTLBuffer> cellMassBuffer = nil;        // Σ stellar mass per cell (M_sun ×64, atomic)
@@ -100,6 +105,13 @@ struct Renderer::Impl {
   id<MTLBuffer> cellMaxPartialsBuffer = nil; // {count,cid} per threadgroup (densest cell)
   id<MTLBuffer> phiBuffer = nil;             // PM gravity potential Φ per cell (float), warm-started across frames
   bool phiInitialized = false;               // zero Φ once on first alloc (warm-start persists after)
+  // ── AMR nested-mesh gravity (Slice 1 plumbing, gated by SS_AMR) ──
+  id<MTLComputePipelineState> binFineMassPipeline = nil; // fine-grid mass binning (bin_fine_mass)
+  id<MTLBuffer> fineCellMassBuffer = nil;    // Σ mass ×64 in the fine 128³ grid over ±kAmrFineExtent
+  id<MTLBuffer> finePhiBuffer = nil;         // fine PM potential Φ (warm-started)
+  id<MTLBuffer> fineHashUniformBuffer = nil; // SpatialHashUniforms with halfExtent=kAmrFineExtent
+  bool finePhiInitialized = false;
+  float lastMFineEnc = 0.0f;                 // M within kAmrFineExtent (radial profile, 1-frame lag) → fine BC monopole
   // SPH reaction engine (slice 0 plumbing): per-particle smoothed density ρ and
   // EOS pressure P, float each, sized to particle count (~28 MB at the 7M peak).
   // Written by sph_density (slice 1) / sph EOS (slice 2); inert until then.
@@ -325,6 +337,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"Poisson pipeline error: %@", error);
   } else {
     NSLog(@"Missing poisson_sor kernel");
+  }
+
+  // ── AMR fine-grid mass-binning pipeline (Slice 1) ───────────────────
+  id<MTLFunction> binFineFunc =
+      [impl_->library newFunctionWithName:@"bin_fine_mass"];
+  if (binFineFunc) {
+    impl_->binFineMassPipeline =
+        [impl_->device newComputePipelineStateWithFunction:binFineFunc error:&error];
+    if (error) NSLog(@"bin_fine_mass pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing bin_fine_mass kernel");
   }
 
   // ── SPH density pipeline (reaction engine slice 1) ──────────────────
@@ -661,6 +684,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellCountsBuffer, cellSize);
   allocIfNeeded(impl_->cellMassBuffer, cellSize);
   allocIfNeeded(impl_->phiBuffer, Impl::kTotalCells * sizeof(float)); // PM gravity Φ (warm-started)
+  allocIfNeeded(impl_->fineCellMassBuffer, Impl::kTotalCells * sizeof(uint32_t)); // AMR fine grid mass
+  allocIfNeeded(impl_->finePhiBuffer, Impl::kTotalCells * sizeof(float));         // AMR fine Φ
+  allocIfNeeded(impl_->fineHashUniformBuffer, sizeof(SpatialHashUniforms));       // AMR fine uniforms
   allocIfNeeded(impl_->densityBuffer, count * sizeof(float));  // SPH ρ per particle (slice 0 plumbing)
   allocIfNeeded(impl_->mergeClaimBuffer, count * sizeof(uint32_t)); // cross-cell merge claims
   allocIfNeeded(impl_->pressureBuffer, count * sizeof(float)); // SPH P per particle (slice 0 plumbing)
@@ -1646,6 +1672,88 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                 physicsUniforms.dt, ph[(64 * 128 + 64) * 128 + 64]);
       }
 
+      // ── AMR SLICE 1: FINE-GRID PM — plumbing/measurement, gated by SS_AMR ────
+      // Solve a SECOND Poisson field on a 128³ grid over ±kAmrFineExtent at the
+      // origin (cellSize ~0.031 sim). NOT wired to any force — this proves the
+      // fine grid resolves a deeper/sharper central well than the coarse 1.0-sim
+      // grid can. Default OFF → zero cost/risk to the shipped star map.
+      static int amrOn = -1;
+      if (amrOn < 0) amrOn = getenv("SS_AMR") ? 1 : 0;
+      if (amrOn && binFineMassPipeline && poissonPipeline && fineCellMassBuffer &&
+          finePhiBuffer && fineHashUniformBuffer && pmGravityOn && sorFrame &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        SpatialHashUniforms fu;
+        fu.gridSize = Impl::kGridSize;
+        fu.gridSizeZ = Impl::kGridSize;
+        fu.particleCount = particleCount;
+        fu.halfExtent = Impl::kAmrFineExtent;
+        fu.cellSize = 2.0f * fu.halfExtent / (float)Impl::kGridSize;
+        fu.invCellSize = (float)Impl::kGridSize / (2.0f * fu.halfExtent);
+        memcpy(fineHashUniformBuffer.contents, &fu, sizeof(fu));
+        // clear fine mass → bin (skip-outside) → solve.
+        {
+          id<MTLBlitCommandEncoder> zb = [cmdBuf blitCommandEncoder];
+          [zb fillBuffer:fineCellMassBuffer
+                   range:NSMakeRange(0, Impl::kTotalCells * sizeof(uint32_t)) value:0];
+          [zb endEncoding];
+        }
+        {
+          id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+          [comp setComputePipelineState:binFineMassPipeline];
+          [comp setBuffer:particleBuffer offset:0 atIndex:0];
+          [comp setBuffer:fineCellMassBuffer offset:0 atIndex:1];
+          [comp setBuffer:fineHashUniformBuffer offset:0 atIndex:2];
+          NSUInteger tg = std::min((NSUInteger)256,
+                                   binFineMassPipeline.maxTotalThreadsPerThreadgroup);
+          [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+          [comp endEncoding];
+        }
+        if (!finePhiInitialized) {
+          id<MTLBlitCommandEncoder> zb = [cmdBuf blitCommandEncoder];
+          [zb fillBuffer:finePhiBuffer
+                   range:NSMakeRange(0, Impl::kTotalCells * sizeof(float)) value:0];
+          [zb endEncoding];
+          finePhiInitialized = true;
+        }
+        float Gsim = physicsUniforms.gravGM / std::max(physicsUniforms.massTotal, 1.0f);
+        // Fine BC monopole = gmSim(M within R_fine): the isolated interior field
+        // (exterior halo adds a near-constant offset that doesn't change −∇Φ).
+        float fineGM = (float)space::units::gmSim((double)std::max(lastMFineEnc, 0.0f));
+        float fineParams[2] = {(float)(4.0 * 3.14159265358979) * Gsim, fineGM};
+        NSUInteger tgP = std::min((NSUInteger)256,
+                                  poissonPipeline.maxTotalThreadsPerThreadgroup);
+        for (int sweep = 0; sweep < 80; sweep++) {
+          for (uint color = 0; color < 2u; color++) {
+            id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+            [comp setComputePipelineState:poissonPipeline];
+            [comp setBuffer:fineCellMassBuffer offset:0 atIndex:0];
+            [comp setBuffer:finePhiBuffer offset:0 atIndex:1];
+            [comp setBuffer:fineHashUniformBuffer offset:0 atIndex:2];
+            [comp setBytes:&fineParams length:sizeof(fineParams) atIndex:3];
+            [comp setBytes:&color length:sizeof(color) atIndex:4];
+            [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(tgP, 1, 1)];
+            [comp endEncoding];
+          }
+        }
+      }
+      // [AMR] compare fine vs coarse central well (reads last frame's Φ). The
+      // fine grid resolves r=0.25/0.5/1.0 sim (8/16/32 fine cells); the coarse
+      // grid (cell 1.0 sim) cannot distinguish anything inside 1 sim = the wall.
+      if (amrOn && (physicsUniforms.frameCounter % 240u) == 2u &&
+          finePhiBuffer && phiBuffer && pmGravityOn) {
+        const float *fp = (const float *)finePhiBuffer.contents;
+        const float *cp = (const float *)phiBuffer.contents;
+        const int N = Impl::kGridSize, c = N / 2;
+        auto ix = [&](int i, int j, int k) { return (k * N + j) * N + i; };
+        float fineCell = 2.0f * Impl::kAmrFineExtent / (float)N;
+        fprintf(stderr,
+                "[AMR] fineCell=%.4f sim | finePhi r0=%.4f r.25=%.4f r.5=%.4f r1=%.4f | coarsePhi r0=%.4f r1=%.4f | M<Rfine=%.3e\n",
+                fineCell, fp[ix(c, c, c)], fp[ix(c + 8, c, c)], fp[ix(c + 16, c, c)],
+                fp[ix(c + 32, c, c)], cp[ix(c, c, c)], cp[ix(c + 1, c, c)], lastMFineEnc);
+      }
+
 
       // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
       if (reduceCellMaxPipeline && cellMaxPartialsBuffer && !skipCellMax) {
@@ -1865,6 +1973,29 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             fprintf(stderr,
                     "[HORIZON] r_h=%.4f sim  M(<r_h)=%.3e Msun  (honest geometric, observe-only)\n",
                     r_h, mEncRh);
+            // ── SLICE 0 (2026-07-11): MEASURE THE WALL — how tightly does the
+            // core actually concentrate at rest? Baseline for the AMR before/after.
+            // Second pass over the SAME radial profile (mass binned 0..5 sim, 256
+            // shells). Reports enclosed mass at key radii, the half-mass radius,
+            // and the densest shell. If mass never packs below ~1 sim (the
+            // softening floor), r50 stays high and M(<0.5) stays tiny = the wall.
+            double mTot5 = cum;                       // total profiled mass within 5 sim
+            double c2 = 0.0, m05 = 0.0, m10 = 0.0, m20 = 0.0, r50 = 0.0;
+            double mPeak = 0.0; double rPeak = 0.0;
+            for (int s = 0; s < 256; s++) {
+              double ms = radial[s] / 256.0;
+              double r  = (s + 1) * dr;
+              c2 += ms;
+              if (r <= 0.5) m05 = c2;
+              if (r <= 1.0) m10 = c2;
+              if (r <= 2.0) m20 = c2;
+              if (r50 == 0.0 && c2 >= 0.5 * mTot5 && mTot5 > 0.0) r50 = r;
+              if (ms > mPeak) { mPeak = ms; rPeak = r; }
+            }
+            lastMFineEnc = (float)m20;    // AMR fine-grid BC monopole (M within ±2 sim = kAmrFineExtent)
+            fprintf(stderr,
+                    "[CORE] Mtot(<5)=%.3e  M(<0.5)=%.3e  M(<1)=%.3e  M(<2)=%.3e  r50=%.3f sim  peakShell r=%.3f m=%.3e  (horizon needs 2.97e5 within 0.5)\n",
+                    mTot5, m05, m10, m20, r50, rPeak, mPeak);
           }
         }
         // MASS-WEIGHTED centre of mass of the live stars (real IMF masses) →

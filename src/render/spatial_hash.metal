@@ -406,16 +406,72 @@ kernel void compute_cell_centroids(
             rCount += 1.0f;
         }
     }
-    float3 vmean = vsum / float(count);
     cellCentroids[cid] = float4(sum / float(count), float(count));
     // .w = velocity dispersion σ = sqrt(⟨|v|²⟩ − |⟨v⟩|²) over genuine-motion stars
     // only, per-frame units. Feeds Chandrasekhar dynamical friction (X=|v_pec|/(√2·σ)).
+    // MEAN is now the CLAMPED mean too (2026-07-12 honest-dynfric rework): the
+    // old unclamped mean let ONE teleporting respawn (stale prevW ~4000 sim)
+    // poison a cell's flow target by ~100/count sim/frame — and the drag then
+    // slammed every real star toward that phantom. Teleports are artifacts,
+    // not flow; both moments now exclude them. (bit5 relaxation reads the same
+    // mean — same argument.) vsum kept for the count==rCount fast path only.
     float sigma2 = 0.0f;
+    float3 vmeanOut = float3(0.0f);
     if (rCount > 0.5f) {
-        float3 vrMean = vrSum / rCount;
-        sigma2 = max(v2rSum / rCount - dot(vrMean, vrMean), 0.0f);
+        vmeanOut = vrSum / rCount;
+        sigma2 = max(v2rSum / rCount - dot(vmeanOut, vmeanOut), 0.0f);
+    } else if (count > 0u) {
+        vmeanOut = vsum / float(count); // every member clamped-out: fall back
     }
-    cellVelocities[cid] = float4(vmean, sqrt(sigma2));
+    cellVelocities[cid] = float4(vmeanOut, sqrt(sigma2));
+}
+
+// ── BALSARA SWITCH, per cell (2026-07-12) — the owed bit12 re-enable gate ────
+// f = compression / (compression + |∇×v| + eps), compression = max(−∇·v, 0).
+// 1 in a compressive shock front, →0 in pure shear — so the Monaghan viscosity
+// thermalizes the COLLAPSE (its job) but no longer heats the COLD ROTATING rest
+// map into the over-exposed blob + slabs (the 61d3d40 failure). Central
+// differences of the per-cell mean flow (cellVelocities.xyz, per-frame units —
+// dt cancels in the ratio). Deviation from classic Balsara-1995 (|∇·v|):
+// compression-only, since Π exists solely to capture compressive shocks.
+// Cells at the domain shell or with any empty face-neighbour get f=0 —
+// gradients across empty cells are cloud-edge artifacts, not shocks.
+kernel void cell_balsara(
+    device const float4* cellVelocities [[buffer(0)]],
+    device const uint*   cellCounts     [[buffer(1)]],
+    device float*        balsaraOut     [[buffer(2)]],
+    constant SpatialHashUniforms& u     [[buffer(3)]],
+    uint cid [[thread_position_in_grid]])
+{
+    int N = u.gridSize;
+    uint total = uint(N) * uint(N) * uint(u.gridSizeZ);
+    if (cid >= total) return;
+    int i = int(cid) % N;
+    int j = (int(cid) / N) % N;
+    int k = int(cid) / (N * N);
+    if (i == 0 || j == 0 || k == 0 || i == N - 1 || j == N - 1 || k == N - 1) {
+        balsaraOut[cid] = 0.0f;
+        return;
+    }
+    uint xp = cid + 1u,            xm = cid - 1u;
+    uint yp = cid + uint(N),       ym = cid - uint(N);
+    uint zp = cid + uint(N * N),   zm = cid - uint(N * N);
+    if (cellCounts[xp] == 0u || cellCounts[xm] == 0u ||
+        cellCounts[yp] == 0u || cellCounts[ym] == 0u ||
+        cellCounts[zp] == 0u || cellCounts[zm] == 0u) {
+        balsaraOut[cid] = 0.0f;
+        return;
+    }
+    float3 vxp = cellVelocities[xp].xyz, vxm = cellVelocities[xm].xyz;
+    float3 vyp = cellVelocities[yp].xyz, vym = cellVelocities[ym].xyz;
+    float3 vzp = cellVelocities[zp].xyz, vzm = cellVelocities[zm].xyz;
+    float inv2h = 0.5f * u.invCellSize;
+    float divv = (vxp.x - vxm.x + vyp.y - vym.y + vzp.z - vzm.z) * inv2h;
+    float3 curl = float3((vyp.z - vym.z) - (vzp.y - vzm.y),
+                         (vzp.x - vzm.x) - (vxp.z - vxm.z),
+                         (vxp.y - vxm.y) - (vyp.x - vym.x)) * inv2h;
+    float comp = max(-divv, 0.0f);
+    balsaraOut[cid] = comp / (comp + length(curl) + 1e-5f);
 }
 
 // ── SPH DENSITY (reaction engine, slice 1) ──────────────────────────────────
@@ -602,6 +658,7 @@ kernel void sph_force(
     constant SphForceParams& p             [[buffer(7)]],
     device float*          uInOut          [[buffer(8)]],
     device atomic_int*     closure         [[buffer(9)]],   // TEMP-CLOSURE ledger ×1e6: [1]=du dyn, [2]=du cool, [3]=du clamp
+    device const float*    cellBalsara     [[buffer(10)]],  // per-cell shear/shock switch (cell_balsara)
     uint tgid [[threadgroup_position_in_grid]],
     uint tid  [[thread_position_in_threadgroup]])
 {
@@ -702,6 +759,11 @@ kernel void sph_force(
                 uint ncCount = min(cellCounts[ncID], 32u);
                 if (ncCount == 0u) continue;   // empty tile: skip both barriers
                                                // (threadgroup-uniform → safe)
+                // BALSARA gate for this pair-tile: mean of the two cells'
+                // shear/shock factors. 1 in a compressive shock front, →0 in
+                // the rotating rest map's pure shear — the owed bit12 re-enable
+                // gate (see cell_balsara + app_state.h uiTogSphVisc note).
+                float fBpair = 0.5f * (cellBalsara[tgid] + cellBalsara[ncID]);
                 uint ncStart = cellStarts[ncID];
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 if (tid < ncCount) {
@@ -735,7 +797,7 @@ kernel void sph_force(
                             mu = max(mu, -p.muMax);               // viscous-stability clamp
                             float cbar = 0.5f * (ciCur + sh_c[k]);
                             float rbar = 0.5f * (rhoI + rhoJ);
-                            Pij = (-p.alpha * cbar * mu + p.beta * mu * mu) / rbar;
+                            Pij = fBpair * (-p.alpha * cbar * mu + p.beta * mu * mu) / rbar;
                             // PHYSICAL BRAKE BOUND: an explicit viscous impulse
                             // can at most STAGNATE the pair's approach this
                             // step (perfectly inelastic limit) — never reverse
@@ -980,8 +1042,19 @@ kernel void prolongate_coarse_to_fine(
     constant SpatialHashUniforms& fu [[buffer(1)]],   // FINE uniforms
     device const float* coarsePhi [[buffer(2)]],
     constant SpatialHashUniforms& cu [[buffer(3)]],   // COARSE uniforms
+    device float*       coarsePhiPrev [[buffer(4)]],  // last prolongated coarse Φ (zero at launch)
     uint cid [[thread_position_in_grid]])
 {
+    // DELTA-PROLONGATION (2026-07-12, slice-2 "moat" fix). Cold-start-only
+    // seeding went STALE: the coarse well keeps deepening as the galaxy
+    // collapses, but a few SOR sweeps/frame cannot carry that large-scale
+    // change into the fine interior — the patch became a relative potential
+    // HILL and infall parked in a shell at the ±R_fine rim (measured: peakShell
+    // r≈2.2, M<Rfine→0, M(<2) draining). Fix: every solve frame ADD the
+    // trilinear CHANGE in coarse Φ since the last prolongation. Tracks the
+    // evolving galaxy exactly, preserves the sweeps' accumulated fine detail,
+    // stays smooth (no staircase), and cold-starts for free (prev = zeros →
+    // first delta = the full seed).
     int N = fu.gridSize;
     uint total = uint(N) * uint(N) * uint(fu.gridSizeZ);
     if (cid >= total) return;
@@ -1009,7 +1082,9 @@ kernel void prolongate_coarse_to_fine(
     float p01 = mix(CPHI(c0.x, c0.y, c1.z), CPHI(c1.x, c0.y, c1.z), f.x);
     float p11 = mix(CPHI(c0.x, c1.y, c1.z), CPHI(c1.x, c1.y, c1.z), f.x);
     #undef CPHI
-    finePhi[cid] = mix(mix(p00, p10, f.y), mix(p01, p11, f.y), f.z);
+    float sampleNew = mix(mix(p00, p10, f.y), mix(p01, p11, f.y), f.z);
+    finePhi[cid] += sampleNew - coarsePhiPrev[cid];  // add the coarse CHANGE only
+    coarsePhiPrev[cid] = sampleNew;                  // remember what we've injected
 }
 
 // ── AMR: FINE POISSON with NESTED (coarse-Φ) BOUNDARY ───────────────────────

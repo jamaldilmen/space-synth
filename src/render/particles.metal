@@ -1277,29 +1277,66 @@ kernel void compute_physics(
         if (su.gridSize > 0 && hashFresh && !(u.debugFlags & (1u << 24)) && // TEMP-DIAG SS_PLAY_SKIP=dynfric
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(pz) < su.halfExtent) {
-            int fcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-            int fcy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-            int fcz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
-            uint fCell = uint((fcz * su.gridSize + fcy) * su.gridSize + fcx);
-            float rho   = (float(cellMass[fCell]) * (1.0f / 64.0f)) /
-                          max(su.cellSize * su.cellSize * su.cellSize, 1e-6f); // M_sun/sim³
-            float4 cv   = cellVelocities[fCell];
-            float  sigma = cv.w;                                  // per-frame dispersion (A.1)
-            float3 vpec = float3(vpx, vpy, vpz) - cv.xyz;         // peculiar velocity (per-frame)
-            float  speed = length(vpec);
-            if (rho > 1e-4f && sigma > 1e-5f && speed > 1e-6f) {
-                float X    = speed / (1.4142136f * sigma);
-                float Gx   = chandraG(X);
-                const float lnLambda = 13.6f;                     // ln(0.4N), N≈2e6
-                const float fRelax   = 4.0e11f;                   // derived time-compression
-                float speed3 = speed * speed * speed;
-                // Δ(per-frame displ) = a_df·dt²·f_relax; a_df∝dt²/speed³ (v=speed/dt)
-                float coef = (4.0f * 3.14159265f) * G1 * G1 * rho * lnLambda *
-                             mass * Gx * fRelax * (dt * dt * dt * dt) / speed3;
-                coef = min(coef, 0.5f);                           // never remove >50%/frame
-                shiftVx -= coef * vpec.x;
-                shiftVy -= coef * vpec.y;
-                shiftVz -= coef * vpec.z;
+            // HONEST DYNFRIC (2026-07-12 rework — docs/BUG_lines_2026-07-12.md).
+            // The old form was the deepest carver of the ruler-straight rest
+            // lanes: it dragged every star toward its cell's mean velocity read
+            // NEAREST-CELL (a field piecewise-constant at grid granularity) at
+            // up to 0.5/frame. Fixes, in order of guilt:
+            //  1. TRILINEAR, count-weighted sampling of the mean flow + σ over
+            //     the 8 surrounding cell centres → the drag target is smooth in
+            //     space, no per-cell discontinuity to condense onto (same class
+            //     of fix as the AMR prolongation staircase). ρ plain-trilinear.
+            //  2. Rate cap 0.5 → 0.1/frame: e-fold ≥ ~0.08 s ≈ half the core
+            //     free-fall time — still binds the collapse (its actual job,
+            //     and what the AMR slice-2 BOUNCE needs), integrator-safe.
+            //  3. ≥8 effective samples required: a 1–2 star "σ" is noise, not
+            //     a background to drag against.
+            // The ≤32/cell moments are an effectively RANDOM subsample (scatter
+            // keeps atomic-race winners in id order; ids are spatially random),
+            // so the estimators are unbiased; 8-cell blending cuts their noise
+            // to ~6%, ×0.1 rate → ≤0.6%/frame velocity noise. Fine.
+            float3 gcc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f;
+            int3 b0 = int3(floor(gcc));
+            float3 fw = clamp(gcc - float3(b0), 0.0f, 1.0f);
+            float wSum = 0.0f, sigSum = 0.0f, rhoSum = 0.0f;
+            float3 vSum3 = float3(0.0f);
+            for (int dz2 = 0; dz2 <= 1; dz2++)
+            for (int dy2 = 0; dy2 <= 1; dy2++)
+            for (int dx2 = 0; dx2 <= 1; dx2++) {
+                int3 cc = clamp(b0 + int3(dx2, dy2, dz2), int3(0), int3(su.gridSize - 1));
+                uint cID2 = uint((cc.z * su.gridSize + cc.y) * su.gridSize + cc.x);
+                float wt = (dx2 ? fw.x : 1.0f - fw.x) *
+                           (dy2 ? fw.y : 1.0f - fw.y) *
+                           (dz2 ? fw.z : 1.0f - fw.z);
+                rhoSum += float(cellMass[cID2]) * wt;             // mass field: plain trilinear
+                float cw = float(min(cellCounts[cID2], 32u));      // moments: weight by sample size
+                if (cw < 0.5f) continue;
+                float4 cv2 = cellVelocities[cID2];
+                vSum3  += cv2.xyz * (wt * cw);
+                sigSum += cv2.w   * (wt * cw);
+                wSum   += wt * cw;
+            }
+            if (wSum >= 8.0f) {
+                float3 vmeanT = vSum3 / wSum;
+                float  sigma  = sigSum / wSum;                    // per-frame dispersion (A.1)
+                float  rho    = (rhoSum * (1.0f / 64.0f)) /
+                                max(su.cellSize * su.cellSize * su.cellSize, 1e-6f); // M_sun/sim³
+                float3 vpec = float3(vpx, vpy, vpz) - vmeanT;      // peculiar velocity (per-frame)
+                float  speed = length(vpec);
+                if (rho > 1e-4f && sigma > 1e-5f && speed > 1e-6f) {
+                    float X    = speed / (1.4142136f * sigma);
+                    float Gx   = chandraG(X);
+                    const float lnLambda = 13.6f;                     // ln(0.4N), N≈2e6
+                    const float fRelax   = 4.0e11f;                   // derived time-compression
+                    float speed3 = speed * speed * speed;
+                    // Δ(per-frame displ) = a_df·dt²·f_relax; a_df∝dt²/speed³ (v=speed/dt)
+                    float coef = (4.0f * 3.14159265f) * G1 * G1 * rho * lnLambda *
+                                 mass * Gx * fRelax * (dt * dt * dt * dt) / speed3;
+                    coef = min(coef, 0.1f);            // e-fold ≥ ~0.08 s (was 0.5 = the lane hammer)
+                    shiftVx -= coef * vpec.x;
+                    shiftVy -= coef * vpec.y;
+                    shiftVz -= coef * vpec.z;
+                }
             }
         }
 

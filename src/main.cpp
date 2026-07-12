@@ -235,6 +235,11 @@ int main() {
   }
   // TEMP substrate-noise hunt: kill the legacy grid pressure for baseline A/B.
   if (getenv("SS_NO_LEGACY_PRESSURE")) app.uiTogNoLegacyPressure = true;
+  // SS_SPH_VISC=1 → bit12 shock viscosity+heating ON without the SS_SPH_TEST
+  // reseed (that flag rebuilds the field into two test spheres — unusable for
+  // in-situ runs). Needed for the AMR bounce: shocks are the honest dissipation
+  // that binds a COLD radial collapse (dynfric can't — σ→0, drag ∝ 1/v³).
+  if (getenv("SS_SPH_VISC")) app.uiTogSphVisc = true;
 
   // 🔬 TEMP-DIAG isolation ladder (docs/BUG_lines_2026-07-12.md): SS_INERT=1
   // turns EVERY optional force OFF (all bhToggles force bits cleared, legacy
@@ -2250,6 +2255,18 @@ int main() {
         }
         printf("  [VEL] mean v=(%.4f %.4f %.4f) sim/frame  voices=%d\n",
                svx / n, svy / n, svz / n, vc);
+      }
+      // Integration-accuracy budget (same numbers as the HUD [accuracy] row):
+      // how many gravity kicks hit the c·dt clamp this frame + the worst
+      // offender. The AMR fine well shrinks orbital periods ~(1/0.03)^1.5 —
+      // if this population explodes as the core assembles, the BOUNCE is
+      // integration heating, and the fix is sub-stepping, not more force work.
+      {
+        PhysicsStats sAcc = renderer.getPhysicsStats();
+        printf("  [ACC] clamped=%d (%.4f%%)  worst=%.2e c*dt\n",
+               sAcc.accOverCount,
+               100.0f * (float)sAcc.accOverCount / (float)std::max(app.uiParticleCount, 1),
+               sAcc.maxAccRatio);
       }
 
       // 🔬 TEMP-DIAG (docs/BUG_lines_2026-07-12.md): SS_DUMP=/path.bin → one-

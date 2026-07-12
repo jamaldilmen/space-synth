@@ -55,6 +55,8 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> prefixSumAddPipeline = nil;
   id<MTLComputePipelineState> scatterPipeline = nil;
   id<MTLComputePipelineState> centroidPipeline = nil; // per-cell centroid (cohesion)
+  id<MTLComputePipelineState> balsaraPipeline = nil;  // per-cell shear/shock switch (bit12 gate)
+  id<MTLBuffer> cellBalsaraBuffer = nil;              // float per cell: 1 shock … 0 shear
   id<MTLComputePipelineState> poissonPipeline = nil;  // PM gravity: red-black SOR Poisson sweep
   id<MTLComputePipelineState> sphDensityPipeline = nil; // SPH ρ per particle (reaction engine slice 1)
   id<MTLComputePipelineState> sphPressurePipeline = nil; // SPH EOS pressure (reaction engine slice 2)
@@ -111,8 +113,8 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> prolongatePipeline = nil;  // seed fine Φ from coarse Φ (2-level multigrid)
   id<MTLBuffer> fineCellMassBuffer = nil;    // Σ mass ×64 in the fine 128³ grid over ±kAmrFineExtent
   id<MTLBuffer> finePhiBuffer = nil;         // fine PM potential Φ (warm-started)
+  id<MTLBuffer> coarsePhiPrevBuffer = nil;   // per-FINE-cell record of the coarse Φ already injected (delta-prolongation)
   id<MTLBuffer> fineHashUniformBuffer = nil; // SpatialHashUniforms with halfExtent=kAmrFineExtent
-  bool finePhiInitialized = false;
   float lastMFineEnc = 0.0f;                 // M within kAmrFineExtent (radial profile, 1-frame lag) → fine BC monopole
   // SPH reaction engine (slice 0 plumbing): per-particle smoothed density ρ and
   // EOS pressure P, float each, sized to particle count (~28 MB at the 7M peak).
@@ -297,13 +299,13 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   const char *spatialKernels[] = {"assign_cells",     "count_cells",
                                   "prefix_sum_local", "prefix_sum_blocks",
                                   "prefix_sum_add",   "scatter_particles",
-                                  "compute_cell_centroids"};
+                                  "compute_cell_centroids", "cell_balsara"};
   id<MTLComputePipelineState> *spatialPipelines[] = {
       &impl_->assignCellsPipeline,    &impl_->countCellsPipeline,
       &impl_->prefixSumLocalPipeline, &impl_->prefixSumBlocksPipeline,
       &impl_->prefixSumAddPipeline,   &impl_->scatterPipeline,
-      &impl_->centroidPipeline};
-  for (int i = 0; i < 7; i++) {
+      &impl_->centroidPipeline,       &impl_->balsaraPipeline};
+  for (int i = 0; i < 8; i++) {
     id<MTLFunction> fn = [impl_->library
         newFunctionWithName:[NSString stringWithUTF8String:spatialKernels[i]]];
     if (fn) {
@@ -711,6 +713,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->fineCellMassBuffer, Impl::kTotalCells * sizeof(uint32_t)); // AMR fine grid mass
   allocIfNeeded(impl_->finePhiBuffer, Impl::kTotalCells * sizeof(float));         // AMR fine Φ
   allocIfNeeded(impl_->fineHashUniformBuffer, sizeof(SpatialHashUniforms));       // AMR fine uniforms
+  allocIfNeeded(impl_->coarsePhiPrevBuffer, Impl::kTotalCells * sizeof(float));   // AMR delta-prolongation memory (zeroed by alloc)
   allocIfNeeded(impl_->densityBuffer, count * sizeof(float));  // SPH ρ per particle (slice 0 plumbing)
   allocIfNeeded(impl_->mergeClaimBuffer, count * sizeof(uint32_t)); // cross-cell merge claims
   allocIfNeeded(impl_->pressureBuffer, count * sizeof(float)); // SPH P per particle (slice 0 plumbing)
@@ -745,6 +748,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->sortedParticlesBuffer, (NSUInteger)count * 48); // HOT sorted records (48B, was 80B Particle)
   allocIfNeeded(impl_->cellCentroidsBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellVelocitiesBuffer, Impl::kTotalCells * 16); // float4/cell
+  allocIfNeeded(impl_->cellBalsaraBuffer, Impl::kTotalCells * sizeof(float)); // shear/shock switch (zeroed by alloc)
   allocIfNeeded(impl_->cellMaxPartialsBuffer,
                 ((Impl::kTotalCells + 255) / 256) * 8); // {count,cid}/group
   allocIfNeeded(impl_->spatialHashUniformBuffer, sizeof(SpatialHashUniforms));
@@ -1526,6 +1530,26 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
+      // Phase 5a: per-cell BALSARA switch (shear vs shock) from the fresh
+      // cell mean-velocity field — gates the bit12 viscosity in sph_force so
+      // the rotating rest map cannot shock-heat itself (the 61d3d40 blob).
+      // Same gate as the centroid pass: its output is only consumed by SPH,
+      // and a skipped centroid pass would leave it reading stale means.
+      if (balsaraPipeline && cellBalsaraBuffer && !skipCentroid &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:balsaraPipeline];
+        [comp setBuffer:cellVelocitiesBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellCountsBuffer offset:0 atIndex:1];
+        [comp setBuffer:cellBalsaraBuffer offset:0 atIndex:2];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+        NSUInteger tgB = std::min(
+            (NSUInteger)256, balsaraPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgB, 1, 1)];
+        [comp endEncoding];
+      }
+
       // SPH CADENCE: at rest the passes run every kSphCadence-th frame — rest
       // dynamical times are hundreds of frames, so a 2-frame-stale force field
       // is well inside the integration error already accepted. The force
@@ -1659,6 +1683,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBytes:&sphParams length:sizeof(sphParams) atIndex:7];
         [comp setBuffer:uBuffer offset:0 atIndex:8];
         [comp setBuffer:sphClosureBuffer offset:0 atIndex:9]; // TEMP-CLOSURE du splits
+        [comp setBuffer:cellBalsaraBuffer offset:0 atIndex:10]; // shear/shock gate on the Monaghan term
         [comp dispatchThreadgroups:MTLSizeMake(Impl::kTotalCells, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
         [comp endEncoding];
@@ -1758,20 +1783,22 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // galaxy). Without this the interior stayed flat → gravity in the patch
         // came out WEAKER than coarse and the core spread (measured). The sweeps
         // below then only add the short-wavelength interior detail (fast for SOR).
-        // COLD-START ONLY (2026-07-12 perf+accuracy fix): re-prolongating every
-        // solve frame destroyed the warm start — the sweeps below re-smoothed
-        // the same seed forever instead of CONVERGING across frames, and the
-        // extra 2.1M-thread pass burned frame time. The SOR boundary rows are
-        // re-pinned to coarse Φ every sweep, so a once-seeded interior stays
-        // anchored to the live coarse field.
-        if (prolongatePipeline && !finePhiInitialized) {
-          finePhiInitialized = true;
+        // DELTA-PROLONGATION every solve frame (2026-07-12 "moat" fix). The
+        // cold-start-only seed went STALE as the coarse well deepened — the
+        // fine interior became a relative potential HILL and infall parked in
+        // a shell at the ±R_fine rim (measured: peakShell r≈2.2, M<Rfine→0).
+        // The kernel now adds only the trilinear CHANGE in coarse Φ since the
+        // last prolongation (coarsePhiPrev): the large scale tracks the live
+        // galaxy, the sweeps' accumulated fine detail SURVIVES, and cold start
+        // falls out of the zero-initialized prev buffer.
+        if (prolongatePipeline && coarsePhiPrevBuffer) {
           id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
           [comp setComputePipelineState:prolongatePipeline];
           [comp setBuffer:finePhiBuffer offset:0 atIndex:0];
           [comp setBuffer:fineHashUniformBuffer offset:0 atIndex:1];
           [comp setBuffer:phiBuffer offset:0 atIndex:2];                // COARSE Φ
           [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3]; // COARSE uniforms
+          [comp setBuffer:coarsePhiPrevBuffer offset:0 atIndex:4];      // injected-Φ memory
           NSUInteger tgR = std::min((NSUInteger)256,
                                     prolongatePipeline.maxTotalThreadsPerThreadgroup);
           [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)

@@ -107,6 +107,8 @@ struct Renderer::Impl {
   bool phiInitialized = false;               // zero Φ once on first alloc (warm-start persists after)
   // ── AMR nested-mesh gravity (Slice 1 plumbing, gated by SS_AMR) ──
   id<MTLComputePipelineState> binFineMassPipeline = nil; // fine-grid mass binning (bin_fine_mass)
+  id<MTLComputePipelineState> poissonFinePipeline = nil; // fine SOR with nested (coarse-Φ) boundary
+  id<MTLComputePipelineState> prolongatePipeline = nil;  // seed fine Φ from coarse Φ (2-level multigrid)
   id<MTLBuffer> fineCellMassBuffer = nil;    // Σ mass ×64 in the fine 128³ grid over ±kAmrFineExtent
   id<MTLBuffer> finePhiBuffer = nil;         // fine PM potential Φ (warm-started)
   id<MTLBuffer> fineHashUniformBuffer = nil; // SpatialHashUniforms with halfExtent=kAmrFineExtent
@@ -348,6 +350,28 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     if (error) NSLog(@"bin_fine_mass pipeline error: %@", error);
   } else {
     NSLog(@"Missing bin_fine_mass kernel");
+  }
+
+  // ── AMR fine Poisson (nested coarse-Φ boundary) ─────────────────────
+  id<MTLFunction> poissonFineFunc =
+      [impl_->library newFunctionWithName:@"poisson_sor_fine"];
+  if (poissonFineFunc) {
+    impl_->poissonFinePipeline =
+        [impl_->device newComputePipelineStateWithFunction:poissonFineFunc error:&error];
+    if (error) NSLog(@"poisson_sor_fine pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing poisson_sor_fine kernel");
+  }
+
+  // ── AMR prolongation (coarse Φ → fine grid initial guess) ───────────
+  id<MTLFunction> prolongFunc =
+      [impl_->library newFunctionWithName:@"prolongate_coarse_to_fine"];
+  if (prolongFunc) {
+    impl_->prolongatePipeline =
+        [impl_->device newComputePipelineStateWithFunction:prolongFunc error:&error];
+    if (error) NSLog(@"prolongate pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing prolongate_coarse_to_fine kernel");
   }
 
   // ── SPH density pipeline (reaction engine slice 1) ──────────────────
@@ -1211,6 +1235,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       skipCellMax     = strstr(sk, "cellmax") != nullptr;
       skipStats       = strstr(sk, "stats") != nullptr;
     }
+    // 🔬 TEMP-DIAG isolation ladder (docs/BUG_lines_2026-07-12.md): SS_INERT
+    // must also silence merge_stars — it is NOT gated by bhToggles (only by
+    // notPlaying), so clearing the force bits in main.cpp can't reach it.
+    // SS_INERT_KEEP containing "merge" re-enables it (ladder rung).
+    if (getenv("SS_INERT")) {
+      const char *keep = getenv("SS_INERT_KEEP");
+      if (!(keep && strstr(keep, "merge"))) skipMerge = true;
+    }
   }
   if (hasCompute && physicsPipeline) {
     // Preserve debugFlags set by computeStep(); only add reset bit if needed
@@ -1249,7 +1281,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // instead of plunging from inside it. 1e5 M☉ → ISCO ≈ 0.5 sim. TUNABLE knob:
     // bigger = faster/tighter orbits (ISCO grows), smaller = wider/slower.
     physicsUniforms.centerGM = (float)space::units::gmSim(4297000.0);
-    physicsUniforms.bhToggles = bhToggles;    // UI on/off bitmask → physics gates
+    static int amrOn = -1;
+    if (amrOn < 0) amrOn = getenv("SS_AMR") ? 1 : 0;   // AMR nested-mesh gravity (default off)
+    physicsUniforms.bhToggles = bhToggles | (amrOn ? 0x8000u : 0u); // bit15 = AMR fine force (Slice 2)
     physicsUniforms.horizonR = lastHorizonR;  // honest r_h (1-frame lag) → pressure-yield in the kernel
     physicsUniforms.bhX = bhPosX;
     physicsUniforms.bhY = bhPosY;
@@ -1317,6 +1351,15 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       su.gridSizeZ = kGridSize;
       memcpy(spatialHashUniformBuffer.contents, &su,
              sizeof(SpatialHashUniforms));
+      // AMR (Slice 2): keep the fine uniforms valid EVERY frame so compute_physics
+      // can sample −∇Φ_fine even on non-solve frames. Same 128³ over ±kAmrFineExtent.
+      if (amrOn && fineHashUniformBuffer) {
+        SpatialHashUniforms fu = su;
+        fu.halfExtent = Impl::kAmrFineExtent;
+        fu.cellSize = 2.0f * fu.halfExtent / (float)kGridSize;
+        fu.invCellSize = (float)kGridSize / (2.0f * fu.halfExtent);
+        memcpy(fineHashUniformBuffer.contents, &fu, sizeof(SpatialHashUniforms));
+      }
 
       // Clear cell counts, masses and offsets
       id<MTLBlitCommandEncoder> clearBlit = [cmdBuf blitCommandEncoder];
@@ -1356,6 +1399,17 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [clearBlit fillBuffer:radialMassBuffer   // 256-shell horizon profile, re-accumulated each frame
                       range:NSMakeRange(0, 256 * sizeof(uint32_t))
                       value:0];
+      // compute_physics adds sphForce[id] to gacc for EVERY particle (bit11), but
+      // sph_force only WRITES the ≤32 particles per cell that scatter_particles
+      // kept. An unwritten id used to keep its LAST force forever → a frozen
+      // constant acceleration re-applied every frame → straight-line ejecta at the
+      // speed cap, with no u debit booked (W huge, dyn=0). Zero it each frame:
+      // unsampled ⇒ no SPH force this frame.
+      if (sphForceBuffer) {
+        [clearBlit fillBuffer:sphForceBuffer
+                        range:NSMakeRange(0, (NSUInteger)particleCount * 4 * sizeof(float))
+                        value:0];
+      }
       [clearBlit endEncoding];
 
       // Phase 1+2 FUSED (2026-07-07): count_cells computes cell ids itself —
@@ -1672,24 +1726,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                 physicsUniforms.dt, ph[(64 * 128 + 64) * 128 + 64]);
       }
 
-      // ── AMR SLICE 1: FINE-GRID PM — plumbing/measurement, gated by SS_AMR ────
+      // ── AMR FINE-GRID PM SOLVE (Slice 1 plumbing; Slice 2 wires its force) ──
       // Solve a SECOND Poisson field on a 128³ grid over ±kAmrFineExtent at the
-      // origin (cellSize ~0.031 sim). NOT wired to any force — this proves the
-      // fine grid resolves a deeper/sharper central well than the coarse 1.0-sim
-      // grid can. Default OFF → zero cost/risk to the shipped star map.
-      static int amrOn = -1;
-      if (amrOn < 0) amrOn = getenv("SS_AMR") ? 1 : 0;
-      if (amrOn && binFineMassPipeline && poissonPipeline && fineCellMassBuffer &&
+      // origin (cellSize ~0.031 sim), so gravity resolves BELOW one coarse cell.
+      // Fine uniforms are populated every frame up in the uniform block.
+      // Default OFF (SS_AMR) → zero cost/risk to the shipped star map.
+      if (amrOn && binFineMassPipeline && poissonFinePipeline && fineCellMassBuffer &&
           finePhiBuffer && fineHashUniformBuffer && pmGravityOn && sorFrame &&
           physicsUniforms.totalAmplitude < 0.02f) {
-        SpatialHashUniforms fu;
-        fu.gridSize = Impl::kGridSize;
-        fu.gridSizeZ = Impl::kGridSize;
-        fu.particleCount = particleCount;
-        fu.halfExtent = Impl::kAmrFineExtent;
-        fu.cellSize = 2.0f * fu.halfExtent / (float)Impl::kGridSize;
-        fu.invCellSize = (float)Impl::kGridSize / (2.0f * fu.halfExtent);
-        memcpy(fineHashUniformBuffer.contents, &fu, sizeof(fu));
         // clear fine mass → bin (skip-outside) → solve.
         {
           id<MTLBlitCommandEncoder> zb = [cmdBuf blitCommandEncoder];
@@ -1709,29 +1753,62 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
               threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
           [comp endEncoding];
         }
-        if (!finePhiInitialized) {
-          id<MTLBlitCommandEncoder> zb = [cmdBuf blitCommandEncoder];
-          [zb fillBuffer:finePhiBuffer
-                   range:NSMakeRange(0, Impl::kTotalCells * sizeof(float)) value:0];
-          [zb endEncoding];
+        // PROLONGATE: seed the fine grid with the coarse solution so SOR starts
+        // from a field that ALREADY carries the full large-scale gradient (the
+        // galaxy). Without this the interior stayed flat → gravity in the patch
+        // came out WEAKER than coarse and the core spread (measured). The sweeps
+        // below then only add the short-wavelength interior detail (fast for SOR).
+        // COLD-START ONLY (2026-07-12 perf+accuracy fix): re-prolongating every
+        // solve frame destroyed the warm start — the sweeps below re-smoothed
+        // the same seed forever instead of CONVERGING across frames, and the
+        // extra 2.1M-thread pass burned frame time. The SOR boundary rows are
+        // re-pinned to coarse Φ every sweep, so a once-seeded interior stays
+        // anchored to the live coarse field.
+        if (prolongatePipeline && !finePhiInitialized) {
           finePhiInitialized = true;
+          id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+          [comp setComputePipelineState:prolongatePipeline];
+          [comp setBuffer:finePhiBuffer offset:0 atIndex:0];
+          [comp setBuffer:fineHashUniformBuffer offset:0 atIndex:1];
+          [comp setBuffer:phiBuffer offset:0 atIndex:2];                // COARSE Φ
+          [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:3]; // COARSE uniforms
+          NSUInteger tgR = std::min((NSUInteger)256,
+                                    prolongatePipeline.maxTotalThreadsPerThreadgroup);
+          [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(tgR, 1, 1)];
+          [comp endEncoding];
         }
         float Gsim = physicsUniforms.gravGM / std::max(physicsUniforms.massTotal, 1.0f);
-        // Fine BC monopole = gmSim(M within R_fine): the isolated interior field
-        // (exterior halo adds a near-constant offset that doesn't change −∇Φ).
-        float fineGM = (float)space::units::gmSim((double)std::max(lastMFineEnc, 0.0f));
-        float fineParams[2] = {(float)(4.0 * 3.14159265358979) * Gsim, fineGM};
+        // NESTED BC: the fine patch's boundary is the COARSE Φ (which carries all
+        // the mass OUTSIDE the patch). sp.y is unused by poisson_sor_fine.
+        float fineParams[2] = {(float)(4.0 * 3.14159265358979) * Gsim, 0.0f};
         NSUInteger tgP = std::min((NSUInteger)256,
-                                  poissonPipeline.maxTotalThreadsPerThreadgroup);
-        for (int sweep = 0; sweep < 80; sweep++) {
+                                  poissonFinePipeline.maxTotalThreadsPerThreadgroup);
+        // 80 sweeps was the COLD-START number. With prolongation the solve now
+        // starts from the correct large-scale field and only has to add
+        // short-wavelength interior detail — which SOR kills fast. 16 sweeps.
+        // (80 sweeps × 2 colours over 2.1M cells every other frame was doubling
+        // the whole PM cost for nothing: 10 fps with merge on.) Tunable via
+        // SS_AMR_SWEEPS if we need to trade accuracy back in.
+        static int kFineSweeps = 0;
+        if (kFineSweeps == 0) {
+          kFineSweeps = 16;
+          if (const char *fs = getenv("SS_AMR_SWEEPS")) {
+            int v = atoi(fs);
+            if (v >= 1 && v <= 200) kFineSweeps = v;
+          }
+        }
+        for (int sweep = 0; sweep < kFineSweeps; sweep++) {
           for (uint color = 0; color < 2u; color++) {
             id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
-            [comp setComputePipelineState:poissonPipeline];
+            [comp setComputePipelineState:poissonFinePipeline];
             [comp setBuffer:fineCellMassBuffer offset:0 atIndex:0];
             [comp setBuffer:finePhiBuffer offset:0 atIndex:1];
             [comp setBuffer:fineHashUniformBuffer offset:0 atIndex:2];
             [comp setBytes:&fineParams length:sizeof(fineParams) atIndex:3];
             [comp setBytes:&color length:sizeof(color) atIndex:4];
+            [comp setBuffer:phiBuffer offset:0 atIndex:5];                 // COARSE Φ → fine boundary
+            [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:6];  // COARSE uniforms
             [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(tgP, 1, 1)];
             [comp endEncoding];
@@ -1863,6 +1940,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp setBuffer:sphForceBuffer offset:0 atIndex:16]; // SPH pressure accel (bit11, slice 2b)
         [comp setBuffer:sphClosureBuffer offset:0 atIndex:17]; // TEMP-CLOSURE W_sph
         [comp setBuffer:uBuffer offset:0 atIndex:18]; // SPH u → display radiance-temp bridge
+        [comp setBuffer:finePhiBuffer offset:0 atIndex:19];         // AMR fine Φ (bit15: force = −∇Φ_fine)
+        [comp setBuffer:fineHashUniformBuffer offset:0 atIndex:20]; // AMR fine-grid uniforms
       }
 
       NSUInteger tg =

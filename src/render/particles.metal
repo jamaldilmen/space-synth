@@ -390,6 +390,8 @@ kernel void compute_physics(
     device const float4* sphForce [[buffer(16)]],    // SPH pressure acceleration (sph_force, slice 2b); added to gacc under bit11
     device atomic_int* sphClosure [[buffer(17)]],    // TEMP-CLOSURE ledger ×1e6: [0]=W done by the SPH force (F·Δx)
     device const float* sphU [[buffer(18)]],         // SPH specific internal energy u_i (id-indexed, persistent)
+    device const float* finePhi [[buffer(19)]],      // AMR fine PM potential Φ (bit15; nested grid ±fsu.halfExtent)
+    constant SpatialHashUniforms& fsu [[buffer(20)]],// AMR fine-grid uniforms (halfExtent=kAmrFineExtent)
     uint id [[thread_position_in_grid]])
 {
     if (int(id) >= u.particleCount) return;
@@ -1272,7 +1274,7 @@ kernel void compute_physics(
         // (A.1), v_pec = star velocity − local mean. f_relax compresses the real
         // relaxation time (t_cc≈78 Myr ⇒ ~1000 sim-time units watchable) — a
         // time-lapse choice, not a force cheat (per root-cause doc).
-        if (su.gridSize > 0 && hashFresh &&
+        if (su.gridSize > 0 && hashFresh && !(u.debugFlags & (1u << 24)) && // TEMP-DIAG SS_PLAY_SKIP=dynfric
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(pz) < su.halfExtent) {
             int fcx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
@@ -1298,6 +1300,36 @@ kernel void compute_physics(
                 shiftVx -= coef * vpec.x;
                 shiftVy -= coef * vpec.y;
                 shiftVz -= coef * vpec.z;
+            }
+        }
+
+        // ── AMR FINE FORCE (bit15) — the resolution unlock ───────────────────
+        // Inside the fine box, REPLACE coarse gravity with −∇Φ from the fine
+        // 128³ grid (cellSize ~0.031 sim → softening ~0.031, not the coarse
+        // 1.0). Blended back to coarse near the boundary so there's no force
+        // discontinuity. This is what lets the core concentrate BELOW one coarse
+        // cell — the whole point of the nested mesh. Fine Φ is solved (renderer,
+        // Slice 1) before this kernel runs. comShift pins the core to the origin
+        // where the fine patch sits.
+        if (u.bhToggles & 0x8000u) {
+            float rrF = length(gpos);
+            if (rrF < fsu.halfExtent &&
+                fabs(px) < fsu.halfExtent && fabs(py) < fsu.halfExtent &&
+                fabs(pz) < fsu.halfExtent) {
+                int Nf = fsu.gridSize;
+                int fi = clamp(int((px + fsu.halfExtent) * fsu.invCellSize), 1, Nf - 2);
+                int fj = clamp(int((py + fsu.halfExtent) * fsu.invCellSize), 1, Nf - 2);
+                int fk = clamp(int((pz + fsu.halfExtent) * fsu.invCellSize), 1, Nf - 2);
+                uint fc = uint((fk * Nf + fj) * Nf + fi);
+                float finv2h = 0.5f * fsu.invCellSize;      // 1/(2h_fine)
+                float fax = (finePhi[fc + 1u]            - finePhi[fc - 1u])            * finv2h;
+                float fay = (finePhi[fc + uint(Nf)]      - finePhi[fc - uint(Nf)])      * finv2h;
+                float faz = (finePhi[fc + uint(Nf * Nf)] - finePhi[fc - uint(Nf * Nf)]) * finv2h;
+                float3 gaccFine = -float3(fax, fay, faz);
+                float wInner = fsu.halfExtent * 0.75f;      // full fine inside 75% of the box
+                float w = clamp((fsu.halfExtent - rrF) /
+                                max(fsu.halfExtent - wInner, 1e-4f), 0.0f, 1.0f);
+                gacc = mix(gacc, gaccFine, w);
             }
         }
 
@@ -2212,29 +2244,54 @@ kernel void compute_physics(
     // attack, 1.5–2.5=decay, 2.5–3.5=sustain, 3.5–4.5=release.
     {
         float ph = u.envelopePhase;
-        float dynamic_cap;
-        if (ph < 0.5f)        dynamic_cap = STAR_MAP_CAP;                                       // silence = wide STAR MAP (overflows frame)
-        else if (ph < 1.5f)   dynamic_cap = mix(STAR_MAP_CAP, ORBIT_R_CHLADNI, ph - 0.5f);      // attack: stars rush IN toward the Chladni/supernova
-        else if (ph < 3.5f)   dynamic_cap = ORBIT_R_CHLADNI;                                    // decay/sustain
-        else                  dynamic_cap = STAR_MAP_CAP; // release: NO scripted crush — the
-                                                          // collapse onto the hole is gravity's
-                                                          // job (drag-driven inspiral), and the
-                                                          // XY squeeze was the third L-killer
-                                                          // (it erased orbits → ball, no disk)
-        // Yield the cap while spinning — otherwise the tumbling body periodically
-        // hits the XY cap and gets yanked, flickering between two states.
-        dynamic_cap += (1.0f - spinSuppress) * 8.0f;
-        float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
-        if (rXY2 > dynamic_cap * dynamic_cap) {
-            float rXY = sqrt(rXY2);
-            float scale = dynamic_cap / rXY;
-            nextPos.x *= scale;
-            nextPos.y *= scale;
-            float2 radialDir = float2(nextPos.x, nextPos.y) * (1.0f / dynamic_cap);
-            float vRad = finalV.x * radialDir.x + finalV.y * radialDir.y;
-            if (vRad > 0.0f) {
-                finalV.x -= vRad * radialDir.x;
-                finalV.y -= vRad * radialDir.y;
+        // ── THE TUBE, FIXED (2026-07-12, Jamal: "we want the tube when we PLAY,
+        // not when we don't"). The XY-only clamp below bounds x,y and leaves z
+        // FREE — that is a CYLINDER by construction, and it was applied AT REST
+        // too. So the silent star map was trapped in a tube: a flat wall at
+        // rXY=100 (stars piled on it, since the clamp also kills their outward
+        // radial velocity — hence the STRAIGHT LINES; nothing in nature is
+        // straight), unbounded along z (hence the elongated tube zoomed out),
+        // and therefore NO proper centre for a hole to form at — density smears
+        // along the free axis instead of collapsing to a point. The growing
+        // wall pile-up is also a few grid cells with enormous counts, which is
+        // why fps decayed over time and RECOVERED after playing (play switches
+        // the cap and redistributes them). The constant's own comment said
+        // "silence: NO cap (the star map has no tube limit)" — the tube was
+        // never intended here; only the PLAY state wants a cylindrical cavity.
+        bool playCap = (ph >= 0.5f && ph < 3.5f);   // attack/decay/sustain = the Chladni tube
+        if (playCap) {
+            // PLAY: cylindrical (XY) cavity — the tube is the instrument's shape.
+            float dynamic_cap = (ph < 1.5f) ? mix(STAR_MAP_CAP, ORBIT_R_CHLADNI, ph - 0.5f)
+                                            : ORBIT_R_CHLADNI;
+            // Yield the cap while spinning — otherwise the tumbling body periodically
+            // hits the XY cap and gets yanked, flickering between two states.
+            dynamic_cap += (1.0f - spinSuppress) * 8.0f;
+            float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
+            if (rXY2 > dynamic_cap * dynamic_cap) {
+                float rXY = sqrt(rXY2);
+                float scale = dynamic_cap / rXY;
+                nextPos.x *= scale;
+                nextPos.y *= scale;
+                float2 radialDir = float2(nextPos.x, nextPos.y) * (1.0f / dynamic_cap);
+                float vRad = finalV.x * radialDir.x + finalV.y * radialDir.y;
+                if (vRad > 0.0f) {
+                    finalV.x -= vRad * radialDir.x;
+                    finalV.y -= vRad * radialDir.y;
+                }
+            }
+        } else {
+            // REST / RELEASE: a star map is a 3D CLUSTER, not a tube. Bound the
+            // TRUE radius |r| in all three axes (a sphere — no flat wall, no free
+            // axis), so the field has a real centre and gravity can collapse to
+            // a point. Same outward-velocity kill, now radial in 3D.
+            float capR = STAR_MAP_CAP + (1.0f - spinSuppress) * 8.0f;
+            float r2 = dot(nextPos, nextPos);
+            if (r2 > capR * capR) {
+                float r = sqrt(r2);
+                float3 rdir = nextPos / r;
+                nextPos = rdir * capR;
+                float vRad = dot(finalV, rdir);
+                if (vRad > 0.0f) finalV -= vRad * rdir;   // no escape past the sphere
             }
         }
     }

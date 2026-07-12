@@ -659,7 +659,17 @@ kernel void sph_force(
     // per-cell adaptive from the CFL ratio (threadgroup-uniform via simd_max
     // over the cell's 32 lanes = one simdgroup → barriers stay uniform);
     // cold cells pay nothing (N=1).
-    float myR = active ? (ci + length(vi)) * p.dtU / max(h, 1e-6f) : 0.0f;
+    // SUB-STEP CRITERION — SOUND SPEED ONLY (fixed 2026-07-11).
+    // This sub-step exists for the THERMAL (u↔v pressure) stiffness — see the
+    // note above: "positions move ≤3% of h per frame even at c — geometry is
+    // resolved; the u↔v exchange is what needs sub-cycling." Including the BULK
+    // velocity |v_i| contradicted that: in a collapsing core the stars are FAST
+    // but COLD (u at the floor ⇒ P≈0), so it ran the full 27-cell × 32-neighbour
+    // loop up to 8× to compute a force that is essentially ZERO. Measured: it was
+    // 100% of the density-dependent cost (compute 21→88 ms as the core densified;
+    // flat 12 ms with the pass skipped). Keyed on c_s alone, cold-fast cores cost
+    // N=1 and genuinely hot (stiff) regions still sub-cycle exactly as before.
+    float myR = active ? ci * p.dtU / max(h, 1e-6f) : 0.0f;
     uint NSub = uint(clamp(ceil(simd_max(myR) * 4.0f), 1.0f, 8.0f));
     float dtSub = p.dtU / float(NSub);
     float u0 = (active && originId < uint(u.particleCount)) ? uInOut[originId]
@@ -953,6 +963,101 @@ kernel void poisson_sor(
     // ~10× faster low-frequency convergence than plain GS, which is what binds).
     const float omega = 1.9f;
     phi[cid] = phi[cid] + omega * (phiStar - phi[cid]);
+}
+
+// ── AMR: PROLONGATION — seed the fine grid with the coarse solution ─────────
+// Two-level multigrid, the standard move. SOR on a 128³ box cannot propagate
+// boundary information 64 cells to the centre in a practical sweep count, so a
+// fine solve started from a stale/zero field leaves the INTERIOR too flat: it
+// never picks up the exterior galaxy's gradient, gravity in the patch comes out
+// WEAKER than the coarse field, and the core spreads instead of collapsing
+// (measured 2026-07-11, slice-2 attempts 1 and 2). Seeding every fine cell with
+// the coarse Φ at its world position gives SOR a starting field that ALREADY
+// carries the full large-scale gradient; the sweeps then only have to add the
+// short-wavelength interior detail — which is exactly what SOR converges on fast.
+kernel void prolongate_coarse_to_fine(
+    device float*       finePhi   [[buffer(0)]],
+    constant SpatialHashUniforms& fu [[buffer(1)]],   // FINE uniforms
+    device const float* coarsePhi [[buffer(2)]],
+    constant SpatialHashUniforms& cu [[buffer(3)]],   // COARSE uniforms
+    uint cid [[thread_position_in_grid]])
+{
+    int N = fu.gridSize;
+    uint total = uint(N) * uint(N) * uint(fu.gridSizeZ);
+    if (cid >= total) return;
+    int i = int(cid) % N;
+    int j = (int(cid) / N) % N;
+    int k = int(cid) / (N * N);
+    float3 p = (float3(i, j, k) + 0.5f) * fu.cellSize - fu.halfExtent;  // world pos
+    int Nc = cu.gridSize;
+    // TRILINEAR prolongation (2026-07-12 slice-2 fix). The old NEAREST-cell
+    // sample seeded a 32-fine-cell STAIRCASE every solve frame; 16 SOR sweeps
+    // cannot smooth the step faces, so −∇Φ_fine was ~zero inside blocks with
+    // spike-kicks at coarse-cell faces — measured: mass EJECTED from the fine
+    // box (M<Rfine→0), core unbound. Standard multigrid prolongation is
+    // (tri)linear: the seed then carries the coarse field's smooth gradient
+    // everywhere and the sweeps only add interior detail.
+    float3 g = (p + cu.halfExtent) * cu.invCellSize - 0.5f;   // coarse cell-center coords
+    int3 c0 = int3(clamp(int(floor(g.x)), 0, Nc - 1),
+                   clamp(int(floor(g.y)), 0, Nc - 1),
+                   clamp(int(floor(g.z)), 0, Nc - 1));
+    int3 c1 = min(c0 + 1, Nc - 1);
+    float3 f = clamp(g - float3(c0), 0.0f, 1.0f);
+    #define CPHI(ci, cj, ck) coarsePhi[uint(((ck) * Nc + (cj)) * Nc + (ci))]
+    float p00 = mix(CPHI(c0.x, c0.y, c0.z), CPHI(c1.x, c0.y, c0.z), f.x);
+    float p10 = mix(CPHI(c0.x, c1.y, c0.z), CPHI(c1.x, c1.y, c0.z), f.x);
+    float p01 = mix(CPHI(c0.x, c0.y, c1.z), CPHI(c1.x, c0.y, c1.z), f.x);
+    float p11 = mix(CPHI(c0.x, c1.y, c1.z), CPHI(c1.x, c1.y, c1.z), f.x);
+    #undef CPHI
+    finePhi[cid] = mix(mix(p00, p10, f.y), mix(p01, p11, f.y), f.z);
+}
+
+// ── AMR: FINE POISSON with NESTED (coarse-Φ) BOUNDARY ───────────────────────
+// The fine patch does NOT live in isolation — it sits INSIDE the galaxy. Its
+// boundary must therefore carry the COARSE potential (which contains all the
+// mass outside the patch), not a monopole of the patch's own tiny interior mass.
+// Solving with an interior-only BC threw away ~590k M_sun of exterior gravity →
+// gravity got WEAKER inside the patch and the core spread out (measured
+// 2026-07-11, slice-2 first attempt). This is the standard nested-mesh /
+// zoom-in BC: Φ_fine|boundary = Φ_coarse(x). Interior is then solved at fine
+// resolution, so we get the full field AND sub-cell structure.
+kernel void poisson_sor_fine(
+    device const uint*  fineCellMass [[buffer(0)]],  // fine ρ source (Σ M_sun ×64)
+    device float*       finePhi      [[buffer(1)]],  // fine Φ, updated in place
+    constant SpatialHashUniforms& fu [[buffer(2)]],  // FINE uniforms (halfExtent = R_fine)
+    constant float2&    sp           [[buffer(3)]],  // x = 4πG_sim (y unused here)
+    constant uint&      color        [[buffer(4)]],  // red-black parity
+    device const float* coarsePhi    [[buffer(5)]],  // COARSE Φ — supplies the boundary
+    constant SpatialHashUniforms& cu [[buffer(6)]],  // COARSE uniforms
+    uint cid [[thread_position_in_grid]])
+{
+    int N = fu.gridSize;
+    uint total = uint(N) * uint(N) * uint(fu.gridSizeZ);
+    if (cid >= total) return;
+    int i = int(cid) % N;
+    int j = (int(cid) / N) % N;
+    int k = int(cid) / (N * N);
+    if (((i + j + k) & 1) != int(color)) return;
+
+    float h = fu.cellSize;
+    // Boundary: sample the COARSE potential at this fine cell's world position
+    // (nearest-cell; the coarse field is smooth at its own 1-sim scale).
+    if (i == 0 || j == 0 || k == 0 || i == N - 1 || j == N - 1 || k == N - 1) {
+        float3 p = (float3(i, j, k) + 0.5f) * h - fu.halfExtent;   // world pos
+        int Nc = cu.gridSize;
+        int ci = clamp(int((p.x + cu.halfExtent) * cu.invCellSize), 0, Nc - 1);
+        int cj = clamp(int((p.y + cu.halfExtent) * cu.invCellSize), 0, Nc - 1);
+        int ck = clamp(int((p.z + cu.halfExtent) * cu.invCellSize), 0, Nc - 1);
+        finePhi[cid] = coarsePhi[uint((ck * Nc + cj) * Nc + ci)];
+        return;
+    }
+    float rho = (float(fineCellMass[cid]) * (1.0f / 64.0f)) / (h * h * h);
+    float sum = finePhi[cid + 1u]            + finePhi[cid - 1u]
+              + finePhi[cid + uint(N)]       + finePhi[cid - uint(N)]
+              + finePhi[cid + uint(N * N)]   + finePhi[cid - uint(N * N)];
+    float phiStar = (sum - sp.x * rho * h * h) / 6.0f;
+    const float omega = 1.9f;
+    finePhi[cid] = finePhi[cid] + omega * (phiStar - finePhi[cid]);
 }
 
 // ── AMR SLICE 1 (2026-07-11): FINE-GRID MASS BINNING ────────────────────────

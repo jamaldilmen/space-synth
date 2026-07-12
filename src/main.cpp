@@ -236,6 +236,34 @@ int main() {
   // TEMP substrate-noise hunt: kill the legacy grid pressure for baseline A/B.
   if (getenv("SS_NO_LEGACY_PRESSURE")) app.uiTogNoLegacyPressure = true;
 
+  // 🔬 TEMP-DIAG isolation ladder (docs/BUG_lines_2026-07-12.md): SS_INERT=1
+  // turns EVERY optional force OFF (all bhToggles force bits cleared, legacy
+  // grid pressure retired; renderer.mm skips the ungated merge_stars pass under
+  // the same flag). SS_INERT_KEEP="tok,tok" re-enables forces one at a time:
+  //   fieldgrav(bit0) central(bit1) capture(bit2) seedseed(bit3) originpin(bit4)
+  //   relax(bit5) resurrect(bit6) substep(bit9) pm(bit10) sphp(bit11) sphv(bit12)
+  //   sphcool(bit13) legacy(bit14 force back ON) merge(merge_stars pass)
+  // ⚠️ tokens are matched with strstr — keep them substring-unique.
+  if (getenv("SS_INERT")) {
+    const char *keep = getenv("SS_INERT_KEEP");
+    auto kept = [keep](const char *tok) {
+      return keep != nullptr && strstr(keep, tok) != nullptr;
+    };
+    app.uiTogFieldGravity     = kept("fieldgrav");
+    app.uiTogCentralSMBH      = kept("central");
+    app.uiTogSeedCapture      = kept("capture");
+    app.uiTogSeedMerge        = kept("seedseed");
+    app.uiTogOriginPin        = kept("originpin");
+    app.uiTogRelaxation       = kept("relax");
+    app.uiTogResurrection     = kept("resurrect");
+    app.uiTogAdaptiveSubstep  = kept("substep");
+    app.uiTogPMGravity        = kept("pm");
+    app.uiTogSphPressure      = kept("sphp");
+    app.uiTogSphVisc          = kept("sphv");
+    app.uiTogSphCool          = kept("sphcool");
+    app.uiTogNoLegacyPressure = !kept("legacy"); // inverted: kept = legacy force runs
+  }
+
   // Arrow-key PHYSICAL spin: hold to ramp torque on the particle body, with
   // momentum/drag. The max is PHYSICAL, not arbitrary: M87*'s real Kerr horizon
   // angular velocity Ω_H = a/(r₊²+a²)·c = 9.79e-6 rad/s (one rotation ≈ 7.43
@@ -1951,6 +1979,10 @@ int main() {
           if (strstr(sk, "web"))       playSkipBits |= (1u << 20); // chord webbing (inter-harmonic)
           if (strstr(sk, "jitter"))    playSkipBits |= (1u << 21); // Brownian shimmer
           if (strstr(sk, "symbreak"))  playSkipBits |= (1u << 22); // Noether symmetry-break impulse
+          // 🔬 BUG_lines_2026-07-12: "dynfric" gates the UNGATED Chandrasekhar
+          // dynamical-friction block (particles.metal ~1277) — a REST force,
+          // parked in this parser because it shares the debugFlags transport.
+          if (strstr(sk, "dynfric"))   playSkipBits |= (1u << 24); // per-cell dyn friction (rest)
           printf("[PLAY-SKIP] %s -> bits 0x%x\n", sk, playSkipBits);
         }
       }
@@ -2218,6 +2250,31 @@ int main() {
         }
         printf("  [VEL] mean v=(%.4f %.4f %.4f) sim/frame  voices=%d\n",
                svx / n, svy / n, svz / n, vc);
+      }
+
+      // 🔬 TEMP-DIAG (docs/BUG_lines_2026-07-12.md): SS_DUMP=/path.bin → one-
+      // shot FULL-field position dump (float32 x,y,z per particle) on the 3rd
+      // stats probe (~30 s in). Splits the fork: lines IN THE DATA = physics/
+      // spawn; data clean = RENDER. Analyzed offline (histogram/FFT vs the
+      // cellSize-1.0 grid).
+      if (const char *dumpPath = getenv("SS_DUMP")) {
+        static int dumpTick = 0;
+        static int dumpAt = getenv("SS_DUMP_TICK") ? atoi(getenv("SS_DUMP_TICK")) : 3;
+        if (++dumpTick == dumpAt) {
+          int n = renderer.particleCount();
+          std::vector<GPUParticle> all((size_t)n);
+          renderer.readbackParticles(all.data(), n);
+          if (FILE *f = fopen(dumpPath, "wb")) {
+            for (int i = 0; i < n; i++) {
+              float xyz[3] = {all[i].x, all[i].y, all[i].z};
+              fwrite(xyz, sizeof(float), 3, f);
+            }
+            fclose(f);
+            printf("  [DUMP] wrote %d particles (x,y,z float32) -> %s\n", n, dumpPath);
+          } else {
+            printf("  [DUMP] FAILED to open %s\n", dumpPath);
+          }
+        }
       }
 
       fflush(stdout);

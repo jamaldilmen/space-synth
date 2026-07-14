@@ -59,6 +59,7 @@ struct Renderer::Impl {
   id<MTLBuffer> cellBalsaraBuffer = nil;              // float per cell: 1 shock … 0 shear
   id<MTLComputePipelineState> poissonPipeline = nil;  // PM gravity: red-black SOR Poisson sweep
   id<MTLComputePipelineState> sphDensityPipeline = nil; // SPH ρ per particle (reaction engine slice 1)
+  id<MTLComputePipelineState> sphDensityFloorPipeline = nil; // per-particle cell-mean ρ floor (P/ρ² singularity fix)
   id<MTLComputePipelineState> sphPressurePipeline = nil; // SPH EOS pressure (reaction engine slice 2)
   id<MTLComputePipelineState> sphForcePipeline = nil;    // SPH pressure force (reaction engine slice 2b)
 
@@ -87,7 +88,14 @@ struct Renderer::Impl {
   // origin (the core, pinned there by comShift) → cellSize 2·2/128 = 0.03125
   // sim, ~32× finer than the coarse 1.0-sim cell, finally below the horizon
   // scale. Slice 1 = plumbing/measurement (SS_AMR); force wiring is Slice 2.
-  static constexpr float kAmrFineExtent = 2.0f;
+  // ── DAM TEST 2026-07-13 (Jamal go 18:38): 2.0 → 4.0. The L-transport soak
+  // piled 3.8e5 M☉ at r≈2.66 = just OUTSIDE the old box (blend from 1.5);
+  // his screen showed the core as a CUBE = matter stacked on the box faces.
+  // Moving the face to 4.0 (blend from 3.0): pile falls inward → dam named;
+  // re-parks at the new face → dam confirmed; stays at 2.66 → rotation
+  // support is back as the answer. Costs resolution: fineCell 0.031 → 0.0625
+  // (128³ unchanged) — still 16× finer than coarse, fine for the test.
+  static constexpr float kAmrFineExtent = 4.0f;
   id<MTLBuffer> cellIndicesBuffer = nil;     // cell ID per particle
   id<MTLBuffer> cellCountsBuffer = nil;      // count per cell
   id<MTLBuffer> cellMassBuffer = nil;        // Σ stellar mass per cell (M_sun ×64, atomic)
@@ -116,6 +124,7 @@ struct Renderer::Impl {
   id<MTLBuffer> coarsePhiPrevBuffer = nil;   // per-FINE-cell record of the coarse Φ already injected (delta-prolongation)
   id<MTLBuffer> fineHashUniformBuffer = nil; // SpatialHashUniforms with halfExtent=kAmrFineExtent
   float lastMFineEnc = 0.0f;                 // M within kAmrFineExtent (radial profile, 1-frame lag) → fine BC monopole
+  float liveUAmbient = 6e-3f;                // mass-weighted mean u (SPH ledger window) → display ambient
   // SPH reaction engine (slice 0 plumbing): per-particle smoothed density ρ and
   // EOS pressure P, float each, sized to particle count (~28 MB at the 7M peak).
   // Written by sph_density (slice 1) / sph EOS (slice 2); inert until then.
@@ -387,6 +396,19 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       NSLog(@"SPH density pipeline error: %@", error);
   } else {
     NSLog(@"Missing sph_density kernel");
+  }
+
+  // ── SPH density FLOOR pipeline (per-particle cell-mean ρ) ────────────
+  id<MTLFunction> sphDensityFloorFunc =
+      [impl_->library newFunctionWithName:@"sph_density_floor"];
+  if (sphDensityFloorFunc) {
+    impl_->sphDensityFloorPipeline =
+        [impl_->device newComputePipelineStateWithFunction:sphDensityFloorFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"SPH density floor pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing sph_density_floor kernel");
   }
 
   // ── SPH EOS pressure pipeline (reaction engine slice 2) ─────────────
@@ -1285,6 +1307,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // instead of plunging from inside it. 1e5 M☉ → ISCO ≈ 0.5 sim. TUNABLE knob:
     // bigger = faster/tighter orbits (ISCO grows), smaller = wider/slower.
     physicsUniforms.centerGM = (float)space::units::gmSim(4297000.0);
+    physicsUniforms.uAmbient = liveUAmbient;   // display ambient follows the live gas
     static int amrOn = -1;
     if (amrOn < 0) amrOn = getenv("SS_AMR") ? 1 : 0;   // AMR nested-mesh gravity (default off)
     physicsUniforms.bhToggles = bhToggles | (amrOn ? 0x8000u : 0u); // bit15 = AMR fine force (Slice 2)
@@ -1565,6 +1588,27 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         }
       }
       bool sphFrame = (physicsUniforms.frameCounter % kSphCadence) == 0u;
+
+      // Phase 5a1.5: SPH DENSITY FLOOR — EVERY particle gets the uncapped
+      // cell-mean ρ (cellMass/MASS_FP/h³, self-term minimum) BEFORE the ≤32-
+      // sample refinement below, which may only RAISE it. Root fix for the
+      // stale-ρ / 1e-12-floor P/ρ² singularity (poison=200k at ring density)
+      // AND the ~100× dense-cell undercount. Same gates as the density pass.
+      if (sphDensityFloorPipeline && densityBuffer && cellMassBuffer &&
+          !sphSkipDensity && sphFrame &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:sphDensityFloorPipeline];
+        [comp setBuffer:particleBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellMassBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        [comp setBuffer:densityBuffer offset:0 atIndex:3];
+        NSUInteger tgF = std::min(
+            (NSUInteger)256, sphDensityFloorPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgF, 1, 1)];
+        [comp endEncoding];
+      }
 
       // Phase 5a2: SPH DENSITY — ρ_i per particle (27-cell ≤32/cell neighbour
       // scan, cubic spline, h=cellSize). Rest only for now (matches centroids;
@@ -2261,6 +2305,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           // escaper bin, the interior book is clean and the question is "who
           // ejects, and why asymmetric" — not a force error in the bulk.
           double m = 0, px = 0, py = 0, pz = 0, ke = 0, uu = 0, umax = 0;
+          static std::vector<float> uSamp; uSamp.clear();  // u percentile → display ambient
           double opx = 0, opy = 0, opz = 0, oke = 0;
           int nOut = 0;
           double rMaxU = 0;
@@ -2303,6 +2348,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
               oke += 0.5 * q.mass * (vx * vx + vy * vy + vz * vz);
             }
             if (up[i] > umax) { umax = up[i]; rMaxU = r; }
+            if (r < 64.0) uSamp.push_back(up[i]);
+          }
+          // PERCENTILE ambient (2026-07-12 23:5x): the mean can't gate a glow —
+          // half the gas is above it by definition and the ^0.25 colour curve
+          // lights ANY excess. p90 of the sampled u → 90% of the field renders
+          // dark by construction; only the genuinely hot tail glows.
+          if (uSamp.size() > 100) {
+            size_t k90 = (uSamp.size() * 9) / 10;
+            std::nth_element(uSamp.begin(), uSamp.begin() + k90, uSamp.end());
+            liveUAmbient = uSamp[k90];
           }
           fprintf(stderr,
                   "[SPH] f=%u nIn=%d m=%.0f pIn=(%.4g %.4g %.4g) KEin=%.6g U=%.6g "
@@ -2316,8 +2371,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           // Persistent S > 0 = energy created inside the SPH pair machinery.
           if (sphClosureBuffer) {
             const int32_t *cl = (const int32_t *)sphClosureBuffer.contents;
-            double W = cl[0] * 1e-2, dyn = cl[1] * 1e-2, cool = cl[2] * 1e-2,
-                   clmp = cl[3] * 1e-2;
+            double W = cl[0] * 1.0, dyn = cl[1] * 1.0, cool = cl[2] * 1.0,
+                   clmp = cl[3] * 1.0;  // ×1.0: GPU ledger rescaled
             fprintf(stderr,
                     "[CLOSURE] f=%u W=%.4g dyn=%.4g S=%.4g cool=%.4g clamp=%.4g "
                     "poison=%d\n",

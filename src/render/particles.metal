@@ -93,6 +93,7 @@ struct PhysicsUniforms {
                                  //  0 field self-gravity, 1 central SMBH,
                                  //  2 seed capture, 3 seed↔seed merge,
                                  //  4 origin-pin, 5 relaxation, 6 resurrection
+    float uAmbient;              // 160: live substrate mean u → display ambient
 };
 
 struct SpatialHashUniforms {
@@ -1295,7 +1296,25 @@ kernel void compute_physics(
             // keeps atomic-race winners in id order; ids are spatially random),
             // so the estimators are unbiased; 8-cell blending cuts their noise
             // to ~6%, ×0.1 rate → ≤0.6%/frame velocity noise. Fine.
-            float3 gcc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f;
+            // ── SAMPLE-POINT DITHER (2026-07-14) — carver #0 NAMED & KILLED ──
+            // Ladder-measured (scratchpad ladder_*.bin, seed-42 deterministic):
+            // with ALL bhToggles forces off this block alone lays a coherent
+            // z-plane seed (−4.6/−4.9/−5.3σ at z≈−7.2/−4.4/−1.4 by ~20 s);
+            // bit24-off drops the field to the noise floor and it STAYS there
+            // through tick 12. PM gravity then amplifies the seed (−8.4σ), and
+            // the dissipative collapse turns it into −40…−48σ Zel'dovich-style
+            // pancakes = the 2026-07-14 00:10 "super lines" on Jamal's screen.
+            // Mechanism: the trilinear count-weighted moments are still
+            // PIECEWISE-SMOOTH ON THE GRID — neighbouring stars sample nearly
+            // the SAME biased mean and get kicked in unison → coherent density
+            // waves. Cure (textbook PM anti-aliasing / CIC interlacing): dither
+            // the SAMPLE POINT ±0.5 cell per particle per frame — the bias
+            // decorrelates into incoherent noise the 0.1/frame cap keeps
+            // microscopic, while the mean drag (the physics) is unchanged.
+            float3 dith = float3(noise(id, u.frameCounter + 101u),
+                                 noise(id + 15485863u, u.frameCounter + 211u),
+                                 noise(id + 32452843u, u.frameCounter + 307u));
+            float3 gcc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f + dith;
             int3 b0 = int3(floor(gcc));
             float3 fw = clamp(gcc - float3(b0), 0.0f, 1.0f);
             float wSum = 0.0f, sigSum = 0.0f, rhoSum = 0.0f;
@@ -1336,6 +1355,63 @@ kernel void compute_physics(
                     shiftVx -= coef * vpec.x;
                     shiftVy -= coef * vpec.y;
                     shiftVz -= coef * vpec.z;
+                }
+            }
+        }
+
+        // ── α-DISC ANGULAR-MOMENTUM TRANSPORT (bit25, SS_LTRANS) — slice 3 ───
+        // THE missing link (state-of-the-union 2026-07-13 §1 link 5): collapse
+        // parks in a ROTATION-SUPPORTED ring at r≈2.2–2.8 (measured [SHELLV]
+        // vt:vr = 10:1) because nothing moves angular momentum OUTWARD — bit5
+        // relaxation is deliberately spin-preserving, dynfric drags toward the
+        // rotating mean itself. Real discs accrete because VISCOSITY diffuses
+        // momentum between adjacent annuli (Shakura–Sunyaev α-disc): inner
+        // matter hands its L to outer matter and sinks. Here: viscous momentum
+        // diffusion on the RESOLVED mean flow — Δv̄ = ν·∇²v̄ with the 6-face-
+        // neighbour Laplacian of cellVelocities.xyz (same stencil + same
+        // empty-neighbour rule as cell_balsara), ν = α·σ·h (σ = local
+        // dispersion cellVelocities.w, h = cellSize, α = 0.1 the standard disc
+        // value). F_LTRANS compresses the viscous time exactly like fRelax
+        // compresses the relaxation time — a time-lapse choice, not a force
+        // cheat. Per-frame units: λ = ν/h² = α·σ/h [1/frame], Δ(shiftV) =
+        // λ·(Σ₆v̄ₙ − 6v̄c) — the particle's peculiar velocity is untouched;
+        // only the shared mean flow diffuses. Symmetric stencil → momentum-
+        // conserving to first order. Gates: rest-only, interior cell, all 6
+        // face neighbours populated (edge gradients are cloud-edge artifacts),
+        // ≥8 stars in the home cell (a 1–2 star mean is noise). Explicit
+        // diffusion is stable for 6λ ≤ 1; cap λ at 1/12 (6λ ≤ 0.5).
+        if ((u.debugFlags & (1u << 25)) && su.gridSize > 0 && hashFresh &&
+            playGate < 0.5f &&
+            fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
+            fabs(pz) < su.halfExtent) {
+            int Nc = su.gridSize;
+            int ci = clamp(int((px + su.halfExtent) * su.invCellSize), 0, Nc - 1);
+            int cj = clamp(int((py + su.halfExtent) * su.invCellSize), 0, Nc - 1);
+            int ck = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, Nc - 1);
+            if (ci > 0 && cj > 0 && ck > 0 &&
+                ci < Nc - 1 && cj < Nc - 1 && ck < Nc - 1) {
+                uint cc  = uint((ck * Nc + cj) * Nc + ci);
+                uint lxp = cc + 1u,              lxm = cc - 1u;
+                uint lyp = cc + uint(Nc),        lym = cc - uint(Nc);
+                uint lzp = cc + uint(Nc * Nc),   lzm = cc - uint(Nc * Nc);
+                if (cellCounts[cc] >= 8u &&
+                    cellCounts[lxp] != 0u && cellCounts[lxm] != 0u &&
+                    cellCounts[lyp] != 0u && cellCounts[lym] != 0u &&
+                    cellCounts[lzp] != 0u && cellCounts[lzm] != 0u) {
+                    float4 cvc = cellVelocities[cc];
+                    float3 lap6 = cellVelocities[lxp].xyz + cellVelocities[lxm].xyz +
+                                  cellVelocities[lyp].xyz + cellVelocities[lym].xyz +
+                                  cellVelocities[lzp].xyz + cellVelocities[lzm].xyz -
+                                  6.0f * cvc.xyz;          // ×1/h² = ∇²v̄
+                    const float ALPHA_SS = 0.1f;    // Shakura–Sunyaev α
+                    const float F_LTRANS = 100.0f;  // time compression (cf. fRelax)
+                    float lam = ALPHA_SS * F_LTRANS * cvc.w * su.invCellSize;
+                    lam = min(lam, 1.0f / 12.0f);   // explicit-diffusion stability
+                    if (!notFinite3(lap6)) {
+                        shiftVx += lam * lap6.x;
+                        shiftVy += lam * lap6.y;
+                        shiftVz += lam * lap6.z;
+                    }
                 }
             }
         }
@@ -2438,7 +2514,14 @@ kernel void compute_physics(
             // (shocked gas, feeding cores, umax=0.3 bombs) glow. DEBT: this
             // ambient (T~2e10 K!) is the substrate-noise pump, not honest
             // cluster physics — the dissipation thread owns the real cure.
-            const float U_AMBIENT = 6e-3f;
+            // SELF-CALIBRATING ambient (2026-07-12): 1.2× the live mass-
+            // weighted mean u — bulk field dark, above-ambient pockets glow.
+            // The old hardcoded 6e-3 was measured against dead-ρ gas; the
+            // density floor moved the substrate and everything lit up.
+            // SELF-CALIBRATING ambient: 1.2× the live mass-weighted mean u.
+            // The hardcoded 6e-3 was measured against dead-ρ gas; the density
+            // floor moved the substrate and the whole field lit up (the blob).
+            float U_AMBIENT = max(u.uAmbient * 1.2f, 1e-4f);
             float uEx = max(ui - U_AMBIENT, 0.0f);
             float bridgeT = 12.0f * pow(min(uEx, 0.3f) * (1.0f / 0.3f), 0.25f);
             currentTemp = max(currentTemp, bridgeT);
@@ -2493,7 +2576,7 @@ kernel void compute_physics(
             if (!isfinite(wSph)) wSph = 0.0f;  // NaN guard — else int(NaN) slams the counter
             float wSum = simd_sum(wSph);
             if (simd_is_first())
-                atomic_fetch_add_explicit(&sphClosure[0], int(wSum * 1.0e2f),
+                atomic_fetch_add_explicit(&sphClosure[0], int(wSum),  // ×1.0: ×1e2 saturated at honest ρ
                                           memory_order_relaxed);
         }
         p.prevW = float4(float3(px, py, pz) - comShift, currentTemp);

@@ -241,6 +241,15 @@ int main() {
   // that binds a COLD radial collapse (dynfric can't — σ→0, drag ∝ 1/v³).
   if (getenv("SS_SPH_VISC")) app.uiTogSphVisc = true;
 
+  // SS_NO_CAPTURE=1 → bit2 seed-capture OFF for honest-physics beds. Measured
+  // 2026-07-13 ~23:30 (gated_v2 log): the gated-visc bed collapsed to
+  // Mtot(<5)=2.26e5 — best state ever — and the DEFAULT-ON capture cheat then
+  // converted the honest core into 6 seed bodies (biggest 2.2e5 M☉, "hole 74%",
+  // ~780k particles eaten). The fake-BH machinery destroys the honest
+  // experiment exactly when it starts working. Full retirement = slice 4
+  // (after the honest horizon fires); this only keeps it out of test beds.
+  if (getenv("SS_NO_CAPTURE")) app.uiTogSeedCapture = false;
+
   // 🔬 TEMP-DIAG isolation ladder (docs/BUG_lines_2026-07-12.md): SS_INERT=1
   // turns EVERY optional force OFF (all bhToggles force bits cleared, legacy
   // grid pressure retired; renderer.mm skips the ungated merge_stars pass under
@@ -2010,6 +2019,25 @@ int main() {
       debugFlags |= eigenBit;
     }
 
+    // SS_LTRANS=1 → enable α-disc angular-momentum transport (bit25, slice 3).
+    // The one missing physics term of the honest-BH chain (state-of-the-union
+    // 2026-07-13 §1 link 5): viscous diffusion of the resolved mean flow so the
+    // rotation-supported ring ([SHELLV] vt:vr = 10:1) hands its L outward and
+    // sinks. Default OFF — show-safe. Verify by numbers: [SHELLV] vt:vr falls,
+    // [CORE] M(<0.5) climbs past 1.06e5.
+    {
+      static uint32_t ltransBit = 0;
+      static bool ltransParsed = false;
+      if (!ltransParsed) {
+        ltransParsed = true;
+        if (getenv("SS_LTRANS")) {
+          ltransBit = (1u << 25);
+          printf("[LTRANS] ON (bit25) — α-disc angular-momentum transport\n");
+        }
+      }
+      debugFlags |= ltransBit;
+    }
+
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
     auto stats = renderer.getPhysicsStats();
     if (app.uiAutoMode && stats.errorState > 0) {
@@ -2255,6 +2283,34 @@ int main() {
         }
         printf("  [VEL] mean v=(%.4f %.4f %.4f) sim/frame  voices=%d\n",
                svx / n, svy / n, svz / n, vc);
+      }
+      // [SHELLV] — what supports the r≈2.8 shell (AMR slice-3 diagnostic)?
+      // Radial profile of mean radial velocity v_r (infall<0), mean tangential
+      // speed v_t, from the same 1000-particle probe. Signatures: rotation →
+      // v_t ≫ |v_r|; pressure/static → both ≈0; breathing → v_r sign flips
+      // between probes. Units: sim/frame.
+      {
+        const float rEdges[6] = {1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 1e9f};
+        double vr[6] = {0}, vt[6] = {0}; int nB[6] = {0};
+        for (int i = 0; i < PROBE_N; i++) {
+          const auto &q = probe[i];
+          if (q.mass < 0.001f) continue;
+          float rq = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z);
+          if (rq < 1e-4f) continue;
+          int b = 0; while (rq > rEdges[b] && b < 5) b++;
+          float vrad = (q.x*q.vx + q.y*q.vy + q.z*q.vz) / rq;
+          float v2 = q.vx*q.vx + q.vy*q.vy + q.vz*q.vz;
+          vr[b] += vrad;
+          vt[b] += std::sqrt(std::max(0.0f, v2 - vrad*vrad));
+          nB[b]++;
+        }
+        printf("  [SHELLV] r<1:%d vr=%+.4f vt=%.4f | 1-2:%d vr=%+.4f vt=%.4f | "
+               "2-3:%d vr=%+.4f vt=%.4f | 3-4:%d vr=%+.4f vt=%.4f | 4-6:%d vr=%+.4f vt=%.4f\n",
+               nB[0], nB[0] ? vr[0]/nB[0] : 0.0, nB[0] ? vt[0]/nB[0] : 0.0,
+               nB[1], nB[1] ? vr[1]/nB[1] : 0.0, nB[1] ? vt[1]/nB[1] : 0.0,
+               nB[2], nB[2] ? vr[2]/nB[2] : 0.0, nB[2] ? vt[2]/nB[2] : 0.0,
+               nB[3], nB[3] ? vr[3]/nB[3] : 0.0, nB[3] ? vt[3]/nB[3] : 0.0,
+               nB[4], nB[4] ? vr[4]/nB[4] : 0.0, nB[4] ? vt[4]/nB[4] : 0.0);
       }
       // Integration-accuracy budget (same numbers as the HUD [accuracy] row):
       // how many gravity kicks hit the c·dt clamp this frame + the worst

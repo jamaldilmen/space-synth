@@ -509,6 +509,39 @@ static inline float sphGradW(float r, float h) {
 // 158ms, measured 2026-07-02). Home particle read from the SORTED buffer (origin id
 // in .entanglement.y). Control flow is threadgroup-uniform → all threads hit every
 // barrier. OOB write-guard: originId is a read value; a stale slot would fault the GPU.
+// ── SPH DENSITY FLOOR (2026-07-12) — EVERY particle gets a physical ρ ───────
+// Root fix for the P/ρ² singularity (poison=200k at ring density, [CLOSURE]
+// W=−1.8e7): sph_density writes only the ≤32 scattered ids per cell, so an
+// unscattered star kept a STALE ρ forever (or the alloc zero → the 1e-12 floor
+// → P/ρ² = (γ−1)u/ρ ~ 1e10). Worse, the ≤32-sample kernel sum UNDERCOUNTS a
+// 3000-star cell ~100×. This pass runs first, one thread per particle:
+//   ρ_floor = max( cellMass(cell)/MASS_FP / h³  — the TRUE uncapped cell mean,
+//                  m_self·W(0,h)                — the self-contribution )
+// sph_density then only ever RAISES it (max) with the sampled local value.
+// cellMass is the same uncapped atomic binning PM gravity trusts.
+kernel void sph_density_floor(
+    device const Particle* particles    [[buffer(0)]],
+    device const uint*     cellMass     [[buffer(1)]],
+    constant SpatialHashUniforms& u     [[buffer(2)]],
+    device float*          densityOut   [[buffer(3)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (int(id) >= u.particleCount) return;
+    float4 pw = particles[id].posW;
+    float m = pw.w;
+    uint mb = as_type<uint>(m);
+    bool finite = ((mb >> 23) & 0xFFu) != 0xFFu;
+    float h = u.cellSize;
+    if (!finite || m <= 0.001f) { densityOut[id] = 1e-12f; return; } // dead/wall
+    int cx2 = clamp(int((pw.x + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    int cy2 = clamp(int((pw.y + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    int cz2 = clamp(int((pw.z + u.halfExtent) * u.invCellSize), 0, u.gridSize - 1);
+    uint cID = uint((cz2 * u.gridSize + cy2) * u.gridSize + cx2);
+    float rhoCell = (float(cellMass[cID]) * (1.0f / MASS_FP)) / max(h * h * h, 1e-6f);
+    float rhoSelf = m * sphW(0.0f, h);
+    densityOut[id] = max(rhoCell, rhoSelf);
+}
+
 kernel void sph_density(
     device const SortedHot* sortedParticles [[buffer(0)]],
     device const uint*     cellStarts      [[buffer(1)]],
@@ -585,7 +618,11 @@ kernel void sph_density(
             }
         }
     }
-    if (active && originId < uint(u.particleCount)) densityOut[originId] = rho;
+    // Only ever RAISE the floor pass's value: in sparse cells the sampled sum
+    // is the better (local) estimate; in dense cells the ≤32-sample sum is a
+    // ~100× undercount and the uncapped cell mean must win. max() covers both.
+    if (active && originId < uint(u.particleCount))
+        densityOut[originId] = max(rho, densityOut[originId]);
 }
 
 // ── SPH EOS PRESSURE (reaction engine slice 2) ──────────────────────────────
@@ -792,6 +829,31 @@ kernel void sph_force(
                         float3 vij = viCur - sh_vel[k];
                         float vdotr = dot(vij, rij);
                         float dWdr = sphGradW(r, h);
+                        // ── DENSITY GATE on the WHOLE pair term (2026-07-13, visc bed only) ──
+                        // v1 of this gate (Π only, 20:03 build) killed the
+                        // field-wide thermal blob ([COLOR-TEMP] 0.000 vs 3.1)
+                        // but the pump survived as KINETIC energy + momentum:
+                        // KEin 59→242/720f, Etot +180 created, the cloud's CoM
+                        // drifted 16 sim and σ 14→40 (20:04 log) — with u cold,
+                        // the remaining exchanger in the diffuse cloud is the
+                        // pressure/viscous FORCE channel (floor-u pressure on
+                        // floored ρ + cap-pinned contact grinders, the 07-07
+                        // residual pump, now 4–5× hotter). Physics: below SPH-
+                        // resolvable density the cloud is COLLISIONLESS — the
+                        // bed that measurably collapsed to r50=1.03 today. So in
+                        // the visc bed the ENTIRE pair interaction (P force, Π,
+                        // du) fades in with pair density: 0 below 200 M☉/sim³
+                        // (diffuse ~20), full above 1000 (shell/core 3.6e3–1.8e4).
+                        // Force and its du debit scale TOGETHER → books stay
+                        // closed. !viscOn (default/show bed) is UNTOUCHED.
+                        const float RHO_SPH_LO = 200.0f;   // M_sun/sim³
+                        const float RHO_SPH_HI = 1000.0f;
+                        float gDensPair = 1.0f;
+                        if (viscOn) {
+                            gDensPair = smoothstep(RHO_SPH_LO, RHO_SPH_HI,
+                                                   0.5f * (rhoI + rhoJ));
+                            if (gDensPair < 1e-4f) continue;      // fully collisionless pair
+                        }
                         if (viscOn && vdotr < 0.0f) {             // approaching → shock term
                             float mu   = h * vdotr / (r * r + 0.01f * h * h);
                             mu = max(mu, -p.muMax);               // viscous-stability clamp
@@ -839,10 +901,10 @@ kernel void sph_force(
                             if (dvP > 0.5f * head)
                                 scaleP = 0.5f * head / max(dvP, 1e-20f);
                         }
-                        float term = mj * (scaleP * sumP + Pij);
+                        float term = gDensPair * mj * (scaleP * sumP + Pij);
                         acc += (-term * dWdr) * (rij / r);        // ∇_i W along r_ij
                         if (viscOn)                               // PdV + ½Π shock heating
-                            dudt += mj * (scaleP * PiOverRhoI2 + 0.5f * Pij) * dWdr * vdotr / r;
+                            dudt += gDensPair * mj * (scaleP * PiOverRhoI2 + 0.5f * Pij) * dWdr * vdotr / r;
                         // TESTED AND REVERTED (2026-07-07): (a) midpoint-velocity
                         // du (KDK-style) — correction is ~4% at measured kick
                         // sizes, no effect on the pump; (b) EXACT exponential
@@ -917,9 +979,9 @@ kernel void sph_force(
     float sDyn = simd_sum(cDyn), sCool = simd_sum(cCool), sClamp = simd_sum(cClamp);
     uint nBad = simd_sum(bad ? 1u : 0u);
     if (simd_is_first()) {
-        atomic_fetch_add_explicit(&closure[1], int(sDyn   * 1.0e2f), memory_order_relaxed);
-        atomic_fetch_add_explicit(&closure[2], int(sCool  * 1.0e2f), memory_order_relaxed);
-        atomic_fetch_add_explicit(&closure[3], int(sClamp * 1.0e2f), memory_order_relaxed);
+        atomic_fetch_add_explicit(&closure[1], int(sDyn), memory_order_relaxed);   // ×1.0: ×1e2 saturated at honest ρ
+        atomic_fetch_add_explicit(&closure[2], int(sCool), memory_order_relaxed);
+        atomic_fetch_add_explicit(&closure[3], int(sClamp), memory_order_relaxed);
         atomic_fetch_add_explicit(&closure[4], int(nBad), memory_order_relaxed);
     }
 }

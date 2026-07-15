@@ -57,6 +57,12 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> centroidPipeline = nil; // per-cell centroid (cohesion)
   id<MTLComputePipelineState> balsaraPipeline = nil;  // per-cell shear/shock switch (bit12 gate)
   id<MTLBuffer> cellBalsaraBuffer = nil;              // float per cell: 1 shock … 0 shear
+  // CIC velocity moments (SS_CIC_MOMENTS, 2026-07-15): deposit-side anti-alias
+  // of cellVelocities — see spatial_hash.metal cic_* kernels.
+  id<MTLComputePipelineState> cicClearPipeline = nil;
+  id<MTLComputePipelineState> cicDepositPipeline = nil;
+  id<MTLComputePipelineState> cicFinalizePipeline = nil;
+  id<MTLBuffer> cicMomentsBuffer = nil;               // 5 floats per cell
   id<MTLComputePipelineState> poissonPipeline = nil;  // PM gravity: red-black SOR Poisson sweep
   id<MTLComputePipelineState> sphDensityPipeline = nil; // SPH ρ per particle (reaction engine slice 1)
   id<MTLComputePipelineState> sphDensityFloorPipeline = nil; // per-particle cell-mean ρ floor (P/ρ² singularity fix)
@@ -308,13 +314,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   const char *spatialKernels[] = {"assign_cells",     "count_cells",
                                   "prefix_sum_local", "prefix_sum_blocks",
                                   "prefix_sum_add",   "scatter_particles",
-                                  "compute_cell_centroids", "cell_balsara"};
+                                  "compute_cell_centroids", "cell_balsara",
+                                  "cic_clear_moments", "cic_deposit_moments",
+                                  "cic_finalize_moments"};
   id<MTLComputePipelineState> *spatialPipelines[] = {
       &impl_->assignCellsPipeline,    &impl_->countCellsPipeline,
       &impl_->prefixSumLocalPipeline, &impl_->prefixSumBlocksPipeline,
       &impl_->prefixSumAddPipeline,   &impl_->scatterPipeline,
-      &impl_->centroidPipeline,       &impl_->balsaraPipeline};
-  for (int i = 0; i < 8; i++) {
+      &impl_->centroidPipeline,       &impl_->balsaraPipeline,
+      &impl_->cicClearPipeline,       &impl_->cicDepositPipeline,
+      &impl_->cicFinalizePipeline};
+  for (int i = 0; i < 11; i++) {
     id<MTLFunction> fn = [impl_->library
         newFunctionWithName:[NSString stringWithUTF8String:spatialKernels[i]]];
     if (fn) {
@@ -771,6 +781,8 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellCentroidsBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellVelocitiesBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellBalsaraBuffer, Impl::kTotalCells * sizeof(float)); // shear/shock switch (zeroed by alloc)
+  if (getenv("SS_CIC_MOMENTS"))                                    // ~42MB, only when the A/B is on
+    allocIfNeeded(impl_->cicMomentsBuffer, Impl::kTotalCells * 5 * sizeof(float));
   allocIfNeeded(impl_->cellMaxPartialsBuffer,
                 ((Impl::kTotalCells + 255) / 256) * 8); // {count,cid}/group
   allocIfNeeded(impl_->spatialHashUniformBuffer, sizeof(SpatialHashUniforms));
@@ -1550,6 +1562,48 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             (NSUInteger)256, centroidPipeline.maxTotalThreadsPerThreadgroup);
         [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(tgC, 1, 1)];
+        [comp endEncoding];
+      }
+
+      // Phase 5+: CIC velocity moments (SS_CIC_MOMENTS A/B, 2026-07-15) —
+      // deposit-side anti-aliasing of cellVelocities. Runs AFTER the centroid
+      // pass and OVERWRITES its cell-quantized mean/σ with the continuous CIC
+      // estimate (all particles, 8-cell trilinear deposit). Same rest-only
+      // gate: the consumers (dynfric, Balsara, bit5) are rest physics.
+      static bool cicMomentsOn = getenv("SS_CIC_MOMENTS") != nullptr;
+      if (cicMomentsOn && cicClearPipeline && cicDepositPipeline &&
+          cicFinalizePipeline && cicMomentsBuffer && !skipCentroid &&
+          physicsUniforms.totalAmplitude < 0.02f) {
+        id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:cicClearPipeline];
+        [comp setBuffer:cicMomentsBuffer offset:0 atIndex:0];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:1];
+        NSUInteger tgZ = std::min(
+            (NSUInteger)256, cicClearPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells * 5, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgZ, 1, 1)];
+        [comp endEncoding];
+
+        comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:cicDepositPipeline];
+        [comp setBuffer:particleBufferRead offset:0 atIndex:0]; // same snapshot as scatter
+        [comp setBuffer:cicMomentsBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        NSUInteger tgD = std::min(
+            (NSUInteger)256, cicDepositPipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgD, 1, 1)];
+        [comp endEncoding];
+
+        comp = [cmdBuf computeCommandEncoder];
+        [comp setComputePipelineState:cicFinalizePipeline];
+        [comp setBuffer:cicMomentsBuffer offset:0 atIndex:0];
+        [comp setBuffer:cellVelocitiesBuffer offset:0 atIndex:1];
+        [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:2];
+        NSUInteger tgF = std::min(
+            (NSUInteger)256, cicFinalizePipeline.maxTotalThreadsPerThreadgroup);
+        [comp dispatchThreads:MTLSizeMake(Impl::kTotalCells, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgF, 1, 1)];
         [comp endEncoding];
       }
 

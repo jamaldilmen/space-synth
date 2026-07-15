@@ -426,6 +426,97 @@ kernel void compute_cell_centroids(
     cellVelocities[cid] = float4(vmeanOut, sqrt(sigma2));
 }
 
+// ── CIC MOMENTS (2026-07-15) — deposit-side anti-aliasing of the velocity-
+// moment field (dynfric drag target + Balsara input), env-gated SS_CIC_MOMENTS
+// (host-side: these passes are simply not enqueued when the flag is off, so
+// the default bed is byte-identical).
+// WHY: compute_cell_centroids hard-bins ≤32 sorted members per cell → the
+// moment field is CELL-QUANTIZED (a staircase in all three axes). The 07-14
+// read-side ±0.5-cell dither only cut the dynfric carver's 20 s amplification
+// ×1.7→×1.3 — stacked probes (tools/zprobe.py, 4 runs) showed the coherent
+// residual surviving, and the 07-15 t12 build-up ladder proved the super-line
+// pancakes need exactly dithered-dynfric + Monaghan viscosity on top of the
+// spawn realization's own noise (docs/BUG_lines_2026-07-12.md). A read-side
+// dither cannot fix a cell-quantized SOURCE. Cloud-in-cell deposit is the
+// textbook source fix: every particle spreads its (teleport-clamped) velocity
+// over its 8 surrounding cells with trilinear weights → the moment field is
+// continuous piecewise-linear, and the ≤32 subsample bias disappears (ALL
+// particles deposit — the sorted-list cap doesn't apply). cellMass, cellCounts
+// and cellCentroids (PM gravity ρ, cohesion) are UNTOUCHED.
+// Layout: 5 floats per cell — [Σw, Σw·vx, Σw·vy, Σw·vz, Σw·|v|²].
+
+constant uint CIC_M_STRIDE = 5u;
+
+kernel void cic_clear_moments(
+    device float* moments [[buffer(0)]],
+    constant SpatialHashUniforms& u [[buffer(1)]],
+    uint id [[thread_position_in_grid]])
+{
+    uint total = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ)
+               * CIC_M_STRIDE;
+    if (id < total) moments[id] = 0.0f;
+}
+
+kernel void cic_deposit_moments(
+    device const Particle* particles [[buffer(0)]],
+    device atomic_float*   moments   [[buffer(1)]],
+    constant SpatialHashUniforms& u  [[buffer(2)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (int(id) >= u.particleCount) return;
+    float4 posW = particles[id].posW;
+    if (posW.w <= 0.0f) return;                 // static walls / eaten: not flow
+    float3 vv = posW.xyz - particles[id].prevW.xyz;
+    // Same teleport exclusion as compute_cell_centroids' VCLAMP: a revived or
+    // parked star carries a stale prevW → a bogus ~4000 sim/frame "velocity".
+    const float VCLAMP = 0.05f;
+    if (!all(abs(vv) < VCLAMP)) return;
+    float3 g = (posW.xyz + u.halfExtent) * u.invCellSize - 0.5f; // cell-center coords
+    int3 b0 = int3(floor(g));
+    float3 fw = clamp(g - float3(b0), 0.0f, 1.0f);
+    float v2 = dot(vv, vv);
+    for (int dz = 0; dz <= 1; dz++)
+    for (int dy = 0; dy <= 1; dy++)
+    for (int dx = 0; dx <= 1; dx++) {
+        int3 cc = b0 + int3(dx, dy, dz);
+        if (cc.x < 0 || cc.y < 0 || cc.z < 0 ||
+            cc.x >= u.gridSize || cc.y >= u.gridSize || cc.z >= u.gridSizeZ)
+            continue;                            // edge: weight dropped, finalize renormalizes by Σw
+        float w = (dx ? fw.x : 1.0f - fw.x) *
+                  (dy ? fw.y : 1.0f - fw.y) *
+                  (dz ? fw.z : 1.0f - fw.z);
+        if (w < 1e-7f) continue;
+        uint base = uint((cc.z * u.gridSize + cc.y) * u.gridSize + cc.x)
+                  * CIC_M_STRIDE;
+        atomic_fetch_add_explicit(&moments[base + 0u], w,        memory_order_relaxed);
+        atomic_fetch_add_explicit(&moments[base + 1u], w * vv.x, memory_order_relaxed);
+        atomic_fetch_add_explicit(&moments[base + 2u], w * vv.y, memory_order_relaxed);
+        atomic_fetch_add_explicit(&moments[base + 3u], w * vv.z, memory_order_relaxed);
+        atomic_fetch_add_explicit(&moments[base + 4u], w * v2,   memory_order_relaxed);
+    }
+}
+
+// Runs AFTER compute_cell_centroids and OVERWRITES cellVelocities with the CIC
+// mean + dispersion. Cells with ~no CIC weight keep the centroid-pass value
+// (the same fallback role as that kernel's rCount==0 branch).
+kernel void cic_finalize_moments(
+    device const float* moments   [[buffer(0)]],
+    device float4* cellVelocities [[buffer(1)]],
+    constant SpatialHashUniforms& u [[buffer(2)]],
+    uint cid [[thread_position_in_grid]])
+{
+    uint total = uint(u.gridSize) * uint(u.gridSize) * uint(u.gridSizeZ);
+    if (cid >= total) return;
+    uint base = cid * CIC_M_STRIDE;
+    float w = moments[base];
+    if (w < 1e-3f) return;
+    float3 vm = float3(moments[base + 1u],
+                       moments[base + 2u],
+                       moments[base + 3u]) / w;
+    float sig2 = max(moments[base + 4u] / w - dot(vm, vm), 0.0f);
+    cellVelocities[cid] = float4(vm, sqrt(sig2));
+}
+
 // ── BALSARA SWITCH, per cell (2026-07-12) — the owed bit12 re-enable gate ────
 // f = compression / (compression + |∇×v| + eps), compression = max(−∇·v, 0).
 // 1 in a compressive shock front, →0 in pure shear — so the Monaghan viscosity

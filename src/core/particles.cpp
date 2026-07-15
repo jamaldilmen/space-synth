@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <unordered_map>
@@ -15,7 +16,13 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   maxWaveDepth_ = maxWaveDepth;
   particles_.resize(count);
 
-  std::mt19937 rng(42);
+  // 🔬 TEMP-DIAG SS_SPAWN_SEED (2026-07-15, second-z-seeder hunt): the dead bed
+  // carries a deterministic z-comb at fixed centers across runs; a different
+  // spawn seed decides realization-noise (centers MOVE) vs grid mechanism
+  // (centers STAY). Default 42 = every existing bed byte-identical.
+  unsigned spawnSeed = 42u;
+  if (const char *ss = getenv("SS_SPAWN_SEED")) spawnSeed = (unsigned)atoi(ss);
+  std::mt19937 rng(spawnSeed);
   // ── STAR-MAP REST SPAWN: a FILLED 3D star cluster (not a flat disk) ──────
   // The rest/silence state is a STAR MAP — an isotropic, centre-filled sphere
   // of stars — NOT the old thin accretion-disk ring with an empty hole (that

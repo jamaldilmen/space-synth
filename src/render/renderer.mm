@@ -144,6 +144,13 @@ struct Renderer::Impl {
   // Stats readback (partial sums from GPU reduction)
   id<MTLBuffer> partialSumsBuffer = nil;
   id<MTLBuffer> radialMassBuffer = nil;  // 256-shell enclosed-mass profile → honest horizon r_h
+  // STABLE MIRROR (2026-07-15, readback-flicker fix): radialMassBuffer is blit-
+  // zeroed EVERY frame, and the CPU stats read is async vs frames in flight —
+  // a read between clear and re-accumulate saw all-zero shells → [HORIZON]
+  // flickered r_h=0 (0.82→0→0.82 in the first-horizon soak). Same class as the
+  // seedCount [4..7] persist slots. The reduce pass blit-copies the FINISHED
+  // profile here (never cleared); the CPU only ever reads complete profiles.
+  id<MTLBuffer> radialMassStableBuffer = nil;
   int numThreadgroups = 0;
   PhysicsStats latestStats = {};
 
@@ -158,6 +165,9 @@ struct Renderer::Impl {
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
   float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
+  float lastHorizonMass = 0.0f; // M(<r_h) [M_sun] — drives the emergent time-lapse disk GM
+  id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
+  id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
   float lastParticleSize = 2.0f; // Size slider (1-frame lag) → scales the cluster's mass/gravity
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
@@ -540,6 +550,71 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
           fragmentFunc);
   }
 
+  // ── HOLE pipeline (2026-07-15): r<r_h particles as BLACK occluders ───
+  // Darkening blend (dst *= 1−α) over the HDR target, drawn AFTER the
+  // additive star pass — the particles inside the honest horizon eat the
+  // light behind them (see render.metal hole_vertex for the physics note).
+  {
+    id<MTLFunction> holeV = [impl_->library newFunctionWithName:@"hole_vertex"];
+    id<MTLFunction> holeF = [impl_->library newFunctionWithName:@"hole_fragment"];
+    if (holeV && holeF) {
+      MTLRenderPipelineDescriptor *hd = [[MTLRenderPipelineDescriptor alloc] init];
+      hd.vertexFunction = holeV;
+      hd.fragmentFunction = holeF;
+      hd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      hd.colorAttachments[0].blendingEnabled = YES;
+      hd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorZero;
+      hd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      hd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
+      hd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+      hd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->holePipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:hd error:&error];
+      if (error) NSLog(@"Hole pipeline error: %@", error);
+    } else {
+      NSLog(@"Missing hole shader functions");
+    }
+  }
+
+  // ── DEFLECTION MAP LUT (2026-07-17): exact Schwarzschild bending angle ──
+  // α(b) = 2∫₀^{u₀} du/√(1/b² − u²(1−u)) − π  (u = r_s/r, b in r_s units);
+  // u₀ = turning point. Endpoint singularity killed by u = u₀(1−t²). The
+  // shader samples this per particle (render.metal lensAlphaSample) — light
+  // bends through the metric in world space; particles stay the only source.
+  {
+    const int N = 256;
+    float table[N];
+    const double xMin = 2.60, xMax = 200.0;
+    for (int k = 0; k < N; ++k) {
+      double x = xMin * pow(xMax / xMin, (double)k / (N - 1));
+      double invb2 = 1.0 / (x * x);
+      double u0 = 1.0 / x;                       // Newton for the turning point
+      for (int i = 0; i < 60; ++i) {
+        double g  = invb2 - u0 * u0 * (1.0 - u0);
+        double gp = -2.0 * u0 + 3.0 * u0 * u0;
+        if (fabs(gp) < 1e-14) break;
+        double step = g / gp;
+        u0 = std::min(std::max(u0 - step, 1e-9), 0.66666);
+        if (fabs(step) < 1e-14) break;
+      }
+      const int M = 1024;
+      double sum = 0.0;
+      for (int i = 0; i < M; ++i) {              // midpoint in t, u = u0(1−t²)
+        double t = (i + 0.5) / M;
+        double u = u0 * (1.0 - t * t);
+        double g = invb2 - u * u * (1.0 - u);
+        if (g > 0.0) sum += 2.0 * u0 * t / sqrt(g);
+      }
+      table[k] = (float)std::max(2.0 * (sum / M) - M_PI, 0.0);
+    }
+    impl_->lensAlphaLUT = [impl_->device newBufferWithBytes:table
+                                                     length:sizeof(table)
+                                                    options:MTLResourceStorageModeShared];
+    NSLog(@"[LENS-LUT] α(2.60)=%.3f α(3.0)=%.3f α(10)=%.3f α(200)=%.4f rad",
+          table[0], table[(int)(log(3.0/xMin)/log(xMax/xMin)*(N-1))],
+          table[(int)(log(10.0/xMin)/log(xMax/xMin)*(N-1))], table[N-1]);
+  }
+
   // ── Trajectory (oscilloscope scope-line) pipeline ───────────────────
   // ISOLATED additive LINE pipeline, drawn AFTER the points so it can never
   // break the particle render. Crisp 1px beams (Metal line primitive), same
@@ -781,7 +856,9 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->cellCentroidsBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellVelocitiesBuffer, Impl::kTotalCells * 16); // float4/cell
   allocIfNeeded(impl_->cellBalsaraBuffer, Impl::kTotalCells * sizeof(float)); // shear/shock switch (zeroed by alloc)
-  if (getenv("SS_CIC_MOMENTS"))                                    // ~42MB, only when the A/B is on
+  // DEFAULT ON since 2026-07-15 (Jamal's verdict on the live CIC bed; measured
+  // cost ~3ms/frame at rest, show bed 33→30fps). SS_NO_CIC_MOMENTS=1 = A/B off.
+  if (!getenv("SS_NO_CIC_MOMENTS"))                                // ~42MB
     allocIfNeeded(impl_->cicMomentsBuffer, Impl::kTotalCells * 5 * sizeof(float));
   allocIfNeeded(impl_->cellMaxPartialsBuffer,
                 ((Impl::kTotalCells + 255) / 256) * 8); // {count,cid}/group
@@ -817,6 +894,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   // particles.metal (8 stats + COM/live-count + radius + BH-enclosure).
   allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 80);
   allocIfNeeded(impl_->radialMassBuffer, 256 * sizeof(uint32_t)); // 256-shell horizon profile
+  allocIfNeeded(impl_->radialMassStableBuffer, 256 * sizeof(uint32_t)); // flicker-free CPU mirror
 }
 
 void Renderer::setBlackHolePose(bool on, float bhMassMsun) {
@@ -1051,9 +1129,16 @@ void Renderer::render(const RenderConfig &config) {
     // that mismatch made the lens sphere and the physical disk read as two
     // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
     // the lens grows as the hole eats, always matching the disk it carved.
-    float bSim = 2.6f * (float)space::units::kRsSimPerMsun *
-                 std::max(impl_->bhSeedMass, 0.0f) *   // accreted BH mass (stable, monotonic)
-                 config.shadowRadius;
+    // HONEST-HORIZON RE-KEY (2026-07-15): when the geometric criterion has
+    // fired (lastHorizonR > 0 — real enclosed mass, no cheats), the lens
+    // derives from THAT r_s. The legacy seed-mass path remains as fallback
+    // for the posed/cheat modes (bhSeedMass ≈ 50 M☉ in the honest bed —
+    // an invisible 2e-4 lens — which is why the first honest hole had no
+    // lensing at all).
+    float rsEff = std::max(impl_->lastHorizonR,
+                           (float)space::units::kRsSimPerMsun *
+                               std::max(impl_->bhSeedMass, 0.0f));
+    float bSim = 2.6f * rsEff * config.shadowRadius; // photon capture b = 2.6 r_s
     // LENS OFF DURING PLAY: the BH gravitational lens warps the whole field
     // toward screen-center (the "squeeze to the middle / eckig, not fluid"
     // distortion + bright center dot). No hole while a note sounds → no lens.
@@ -1088,9 +1173,31 @@ void Renderer::render(const RenderConfig &config) {
     cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->bhSeedMass);
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
+    cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
+  } else if (impl_->lastHorizonR > 0.0f && impl_->lastHorizonMass > 0.5f) {
+    // EMERGENT-HOLE TIME-LAPSE (2026-07-15, Jamal: "rotation means time
+    // passes on a trajectory"): the same Keplerian playback clock, keyed to
+    // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
+    // keeps running underneath; this compresses the RENDER clock only.
+    double now = CACurrentMediaTime();
+    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
+    impl_->bhPoseClock = now;
+    dtP = std::min(std::max(dtP, 0.0), 0.1);
+    impl_->bhPoseTime += dtP;
+    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->lastHorizonMass);
+    cam.bhPoseTime = (float)impl_->bhPoseTime;
+    cam.bhPoseDt   = (float)dtP;
+    // PLATE-PLANE ALIGNMENT (2026-07-16, item 4): the galaxy now orbits about
+    // Z (the Chladni plate's plane, face-on at launch) — the emergent
+    // time-lapse uses the legacy z-axis playback (which also matches the
+    // legacy Doppler plane). The y-axis branch sleeps.
+    cam.bhDiskAxisY = 0.0f;
   } else {
     cam.bhDiskGM = 0.0f; cam.bhPoseTime = 0.0f; cam.bhPoseDt = 0.0f;
+    cam.bhDiskAxisY = 0.0f;
+    impl_->bhPoseClock = 0.0;                  // clock re-arms on next hole
   }
+  cam.horizonR = impl_->lastHorizonR; // honest r_h → the hole pass (0 = no hole)
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;
@@ -1199,9 +1306,16 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // that mismatch made the lens sphere and the physical disk read as two
     // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
     // the lens grows as the hole eats, always matching the disk it carved.
-    float bSim = 2.6f * (float)space::units::kRsSimPerMsun *
-                 std::max(impl_->bhSeedMass, 0.0f) *   // accreted BH mass (stable, monotonic)
-                 config.shadowRadius;
+    // HONEST-HORIZON RE-KEY (2026-07-15): when the geometric criterion has
+    // fired (lastHorizonR > 0 — real enclosed mass, no cheats), the lens
+    // derives from THAT r_s. The legacy seed-mass path remains as fallback
+    // for the posed/cheat modes (bhSeedMass ≈ 50 M☉ in the honest bed —
+    // an invisible 2e-4 lens — which is why the first honest hole had no
+    // lensing at all).
+    float rsEff = std::max(impl_->lastHorizonR,
+                           (float)space::units::kRsSimPerMsun *
+                               std::max(impl_->bhSeedMass, 0.0f));
+    float bSim = 2.6f * rsEff * config.shadowRadius; // photon capture b = 2.6 r_s
     bool bhLensActive = (impl_->physicsUniforms.totalAmplitude < 0.02f); // lens OFF during play
     cam.bhShadowNdcRadius =
         (config.orthoMode && frustum > 1e-4f && bhLensActive)
@@ -1231,9 +1345,31 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->bhSeedMass);
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
+    cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
+  } else if (impl_->lastHorizonR > 0.0f && impl_->lastHorizonMass > 0.5f) {
+    // EMERGENT-HOLE TIME-LAPSE (2026-07-15, Jamal: "rotation means time
+    // passes on a trajectory"): the same Keplerian playback clock, keyed to
+    // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
+    // keeps running underneath; this compresses the RENDER clock only.
+    double now = CACurrentMediaTime();
+    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
+    impl_->bhPoseClock = now;
+    dtP = std::min(std::max(dtP, 0.0), 0.1);
+    impl_->bhPoseTime += dtP;
+    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->lastHorizonMass);
+    cam.bhPoseTime = (float)impl_->bhPoseTime;
+    cam.bhPoseDt   = (float)dtP;
+    // PLATE-PLANE ALIGNMENT (2026-07-16, item 4): the galaxy now orbits about
+    // Z (the Chladni plate's plane, face-on at launch) — the emergent
+    // time-lapse uses the legacy z-axis playback (which also matches the
+    // legacy Doppler plane). The y-axis branch sleeps.
+    cam.bhDiskAxisY = 0.0f;
   } else {
     cam.bhDiskGM = 0.0f; cam.bhPoseTime = 0.0f; cam.bhPoseDt = 0.0f;
+    cam.bhDiskAxisY = 0.0f;
+    impl_->bhPoseClock = 0.0;                  // clock re-arms on next hole
   }
+  cam.horizonR = impl_->lastHorizonR; // honest r_h → the hole pass (0 = no hole)
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;
@@ -1565,12 +1701,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         [comp endEncoding];
       }
 
-      // Phase 5+: CIC velocity moments (SS_CIC_MOMENTS A/B, 2026-07-15) —
-      // deposit-side anti-aliasing of cellVelocities. Runs AFTER the centroid
-      // pass and OVERWRITES its cell-quantized mean/σ with the continuous CIC
-      // estimate (all particles, 8-cell trilinear deposit). Same rest-only
-      // gate: the consumers (dynfric, Balsara, bit5) are rest physics.
-      static bool cicMomentsOn = getenv("SS_CIC_MOMENTS") != nullptr;
+      // Phase 5+: CIC velocity moments (2026-07-15) — deposit-side
+      // anti-aliasing of cellVelocities. Runs AFTER the centroid pass and
+      // OVERWRITES its cell-quantized mean/σ with the continuous CIC estimate
+      // (all particles, 8-cell trilinear deposit). Same rest-only gate: the
+      // consumers (dynfric, Balsara, bit5) are rest physics. DEFAULT ON since
+      // 2026-07-15 (kills the z-pancake seed amplification — the lines bug;
+      // his verdict on the live bed). SS_NO_CIC_MOMENTS=1 = A/B off.
+      static bool cicMomentsOn = getenv("SS_NO_CIC_MOMENTS") == nullptr;
       if (cicMomentsOn && cicClearPipeline && cicDepositPipeline &&
           cicFinalizePipeline && cicMomentsBuffer && !skipCentroid &&
           physicsUniforms.totalAmplitude < 0.02f) {
@@ -1746,7 +1884,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         muMax = std::max(muMax, csRelMax);  // never clamp below the sound scale
         bool sphCoolingOn = (bhToggles & 0x2000u) != 0u;  // bit13 (slice 4)
         struct { float dt, dtU, alpha, beta, uFloor, uMax, viscOn, muMax,
-                 coolOn, coolTau; } sphParams = {
+                 coolOn, coolTau, horizonR, bhX, bhY, bhZ; } sphParams = {
             physicsUniforms.dt,
             physicsUniforms.dt * (float)kSphCadence,  // du + brake cover skipped frames
             sphAlpha,
@@ -1756,7 +1894,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             sphViscosityOn ? 1.0f : 0.0f,
             muMax,
             sphCoolingOn ? 1.0f : 0.0f,
-            lastSphCoolTau};  // τ₀ [simt] from the mod-menu slider (~1 simt ≈ 1 s wall)
+            lastSphCoolTau,   // τ₀ [simt] from the mod-menu slider (~1 simt ≈ 1 s wall)
+            // ONE-WAY MEMBRANE (2026-07-16): the honest horizon + its centre —
+            // matter inside is causally dead to SPH (see sph_force).
+            lastHorizonR, bhPosX, bhPosY, bhPosZ};
         // ZERO the force buffer first — sph_force only writes the ≤32 scattered
         // particles per cell; without the clear, a particle that drops out of
         // the sorted set (overflowing cell) REPLAYS its last kick every frame —
@@ -2106,6 +2247,19 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
       [comp endEncoding];
 
+      // Mirror the FINISHED radial profile for the CPU (readback-flicker fix,
+      // 2026-07-15): the working buffer is cleared every frame, so an async
+      // CPU read could catch all-zero shells (the r_h=0 flicker). This copy
+      // runs after the accumulate in GPU queue order; the stable buffer is
+      // never cleared → the CPU only ever sees complete profiles.
+      if (radialMassStableBuffer) {
+        id<MTLBlitCommandEncoder> mirror = [cmdBuf blitCommandEncoder];
+        [mirror copyFromBuffer:radialMassBuffer sourceOffset:0
+                      toBuffer:radialMassStableBuffer destinationOffset:0
+                          size:256 * sizeof(uint32_t)];
+        [mirror endEncoding];
+      }
+
       // CPU-side final sum (from partial sums) — 1-frame latency is fine
       // Schedule readback after commit completes
       // For now, read previous frame's data synchronously
@@ -2162,8 +2316,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // the largest r where r_s(M(<r)) ≥ r. This resolves r_s far below the coarse
         // 1.0-sim cell, so a small dense core can show a REAL horizon. NOT yet wired
         // to formation — just logged, so we can SEE r_h appear when a core crushes.
-        if (radialMassBuffer) {
-          const uint32_t *radial = (const uint32_t *)radialMassBuffer.contents;
+        if (radialMassStableBuffer) {
+          // Read the STABLE mirror, not the per-frame-cleared working buffer
+          // (the r_h=0 readback flicker — see the buffer's decl comment).
+          const uint32_t *radial = (const uint32_t *)radialMassStableBuffer.contents;
           const double dr = 5.0 / 256.0;           // RADIAL_MAX_R / RADIAL_SHELLS
           const double kRsSimPerMsun = 1.6825e-6;  // units.h
           double cum = 0.0, r_h = 0.0, mEncRh = 0.0;
@@ -2173,6 +2329,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             if (kRsSimPerMsun * cum >= r) { r_h = r; mEncRh = cum; } // horizon here
           }
           lastHorizonR = (float)r_h;   // → uniform next frame: pressure yields inside r_h
+          lastHorizonMass = (float)mEncRh; // → emergent time-lapse disk GM
           if ((physicsUniforms.frameCounter % 120u) == 0u) {
             fprintf(stderr,
                     "[HORIZON] r_h=%.4f sim  M(<r_h)=%.3e Msun  (honest geometric, observe-only)\n",
@@ -2267,7 +2424,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float dt01 = (encFrac - 0.40f) / 0.30f;          // ramp 40%→70% gathered
         dt01 = dt01 < 0.0f ? 0.0f : (dt01 > 1.0f ? 1.0f : dt01);
         float densTarget = dt01 * dt01 * (3.0f - 2.0f * dt01); // smoothstep
-        float target = std::max(seedTarget, densTarget);
+        // HONEST HORIZON (2026-07-15): r_h > 0 IS "a black hole formed" —
+        // the literal geometric criterion this proxy was invented to
+        // approximate is now reachable and firing (first: r_h=0.82,
+        // 2026-07-15 14:27:08). It drives the formed-latch (secondary
+        // lensed image, raytracer gates) directly.
+        float honestTarget = (lastHorizonR > 0.0f) ? 1.0f : 0.0f;
+        float target = std::max({seedTarget, densTarget, honestTarget});
         (void)collapseFrac;                      // UI dial now unused by formation
         // SMOOTH + LATCH: the raw enclosure signal wobbles with disk slosh
         // and made the raytracer flicker on/off ("seconds of black hole
@@ -2525,6 +2688,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc setVertexBuffer:particleBuffer
                 offset:0
                atIndex:2]; // Random-access for Webbing
+  [enc setVertexBuffer:lensAlphaLUT
+                offset:0
+               atIndex:3]; // deflection map α(b/r_s) — world-space lens
   // instanceCount — instance 0 = primary image, instance 1 = the SECONDARY
   // lensed image (the Gargantua fold-over). The secondary only EXISTS when a
   // hole is lensing; with no hole it was culled in-shader to pointSize 0 — but
@@ -2537,6 +2703,20 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
           vertexStart:0
           vertexCount:particleCount
         instanceCount:particleInstances];
+
+  // THE HOLE PASS (2026-07-15): re-draw the r<r_h particles as black
+  // occluding splats over the additive image — the matter inside the honest
+  // horizon eats the light behind it (render.metal hole_vertex). Only encoded
+  // when the horizon actually exists; zero cost otherwise.
+  if (holePipeline && lastHorizonR > 0.0f) {
+    [enc setRenderPipelineState:holePipeline];
+    [enc setDepthStencilState:depthState];
+    [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
+    [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    [enc drawPrimitives:MTLPrimitiveTypePoint
+            vertexStart:0
+            vertexCount:particleCount];
+  }
 
   // 2b. Scope lines (oscilloscope) — ISOLATED additive pass over the points.
   // Only encoded when oscillation (spin) is active; the vertex shader also
@@ -2577,6 +2757,16 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // to the particles in the vertex shader (render.metal).
 
   [enc endEncoding];
+
+  // AUTO-EXPOSURE mip chain (2026-07-16): reduce the freshly rendered HDR
+  // scene to its average (top mip). The tonemap samples it to adapt the iris
+  // — STOP-DOWN ONLY — so the queue at the hole reads as fire structure
+  // instead of clipped white paste (Jamal: "still this blob thing").
+  if (offscreenTexture.mipmapLevelCount > 1) {
+    id<MTLBlitCommandEncoder> mipBlit = [cmdBuf blitCommandEncoder];
+    [mipBlit generateMipmapsForTexture:offscreenTexture];
+    [mipBlit endEncoding];
+  }
 
   // ── Multi-pass Gaussian blur via ping-pong HDR pool ───────────────
   // Foundation for real blur / future bloom / DOF / feedback. Two reused
@@ -2761,6 +2951,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [postEnc setFragmentTexture:postSource atIndex:0];
     [postEnc setFragmentTexture:prevFrameTexture atIndex:1];
     [postEnc setFragmentTexture:bloomTexture atIndex:2]; // HDR glow
+    [postEnc setFragmentTexture:offscreenTexture atIndex:3]; // auto-exposure avg (top mip)
     [postEnc setFragmentBuffer:postUniformBuffer[frameIdx] offset:0 atIndex:0];
     [postEnc drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0
@@ -2872,14 +3063,27 @@ void Renderer::resize(int width, int height) {
   impl_->depthTexture = [impl_->device newTextureWithDescriptor:depthDesc];
 
   // ── Offscreen texture: HDR (RGBA16Float) for physics-accurate lighting ──
+  // MIPMAPPED (2026-07-16, auto-exposure): the top mip = the scene's average
+  // colour; the postfx tonemap reads it to adapt the iris (stop-down only) so
+  // the queued matter at the hole shows fire structure instead of clipping to
+  // white paste (Jamal: "still this blob thing", "hdr peaks limit").
   MTLTextureDescriptor *hdrDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:width
+                                  height:height
+                               mipmapped:YES];
+  hdrDesc.storageMode = MTLStorageModePrivate;
+  hdrDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
+  // (pool/bloom/feedback textures below stay non-mipmapped — hdrDesc is
+  // re-declared for them.)
+  hdrDesc = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                    width:width
                                   height:height
                                mipmapped:NO];
   hdrDesc.storageMode = MTLStorageModePrivate;
   hdrDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-  impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
 #if HAS_SYPHON
   // Dedicated SDR-tonemapped texture for the Syphon feed (same format, separate
   // target so the screen stays EDR while the feed is vibrant-SDR).

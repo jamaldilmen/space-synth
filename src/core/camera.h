@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #ifndef M_PI_F
 #define M_PI_F 3.14159265358979323846f
@@ -16,6 +17,13 @@ public:
     // 400 puts the horizon at ~12% of half-screen at default zoom
     // (was 800 → 6%). User can still scroll out to 2000.
     rho = 400.0f;
+    // 🔬 TEMP-DIAG SS_CAM_RHO (2026-07-16): launch at a chosen zoom so the
+    // agent can self-verify zoomed render states (hole close-ups) by
+    // screenshot without driving the user's mouse. No env = unchanged.
+    if (const char *cr = getenv("SS_CAM_RHO")) {
+      float v = (float)atof(cr);
+      if (v >= 50.0f && v <= 2000.0f) rho = v;
+    }
     theta = M_PI_F / 2.0f; // Elevation — face-on horizontal view
     phi = 0.0f;            // Azimuth
     velRho = velTheta = velPhi = 0.0f;

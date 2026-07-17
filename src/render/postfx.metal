@@ -90,6 +90,7 @@ fragment float4 postfx_fragment(
     texture2d<float> currentFrame [[texture(0)]],
     texture2d<float> previousFrame [[texture(1)]],
     texture2d<float> bloomTex [[texture(2)]],
+    texture2d<float> sceneAvgTex [[texture(3)]], // mipped HDR scene → top mip = frame average (auto-exposure)
     constant PostFXUniforms& u [[buffer(0)]])
 {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
@@ -215,6 +216,27 @@ fragment float4 postfx_fragment(
     // the sensor down. This is the real iris: scales the WHOLE HDR scene
     // before the tonemap, no per-sprite term can bypass it. 1.0 = neutral.
     color.rgb *= max(u.exposure, 0.0f);
+
+    // ── AUTO-EXPOSURE, STOP-DOWN ONLY (2026-07-16) — expose for the ring.
+    // The queued matter at the hole stacks 30–100× over display peak; the
+    // sensor bleach then (correctly) burns it to featureless white paste
+    // (Jamal: "still this blob thing", "hdr peaks limit in the highs"). A
+    // real camera pointed at the EHT crescent stops down and the ring shows
+    // FIRE. Iris = key/avgLum from the scene's own average (top mip of the
+    // freshly rendered HDR frame), clamped to ≤1 so it can only darken an
+    // overexposed frame — the wide starfield (avgLum ≪ key) stays EXACTLY
+    // as tuned. Applied before the tonemap like the manual iris above.
+    {
+        constexpr sampler avgS(mag_filter::linear, min_filter::linear,
+                               mip_filter::linear);
+        uint topMip = sceneAvgTex.get_num_mip_levels() - 1u;
+        float3 avgC = sceneAvgTex.sample(avgS, float2(0.5f, 0.5f),
+                                         level(float(topMip))).rgb;
+        float avgLum = dot(avgC, float3(0.2126f, 0.7152f, 0.0722f));
+        const float kExpKey = 0.35f;   // wide field avg ≪ this → no change
+        float autoExp = clamp(kExpKey / max(avgLum, 1e-5f), 0.05f, 1.0f);
+        color.rgb *= autoExp;
+    }
 
     float hdrPeak = max(1.0f, u.edrHeadroom);
     // HUE-PRESERVING tonemap. Per-channel ACES desaturates every highlight to

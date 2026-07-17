@@ -405,6 +405,15 @@ kernel void compute_physics(
     // TEMP-CLOSURE: entry position (px/py/pz get mutated mid-kernel).
     float3 posEntry = float3(px, py, pz);
 
+    // ── ONE-WAY MEMBRANE flag (2026-07-16, BH deep scan) — see the membrane
+    // note at the dynfric gate. Declared at kernel scope: the force gates
+    // (dynfric/LTRANS/SPH) AND the final-kick damping both read it.
+    bool insideHorizon = false;
+    if (u.horizonR > 0.0f && mass > 0.001f) {
+        float3 relBH0 = float3(px - u.bhX, py - u.bhY, pz - u.bhZ);
+        insideHorizon = dot(relBH0, relBH0) < u.horizonR * u.horizonR;
+    }
+
     // ── Störmer-Verlet: derive velocity from position history ────────
     float prevX = p.prevW.x;
     float prevY = p.prevW.y;
@@ -1267,6 +1276,21 @@ kernel void compute_physics(
         // (matter falls at up to c) rather than creeping at a magic number.
         // Plummer softening keeps gacc finite (d²+ε² > 0), so this can't make
         // inf; the norm-scale is guarded by the finite check.
+        // ── ONE-WAY MEMBRANE (2026-07-16, BH deep scan) — THE defining law the
+        // sim never had: inside the horizon, time ends for the outside
+        // universe. No pressure, no heat, no signal crosses OUTWARD. Until
+        // now u.horizonR was uploaded and NEVER READ (deep-scan finding) —
+        // matter inside r_h lived as ordinary cap-hot SPH gas, formed a
+        // pressure-supported ball at the centre (its surface poking past the
+        // black splats = Jamal's crescent), and its fountain pushed matter
+        // back OUT of the hole. Inside r < r_h matter is now CAUSALLY DEAD:
+        // no dynfric / LTRANS / SPH kicks (gated with !insideHorizon, flag
+        // declared at kernel entry), strong damping + inward-only motion
+        // (final-kick site), temperature → 0 (dark by physics). Its MASS
+        // still counts in the radial profile — the particles ARE the hole
+        // (core directive) and r_h stays honest. Centre = u.bh* (the radial
+        // profile's own candidate, origin-locked today).
+
         // ── CHANDRASEKHAR DYNAMICAL FRICTION (RANK-1, the collapse keystone) ──
         // Each star drags against the local stellar background: a_df =
         // −4πG²ρ·lnΛ·m·G(X)·v̂/v², X=|v_pec|/(√2σ). Reinstates two-body
@@ -1275,7 +1299,8 @@ kernel void compute_physics(
         // (A.1), v_pec = star velocity − local mean. f_relax compresses the real
         // relaxation time (t_cc≈78 Myr ⇒ ~1000 sim-time units watchable) — a
         // time-lapse choice, not a force cheat (per root-cause doc).
-        if (su.gridSize > 0 && hashFresh && !(u.debugFlags & (1u << 24)) && // TEMP-DIAG SS_PLAY_SKIP=dynfric
+        if (!insideHorizon &&
+            su.gridSize > 0 && hashFresh && !(u.debugFlags & (1u << 24)) && // TEMP-DIAG SS_PLAY_SKIP=dynfric
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(pz) < su.halfExtent) {
             // HONEST DYNFRIC (2026-07-12 rework — docs/BUG_lines_2026-07-12.md).
@@ -1311,10 +1336,14 @@ kernel void compute_physics(
             // the SAMPLE POINT ±0.5 cell per particle per frame — the bias
             // decorrelates into incoherent noise the 0.1/frame cap keeps
             // microscopic, while the mean drag (the physics) is unchanged.
-            float3 dith = float3(noise(id, u.frameCounter + 101u),
-                                 noise(id + 15485863u, u.frameCounter + 211u),
-                                 noise(id + 32452843u, u.frameCounter + 307u));
-            float3 gcc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f + dith;
+            // DITHER RETIRED 2026-07-15: the ±0.5-cell per-particle sample-point
+            // dither treated the SYMPTOM (read-side aliasing) and only cut the
+            // carver ×1.7→×1.3 (stacked ×4 probes). The real fix is upstream:
+            // cic_deposit_moments (spatial_hash.metal) makes the moment field
+            // continuous at the SOURCE, so the plain trilinear read is now
+            // alias-free. Ladder re-verified on removal (inert ×4 stack at the
+            // realization floor, full bed t12 clean).
+            float3 gcc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f;
             int3 b0 = int3(floor(gcc));
             float3 fw = clamp(gcc - float3(b0), 0.0f, 1.0f);
             float wSum = 0.0f, sigSum = 0.0f, rhoSum = 0.0f;
@@ -1352,6 +1381,12 @@ kernel void compute_physics(
                     float coef = (4.0f * 3.14159265f) * G1 * G1 * rho * lnLambda *
                                  mass * Gx * fRelax * (dt * dt * dt * dt) / speed3;
                     coef = min(coef, 0.1f);            // e-fold ≥ ~0.08 s (was 0.5 = the lane hammer)
+                    // TWO-ERA TIME AXIS (2026-07-16, see the LTRANS note
+                    // below): fRelax=4e11 makes FORMATION watchable; after
+                    // the horizon exists the same compression evaporates the
+                    // formed disk in minutes ("black nothing"). Disk era =
+                    // ×0.1: matter keeps orbiting, feeds as a trickle.
+                    if (u.horizonR > 0.0f) coef *= 0.1f;
                     shiftVx -= coef * vpec.x;
                     shiftVy -= coef * vpec.y;
                     shiftVz -= coef * vpec.z;
@@ -1380,7 +1415,8 @@ kernel void compute_physics(
         // face neighbours populated (edge gradients are cloud-edge artifacts),
         // ≥8 stars in the home cell (a 1–2 star mean is noise). Explicit
         // diffusion is stable for 6λ ≤ 1; cap λ at 1/12 (6λ ≤ 0.5).
-        if ((u.debugFlags & (1u << 25)) && su.gridSize > 0 && hashFresh &&
+        if (!insideHorizon &&                     // one-way membrane: no L-drain inside
+            (u.debugFlags & (1u << 25)) && su.gridSize > 0 && hashFresh &&
             playGate < 0.5f &&
             fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
             fabs(pz) < su.halfExtent) {
@@ -1399,18 +1435,48 @@ kernel void compute_physics(
                     cellCounts[lyp] != 0u && cellCounts[lym] != 0u &&
                     cellCounts[lzp] != 0u && cellCounts[lzm] != 0u) {
                     float4 cvc = cellVelocities[cc];
-                    float3 lap6 = cellVelocities[lxp].xyz + cellVelocities[lxm].xyz +
-                                  cellVelocities[lyp].xyz + cellVelocities[lym].xyz +
-                                  cellVelocities[lzp].xyz + cellVelocities[lzm].xyz -
-                                  6.0f * cvc.xyz;          // ×1/h² = ∇²v̄
+                    // MASS-WEIGHTED, MOMENTUM-CONSERVING exchange (2026-07-15).
+                    // The plain Laplacian kicked every particle equally per
+                    // CELL, so it only conserved momentum for equal-mass
+                    // neighbours — in the condensed field (counts differ
+                    // 100×+) the dense fast-rotating disk was dragged toward
+                    // its sparse neighbours' slow means far more per unit
+                    // mass than the reverse: L was DESTROYED, not
+                    // transported, and the infall read as a straight-line
+                    // drain (Jamal 2026-07-15: "no orbit spin pull"). Pairwise
+                    // weight 2·mₙ/(m_c+mₙ): equal masses → exactly the old
+                    // ∇²v̄; near-empty neighbour → ~0 (no L bleed into
+                    // vacuum); heavy neighbour → ≤2 (light cells get dragged
+                    // along). m_c·Δv_c = −mₙ·Δv_n per face by construction.
+                    float mc = max(float(cellMass[cc]), 1.0f);
+                    float3 flux = float3(0.0f);
+                    for (int f = 0; f < 6; f++) {
+                        uint lf = (f == 0) ? lxp : (f == 1) ? lxm :
+                                  (f == 2) ? lyp : (f == 3) ? lym :
+                                  (f == 4) ? lzp : lzm;
+                        float mn = float(cellMass[lf]);
+                        float w  = 2.0f * mn / max(mc + mn, 1.0f);
+                        flux += w * (cellVelocities[lf].xyz - cvc.xyz);
+                    }
                     const float ALPHA_SS = 0.1f;    // Shakura–Sunyaev α
                     const float F_LTRANS = 100.0f;  // time compression (cf. fRelax)
                     float lam = ALPHA_SS * F_LTRANS * cvc.w * su.invCellSize;
                     lam = min(lam, 1.0f / 12.0f);   // explicit-diffusion stability
-                    if (!notFinite3(lap6)) {
-                        shiftVx += lam * lap6.x;
-                        shiftVy += lam * lap6.y;
-                        shiftVz += lam * lap6.z;
+                    // ── TWO-ERA TIME AXIS (2026-07-16, Jamal's reference:
+                    // the NASA SVS disk looks ETERNAL because real accretion
+                    // is a TRICKLE — the viscous drain takes ~1e5–1e6 orbital
+                    // periods. F_LTRANS=100 was tuned to make FORMATION
+                    // watchable in minutes; the same compression drained the
+                    // FORMED disk to "black nothing" in minutes too (his
+                    // 02:08 screen). Once the horizon EXISTS, drop to
+                    // disk-era compression: the queue persists and glows for
+                    // the whole session, still feeding as a trickle.
+                    // Formation era (r_h = 0) unchanged.
+                    if (u.horizonR > 0.0f) lam *= 0.02f;
+                    if (!notFinite3(flux)) {
+                        shiftVx += lam * flux.x;
+                        shiftVy += lam * flux.y;
+                        shiftVz += lam * flux.z;
                     }
                 }
             }
@@ -1450,7 +1516,7 @@ kernel void compute_physics(
         // gravity so it's applied as a·dt² in the same Verlet kick. At rest with
         // u at the cold floor this is ≈0 (collisionless unchanged); it matters
         // once shocks/heating raise u. sphForce is written by the sph_force pass.
-        if (u.bhToggles & 0x800u) {
+        if ((u.bhToggles & 0x800u) && !insideHorizon) { // membrane: pressure cannot act inside
             gacc += sphForce[id].xyz;
         }
 
@@ -2256,6 +2322,24 @@ kernel void compute_physics(
     float speed = length(finalV);
     if (speed > vCapFrame) {
         finalV = (finalV / max(speed, 0.0001f)) * vCapFrame;
+    }
+
+    // ── ONE-WAY MEMBRANE, kick site (2026-07-16): inside the horizon nothing
+    // moves OUTWARD and everything settles. Remove any outward radial
+    // component (the one-way surface), damp hard (no orbits inside — the
+    // interior advects to the centre and stays), and go DARK (temperature →
+    // 0: no emission escapes; the black is physics, the splats just agree).
+    if (insideHorizon) {
+        float3 relBH = float3(px - u.bhX, py - u.bhY, pz - u.bhZ);
+        float  rB = length(relBH);
+        if (rB > 1e-5f) {
+            float3 rhat = relBH / rB;
+            float vOut = dot(finalV, rhat);
+            if (vOut > 0.0f) finalV -= vOut * rhat;   // nothing exits
+        }
+        finalV *= 0.90f;                              // settle, don't orbit
+        currentTemp = 0.0f;                           // dark: the final commit
+                                                      // writes currentTemp → prevW.w
     }
 
     // Jitter (UI slider — now wired). Per-particle Brownian shimmer added as a

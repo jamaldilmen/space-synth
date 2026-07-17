@@ -773,6 +773,8 @@ struct SphForceParams {
                    // IMPLICITLY (decay factor) → unconditionally stable, never
                    // undershoots the floor. Replaces the u-cap discard as the
                    // honest energy sink; hot plasma radiates, cold gas untouched.
+    float horizonR; // ONE-WAY MEMBRANE (2026-07-16): honest r_h (0 = no hole).
+    float bhX, bhY, bhZ; // hole centre (radial-profile candidate, origin-locked)
 };
 
 kernel void sph_force(
@@ -831,6 +833,18 @@ kernel void sph_force(
         }
         ci = sqrt(gamma * max(Pi, 0.0f) / rhoI);
     }
+    // ── ONE-WAY MEMBRANE (2026-07-16, BH deep scan): matter inside the honest
+    // horizon is CAUSALLY DEAD to SPH — it exerts no pressure/viscosity on the
+    // outside universe and receives none (no force, no du; its u decays to the
+    // floor below). A dead thread must STAY in the tile loop (threadgroup
+    // barriers demand uniform control flow) — it just contributes nothing.
+    bool selfDead = false;
+    if (active && p.horizonR > 0.0f) {
+        float3 relBH = ri - float3(p.bhX, p.bhY, p.bhZ);
+        selfDead = dot(relBH, relBH) < p.horizonR * p.horizonR;
+    }
+    if (selfDead) active = false;   // skips accumulation; barriers untouched
+                                    // (they sit outside `if (active)` blocks)
     float h = u.cellSize;
     // ── SUB-STEP ACCUMULATOR (plan §3.6b, 2026-07-07) ────────────────────────
     // The pair exchange is STIFF at hot close pairs: at fixed dtU the booked
@@ -914,6 +928,14 @@ kernel void sph_force(
                         float3 rij = ri - sh_posm[k].xyz;
                         float  r   = length(rij);
                         if (r < 1e-8f) continue;                  // skip self
+                        // ONE-WAY MEMBRANE: a neighbour inside the horizon
+                        // exerts nothing on the outside universe.
+                        if (p.horizonR > 0.0f) {
+                            float3 nbRel = sh_posm[k].xyz -
+                                           float3(p.bhX, p.bhY, p.bhZ);
+                            if (dot(nbRel, nbRel) < p.horizonR * p.horizonR)
+                                continue;
+                        }
                         float mj   = sh_posm[k].w;
                         float rhoJ = sh_rho[k];
                         float Pij  = 0.0f;                        // Π_ij
@@ -1059,6 +1081,13 @@ kernel void sph_force(
             cCool  = mi * (uc - ui);
             cClamp = mi * (uf - uc);
         }
+    }
+    // ONE-WAY MEMBRANE, dead-matter bookkeeping: no force, and its heat is
+    // gone to the outside universe forever (u → floor; nothing radiates out
+    // of a horizon — the honest end of the cap-pinned interior fountain).
+    if (selfDead && originId < uint(u.particleCount)) {
+        forceOut[originId] = float4(0.0f);
+        if (viscOn) uInOut[originId] = p.uFloor;
     }
     // One atomic add per cell-threadgroup (32 lanes = one simdgroup).
     // NON-FINITE GUARD: a single NaN/inf lane turns simd_sum into NaN and

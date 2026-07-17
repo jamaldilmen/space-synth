@@ -56,7 +56,31 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   std::uniform_real_distribution<float> u01(0.0f, 1.0f);
   std::uniform_real_distribution<float> phiDist(0.0f, 2.0f * (float)M_PI);
 
-  // ── PLUMMER-SPHERE SPAWN (2026-07-10) ──────────────────────────────────
+  // ── GALAXY-DISK SPAWN (2026-07-15, Jamal: "currently it's a space Dyson —
+  // it just sucks in every particle. The orbit should be so violently fast
+  // that the light-speed trails of the particles surround the black hole.")
+  // MEASURED why the sphere can never deliver that: spherical cold collapse
+  // violently relaxes — v_rot/σ came out 0.078 (net L exactly on +y, buried
+  // 13:1 under random motion) → a pressure-supported spheroid, radial plunge,
+  // no queue at the horizon, no plasma rim, no body. Matter with dominant
+  // coherent L physically CANNOT cross r_h without queuing — the queue IS the
+  // bright inner disk. So the initial conditions are now disk-dominant (real
+  // observed galaxies already are; we skip the 10-Gyr assembly exactly like
+  // we choose a spawn seed):
+  //   75% THIN DISK  — x–z plane (L about +y, same axis as before), surface
+  //                    density ∝ r^0.7 draw (denser inward), Gaussian height
+  //                    4% flare; near-circular orbits at 0.95 support + 4%
+  //                    random dispersion (v_rot/σ ≈ 20 at spawn — every new
+  //                    ordered structure ships WITH its noise, failure-ledger
+  //                    rule).
+  //   10% NUCLEUS    — Plummer a=1.5 truncated at 6, 0.30 support: collapses
+  //                    in minutes, fires the honest horizon, then eats the
+  //                    disk's queued inner edge.
+  //   15% HALO       — the old Plummer a=15 sphere: the sky backdrop that
+  //                    the shadow occludes and the lens bends.
+  // v_circ from the COMPOSITE enclosed-mass profile below (not the uniform-
+  // ball r³ estimate — that mismatch is what unbound full-support spawns).
+  // ── (previous) PLUMMER-SPHERE SPAWN (2026-07-10) ────────────────────────
   // Was: uniform-density ball placed by blue-noise dart-throwing. That gave a
   // FLAT profile with a HARD edge at r_outer — a filled sphere, not a cluster —
   // and the min-separation dart-throw made the texture ANTI-clustered
@@ -77,63 +101,96 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   // isotropic. Result is naturally POISSON (no anti-clustering) and O(N).
   // A_PLUMMER sets concentration: half-mass radius = 1.305*a. a=15 -> half-mass
   // ~19.6, ~91% of the untruncated mass inside r_outer=60.
-  const float A_PLUMMER = 15.0f;
-  std::vector<std::array<float, 3>> latticePts;
-  {
-    const double ro = (double)r_outer / A_PLUMMER;
-    const double mMax = ro * ro * ro / std::pow(1.0 + ro * ro, 1.5); // mass frac within r_outer
-    latticePts.reserve((size_t)count);
-    for (int i = 0; i < count; i++) {
-      double m = (double)u01(rng) * mMax;                    // enclosed-mass fraction, truncated
-      double rr = (double)A_PLUMMER / std::sqrt(std::pow(m, -2.0 / 3.0) - 1.0);
-      if (!(rr <= (double)r_outer)) rr = (double)r_outer;    // guard the m->mMax float edge
-      double cosT = 2.0 * (double)u01(rng) - 1.0;            // isotropic cos(theta)
-      double sinT = std::sqrt(std::max(0.0, 1.0 - cosT * cosT));
-      double phi = (double)phiDist(rng);
-      latticePts.push_back({(float)(rr * sinT * std::cos(phi)),
-                            (float)(rr * cosT),
-                            (float)(rr * sinT * std::sin(phi))});
-    }
-    printf("[SPAWN] Plummer: %zu placed, a=%.1f, half-mass=%.1f, %.0f%% mass within r_outer\n",
-           latticePts.size(), A_PLUMMER, 1.305f * A_PLUMMER, 100.0 * mMax);
-    fflush(stdout);
-  }
-  size_t latticeIdx = 0;
+  const float A_PLUMMER = 15.0f;   // halo scale (the sky component)
+  const float A_NUC     = 1.0f;    // nucleus Plummer scale (the hole fuel)
+  const float R_NUC     = 3.0f;    // nucleus truncation
+  const float R_DISK    = 18.0f;   // disk edge — SIZED TO THE CAMERA (2026-07-15:
+                                   // the ortho view spans ±4.8 sim at default rho,
+                                   // ±24 at max zoom-out; the first cut at 45 was
+                                   // 10× wider than the window — the galaxy was
+                                   // never on screen. 18 = fully visible zoomed
+                                   // out, hub fills the default view; inner disk
+                                   // sits inside the AMR fine box + r<5 probes).
+  const float F_DISK = 0.75f, F_NUC = 0.10f;   // remainder = halo
+  std::normal_distribution<float> gauss(0.0f, 1.0f);
 
+  int nDisk = 0, nNuc = 0, nHalo = 0;
   for (auto &p : particles_) {
-    // Uniform BOX, not a sphere → the field fills the frame CORNER-TO-CORNER
-    // (no circular edge, no "tube"/radius limitation at rest). That tube only
-    // belongs to the PLAY state (the Chladni cap reintroduces the disk when a
-    // note is held); the open star map has no such limit.
     (void)r_inner;
-    const float boxL = r_outer;  // half-extent of the star-field box
-    // VOLUMETRIC 3D BALL (not a box), minus a small central hole. Rejection-
-    // sample the box and KEEP only points with r_inner ≤ r ≤ r_outer. The old
-    // code sampled the box but only rejected the inner hole, so the box CORNERS
-    // reached r = √(boxL²·3) ≈ 104 — far beyond halfExtent (64). Those corner
-    // stars spawned already outside the domain and "vanished into nothingness"
-    // (2026-06-25, Jamal). A true ball of radius r_outer=60 < 64 keeps every
-    // star inside the domain; the circular spawn velocity (v⊥r, |v|=√(GM/r))
-    // then holds them on bound orbits that never exceed their spawn radius.
-    // This matches the stated intent at the top of this function ("uniform
-    // density in the ball").
-    float rr2;
-    if (latticeIdx < latticePts.size()) {
-      // Jittered-lattice site: hard min-separation, no spawn contacts.
-      p.x = latticePts[latticeIdx][0];
-      p.y = latticePts[latticeIdx][1];
-      p.z = latticePts[latticeIdx][2];
-      latticeIdx++;
-      rr2 = p.x * p.x + p.y * p.y + p.z * p.z;
+    const float boxL = r_outer;  // cluster scale (kept: Rc reference below)
+    // ── COMPONENT DRAW ───────────────────────────────────────────────────
+    float sel = u01(rng);
+    int component;                    // 0 = disk, 1 = nucleus, 2 = halo
+    if (sel < F_DISK) component = 0;
+    else if (sel < F_DISK + F_NUC) component = 1;
+    else component = 2;
+    if (component == 0) {
+      // THIN DISK in x–z: r ~ R_DISK·u^{1/1.7} (density ∝ r^-0.3, denser
+      // inward; enclosed-mass CDF = (r/R)^1.7 used for v_circ below).
+      // ORGANIC CHARACTER (2026-07-15 23:53, Jamal: "too circular, too flat,
+      // too slice-of-a-ball"): perfect circles at uniform support read as
+      // drawn concentric rings. Real disks are messy —
+      //   · lognormal radial jitter (±8%) breaks the ring banding,
+      //   · stronger flare + a base thickness kills the razor slice,
+      //   · a gentle m=2 warp (5°, radius-dependent phase) tilts the plane
+      //     organically instead of a perfect flat cut.
+      // (Eccentricity spread lives in the VELOCITY block below.)
+      // PLATE-PLANE ALIGNMENT (2026-07-16, Jamal item 4): the default camera
+      // sits on +Z (screen plane = x-y) and the Chladni plate lives in x-y —
+      // the disk was x-z (about y) = edge-on 90-degrees off the plate at
+      // launch. The whole BH world now orbits about Z: disk in the PLATE
+      // plane, face-on at launch, aligned with the circle he sees on play.
+      float rr = R_DISK * std::pow(u01(rng), 1.0f / 1.7f);
+      rr *= std::exp(0.08f * gauss(rng));            // radial clumping
+      rr = std::min(rr, R_DISK * 1.15f);
+      float ph = phiDist(rng);
+      float h  = 0.30f + 0.06f * std::max(rr, 2.0f); // thicker, flared
+      // WARP KILLED (2026-07-17, "it still renders as two rings"): the m=1
+      // vertical corrugation 0.09·rr·sin(ph+0.15rr) was the ONLY z(φ,r) term.
+      // The time-lapse playback spins each radius at Ω∝r^-1.5 (differential),
+      // so the corrugation WOUND UP into a helix → two z-separated rings +
+      // the connecting strand he sees (present since before the lens existed,
+      // so not a lens artifact). Flat plane → differential rotation makes an
+      // in-plane spiral (disk-like), not a vertical helix.
+      p.x = rr * std::cos(ph);
+      p.y = rr * std::sin(ph);
+      p.z = h * gauss(rng);
+      nDisk++;
+    } else if (component == 1) {
+      // NUCLEAR DISK (2026-07-16, Jamal: the hole rim was "still just a
+      // white-ish circle" from EVERY angle — an isotropic nucleus rains in
+      // from all directions, so the matter queuing at r_h forms a spherical
+      // SHELL, and a shell limb-brightens into a circle no matter where the
+      // camera is — the documented shell-ring artifact. The queue only reads
+      // as an accretion structure — band edge-on, ring face-on — if the
+      // near-hole matter shares the disk's PLANE.) Plummer radial profile,
+      // FLATTENED ×0.30 in y, same rotation axis as the main disk.
+      const double ro = (double)R_NUC / A_NUC;
+      const double mMax = ro * ro * ro / std::pow(1.0 + ro * ro, 1.5);
+      double m = (double)u01(rng) * mMax;
+      double rr = (double)A_NUC / std::sqrt(std::pow(m, -2.0 / 3.0) - 1.0);
+      if (!(rr <= (double)R_NUC)) rr = (double)R_NUC;
+      double cosT = 2.0 * (double)u01(rng) - 1.0;
+      double sinT = std::sqrt(std::max(0.0, 1.0 - cosT * cosT));
+      double ph = (double)phiDist(rng);
+      p.x = (float)(rr * sinT * std::cos(ph));
+      p.y = (float)(rr * sinT * std::sin(ph));
+      p.z = (float)(rr * cosT) * 0.30f;               // flatten: nuclear disk (plate plane)
+      nNuc++;
     } else {
-      // Lattice exhausted (discretization shortfall, few thousand at most):
-      // fall back to the old rejection sample for the remainder.
-      do {
-        p.x = (2.0f * u01(rng) - 1.0f) * boxL;
-        p.y = (2.0f * u01(rng) - 1.0f) * boxL;
-        p.z = (2.0f * u01(rng) - 1.0f) * boxL;
-        rr2 = p.x * p.x + p.y * p.y + p.z * p.z;
-      } while (rr2 < r_inner * r_inner || rr2 > r_outer * r_outer);
+      // HALO: the old Plummer a=15 sky, truncated at r_outer.
+      const double ro = (double)r_outer / A_PLUMMER;
+      const double mMax = ro * ro * ro / std::pow(1.0 + ro * ro, 1.5);
+      double m = (double)u01(rng) * mMax;
+      double rr = (double)A_PLUMMER / std::sqrt(std::pow(m, -2.0 / 3.0) - 1.0);
+      if (!(rr <= (double)r_outer)) rr = (double)r_outer;
+      double cosT = 2.0 * (double)u01(rng) - 1.0;
+      double sinT = std::sqrt(std::max(0.0, 1.0 - cosT * cosT));
+      double ph = (double)phiDist(rng);
+      p.x = (float)(rr * sinT * std::cos(ph));
+      p.y = (float)(rr * cosT);
+      p.z = (float)(rr * sinT * std::sin(ph));
+      nHalo++;
     }
 
     // KEPLERIAN rest velocity: each star starts on a circular orbit about +Y
@@ -181,27 +238,69 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     // ∝ r³ inside the uniform ball → solid-body v∝r) makes the cluster bound by
     // its OWN mass — the scale is now self-consistent, so gravity can hold and
     // collapse it toward a real geometric horizon. Jamal: "scale must be correct".
-    float fieldEncGM = (r3 < Rc) ? kGM * (r3 * r3 * r3) / (Rc * Rc * Rc) : kGM;
-    // COLD / SUB-VIRIAL spawn (2026-06-26): 0.3× the circular speed. At full
-    // v_circ the cluster still EXPANDED (the real grid+softening force is weaker
-    // than this smooth-r³ estimate → effectively super-virial → unbound). A
-    // sub-virial cloud lets self-gravity WIN: it collapses inward, density
-    // climbs, and at the anchored scale a crushed core reaches r_s ≥ radius = a
-    // real geometric horizon. This is the honest "gravity does its thing →
-    // core collapse → black hole" (Jamal). Factor tunable; lower = colder/faster.
-    const float kColdFactor = 0.05f; // near-radial: kill rotation so it collapses
-                                     // to the centre (no centrifugal ring) → the
-                                     // whole field crushes to ~1 sim where
-                                     // r_s(field)=1 ≥ radius = a real horizon.
-    float vmag = std::sqrt(fieldEncGM / std::max(r3, 0.5f)) * kDt * kColdFactor;
-    if (lxz > 1e-4f) {
-      p.vx =  vmag * p.z / lxz;
-      p.vy =  0.0f;
-      p.vz = -vmag * p.x / lxz;
+    (void)Rc;
+    // COMPOSITE ENCLOSED MASS at r3 (matches the three components drawn
+    // above — v_circ from the mass the star actually orbits inside):
+    //   disk  CDF (r/R_DISK)^1.7, nucleus + halo Plummer m(r) = r³/(r²+a²)^{3/2}
+    auto plumEnc = [](float r, float a, float rt) {
+      double ro = (double)rt / a;
+      double mMax = ro * ro * ro / std::pow(1.0 + ro * ro, 1.5);
+      double x = (double)r / a;
+      double m = x * x * x / std::pow(1.0 + x * x, 1.5);
+      return (float)(std::min(m, mMax) / mMax);   // fraction of the component
+    };
+    float encFrac =
+        F_DISK * std::min(std::pow(r3 / R_DISK, 1.7f), 1.0f) +
+        F_NUC  * plumEnc(r3, A_NUC, R_NUC) +
+        (1.0f - F_DISK - F_NUC) * plumEnc(r3, A_PLUMMER, r_outer);
+    float fieldEncGM = kGM * encFrac;
+    // Per-component support (why: v_rot/σ measured 0.078 for the sphere —
+    // spheroid, no queue, no rim; see the header note):
+    //   disk 0.95 near-circular (+4% dispersion), nucleus 0.30 (collapses →
+    //   fires the horizon), halo 0.90 (holds as the sky).
+    // Nucleus support raised 0.30 → 0.55 with the flattening: it still sinks
+    // and fires the horizon in minutes, but arrives WITH the disk's spin so
+    // the queue is planar, not a shell.
+    // DISK SUPPORT 0.95 → 0.99 (2026-07-17, "fix the collapse"): at 0.95 the
+    // disk was 5% sub-circular → 75% of the mass fell inward, overshot, and
+    // BOUNCED (measured: hollow gap r=1–3 empty, inner core vr=+0.015 outward,
+    // disk puffed 0.5→3.6 = thick 1.9:1 rings, not the NASA razor disk). Near-
+    // circular (0.99) keeps the disk ORBITING in-plane as a thin sheet; the
+    // nucleus (0.55) still sinks and fires the hole → thin disk + central hole,
+    // the reference structure. Inflow becomes viscous (LTRANS), not a plunge.
+    float support = (component == 0) ? 0.99f : (component == 1) ? 0.55f : 0.90f;
+    float vc = std::sqrt(fieldEncGM / std::max(r3, 0.5f)) * kDt;
+    float vmag = vc * support;
+    float lxy = std::sqrt(p.x * p.x + p.y * p.y);
+    if (lxy > 1e-4f) {
+      // Orbit about +Z (plate plane), sense = the Keplerian playback's
+      // counter-clockwise (+z x r): v = omega*(-y, x, 0).
+      p.vx = -vmag * p.y / lxy;
+      p.vy =  vmag * p.x / lxy;
+      p.vz =  0.0f;
     } else {
       p.vx = 0.0f; p.vy = 0.0f; p.vz = 0.0f; // polar axis: radial orbit
     }
+    if (component == 0) {                       // disk dispersion: 4% of v_circ,
+      float sig = 0.04f * vc;                   // isotropic — ordered structure
+      p.vx += sig * gauss(rng);                 // ships WITH its noise
+      p.vy += sig * gauss(rng);
+      p.vz += sig * gauss(rng);
+      // ECCENTRICITY SPREAD (the organic-character other half): per-star
+      // support jitter ±8% → a mix of slightly plunging / slightly apo-going
+      // ellipses instead of one perfect circular sheet.
+      // Review fix 2026-07-17: disk now orbits in the x–y plane (vz=0);
+      // jittering vx+vz was azimuth-biased (only the x-component scattered).
+      // Scale the full tangential velocity → clean eccentricity at any φ.
+      float ecc = 0.08f * gauss(rng);
+      p.vx *= (1.0f + ecc);
+      p.vy *= (1.0f + ecc);
+    }
   }
+  printf("[SPAWN] galaxy-disk: %d disk / %d nucleus / %d halo (R_disk=%.0f, "
+         "a_nuc=%.1f, a_halo=%.0f)\n",
+         nDisk, nNuc, nHalo, R_DISK, A_NUC, A_PLUMMER);
+  fflush(stdout);
 }
 
 void ParticleSystem::clear() { particles_.clear(); }

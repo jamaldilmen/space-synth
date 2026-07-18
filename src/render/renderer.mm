@@ -166,6 +166,7 @@ struct Renderer::Impl {
   float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
   float lastHorizonMass = 0.0f; // M(<r_h) [M_sun] — drives the emergent time-lapse disk GM
+  float bhDiskGMSmooth = 0.0f;  // eased posed-disk GM so rotation RAMPS in (no snap at hole-formation)
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
@@ -1197,7 +1198,14 @@ void Renderer::render(const RenderConfig &config) {
     cam.bhDiskAxisY = 0.0f;
     impl_->bhPoseClock = 0.0;                  // clock re-arms on next hole
   }
+  // ROTATION EASE-IN (2026-07-18 14:40:10): cam.bhDiskGM jumps 0→gmSim(M(<r_h)) the frame
+  // the horizon forms, SNAPPING the posed spin on (Jamal: "snapped into rotation"). Ease it
+  // so Ω=√(GM/r³) ramps in continuously (~30-frame e-fold) instead of a hard switch. Eases
+  // back to 0 the same way when the hole dissolves.
+  impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
+  cam.bhDiskGM = impl_->bhDiskGMSmooth;
   cam.horizonR = impl_->lastHorizonR; // honest r_h → the hole pass (0 = no hole)
+  cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ; // hole centre (after PLAY it's off-origin) → render spins/culls about this
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;
@@ -1369,7 +1377,14 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     cam.bhDiskAxisY = 0.0f;
     impl_->bhPoseClock = 0.0;                  // clock re-arms on next hole
   }
+  // ROTATION EASE-IN (2026-07-18 14:40:10): cam.bhDiskGM jumps 0→gmSim(M(<r_h)) the frame
+  // the horizon forms, SNAPPING the posed spin on (Jamal: "snapped into rotation"). Ease it
+  // so Ω=√(GM/r³) ramps in continuously (~30-frame e-fold) instead of a hard switch. Eases
+  // back to 0 the same way when the hole dissolves.
+  impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
+  cam.bhDiskGM = impl_->bhDiskGMSmooth;
   cam.horizonR = impl_->lastHorizonR; // honest r_h → the hole pass (0 = no hole)
+  cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ; // hole centre (after PLAY it's off-origin) → render spins/culls about this
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;

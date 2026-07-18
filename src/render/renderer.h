@@ -165,6 +165,9 @@ struct CameraUniforms {
   float bhPoseDt = 0.0f;   // posed BH: last frame dt (rotate prev by one frame less)
   float horizonR = 0.0f;   // honest geometric r_h [sim] (0 = no hole) → hole pass
   float bhDiskAxisY = 0.0f; // 1 = emergent time-lapse about Y (honest hole); 0 = posed legacy Z
+  float bhX = 0.0f;        // emergent hole CENTRE (= bhPos, sim coords): render spins/culls
+  float bhY = 0.0f;        // about THIS, not the origin. Matters after PLAY — the cymatics
+  float bhZ = 0.0f;        // displaces matter so the collapsed hole forms off-centre.
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

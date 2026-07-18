@@ -42,6 +42,9 @@ struct CameraUniforms {
     float bhPoseDt;          // posed BH: last frame dt (rotate prev by one frame less)
     float horizonR;          // honest geometric r_h [sim] (0 = no hole) → hole pass
     float bhDiskAxisY;       // 1 = emergent time-lapse about Y (honest hole); 0 = posed legacy Z
+    float bhX;               // emergent hole centre (= bhPos) — spin/cull about this, not origin
+    float bhY;               // (after PLAY the collapsed hole forms off-centre)
+    float bhZ;
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -246,7 +249,8 @@ vertex VertexOut particle_vertex(
     // by one frame less) so the per-frame velocity stays the TRUE orbital motion,
     // keeping the Doppler/streaks honest. No physics — pure analytic playback.
     if (cam.bhDiskGM > 0.0f && cam.bhDiskAxisY < 0.5f) {
-        float rxy = length(in.posW.xy);
+        float2 c2 = float2(cam.bhX, cam.bhY);   // hole centre (off-origin after PLAY)
+        float rxy = length(in.posW.xy - c2);
         // REAL RELATIVISTIC TIME BENDING (2026-07-16, Jamal item 3: "finally
         // introduce the realistic relativistic time bending in proportion to
         // the black hole — it is still way too small"). r_s = the HONEST r_h
@@ -263,9 +267,9 @@ vertex VertexOut particle_vertex(
             float aPrev = wEff * (cam.bhPoseTime - cam.bhPoseDt);
             float cN = cos(aNow),  sN = sin(aNow);
             float cP = cos(aPrev), sP = sin(aPrev);
-            float2 p = in.posW.xy,  q = in.prevW.xy;
-            in.posW.xy  = float2(p.x * cN - p.y * sN, p.x * sN + p.y * cN);
-            in.prevW.xy = float2(q.x * cP - q.y * sP, q.x * sP + q.y * cP);
+            float2 p = in.posW.xy - c2,  q = in.prevW.xy - c2;   // rotate ABOUT the hole centre
+            in.posW.xy  = c2 + float2(p.x * cN - p.y * sN, p.x * sN + p.y * cN);
+            in.prevW.xy = c2 + float2(q.x * cP - q.y * sP, q.x * sP + q.y * cP);
         }
     }
     // ── EMERGENT-HOLE TIME-LAPSE (2026-07-15, Jamal's breakthrough: "rotation
@@ -317,7 +321,8 @@ vertex VertexOut particle_vertex(
     // pass draws these same particles as the black body; the star pass now
     // draws them not at all. Light stays one-way.
     if (cam.horizonR > 0.0f && mass > 0.001f) {
-        if (length(in.posW.xyz) < cam.horizonR) {
+        // distance from the HOLE CENTRE (off-origin after PLAY), not the origin
+        if (length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ)) < cam.horizonR) {
             out.position = float4(0, 0, -2, 1);
             out.pointSize = 0.0f;
             out.color = float3(0);
@@ -1295,7 +1300,7 @@ vertex HoleVertexOut hole_vertex(
 {
     HoleVertexOut out;
     Particle in = particlesIn[vid];
-    float r = length(in.posW.xyz);
+    float r = length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ)); // from HOLE centre (off-origin after PLAY)
     // Only real matter inside the horizon; walls and everything outside cull.
     if (cam.horizonR <= 0.0f || in.posW.w < 0.001f || r >= cam.horizonR) {
         out.position = float4(0, 0, -2, 1);

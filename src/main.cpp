@@ -2030,9 +2030,9 @@ int main() {
       static bool ltransParsed = false;
       if (!ltransParsed) {
         ltransParsed = true;
-        if (getenv("SS_LTRANS")) {
+        if (!getenv("SS_NO_LTRANS")) {   // DEFAULT ON (2026-07-18 01:12:40, honest toggle stack); SS_NO_LTRANS disables
           ltransBit = (1u << 25);
-          printf("[LTRANS] ON (bit25) — α-disc angular-momentum transport\n");
+          printf("[LTRANS] ON (bit25) — α-disc angular-momentum transport (default; SS_NO_LTRANS to disable)\n");
         }
       }
       debugFlags |= ltransBit;

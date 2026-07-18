@@ -1457,7 +1457,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     physicsUniforms.centerGM = (float)space::units::gmSim(4297000.0);
     physicsUniforms.uAmbient = liveUAmbient;   // display ambient follows the live gas
     static int amrOn = -1;
-    if (amrOn < 0) amrOn = getenv("SS_AMR") ? 1 : 0;   // AMR nested-mesh gravity (default off)
+    if (amrOn < 0) amrOn = getenv("SS_NO_AMR") ? 0 : 1;   // AMR nested-mesh gravity DEFAULT ON (2026-07-18 01:12:40, honest toggle stack); SS_NO_AMR disables
     physicsUniforms.bhToggles = bhToggles | (amrOn ? 0x8000u : 0u); // bit15 = AMR fine force (Slice 2)
     physicsUniforms.horizonR = lastHorizonR;  // honest r_h (1-frame lag) → pressure-yield in the kernel
     physicsUniforms.bhX = bhPosX;
@@ -2058,7 +2058,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // SS_AMR_SWEEPS if we need to trade accuracy back in.
         static int kFineSweeps = 0;
         if (kFineSweeps == 0) {
-          kFineSweeps = 16;
+          kFineSweeps = 4;   // 2026-07-18: 4 = the approved honest-stack default (was 16); SS_AMR_SWEEPS overrides
           if (const char *fs = getenv("SS_AMR_SWEEPS")) {
             int v = atoi(fs);
             if (v >= 1 && v <= 200) kFineSweeps = v;
@@ -2607,7 +2607,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         latestStats.maxTemp = gMaxTemp;
         latestStats.maxSpeed = gMaxSpeed;
         latestStats.coreMassMsun = bhMassEnc;
-        latestStats.fieldMassMsun = physicsUniforms.massTotal;
+        // MASS-COUNT FIX (2026-07-18 02:38:40): was physicsUniforms.massTotal — a
+        // SCALED ANCHOR (sMassTotal × Size massScale) that does NOT match the real
+        // Σ posW.w the radial profile / COLLAPSE% numerator sum. That made enclosed
+        // M(<r_h)=2.58e5 EXCEED the reported field 1.89e5 (impossible → COLLAPSE
+        // >100%). Use the true live mass sum (totalSM) the reduce already computes,
+        // so numerator & denominator share ONE mass definition. Gravity is untouched:
+        // G1 = gravGM/massTotal cancels to gmSim(1 M☉) regardless of this value.
+        latestStats.fieldMassMsun = (float)totalSM;
         latestStats.maxBodyMsun = gMaxMass;
         latestStats.bhStrength = bhStrength;
         // Accuracy measurement readback (1-frame lag, like seedAccum). uint

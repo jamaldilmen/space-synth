@@ -104,7 +104,13 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   const float A_PLUMMER = 15.0f;   // halo scale (the sky component)
   const float A_NUC     = 1.0f;    // nucleus Plummer scale (the hole fuel)
   const float R_NUC     = 3.0f;    // nucleus truncation
-  const float R_DISK    = 18.0f;   // disk edge — SIZED TO THE CAMERA (2026-07-15:
+  const float R_DISK    = 18.0f;   // disk edge — R_DISK=8 REVERTED (2026-07-18 01:42:05):
+                                   // measured WORSE — pulling the disk in fed the core
+                                   // faster (BAND r<0.4 424→986, gap still empty). The
+                                   // empty r=0.4–2 accretion gap is a DRAIN problem (L
+                                   // removed too fast → matter plunges to core), NOT a
+                                   // placement problem. Fix is the L-transport rate, not
+                                   // R_DISK. SIZED TO THE CAMERA (2026-07-15:
                                    // the ortho view spans ±4.8 sim at default rho,
                                    // ±24 at max zoom-out; the first cut at 45 was
                                    // 10× wider than the window — the galaxy was
@@ -211,7 +217,16 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
       sTotalMassCount = count;
     }
     const float kGM = (float)units::gmSim(sTotalMass);
-    const float kDt = 1.0f / 120.0f;
+    // SPAWN↔INTEGRATOR dt MATCH (2026-07-18 09:14:30, science-first): the Verlet
+  // stores velocity as per-step displacement v·dt. The integrator pins dt=0.0165
+  // with tcv=dt/dtPrev=1 (renderer.mm:1002-1004), so there is NO frame-1 correction
+  // of the spawn bake. This kDt MUST equal that integrator dt or the orbital speed
+  // is scaled by kDt/0.0165. It was 1/120=0.00833 → every orbit spawned at 0.505×
+  // v_circ → centrifugal support only 0.505²=0.25 of gravity → a spurious 0.75·g
+  // net inward pull = the "fake pull to the center"/toilet-flush at t=0. At 0.0165
+  // the support fractions (disk 0.99, nucleus 0.55) are TRUE fractions of circular.
+  const float kDt = 0.0165f; // = integrator fixed dt (renderer.mm:1002); keep in sync
+
     float r3 = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
     float lxz = std::sqrt(p.x * p.x + p.z * p.z);
     // ENCLOSED-MASS circular velocity (2026-06-13 audit, step 3). The old
@@ -268,6 +283,10 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
     // circular (0.99) keeps the disk ORBITING in-plane as a thin sheet; the
     // nucleus (0.55) still sinks and fires the hole → thin disk + central hole,
     // the reference structure. Inflow becomes viscous (LTRANS), not a plunge.
+    // Nucleus 0.95 tried 2026-07-18 01:52, REVERTED to 0.55 02:05:10: measured
+    // no-op on the empty r=0.4–2 gap (structural collapse-bounce, not a spawn knob;
+    // R_DISK/LTRANS/nucleus 0.55/0.80/0.95 all leave it 0,0,0,0). Path chosen =
+    // render/lens the real r>2 disk around the real particle-shadow, not fill the gap.
     float support = (component == 0) ? 0.99f : (component == 1) ? 0.55f : 0.90f;
     float vc = std::sqrt(fieldEncGM / std::max(r3, 0.5f)) * kDt;
     float vmag = vc * support;

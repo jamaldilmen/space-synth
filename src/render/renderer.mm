@@ -1512,13 +1512,17 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       //   exact (the d² test uses real stellar radii, the cell only scopes
       //   the partner search). The raytracer reads halfExtent from the same
       //   uniforms and scales with it.
-      float ph = physicsUniforms.envelopePhase;
-      bool tubePhase = (ph >= 1.5f && ph < 3.5f);
-      su.halfExtent = tubePhase ? 3.0f : 64.0f; // reverted from 8: fine cells made
-                                   // softening (cellSize²) tiny → sharp kicks hit
-                                   // the c-cap → ejection. The resolution↔stability
-                                   // trilemma needs adaptive sub-stepping, not a
-                                   // smaller domain. Back to the bound star-map base.
+      // UNIFIED DOMAIN SCALE (2026-07-18 14:33:10, "one scale + AMR"): was
+      // tubePhase ? 3.0 : 64.0 — play (decay/sustain) ran the hash/merge at ±3,
+      // rest/attack/release at ±64. So a note flipped ±64→±3→±64 and RELEASE
+      // re-gridded the fine cymatics structure at the 21×-coarser rest cellSize
+      // (1.0 vs 0.047) → the "gridy squarish shapes + new Dyson mergers after play"
+      // mismatch (Jamal 2026-07-18). ONE ±64 domain now for play AND rest; the AMR
+      // fine box (±4, cell 0.0625, default-on this baseline) carries the near-core
+      // resolution the cymatics/collapse needs — the "adaptive sub-stepping not a
+      // smaller domain" the old note asked for. A globally-fine ±8 made softening
+      // tiny → sharp kicks → ejection; AMR gives fine cells LOCALLY instead.
+      su.halfExtent = 64.0f;
       lastHashExtent = su.halfExtent;
       su.particleCount = particleCount;
       su.cellSize = 2.0f * su.halfExtent / (float)kGridSize;

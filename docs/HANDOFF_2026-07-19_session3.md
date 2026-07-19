@@ -1,0 +1,53 @@
+# HANDOFF 2026-07-19 (session 3, evening) — eigenmode default, honest lens chain, roll axis; volumetric rethink NEXT
+**Written:** 2026-07-19 22:53:30. **Branch:** `session-2026-06-30-honest-spacetime-friction`, HEAD `0edde58`.
+**NOTHING COMMITTED** — every change below is uncommitted working tree, per [[feedback_commit_only_on_explicit_order]].
+Supersedes `HANDOFF_2026-07-19_session2.md` (morning) and folds in `HANDOFF_2026-07-19_hollow_tube_geometry.md` (parallel window — its A/B was run, confounded, rerun clean, VERDICT landed).
+
+## One-line state
+Play-stack: **eigenmode-only is now the DEFAULT** (his eyes: "looks a loooot better, motion amazing, fps better" — rest 68→74fps, play 100–117fps). Lens chain got 5 honest fixes. Third rotation axis shipped (Option+←/→). **Rest field colors orange/white = physically correct stars; the variety he wants (Pillars) is GAS — a medium we don't render. NEXT ACTION = the from-scratch volumetric/gas design (his explicit order), which unifies the three open aesthetic wars: hollow-skin, color variety, gaseous blending.**
+
+## Uncommitted change ledger (file → what/why/verdict)
+- `src/core/particles.cpp` — **KEPLER-MEASURED spawn**: v_t from sorted-radius prefix-sum of the realization's own IMF masses (analytic 3-component model deleted), disk/halo support 1.0, nucleus 0.55. ⚠️ TRAP FOUND+FIXED: 10M spawned but only ~2M simulate → raw sum 2.9663e6 M☉ = 5× the anchor; profile normalized × kMbhMsun(5.94276e5)/cum. Birth verified sup≈0.98 outermost. MEASURED CONSEQUENCE: the toilet is the DRAIN, not birth (sup at r≈8 decays 0.81→0.64 in ~10 s).
+- `src/main.cpp` — [BALANCE] probe now prints the 6th bin (r>20 — it was collected and silently dropped; the outer bulk lives there, meanR≈26). SS_TEST_NOPULL (bit26) env test (never fired in anger: its run's r_h stayed 0). **Eigenmode+sculpt DEFAULTS flipped** (see below). **Roll axis**: Option+←/→ key handling, spinVelZ/spinAngleZ ramp identical to X/Y, R resets all three, config.spinZ/spinAngleZ.
+- `src/render/particles.metal` — bit26 NOPULL gate at the gkick (inert unless env). **ACOUSTIC CONTRAST interior fill**: per-id φ∈[−1,+1] flips/scales the Gor'kov force (nodes vs antinodes vs gradient). VERDICT: STILL A SKIN — nodes+antinodes are both surfaces; real volume needs thermal broadening (→ the design). **COLOR DE-BLOCK**: the eruption temp flash now reads TRILINEAR density (was own-cell count = square hue patches) and rises eased (was instant max()); burst force unchanged. Not yet explicitly verdicted.
+- `src/render/render.metal` — **PHOTON DOUBLE-BOOKING FIX**: the straight-line capture cull deleted the same rays the world-space lens images at θ≥2.62r_s (the missing arch); with lens on, no straight-line culls (the slab exception drew the "pokeball" band — removed). **LENS-COHERENT STREAKS**: v2 += (v1 − preLensNDC) — the scratches around the ring were the lens displacement drawn as motion. VERDICT: gone. **PRIMARY MAGNIFICATION**: μ₊(u) point-lens brightening, clamped ×6, rides tuneLens·lensRamp. **Dilation floor 0.02→0.4** in the dial pose (the emergent hole DRIVES this block — bhDiskAxisY is ALWAYS 0 since 07-16, the "axis-Y branch" SLEEPS). VERDICT: inner-horizon spin STILL not visible ("no it doesn't") — OPEN, mechanism unfound. ⚠️ TWO RETRACTED DEAD-CODE EDITS remain in the file (block-B pose plane, Doppler branch unification) — harmless, but know they did nothing. **spinZ/spinAngleZ** appended to CameraUniforms (LAST, mirror renderer.h), applySpin gained az (Z first, then Y→X), vSpin cross + spinMag include Z.
+- `src/render/renderer.mm` — **HONEST LENS KEY** (both overloads): rsEff = honest r_h only (seed-mass fallback now bhPosed-only). VERDICT: right direction. **SMOOTH r_h** (lastHorizonRSmooth, ~0.7 s e-fold, render keying only — physics raw): kills the size JUMPS as the probe steps. cam.spinZ/spinAngleZ plumbing.
+- `src/render/renderer.h` — RenderConfig + CameraUniforms mirrors: spinZ/spinAngleZ (appended LAST — struct offsets must match render.metal).
+- `src/render/postfx.metal` — **LUPTON ASINH tonemap** (replaces ACES shoulder; ASINH_Q=8, ASINH_RANGE=32; isolated star ~45% peak — Exposure dial is now the level lever). VERDICT: "looking a lot better". **BLEACH RE-KEY** 2×–32× → 8×–256×. VERDICT: "same visual" at rest — CORRECT: rest = blackbody star palette (no green exists); variety = gas (→ design).
+- `src/core/app_state.h` — **uiTogLensShadow default true** ("always launch with lensing on" — standing order).
+- `src/ui/window.h` / `window.mm` — KeyEvent.option (Option modifier forwarded on keyDown AND keyUp; keyUp now also sets shift).
+
+## DEFAULTS (a fresh no-env launch now prints)
+`[EIGENMODE] ON (bit23, default)` + `[SCULPT] OFF (default)` + `[LTRANS] ON (bit25)` + lens/shadow bit8 ON.
+Escape hatches: `SS_NO_EIGENMODE=1`, `SS_SCULPT=1`, `SS_NO_LTRANS=1`, `SS_TEST_NOPULL=1` (bit26), `SS_PLAY_SKIP=...`.
+⚠️ Env vars do NOT pass through `open -n` — launch `./SpaceSynth.app/Contents/MacOS/SpaceSynth` directly and CHECK the printf.
+
+## KEY DISCOVERIES this session (keep)
+1. **PLAY-created holes produce the reference look** (his 14:50–16:06 shots: lensed hole, bent streams, giant ring) — play resurrection = hot injection onto a live hole. Rest-collapse is the broken path.
+2. **The eigenmode-only play stack is the right geometry** (sphere-surface sculpt was the hollow-shell maker AND an FPS eater). Confound lesson: SS_EIGENMODE alone did NOT disable the sculpt — the first A/B tested a mixture.
+3. **bhDiskAxisY is always 0** → the emergent hole drives the DIAL pose block + legacy Doppler branch. Two of my "plane fixes" edited sleeping code (confessed + retracted; memory updated).
+4. **Rest-field orange/white is correct physics** (blackbody OBAFGKM; green does not exist in blackbody). Supernova emission ramp (Hα→[OIII]→Hβ→X-ray) exists and is play-gated.
+5. `Mlive=594276/189044` is NOT a conservation bug — massScale display quirk; G1 cancels it.
+
+## OPEN PROBLEMS (ordered by his priority)
+1. **VOLUMETRIC/GAS FROM SCRATCH** (his order: "totally rethink the Chladni supernova volumetric issue from scratch"). Unifies: still-a-skin (any Ψ-seeking force collects on measure-zero surfaces — contrast split just makes two surface families), Pillars color variety (emission-line GAS medium, distinct from star sprites), gaseous blending. Design direction: warm trap (force + per-particle thermal pressure = volume-filling equilibrium, like real nebulae) + emission-line coloring for the diffuse component. Design doc: `docs/DESIGN_2026-07-19_volumetric_medium.md` (being written).
+2. **Inner-horizon spin invisible** (floor 0.4 did NOT fix — his eyes). Suspects: pose gate flapping (needs lastHorizonMass>0.5 AND r_h>0 — after eat+play both flap), pose clock at 1× real time with GM from a light hole (√20 slower than the Sgr A* demo look he loved), or the pose not engaging at all in his state. NEXT: instrument — print bhDiskGM/bhPoseTime gate state when hole live.
+3. **Doppler asymmetry invisible** (plane was never wrong; constants K_BEAM=0.8/EXP=1.4 possibly buried by additive stacking, or he judged face-on views). NEXT: edge-on A/B with a bumped K as a pure diagnostic.
+4. **"Rotation goes INTO the event horizon"** = the rest-drain (toilet) under the pose — the physics war, not render. SS_NO_LTRANS full-run A/B still never done cleanly.
+5. **Heat clamp flattener**: heatK = clamp(temp,0,5)·gain while measured play temps run 6–10 → most particles get identical heat → palette compression. One-constant lever, untested.
+6. **Hole-centering the world-space lens** (axis/depth measured from ORIGIN; bhPos off-origin after play) — same class as the 0edde58 centering fixes.
+7. FPS: improved (rest 68–74, play 100–117) but he wants more; no dedicated pass yet.
+
+## RITUALS (unchanged, enforced)
+`bash package_macos.sh` NEVER bare make; verify bundle ≥ source timestamps BEFORE testing; "did nothing" → stale binary FIRST; headless probes via direct binary + `script -q` pty + `caffeinate`; `pkill -x` between launches; let sims run MINUTES; I change HE plays; his eyes are ground truth; ONE change per verdict; commit ONLY on explicit order.
+
+## LATE-SESSION ADDENDUM (2026-07-20 00:24:00) — the volumetric breakthrough chain
+His verdict at 00:13: **"we almost there"** — first true volumetric medium (donut with depth). The chain that got there (all uncommitted):
+1. **Sun-shell stand-down** (particles.cpp phase 2/3): the ×80 spring + brake snapping play onto ONE sphere = the deepest skin-maker; stands down when eigenmode organizes (`sunShellOn = !bit23`). Legacy: SS_NO_EIGENMODE.
+2. **CHORD-VOLUME FIX**: axial mode p was tied to octave → same-octave chord tones SHARED nodal planes → the sum kept sheets. p now from (m+n)%3 per tone → no shared surfaces → intersection lattice. HIS DATA: "I've always tried chords" (they were skins — this was why).
+3. **SCALE BUG (his diagnosis, verbatim "old 5-months code pre-unified system... scale issue" — CONFIRMED)**: ORBIT_R_CHLADNI/EIGEN_R was 3.0 from the old ±3 world; unified domain is ±64. Cavity now 12 (length π²·12≈118). All play was squeezed into a radius-3 needle = the eternal tube.
+4. **GAS KERNEL SPLATS** (render.metal): in play, M≲2 dwarfs (=the gas) draw ×3 wide/soft/9×-dimmer (flux-conserving) → samples fuse into continuous medium. HIS STANDING ORDER: the same gaseous form is wanted for the STAR MAP's diffuse layer later ("wayfinder smoke/gas between the stars").
+5. **WARM-TRAP KICKS: measured harmful, default OFF** (SS_WARM=1 to experiment). Bisect: kicks off → symmetric 3D spread σ=(6.3,6.3,9.8); kicks on → drift + evaporation. The idea (Boltzmann fill) stays valid; the naive velocity-kick form does not — a correct implementation must inject noise post-friction.
+6. **⚠️ noise() LANDMINE: returns [−0.5,+0.5] ALREADY ZERO-MEAN** (particles.metal:116). Applying ×2−1 maps to [−2,0] = all-negative kicks on every axis = systematic drift sheets (bug shipped+found+fixed 00:19 twice over). NEVER remap it.
+7. **TRILINEAR FLARE FIELD** (00:22): the eruption clock fired per hash-cell → whole cells evacuated in unison → RECTANGULAR voids (his "resolution error obviously" — correct). Density+stress+clock now all 8-cell blended; ⏳ awaiting his verdict on the blocks.
+Remaining named residuals: matter still ring-weighted ("the in-between is hinted, not gravity-strong like the hotspots"); the TWO GREY ZONES doctrine — (a) supernova-chladni destination, (b) BH intake — are the last cheat spots; node-arrival must render like starfield mergers (light-trails, not drawn shapes). Colors: emission ramp present but underused pending gas state 2/2b (palette + extinction).

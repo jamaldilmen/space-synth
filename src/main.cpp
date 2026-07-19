@@ -293,9 +293,12 @@ int main() {
   static constexpr float kBHTimeLapse    = 2.1e7f;   // time compression
   static constexpr float kSpinMax = kOmegaLightReal * kBHTimeLapse; // ≈437 rad/s (~70 rev/s)
   static bool arrowL = false, arrowR = false, arrowU = false, arrowD = false;
+  static bool rollL = false, rollR = false;      // Option+←/→ = third-axis roll (Z)
   static float spinHold = 0.0f;
   static float spinVelX = 0.0f, spinVelY = 0.0f; // current spin rate (rad/s)
+  static float spinVelZ = 0.0f;                  // roll rate (rad/s)
   static float spinAngleX = 0.0f, spinAngleY = 0.0f; // accumulated spin angle (rad)
+  static float spinAngleZ = 0.0f;                // accumulated roll angle (rad)
 
   // ── Sequencer State (Phase 12) ───────────────────────────────────
   struct SeqNote {
@@ -343,6 +346,15 @@ int main() {
       return;
     }
 
+    // OPTION+←/→ = ROLL — spin around the missing THIRD axis (Z, the screen
+    // plane; Jamal 2026-07-19, binding chosen over Shift which is time warp).
+    // Same held-ramp/momentum as the other two axes (render loop below).
+    if (e.option && (e.keyCode == 123 || e.keyCode == 124)) {
+      if (e.keyCode == 123) rollL = e.isDown;
+      else                  rollR = e.isDown;
+      return;
+    }
+
     // Arrow keys = orbit camera. Handled BEFORE the isRepeat gate so a
     // held key fires every macOS key-repeat tick → smooth continuous
     // rotation. Step is a velocity impulse; Camera::update applies
@@ -367,6 +379,9 @@ int main() {
       else if (e.keyCode == 124) arrowR = d;
       else if (e.keyCode == 126) arrowU = d;
       else if (e.keyCode == 125) arrowD = d;
+      // Releasing ←/→ after letting go of Option lands here (no modifier):
+      // clear the roll-held state too so the roll can't stick on.
+      if (!d && (e.keyCode == 123 || e.keyCode == 124)) rollL = rollR = false;
       return;
     }
 
@@ -388,8 +403,9 @@ int main() {
     // accumulated spin rotation.
     if (e.keyCode == 15 && e.isDown) {
       camera.reset();
-      spinVelX = spinVelY = 0.0f;
-      spinAngleX = spinAngleY = 0.0f;
+      spinVelX = spinVelY = spinVelZ = 0.0f;
+      spinAngleX = spinAngleY = spinAngleZ = 0.0f;
+      rollL = rollR = false;
       spinHold = 0.0f;
       return;
     }
@@ -666,7 +682,8 @@ int main() {
     {
       float dirY = (arrowL ? 1.0f : 0.0f) - (arrowR ? 1.0f : 0.0f);
       float dirX = (arrowU ? 1.0f : 0.0f) - (arrowD ? 1.0f : 0.0f);
-      if (dirX != 0.0f || dirY != 0.0f) {
+      float dirZ = (rollR ? 1.0f : 0.0f) - (rollL ? 1.0f : 0.0f); // Option+←/→
+      if (dirX != 0.0f || dirY != 0.0f || dirZ != 0.0f) {
         spinHold += dt;
         // Engages IMMEDIATELY — even a tap nudges the spin a bit; holding ramps
         // it up HARD (accel grows with hold time) to a fast top in ~3 s, and
@@ -674,19 +691,22 @@ int main() {
         float accel = 8.0f + spinHold * spinHold * 25.0f;
         spinVelY += dirY * accel * dt;
         spinVelX += dirX * accel * dt;
+        spinVelZ += dirZ * accel * dt;
       } else {
         spinHold = 0.0f;
       }
       // Momentum drag: coasts to a stop in ~2s after release (heavy flywheel,
       // not frictionless). Stronger drag while NOT actively driving.
-      float dragRate = (dirX != 0.0f || dirY != 0.0f) ? 0.3f : 2.5f;
+      float dragRate = (dirX != 0.0f || dirY != 0.0f || dirZ != 0.0f) ? 0.3f : 2.5f;
       float spinDrag = std::max(0.0f, 1.0f - dt * dragRate);
       spinVelX *= spinDrag;
       spinVelY *= spinDrag;
+      spinVelZ *= spinDrag;
       // Physical ceiling = M87*'s real horizon spin (time-lapsed). Smooth at
       // 120fps; you cannot out-spin the black hole.
       spinVelX = std::clamp(spinVelX, -kSpinMax, kSpinMax);
       spinVelY = std::clamp(spinVelY, -kSpinMax, kSpinMax);
+      spinVelZ = std::clamp(spinVelZ, -kSpinMax, kSpinMax);
       // RIGID-FRAME SPIN: the spin is a rigid rotation applied in the RENDER,
       // not in the physics — so the disk/Chladni shape rotates as one solid
       // body (no force-fighting → no rest-scatter, no note-pinning, no jump to
@@ -695,6 +715,7 @@ int main() {
       // analytic trail/Doppler velocity.
       spinAngleX += spinVelX * dt;
       spinAngleY += spinVelY * dt;
+      spinAngleZ += spinVelZ * dt;
       renderer.setSpin(0.0f, 0.0f);
     }
     camera.update(dt);
@@ -1912,14 +1933,17 @@ int main() {
     // Scope-line gate: spin magnitude (0→cap) drives the oscilloscope beams.
     // 0 when at rest → pure points; ramps to 1 at the clean-120fps spin cap.
     {
-      float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY);
+      float spinMag = std::sqrt(spinVelX * spinVelX + spinVelY * spinVelY +
+                                spinVelZ * spinVelZ);
       config.oscAmount = std::clamp(spinMag / kSpinMax, 0.0f, 1.0f);
       // Spin velocity (for analytic trail/Doppler) + accumulated angle (for the
       // render-side rigid rotation of the whole shape).
       config.spinX = spinVelX;
       config.spinY = spinVelY;
+      config.spinZ = spinVelZ;
       config.spinAngleX = spinAngleX;
       config.spinAngleY = spinAngleY;
+      config.spinAngleZ = spinAngleZ;
       // TANGENTIAL pixel-stretch (driven by spin): smear bright pixels along
       // concentric CIRCLES (not radially out), so they stay on their radius —
       // bounded to the BH/SN, never globby — and the spinning bright side fuses
@@ -2003,17 +2027,35 @@ int main() {
       debugFlags |= playSkipBits;
     }
 
-    // SS_EIGENMODE=1 → enable the cylindrical cavity eigenmode + Gor'kov force
-    // (bit23, play-stack re-land). A/B: combine with SS_PLAY_SKIP=sculpt to see
-    // the eigenmode ALONE vs the current sculpt. Set-once, latched.
+    // EIGENMODE-ONLY IS THE DEFAULT (2026-07-19 19:4x, Jamal's verdict on the
+    // clean A/B: "looks a loooot better... the motion is amazing, fps better").
+    // The cylindrical cavity eigenmode + Gor'kov (bit23) is ON by default and
+    // the Atom-Model sphere-surface sculpt (the hollow-shell maker) is OFF by
+    // default (bit16 skip). Escape hatches for A/B: SS_NO_EIGENMODE=1 disables
+    // the eigenmode; SS_SCULPT=1 re-enables the sphere sculpt.
     {
       static uint32_t eigenBit = 0;
       static bool eigenParsed = false;
       if (!eigenParsed) {
         eigenParsed = true;
-        if (getenv("SS_EIGENMODE")) {
+        if (!getenv("SS_NO_EIGENMODE")) {
           eigenBit = (1u << 23);
-          printf("[EIGENMODE] ON (bit23) — cylindrical cavity + Gor'kov\n");
+          printf("[EIGENMODE] ON (bit23, default) — cylindrical cavity + "
+                 "Gor'kov (SS_NO_EIGENMODE to disable)\n");
+        }
+        if (!getenv("SS_SCULPT")) {
+          eigenBit |= (1u << 16);   // skip the sphere sculpt (SS_SCULPT=1 re-enables)
+          printf("[SCULPT] OFF (default) — sphere-surface sculpt skipped "
+                 "(SS_SCULPT=1 to re-enable)\n");
+        }
+        // Warm-trap kicks DEFAULT OFF (2026-07-20 00:18): the naive velocity
+        // kick was MEASURED harmful twice (evaporation + a systematic z-drift
+        // to +13.5 — the bisect with kicks off restored symmetric 3D spread,
+        // σ=(6.3,6.3,9.8)). SS_WARM=1 re-enables for future correct-Langevin
+        // work only.
+        if (!getenv("SS_WARM")) {
+          eigenBit |= (1u << 27);
+          printf("[WARM] OFF (default) — thermal kicks disabled (SS_WARM=1 to experiment)\n");
         }
       }
       debugFlags |= eigenBit;
@@ -2036,6 +2078,22 @@ int main() {
         }
       }
       debugFlags |= ltransBit;
+    }
+
+    // SS_TEST_NOPULL=1 → bit26: once the honest hole exists (r_h>0), the
+    // kernel strips the inward radial gravity component — pure rotation,
+    // no pull. 2026-07-19 observe-only probe, default OFF.
+    {
+      static uint32_t noPullBit = 0;
+      static bool noPullParsed = false;
+      if (!noPullParsed) {
+        noPullParsed = true;
+        if (getenv("SS_TEST_NOPULL")) {
+          noPullBit = (1u << 26);
+          printf("[NOPULL] TEST ON (bit26) — inward gravity OFF once r_h>0 (SS_TEST_NOPULL)\n");
+        }
+      }
+      debugFlags |= noPullBit;
     }
 
     // ── Auto-Stabilizer Supervisor (Phase 8) ────────────────────────
@@ -2311,6 +2369,64 @@ int main() {
                nB[2], nB[2] ? vr[2]/nB[2] : 0.0, nB[2] ? vt[2]/nB[2] : 0.0,
                nB[3], nB[3] ? vr[3]/nB[3] : 0.0, nB[3] ? vt[3]/nB[3] : 0.0,
                nB[4], nB[4] ? vr[4]/nB[4] : 0.0, nB[4] ? vt[4]/nB[4] : 0.0);
+      }
+      // [BALANCE] — the linked triad gravity↔spin↔pull, made measurable
+      // (entropy diagnostic 2026-07-19). Per shell:
+      //   L    = r·v_t         specific angular momentum (SPIN). Track across
+      //                        probes: CONSTANT L = no transport → cannot accrete
+      //                        (orbits or plunges, never a ring); FALLING L =
+      //                        accretion/dissipation is doing work (entropy up).
+      //   vcirc= √(GM_enc/r)·kDt  the circular speed the shell needs (GRAVITY),
+      //                        from the field mass enclosed inside r (probe est.).
+      //   sup  = v_t/vcirc     the balance. sup≈1 holds a stable orbit; sup<1 =
+      //                        spin lost to gravity → that shell PLUNGES (PULL wins);
+      //                        sup>1 = over-supported → drifts out. This pinpoints
+      //                        the exact radius the disk breaks.
+      // (Horizon-area/entropy monotonicity = watch [HORIZON] r_h across samples;
+      //  any decrease violates the area theorem = physically illegal frame.)
+      {
+        const float bEdges[6] = {1.0f, 3.0f, 6.0f, 10.0f, 20.0f, 1e9f};
+        double sr[6] = {0}, svt[6] = {0}; int nB[6] = {0};
+        for (int i = 0; i < PROBE_N; i++) {
+          const auto &q = probe[i];
+          if (q.mass < 0.001f) continue;
+          float rq = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z);
+          if (rq < 1e-4f) continue;
+          int b = 0; while (rq > bEdges[b] && b < 5) b++;
+          float vrad = (q.x*q.vx + q.y*q.vy + q.z*q.vz) / rq;
+          float v2 = q.vx*q.vx + q.vy*q.vy + q.vz*q.vz;
+          sr[b] += rq;
+          svt[b] += std::sqrt(std::max(0.0f, v2 - vrad*vrad));
+          nB[b]++;
+        }
+        const float kDt = 0.0165f;
+        const double Mfield = (double)space::units::kMbhMsun; // field mass budget (M_sun)
+        printf("  [BALANCE] L=r*vt spin | vcirc=sqrt(GMenc/r) grav | sup=vt/vcirc (<1 PLUNGES)\n");
+        for (int b = 0; b < 6; b++) {
+          if (nB[b] == 0) continue;
+          double meanR = sr[b] / nB[b];
+          double meanVt = svt[b] / nB[b];
+          // M_enc inside meanR: fraction of the probe closer than meanR × field mass.
+          int encN = 0;
+          for (int i = 0; i < PROBE_N; i++) {
+            const auto &q = probe[i];
+            if (q.mass < 0.001f) continue;
+            float rq = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z);
+            if (rq < meanR) encN++;
+          }
+          double Menc = (double)encN / PROBE_N * Mfield;
+          double vcirc = meanR > 1e-4
+              ? std::sqrt(space::units::gmSim(Menc) / meanR) * kDt : 0.0;
+          double L = meanR * meanVt;
+          double sup = vcirc > 1e-9 ? meanVt / vcirc : 0.0;
+          // clamp predictor: the c·dt integrator cap fires when gacc·dt/speedCap > 1.
+          // >1 = this shell's gravity kick is TRUNCATED (integration fails here) →
+          // localizes the 90% [ACC] clamp: is it the core only, or the disk too?
+          double gacc = space::units::gmSim(Menc) / (meanR * meanR); // per wall-s^2
+          double clampR = gacc * (double)kDt / (double)space::units::kCSimPerSec;
+          printf("    r=%.2f n=%4d Menc=%.2e L=%.4f vt=%.4f vcirc=%.4f sup=%.2f clamp=%.2f\n",
+                 meanR, nB[b], Menc, L, meanVt, vcirc, sup, clampR);
+        }
       }
       // Integration-accuracy budget (same numbers as the HUD [accuracy] row):
       // how many gravity kicks hit the c·dt clamp this frame + the worst

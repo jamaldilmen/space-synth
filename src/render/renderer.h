@@ -15,8 +15,10 @@ struct RenderConfig {
   float oscAmount = 0.0f;   // oscilloscope scope-line gate (driven by spin)
   float spinX = 0.0f;       // live spin rate around X (rad/s) → trail/Doppler vel
   float spinY = 0.0f;       // live spin rate around Y (rad/s) → trail/Doppler vel
+  float spinZ = 0.0f;       // live roll rate around Z (rad/s) — Option+←/→ (2026-07-19)
   float spinAngleX = 0.0f;  // accumulated spin angle X (rad) → rigid render spin
   float spinAngleY = 0.0f;  // accumulated spin angle Y (rad) → rigid render spin
+  float spinAngleZ = 0.0f;  // accumulated roll angle Z (rad) → rigid render spin
   float pixelStretch = 0.0f;// 0-1 "5D look" radial pixel-stretch (driven by spin)
 
   // Post-FX
@@ -168,6 +170,8 @@ struct CameraUniforms {
   float bhX = 0.0f;        // emergent hole CENTRE (= bhPos, sim coords): render spins/culls
   float bhY = 0.0f;        // about THIS, not the origin. Matters after PLAY — the cymatics
   float bhZ = 0.0f;        // displaces matter so the collapsed hole forms off-centre.
+  float spinZ = 0.0f;      // roll rate around Z (rad/s) — appended 2026-07-19, keep LAST
+  float spinAngleZ = 0.0f; // accumulated roll angle Z (rad) — mirror order = render.metal
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

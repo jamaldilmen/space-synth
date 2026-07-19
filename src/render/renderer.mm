@@ -167,6 +167,7 @@ struct Renderer::Impl {
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
   float lastHorizonMass = 0.0f; // M(<r_h) [M_sun] — drives the emergent time-lapse disk GM
   float bhDiskGMSmooth = 0.0f;  // eased posed-disk GM so rotation RAMPS in (no snap at hole-formation)
+  float lastHorizonRSmooth = 0.0f; // eased r_h for RENDER keying only (shadow/lens/pose) — the probe steps every few seconds and the hole visibly JUMPED size (2026-07-19); physics keeps the raw value
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
@@ -1136,9 +1137,25 @@ void Renderer::render(const RenderConfig &config) {
     // for the posed/cheat modes (bhSeedMass ≈ 50 M☉ in the honest bed —
     // an invisible 2e-4 lens — which is why the first honest hole had no
     // lensing at all).
-    float rsEff = std::max(impl_->lastHorizonR,
-                           (float)space::units::kRsSimPerMsun *
-                               std::max(impl_->bhSeedMass, 0.0f));
+    // HONEST LENS KEY (2026-07-19): the lens exists iff the honest hole does.
+    // The old unconditional seed-mass fallback kept rsEff > 0 after play
+    // fattened the seeds, so the lens SURVIVED the hole's death and its size
+    // stopped tracking r_h ("lensing stays even if black hole disappears...
+    // not in scale with the actual event horizon"). Seed-mass keying now only
+    // serves the DECLARED posed hole (setBlackHolePose).
+    // SMOOTH HONEST r_h (2026-07-19 18:20): the probe updates r_h every few
+    // seconds, so everything keyed to it JUMPED size at each step ("it just
+    // jumps, doesn't smoothly grow"). Same cure as bhDiskGMSmooth: ease the
+    // RENDER keying (~0.7 s e-fold). Physics keeps the raw honest value.
+    impl_->lastHorizonRSmooth +=
+        (impl_->lastHorizonR - impl_->lastHorizonRSmooth) * 0.03f;
+    if (impl_->lastHorizonRSmooth < 1e-4f && impl_->lastHorizonR == 0.0f)
+      impl_->lastHorizonRSmooth = 0.0f;   // settle the tail to true zero
+    float rsEff = impl_->bhPosed
+        ? std::max(impl_->lastHorizonRSmooth,
+                   (float)space::units::kRsSimPerMsun *
+                       std::max(impl_->bhSeedMass, 0.0f))
+        : impl_->lastHorizonRSmooth;
     float bSim = 2.6f * rsEff * config.shadowRadius; // photon capture b = 2.6 r_s
     // LENS OFF DURING PLAY: the BH gravitational lens warps the whole field
     // toward screen-center (the "squeeze to the middle / eckig, not fluid"
@@ -1157,6 +1174,8 @@ void Renderer::render(const RenderConfig &config) {
   cam.oscAmount = config.oscAmount;
   cam.spinX = config.spinX;
   cam.spinY = config.spinY;
+  cam.spinZ = config.spinZ;
+  cam.spinAngleZ = config.spinAngleZ;
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
   cam.bhStrength = impl_->bhStrength;
@@ -1204,7 +1223,7 @@ void Renderer::render(const RenderConfig &config) {
   // back to 0 the same way when the hole dissolves.
   impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
   cam.bhDiskGM = impl_->bhDiskGMSmooth;
-  cam.horizonR = impl_->lastHorizonR; // honest r_h → the hole pass (0 = no hole)
+  cam.horizonR = impl_->lastHorizonRSmooth; // eased honest r_h → hole pass/membrane/pose (0 = no hole; raw value stays in physics)
   cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ; // hole centre (after PLAY it's off-origin) → render spins/culls about this
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
@@ -1320,9 +1339,25 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // for the posed/cheat modes (bhSeedMass ≈ 50 M☉ in the honest bed —
     // an invisible 2e-4 lens — which is why the first honest hole had no
     // lensing at all).
-    float rsEff = std::max(impl_->lastHorizonR,
-                           (float)space::units::kRsSimPerMsun *
-                               std::max(impl_->bhSeedMass, 0.0f));
+    // HONEST LENS KEY (2026-07-19): the lens exists iff the honest hole does.
+    // The old unconditional seed-mass fallback kept rsEff > 0 after play
+    // fattened the seeds, so the lens SURVIVED the hole's death and its size
+    // stopped tracking r_h ("lensing stays even if black hole disappears...
+    // not in scale with the actual event horizon"). Seed-mass keying now only
+    // serves the DECLARED posed hole (setBlackHolePose).
+    // SMOOTH HONEST r_h (2026-07-19 18:20): the probe updates r_h every few
+    // seconds, so everything keyed to it JUMPED size at each step ("it just
+    // jumps, doesn't smoothly grow"). Same cure as bhDiskGMSmooth: ease the
+    // RENDER keying (~0.7 s e-fold). Physics keeps the raw honest value.
+    impl_->lastHorizonRSmooth +=
+        (impl_->lastHorizonR - impl_->lastHorizonRSmooth) * 0.03f;
+    if (impl_->lastHorizonRSmooth < 1e-4f && impl_->lastHorizonR == 0.0f)
+      impl_->lastHorizonRSmooth = 0.0f;   // settle the tail to true zero
+    float rsEff = impl_->bhPosed
+        ? std::max(impl_->lastHorizonRSmooth,
+                   (float)space::units::kRsSimPerMsun *
+                       std::max(impl_->bhSeedMass, 0.0f))
+        : impl_->lastHorizonRSmooth;
     float bSim = 2.6f * rsEff * config.shadowRadius; // photon capture b = 2.6 r_s
     bool bhLensActive = (impl_->physicsUniforms.totalAmplitude < 0.02f); // lens OFF during play
     cam.bhShadowNdcRadius =
@@ -1336,6 +1371,8 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.oscAmount = config.oscAmount;
   cam.spinX = config.spinX;
   cam.spinY = config.spinY;
+  cam.spinZ = config.spinZ;
+  cam.spinAngleZ = config.spinAngleZ;
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
   cam.bhStrength = impl_->bhStrength;
@@ -1383,7 +1420,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // back to 0 the same way when the hole dissolves.
   impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
   cam.bhDiskGM = impl_->bhDiskGMSmooth;
-  cam.horizonR = impl_->lastHorizonR; // honest r_h → the hole pass (0 = no hole)
+  cam.horizonR = impl_->lastHorizonRSmooth; // eased honest r_h → hole pass/membrane/pose (0 = no hole; raw value stays in physics)
   cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ; // hole centre (after PLAY it's off-origin) → render spins/culls about this
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;

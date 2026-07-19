@@ -16,7 +16,11 @@ public:
   void reset() {
     // 400 puts the horizon at ~12% of half-screen at default zoom
     // (was 800 → 6%). User can still scroll out to 2000.
-    rho = 400.0f;
+    // 400 → 800 (2026-07-20 01:07, "still an eye"): the cavity doubled
+    // (R=3→6) but the default view stayed ±4.8, so the figure OVERFLOWED the
+    // frame and read as a cropped eye. 800 spans ±9.6 — the whole R=6 figure
+    // sits in frame at the same proportion the old R=3 figure had in ±4.8.
+    rho = 800.0f;
     // 🔬 TEMP-DIAG SS_CAM_RHO (2026-07-16): launch at a chosen zoom so the
     // agent can self-verify zoomed render states (hole close-ups) by
     // screenshot without driving the user's mouse. No env = unchanged.

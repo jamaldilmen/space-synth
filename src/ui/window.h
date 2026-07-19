@@ -9,6 +9,7 @@ struct KeyEvent {
   bool isDown;
   bool isRepeat;
   bool shift = false;
+  bool option = false;   // Option/Alt modifier (third-axis roll, 2026-07-19)
   std::string characters;
 };
 

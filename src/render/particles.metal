@@ -200,7 +200,20 @@ constant float ORBIT_R_BH      = 2.0f; // widened from 1.0: the rest disk now ha
                                        // temperature gradient (hot inner → cool
                                        // outer) is visible. Still breathes out to
                                        // ORBIT_R_CHLADNI on play.
-constant float ORBIT_R_CHLADNI = 3.0f;
+// SCALE UNIFICATION (2026-07-19 23:48, Jamal's diagnosis: "old 5-months code
+// pre-unified system... a scale issue" — CONFIRMED): 3.0 was the play cap of
+// the OLD ±3 tube world (set 2026-07-10); the unified ±64 domain (83756a6,
+// 07-18) never rescaled it, so ALL of play — cavity, wall, matter — squeezed
+// into a radius-3 needle inside a ±64 room. That needle IS the eternal "tube
+// skin" at its outermost scale. Now 12: at default zoom (±4.8) the camera is
+// INSIDE the medium; at max zoom-out (±24) the cavity fills the window.
+// EIGEN_R/EIGEN_L (=π²R) and every per-mode force gain self-scale from this.
+// R 12 → 6 (2026-07-20 00:40, Jamal: "the scale change kinda broke their
+// dimension — lowest C used to read as two rings, now it's like an eye"):
+// at 12 the Bessel table (α ≤ 20.32) can't texture the room — pattern
+// fineness ∝ α/R fell 4×, low modes blew into one giant ring. 6 = twice the
+// old room, ring structure back within the math's range.
+constant float ORBIT_R_CHLADNI = 6.0f;
 constant float STAR_MAP_CAP    = 100.0f; // silence: NO cap (the star map has no tube limit)
 
 // CYMATICS VELOCITY CAP (play regime). The relativistic c-cap (u.speedCap·dt)
@@ -695,7 +708,17 @@ kernel void compute_physics(
     // ─── PHASE 2/3: DECAY/SUSTAIN → SUN (Radiating Sphere / Plasma) ──────────────
     else if (u.envelopePhase < 3.5f) {
         float targetRadius = globalTargetRadius;
-        if (r_curr > 0.001f) {
+        // ── THE SKIN-MAKER, FOUND (2026-07-19 23:18) ─────────────────────────
+        // This "SUN — radiating sphere" stage SPRINGS every particle onto ONE
+        // target-radius sphere (×80·lcI) and hard-brakes outward motion — a
+        // CONSTRUCTED hollow shell that overpowers the eigenmode, the contrast
+        // field and any thermal kick (they're ~2 orders weaker). It is the
+        // same 2D-surface-construct class as the retired sphere sculpt. When
+        // the cavity EIGENMODE is the organizer (bit23, the default), the
+        // shell stands down and the 3D mode + warm trap own the shape.
+        // Legacy shell behaviour: SS_NO_EIGENMODE=1.
+        bool sunShellOn = !(u.debugFlags & (1u << 23));
+        if (r_curr > 0.001f && sunShellOn) {
             float3 dir = pvec / r_curr;
             float displacement = (r_curr - targetRadius);
 
@@ -809,21 +832,62 @@ kernel void compute_physics(
         // stress/temp tuning (log2 ramp 0..~2.7) was built against capped
         // counts — an uncapped 50k cell would flash 11× the intended burst.
         uint ecount = min(cellCounts[ecID], uint(MAX_PER_CELL));
-        if (ecount > ERUPT_DENSITY) {
-            float stress = log2(float(ecount) / float(ERUPT_DENSITY)); // 0..~3
-            // Intermittent per-cell flare clock (changes a few times/sec).
-            float flare = noise(ecID * 2654435761u + 7u, uint(u.time * 2.0f));
-            if (flare * stress > ERUPT_THRESHOLD) {
-                float ccx = (float(ecx) + 0.5f) * su.cellSize - su.halfExtent;
-                float ccy = (float(ecy) + 0.5f) * su.cellSize - su.halfExtent;
-                float ccz = (float(ecz) + 0.5f) * su.cellSize - su.halfExtent;
-                float3 outward = float3(px - ccx, py - ccy, pz - ccz);
+        // ── COLOUR PATH DE-BLOCKED (2026-07-19, Jamal ×2: "colors are low
+        // res / on the grid / jump don't fade") — the temp flash used the
+        // particle's OWN cell count (one stress per cell = square hue
+        // patches) and an instant max() (teleporting hue). The TEMP stress
+        // now comes from a TRILINEAR density read (the alias-free pattern of
+        // the moments read, :1346) so hue varies continuously across cell
+        // faces, and the flash RISES eased (~0.3 s) so colours fade in and
+        // decay out. The burst FORCE below keeps the raw per-cell stress +
+        // intermittent flare clock — that is motion character, not colour.
+        {
+            float3 egc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f;
+            int3 eb0 = int3(floor(egc));
+            float3 efw = clamp(egc - float3(eb0), 0.0f, 1.0f);
+            // TRILINEAR FLARE FIELD (2026-07-20 00:24, Jamal: "it's a
+            // resolution error obviously" — CORRECT): the flare CLOCK still
+            // fired per hash-cell — a whole cell erupted in unison and left
+            // its own RECTANGULAR evacuated void (the dark blocks). Density,
+            // stress AND the intermittent clock are now all blended across
+            // the 8 neighbour cells: eruptions are soft blobs straddling
+            // cells; grid-shaped voids are geometrically impossible.
+            float eTri = 0.0f, eFlare = 0.0f;
+            for (int edz = 0; edz <= 1; edz++)
+            for (int edy = 0; edy <= 1; edy++)
+            for (int edx = 0; edx <= 1; edx++) {
+                int3 ccl = clamp(eb0 + int3(edx, edy, edz), int3(0), int3(su.gridSize - 1));
+                uint eID2 = uint((ccl.z * su.gridSize + ccl.y) * su.gridSize + ccl.x);
+                float ewt = (edx ? efw.x : 1.0f - efw.x) *
+                            (edy ? efw.y : 1.0f - efw.y) *
+                            (edz ? efw.z : 1.0f - efw.z);
+                float cnt = float(min(cellCounts[eID2], uint(MAX_PER_CELL)));
+                eTri += cnt * ewt;
+                if (cnt > float(ERUPT_DENSITY)) {
+                    float sI = log2(cnt / float(ERUPT_DENSITY));   // 0..~3
+                    float fI = noise(eID2 * 2654435761u + 7u,      // per-cell clock,
+                                     uint(u.time * 2.0f));         // zero-mean
+                    eFlare += max(fI * sI, 0.0f) * ewt;            // smooth field
+                }
+            }
+            if (eTri > float(ERUPT_DENSITY)) {
+                float stressT = log2(eTri / float(ERUPT_DENSITY));
+                currentTemp = mix(currentTemp,
+                                  max(currentTemp, ERUPT_TEMP * stressT), 0.05f);
+            }
+            if (eFlare > ERUPT_THRESHOLD) {
+                // Per-particle direction + magnitude jitter (noise() is
+                // already zero-mean [−0.5,0.5]; the ×2−1 remap was the
+                // all-negative drift bug, fixed 00:19).
+                float3 outward = float3(noise(id,           u.frameCounter + 71u),
+                                        noise(id + 7919u,   u.frameCounter + 83u),
+                                        noise(id + 104729u, u.frameCounter + 97u));
                 outward = outward / (length(outward) + 1e-4f);
-                float burst = ERUPT_FORCE * stress;
+                float burst = ERUPT_FORCE * eFlare * 2.0f *
+                              (0.5f + noise(id + 31u, u.frameCounter));
                 shiftVx += outward.x * burst * dt;
                 shiftVy += outward.y * burst * dt;
                 shiftVz += outward.z * burst * dt;
-                currentTemp = max(currentTemp, ERUPT_TEMP * stress); // flash hot plasma
             }
         }
     }
@@ -1538,6 +1602,19 @@ kernel void compute_physics(
         }
         if (gkmag > gkmax && gkmag > 1e-12f) gkick *= (gkmax / gkmag);
         gkick *= (1.0f - playGate);          // self-gravity OFF while playing (no center pull)
+        // ── SS_TEST_NOPULL (bit26, 2026-07-19 probe) — once the honest hole
+        // exists (r_h>0), strip the INWARD radial component of the gravity
+        // kick toward it: pure rotation, nothing pulls in. Observe-only
+        // experiment; default OFF.
+        if ((u.debugFlags & (1u << 26)) && u.horizonR > 0.0f) {
+            float3 relBH = float3(px - u.bhX, py - u.bhY, pz - u.bhZ);
+            float rb2 = dot(relBH, relBH);
+            if (rb2 > 1e-12f) {
+                float3 rhat = relBH * rsqrt(rb2);
+                float gr = dot(gkick, rhat);
+                if (gr < 0.0f) gkick -= gr * rhat;   // remove the inward part only
+            }
+        }
         shiftVx += gkick.x;
         shiftVy += gkick.y;
         shiftVz += gkick.z;
@@ -1767,7 +1844,26 @@ kernel void compute_physics(
             // the Ψ=0 nodal shells via the acoustic radiation force F=−Ψ∇Ψ.
             // Single-voice, world-frame cavity (axis = world Z), ∇Ψ by central
             // difference. Gated behind SS_EIGENMODE (bit23) to A/B vs sculpt.
+            // ── VOICE-OWNED MATTER (2026-07-20 00:33, Jamal: "CHORDS DON'T
+            // FEEL LIKE THREE+ FORCES INJECTED INTO A UNIVERSE — they make
+            // the shapes thinner over time"): summing every voice's Gor'kov
+            // onto every particle drives matter to the INTERSECTION of all
+            // nodal sets — sheets→curves→points, thinner with each note (the
+            // codimension math doing exactly the wrong thing aesthetically).
+            // Now the population is PARTITIONED: each particle answers to ONE
+            // voice's mode (id mod voices) → a chord is N coexisting
+            // interleaved bodies stabilizing in one space — thicker with more
+            // notes. Also ×N cheaper: one mode per particle, not all N.
+            // COUPLING (2026-07-20 00:38, Jamal: "I don't see the forces
+            // pulling on EACH OTHER"): pure partition made the voice-bodies
+            // independent ghosts. Now: OWNER voice = full force (the body
+            // keeps its identity), other voices = ×EIGEN_COUPLE (the bodies
+            // tug/shear each other — coupled oscillators). γ=0 ghosts,
+            // γ=1 the old thinning intersection; 0.35 = visible tension.
             if (u.debugFlags & (1u << 23)) {
+                const float EIGEN_COUPLE = 0.35f;
+                float ownW = (int(id % uint(max(numVoices, 1))) == vi)
+                                 ? 1.0f : EIGEN_COUPLE;
                 float rho = sqrt(px * px + py * py);
                 // Outside the cavity wall there is NO mode → no radiation force.
                 // This also bounds k_ρρ ≤ α ≤ 20.3208, inside besselJm's range.
@@ -1781,7 +1877,17 @@ kernel void compute_physics(
                     // the tube (k_z = pπ/L). p is a musical mapping — same status
                     // as pitchClass→m and octave→n in modes.cpp — NOT a physical
                     // constant. Tied to n so structure thickens with pitch.
-                    float kZ   = float(nn) * M_PI_F / EIGEN_L;          // p·π/L, real by construction
+                    // CHORD-VOLUME FIX (2026-07-19 23:32, research §5b +
+                    // Jamal: "I've always tried chords" yet chords stayed
+                    // skins): p was tied to n (octave), so same-octave chord
+                    // tones SHARED their axial nodal planes — and a surface
+                    // common to every voice survives in ΣΨᵢ² (the sum can't
+                    // erase a common zero) → sheets. p now differs per chord
+                    // tone (from m+n), no nodal surface is shared by all
+                    // voices → the summed potential's minima are
+                    // INTERSECTIONS (curves/points) = the volumetric lattice.
+                    int   pAx  = 1 + ((mm + nn) % 3);
+                    float kZ   = float(pAx) * M_PI_F / EIGEN_L;         // p·π/L, real by construction
                     float cth  = px / rho, sth = py / rho;              // cosθ, sinθ
                     float mth  = float(mm) * atan2(py, px);
                     float2 JJ  = besselJmD(mm, kRho * rho);             // (J_m, J_m')
@@ -1805,10 +1911,54 @@ kernel void compute_physics(
                                           dPdz);
                     // Gain dictated by the mode's own wavenumbers (see EIGEN_KAPPA).
                     float Sv = EIGEN_KAPPA / (kRho * kRho + kZ * kZ);
-                    float3 gork = -psi * grad * (Sv * visualAmp * polyNorm);
+                    // ── ACOUSTIC CONTRAST → INTERIOR FILL (2026-07-19) ──────
+                    // F = −Ψ∇Ψ = −½∇(Ψ²) drives EVERY particle onto the same
+                    // Ψ=0 skins (the potential's minima) — that IS the hollow
+                    // tube. The real radiation force scales with the particle's
+                    // acoustic contrast: dense/stiff matter seeks pressure
+                    // NODES (φ>0), light/compressible matter seeks ANTINODES
+                    // (φ<0). φ is drawn per-id, deterministic (same status as
+                    // the per-id IMF mass): the population spreads across
+                    // nodes, antinodes and the gradient between them —
+                    // structure through the VOLUME instead of one skin.
+                    uint hc = id * 747796405u + 2891336453u;
+                    hc ^= hc >> 16; hc *= 0x9E3779B1u; hc ^= hc >> 13;
+                    float contrast = ((float)(hc & 0xFFFFu) / 32767.5f) - 1.0f;
+                    float3 gork = -contrast * psi * grad *
+                                  (Sv * visualAmp * polyNorm * ownW);
                     shiftVx += gork.x;
                     shiftVy += gork.y;
                     shiftVz += gork.z;
+                    // ── WARM TRAP (increment 1, 2026-07-19 23:2x — design doc
+                    // §1, Jamal's 3D-wave framing). A cold trap collapses onto
+                    // the wave's zero-surfaces (sand-on-a-plate transplanted
+                    // to 3D — the skin bug); a WARM trap fills volume:
+                    // ρ ∝ exp(−U/kT) = the |Ψ|²-shaded orbital cloud. Thermal
+                    // kicks keyed to the particle's OWN temperature, σ tied to
+                    // the mode's CHARACTERISTIC drive (Sv·amp·poly·k_ρ), NOT
+                    // the local force — the force is zero exactly ON the nodal
+                    // surface, where escape matters most. Ratio 0.4× from the
+                    // HII-region numbers (research doc §2: σ_th ≈ 0.3–0.5×
+                    // flow) — puffs shells into lobes without erasing them.
+                    if (!(u.debugFlags & (1u << 27))) { // SS_NO_WARM bisect gate
+                        // noise() is already zero-mean [−0.5,0.5] — no remap
+                        // (the ×2−1 here was the [−2,0] all-negative bug).
+                        float3 thKick = float3(noise(id,           u.frameCounter + 41u),
+                                               noise(id + 7919u,   u.frameCounter + 53u),
+                                               noise(id + 104729u, u.frameCounter + 67u));
+                        float tNorm   = clamp(currentTemp, 0.0f, 10.0f) * (1.0f / 5.0f);
+                        // CALIBRATION step 1 (2026-07-19 23:12): 0.4 (the raw
+                        // HII ratio) produced NO visible spread — fricPlay
+                        // damping eats white-noise kicks (stationary width ∝
+                        // σ/√damping), so the ratio must be set against the
+                        // DAMPED equilibrium. Sweeping empirically; bake the
+                        // measured value when Jamal's eyes see lobes.
+                        float sigmaTh = 4.0f * (Sv * visualAmp * polyNorm)
+                                        * (0.3f * kRho) * sqrt(tNorm);
+                        shiftVx += thKick.x * sigmaTh;
+                        shiftVy += thKick.y * sigmaTh;
+                        shiftVz += thKick.z * sigmaTh;
+                    }
                 }
             }
 

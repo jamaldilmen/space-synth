@@ -45,6 +45,8 @@ struct CameraUniforms {
     float bhX;               // emergent hole centre (= bhPos) — spin/cull about this, not origin
     float bhY;               // (after PLAY the collapsed hole forms off-centre)
     float bhZ;
+    float spinZ;             // roll rate around Z (rad/s) — appended 2026-07-19, keep LAST
+    float spinAngleZ;        // accumulated roll angle Z (rad) — mirror order = renderer.h
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -52,7 +54,10 @@ struct CameraUniforms {
 // physics stays spin-free, so there's no force-fighting (no rest-scatter, no
 // note-pinning). Rotation preserves length, so the horizon/colour radius is
 // unchanged.
-static float3 applySpin(float3 p, float ax, float ay) {
+static float3 applySpin(float3 p, float ax, float ay, float az) {
+    // Roll about Z first (Option+←/→, 2026-07-19), then the original Y→X.
+    float cz = cos(az), sz = sin(az);
+    p = float3(p.x * cz - p.y * sz, p.x * sz + p.y * cz, p.z);
     float cy = cos(ay), sy = sin(ay);
     float3 r = float3(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
     float cx = cos(ax), sx = sin(ax);
@@ -261,7 +266,13 @@ vertex VertexOut particle_vertex(
         float rsDil = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
         if (rxy > max(1e-3f, cam.horizonR)) {
             float omega = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
-            float tdil  = sqrt(max(0.02f, 1.0f - rsDil / max(rxy, rsDil + 1e-3f)));
+            // Dilation floor 0.02 → 0.4 (2026-07-19 18:30, Jamal: "stuff in
+            // the inner horizon basically doesn't spin at all"): at 0.02 the
+            // inner edge froze solid — GR-correct for a distant observer, but
+            // it reads as DEAD matter. At 0.4 the inner edge visibly whips
+            // while still clearly slowed vs the outer disk: time bending
+            // stays readable without the freeze.
+            float tdil  = sqrt(max(0.4f, 1.0f - rsDil / max(rxy, rsDil + 1e-3f)));
             float wEff  = omega * tdil;
             float aNow  = wEff * cam.bhPoseTime;
             float aPrev = wEff * (cam.bhPoseTime - cam.bhPoseDt);
@@ -283,19 +294,27 @@ vertex VertexOut particle_vertex(
     // playback-rotating it fought the frozen physics at the boundary
     // (Jamal: "the spin in the center and outside don't add up").
     if (cam.bhDiskGM > 0.0f && cam.bhDiskAxisY > 0.5f) {
-        float rxz = length(in.posW.xz);
-        if (rxz > max(1e-3f, cam.horizonR)) {
+        // PLANE FIX (2026-07-19): this block was written 07-15 when the disk
+        // orbited about Y (x–z). The 07-16 plate-plane alignment moved the
+        // physical disk to x–y about Z — posing about Y on a Z-orbiting disk
+        // superimposes two rotation axes near the centre (Jamal: "rotating in
+        // two directions at once"). Now: same plane (x–y about Z), same CCW
+        // sense as the spawn orbits (+z×r), about the hole centre like the
+        // dial pose above. Dilation floor/r_s semantics unchanged.
+        float2 c2 = float2(cam.bhX, cam.bhY);   // hole centre (off-origin after PLAY)
+        float rxy = length(in.posW.xy - c2);
+        if (rxy > max(1e-3f, cam.horizonR)) {
             float rs = max(cam.horizonR, 1e-3f);
-            float omega = sqrt(cam.bhDiskGM / (rxz * rxz * rxz));
-            float tdil  = sqrt(max(0.4f, 1.0f - rs / max(rxz, rs + 1e-3f)));
+            float omega = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
+            float tdil  = sqrt(max(0.4f, 1.0f - rs / max(rxy, rs + 1e-3f)));
             float wEff  = omega * tdil;
             float aNow  = wEff * cam.bhPoseTime;
             float aPrev = wEff * (cam.bhPoseTime - cam.bhPoseDt);
             float cN = cos(aNow),  sN = sin(aNow);
             float cP = cos(aPrev), sP = sin(aPrev);
-            float2 p = in.posW.xz,  q = in.prevW.xz;
-            in.posW.xz  = float2(p.x * cN + p.y * sN, -p.x * sN + p.y * cN);
-            in.prevW.xz = float2(q.x * cP + q.y * sP, -q.x * sP + q.y * cP);
+            float2 p = in.posW.xy - c2,  q = in.prevW.xy - c2;
+            in.posW.xy  = c2 + float2(p.x * cN - p.y * sN, p.x * sN + p.y * cN);
+            in.prevW.xy = c2 + float2(q.x * cP - q.y * sP, q.x * sP + q.y * cP);
         }
     }
     // SECONDARY LENSED IMAGE (2026-06-13, Jamal: "secondary lensing, stick to
@@ -370,7 +389,7 @@ vertex VertexOut particle_vertex(
     // the whole inner disk inside the photon sphere → "not moving fast enough".)
     float rDil  = length(in.posW.xyz);
     float tDilate = sqrt(max(0.4f, 1.0f - BH_R_IN_SIM / max(rDil, BH_R_IN_SIM + 1e-3f)));
-    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate);
+    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate, cam.spinAngleZ * tDilate);
     float3 worldPos = spinPos * R;
 
     // ── PHOTON-CAPTURE SHADOW (2026-07-15, Jamal: "it's a black circle with
@@ -383,6 +402,18 @@ vertex VertexOut particle_vertex(
     // black disc: the front/behind asymmetry is what reads as a 3D body.
     // Ortho camera → parallel rays along d = view direction through origin
     // (where comShift pins the hole).
+    // DOUBLE-BOOKED PHOTONS FIX (2026-07-19): when the world-space lens is on,
+    // it ALREADY transports every behind-the-hole ray — primary images are
+    // floored at θ≥2.62·r_s, so the θ<2.6·r_s shadow carves itself, and the
+    // small-β sources directly behind the hole become the bright arcs OVER the
+    // shadow (max magnification). Straight-line-culling those same rays here
+    // deleted exactly that arch light (the empty top, "resolving wrong").
+    // The straight-line cull now only handles what the lens can't: the thin
+    // slab at the hole's own depth (along ≤ r_s), or everything when the
+    // lens is off.
+    bool lensWillImage = (cam.bhToggles & 0x100u) &&
+                         (cam.bhShadowNdcRadius > 1e-4f) &&
+                         (smoothstep(0.2f, 0.9f, cam.bhStrength) > 0.001f);
     if (cam.horizonR > 0.0f && !isSecondary) {
         float3 camP = cam.cameraPos.xyz;
         float  camL = length(camP);
@@ -391,7 +422,11 @@ vertex VertexOut particle_vertex(
             float  along = dot(worldPos, d);            // >0 = beyond the hole plane
             float3 perp  = worldPos - along * d;
             float  bCapt = 2.6f * cam.horizonR * R;     // capture radius, world units
-            if (along > 0.0f && length(perp) < bCapt) {
+            // SLAB CULL REMOVED (2026-07-19 17:58): the "hole-depth slab"
+            // exception carved a straight-edged band across the shadow region
+            // (Jamal: "it looks like a pokeball"). With the lens on, the lens
+            // + membrane are the ONLY transport — no straight-line culls.
+            if (along > 0.0f && length(perp) < bCapt && !lensWillImage) {
                 out.position = float4(0, 0, -2, 1);     // captured: no light arrives
                 out.pointSize = 0.0f;
                 out.color = float3(0);
@@ -447,6 +482,9 @@ vertex VertexOut particle_vertex(
     float lensRamp = smoothstep(0.2f, 0.9f, cam.bhStrength);
     bool lensActive = (cam.bhToggles & 0x100u) &&  // bit8: lens/shadow toggle
                       (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f);
+    // Pre-lens screen position — the streak block below needs it to keep
+    // streaks = MOTION through the lens (see LENS-COHERENT STREAK).
+    float2 preLensNDC = out.position.xy / max(out.position.w, 1e-4f);
     // No hole (no lens, or perspective) → the secondary image doesn't exist.
     if (isSecondary && !lensActive) cullThis = true;
     if (lensActive && cam.horizonR > 0.0f) {
@@ -481,6 +519,20 @@ vertex VertexOut particle_vertex(
                     float thEff = mix(beta, th, cam.tuneLens * lensRamp);
                     out.position = cam.viewProjection *
                                    float4(along * dHat + pHat * thEff, 1.0f);
+                    // PRIMARY MAGNIFICATION (2026-07-19): lensing conserves
+                    // surface brightness — a stretched image is a BRIGHTER
+                    // image, by the point-lens μ₊(u) = (u²+2)/(2u√(u²+4)) + ½
+                    // with u = β/θ_E. This fills the evacuated Einstein zone
+                    // with the smooth faint→blazing gradient of the real arcs
+                    // instead of equal-brightness dots. Clamped ×6 (μ₊→∞ on
+                    // axis); blended by the same tuneLens·lensRamp as the
+                    // displacement so dialing the lens off is honest.
+                    float thetaE = sqrt(2.0f * rsW * D);
+                    float u   = beta / max(thetaE, 1e-5f * rsW);
+                    float muP = (u * u + 2.0f) /
+                                (2.0f * u * sqrt(u * u + 4.0f)) + 0.5f;
+                    imageWeight = mix(1.0f, min(muP, 6.0f),
+                                      cam.tuneLens * lensRamp);
                 } else {
                     // SECONDARY image: opposite side, β = α(θ)·D − θ.
                     float th = 0.5f * (sqrt(beta * beta + 8.0f * rsW * D) - beta);
@@ -505,8 +557,11 @@ vertex VertexOut particle_vertex(
                         imageWeight = lensRamp * clamp((A - 1.0f) / (A + 1.0f), 0.0f, 1.0f);
                     }
                 }
-            } else if (isSecondary) {
-                cullThis = true;           // on-axis: degenerate ring, skip
+            } else {
+                // on-axis (β≈0): the true image is a full Einstein ring a
+                // sprite can't represent; an unlensed draw would leak a dot
+                // INSIDE the shadow (the cull no longer removes it) — cull.
+                cullThis = true;
             }
         }
     } else if (lensActive) {
@@ -585,13 +640,20 @@ vertex VertexOut particle_vertex(
     // field in one frame — streaking that jump painted random bright
     // dashes everywhere. Real speeds top out ~60 sim/s; beyond = a jump.
     if (length(velReal) > 60.0f) velReal = float3(0.0f);
-    velReal = applySpin(velReal, cam.spinAngleX, cam.spinAngleY);
-    float3 vSpin = cross(float3(cam.spinX, cam.spinY, 0.0f), spinPos);
+    velReal = applySpin(velReal, cam.spinAngleX, cam.spinAngleY, cam.spinAngleZ);
+    float3 vSpin = cross(float3(cam.spinX, cam.spinY, cam.spinZ), spinPos);
     float3 velWorld = (velReal + vSpin) * R;
     float4 endClip = cam.viewProjection *
         float4(worldPos + velWorld * STREAK_EXPOSURE * cam.tuneStreakLen, 1.0);
     float2 v1_screen = out.position.xy / out.position.w;
     float2 v2_screen = endClip.xy / endClip.w;
+    // LENS-COHERENT STREAK (2026-07-19): v1 is the LENSED image position but
+    // endClip is projected from the UNLENSED world point — near the ring the
+    // "streak" was dominated by the lens displacement itself, drawing bright
+    // scratches in arbitrary directions (the cheap look). Shift the end by
+    // the same image displacement: first-order, both ends of a short streak
+    // bend alike, so the streak is pure motion again. No-op when unlensed.
+    v2_screen += (v1_screen - preLensNDC);
     out.velDir2D = (v2_screen - v1_screen) * STREAK_GAIN;
 
     // ── Phase 18: Chord Connections (Entanglement Webbing) ──
@@ -696,13 +758,18 @@ vertex VertexOut particle_vertex(
         // projection put the "orbital tangent" 90° off, so the time-lapse
         // sweep oscillated vLos through the floor and flipped whole
         // same-radius arcs at once. Branch on the active disk axis.
-        bool axisY = (cam.bhDiskAxisY > 0.5f);
-        float rXY = axisY ? length(spinPos.xz) : length(spinPos.xy);
+        // PLANE FIX №2 (2026-07-19 18:14): the 07-16 branch put the EMERGENT
+        // hole's tangent in x–z (about Y) — true then, wrong since the
+        // plate-plane alignment moved the physical disk to x–y about Z (and
+        // today's pose fix moved the emergent time-lapse with it). The 90°-off
+        // tangent made vLos noise → azimuthally UNIFORM ring, no approaching-
+        // limb glow ("the lens is not spinning as the black hole" / fake
+        // overlay). Both disks orbit Z now — one plane, one prograde sense
+        // (+z×r, the spawn sense), no branch.
+        float rXY = length(spinPos.xy);
         if (rXY > 1e-3f) {
             float omega = 1.0f / (pow(rXY, 1.5f) + KERR_A);   // Kerr Ω(r)
-            float3 tang = axisY
-                ? float3(spinPos.z, 0.0f, -spinPos.x) / rXY   // prograde about Y (spawn sense)
-                : float3(-spinPos.y, spinPos.x, 0.0f) / rXY;  // prograde about Z (posed legacy)
+            float3 tang = float3(-spinPos.y, spinPos.x, 0.0f) / rXY; // prograde about Z
             float3 vOrbit = tang * (omega * rXY);             // REAL orbital β
             // Doppler from the REAL orbital velocity ONLY — NOT the spin. The
             // spin is a time-lapse PLAYBACK rate (~150 rad/s); feeding it here
@@ -1020,6 +1087,26 @@ vertex VertexOut particle_vertex(
     // particles.metal and `M + sqrt(M²-a²)` in blackhole.metal. With
     // M=0.5, a=0.99M → horizon ≈ 0.57 sim coords.
     out.sharpness = cam.sharpness;
+    // ── GAS KERNEL SPLATS (2026-07-19 23:44 — increment 2 render-half; Jamal:
+    // "it should look full at 2 mio particles"). A particle is a SAMPLE of a
+    // fluid: drawn as a sharp point it shows dots and voids; drawn as a soft
+    // smoothing kernel (the SPLASH/Splotch standard) overlapping samples FUSE
+    // into a continuous medium. In PLAY the diffuse population (the ~90%
+    // dwarf stars, M≲2 — they ARE the gas) spreads ×3 with a soft falloff,
+    // luminance ÷ spread² — flux conserved, same photons over more pixels.
+    // Massive stars stay sharp points riding on top. Rest is untouched.
+    {
+        float gasNess = smoothstep(0.5f, 1.5f, cam.envelopePhase) *
+                        (1.0f - smoothstep(1.5f, 3.0f,
+                                           clamp(in.posW.w, 0.05f, 500.0f)));
+        if (gasNess > 0.01f) {
+            const float GAS_SPREAD = 3.0f;
+            float spread = 1.0f + (GAS_SPREAD - 1.0f) * gasNess;
+            out.pointSize = min(out.pointSize * spread, 150.0f);
+            out.luminance /= (spread * spread);
+            out.sharpness  = mix(cam.sharpness, 1.2f, gasNess); // soft kernel
+        }
+    }
     out.grainAlpha = cam.grainAlpha;
 
     // Cull the horizon SPHERE and the polar CYLINDER: any particle whose XY
@@ -1214,7 +1301,7 @@ vertex TrajOut trajectory_vertex(
     // preserved — gravity must read), but the inner/outer ratio no longer
     // tears the disk into two populations ("not fusing into one form").
     float omega = 1.0f / (pow(rXY, 0.9f) + KERR_A);
-    float spinMag = length(float2(cam.spinX, cam.spinY));
+    float spinMag = length(float3(cam.spinX, cam.spinY, cam.spinZ));
     // HORIZON EXPOSURE — spacetime made visible by the hole itself. The arc
     // is the particle's real orbital path over the exposure window; near the
     // horizon Ω explodes (inner-fast differential law above), so matter
@@ -1323,7 +1410,7 @@ vertex HoleVertexOut hole_vertex(
     // black occluders slide off their star images near the rim — the fuzz.
     float rsDil = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
     float tDilate = sqrt(max(0.02f, 1.0f - rsDil / max(r, rsDil + 1e-3f)));
-    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate);
+    float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate, cam.spinAngleZ * tDilate);
     float3 worldPos = spinPos * cam.plateRadius;
     out.position = cam.viewProjection * float4(worldPos, 1.0);
     float dist = max(0.0001f, length(worldPos - cam.cameraPos.xyz));

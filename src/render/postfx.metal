@@ -255,7 +255,20 @@ fragment float4 postfx_fragment(
     // still reads white — but an orange disk now stays orange at full brightness.
     float maxc = max(max(color.r, color.g), color.b);
     maxc = max(maxc, 1e-4f);
-    float tonedMax = acesTonemap(float3(maxc / hdrPeak)).x * hdrPeak;
+    // LUPTON ASINH STRETCH (2026-07-19, Jamal: "gaseous aesthetic not just
+    // glowing yellow / from afar it's just blurry"). ACES has a hard shoulder:
+    // once sprites stack a few times past peak, whole regions hit the ceiling
+    // TOGETHER and every internal gradation dies — the flat blur. The asinh
+    // curve (Lupton 2004, the survey-imagery standard — see
+    // reference_stellar_render_sources) is log-tailed: brightness keeps
+    // differentiating across ~ASINH_RANGE decades of overlap, so dense cores
+    // read as graded gas. Same max-channel application → hue ratio exact.
+    // ASINH_Q = softness knee; ASINH_RANGE = how many × peak still gain
+    // visible brightness (only the very densest point reaches display peak).
+    const float ASINH_Q = 8.0f;
+    const float ASINH_RANGE = 32.0f;
+    float xN = maxc / hdrPeak;
+    float tonedMax = hdrPeak * asinh(ASINH_Q * xN) / asinh(ASINH_Q * ASINH_RANGE);
     color.rgb = color.rgb * (tonedMax / maxc);
     // SENSOR BLEACH (2026-07-07, Jamal: "still the ugly ass yellow"). Pure
     // hue-preservation pins a 50×-overexposed cluster core at max-saturation
@@ -267,7 +280,15 @@ fragment float4 postfx_fragment(
     // ACES (EVERYTHING bleached → "ugly white") and the pure max-channel
     // preserve (NOTHING bleaches → the yellow fog).
     float over = maxc / hdrPeak;
-    float bleach = smoothstep(1.0f, 5.0f, log2(max(over, 1.0f)));
+    // BLEACH RE-KEYED (2026-07-19 22:4x, Jamal: "only white or orange / from
+    // afar it still over-whites / a supernova has so much more variety"): the
+    // old 2×→32× window whitened everything moderately dense — and the
+    // emission ramp's green/cyan midband LIVES in moderately-dense matter, so
+    // the palette's middle was systematically buried under white; only cold
+    // sparse fringes kept hue (the orange+white look). asinh now grades the
+    // stack, so the bleach only needs the truly nuclear cores: hue intact
+    // below 8× peak, full white at ~256×.
+    float bleach = smoothstep(3.0f, 8.0f, log2(max(over, 1.0f)));
     color.rgb = mix(color.rgb, float3(tonedMax), bleach);
 
     // (HDR glow composite moved ABOVE the tonemap — scene-referred, Checkpoint

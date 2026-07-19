@@ -121,6 +121,8 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
   std::normal_distribution<float> gauss(0.0f, 1.0f);
 
   int nDisk = 0, nNuc = 0, nHalo = 0;
+  std::vector<int> comps(particles_.size()); // component per star, read by the
+  int pi = 0;                                // measured-M_enc velocity pass below
   for (auto &p : particles_) {
     (void)r_inner;
     const float boxL = r_outer;  // cluster scale (kept: Rc reference below)
@@ -199,122 +201,82 @@ void ParticleSystem::init(int count, float maxWaveDepth) {
       nHalo++;
     }
 
-    // KEPLERIAN rest velocity: each star starts on a circular orbit about +Y
-    // around the cluster's mass centre (≈ origin at spawn), v_circ = √(GM/r).
-    // This is what makes rest = ORBITS instead of radial plunge: without
-    // tangential velocity every star falls straight through the centre.
-    // Same sense as the old rigid rotation (v ∝ (z, 0, −x)) and the home-pin
-    // spin. Stored in per-FRAME displacement units (×kDt) — the shader's
-    // Verlet velocity proxy is displacement-per-frame.
-    // GM of the whole field, DERIVED from the Sgr A* anchor + time-lapse
-    // (units.h) — same expression the renderer uploads as gravGM, so spawn
-    // orbits exactly match the gravity they live in. Field mass = Σ of the
-    // real per-star IMF masses (mean ≈ 0.30 M_sun), not N×1.
-    static double sTotalMass = 0.0;
-    static int sTotalMassCount = -1;
-    if (sTotalMassCount != count) {
-      sTotalMass = imf::totalMassMsun(count);
-      sTotalMassCount = count;
-    }
-    const float kGM = (float)units::gmSim(sTotalMass);
-    // SPAWN↔INTEGRATOR dt MATCH (2026-07-18 09:14:30, science-first): the Verlet
-  // stores velocity as per-step displacement v·dt. The integrator pins dt=0.0165
-  // with tcv=dt/dtPrev=1 (renderer.mm:1002-1004), so there is NO frame-1 correction
-  // of the spawn bake. This kDt MUST equal that integrator dt or the orbital speed
-  // is scaled by kDt/0.0165. It was 1/120=0.00833 → every orbit spawned at 0.505×
-  // v_circ → centrifugal support only 0.505²=0.25 of gravity → a spurious 0.75·g
-  // net inward pull = the "fake pull to the center"/toilet-flush at t=0. At 0.0165
-  // the support fractions (disk 0.99, nucleus 0.55) are TRUE fractions of circular.
-  const float kDt = 0.0165f; // = integrator fixed dt (renderer.mm:1002); keep in sync
+    (void)boxL;
+    comps[pi++] = component;
+  }
 
-    float r3 = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-    float lxz = std::sqrt(p.x * p.x + p.z * p.z);
-    // ENCLOSED-MASS circular velocity (2026-06-13 audit, step 3). The old
-    // v=√(GM_total/r) treated ALL the field mass as interior to every star —
-    // true only for a point mass. The spawn is a uniform BOX, so the mass
-    // actually inside radius r is ≈ M_total·(r/R)³. Using the full mass made
-    // the inner stars (where enclosed mass ≈ 0) hugely over-sped → they flew
-    // outward and the whole map slowly drifted/heated outward at rest (the
-    // leak the rest friction was masking; measured: meanR climbing with
-    // amp=0). Correct law: v ∝ r inside the cluster (solid-body rotation of a
-    // bound cluster), Keplerian only in the sparse tail outside it. Continuous
-    // at r=R (both give √(GM/R) there).
-    const float Rc = boxL;                       // cluster scale (box half-extent)
-    // HARD-CODED CENTRAL SMBH (Sgr A* = 4.297e6 M☉) at the origin — the dominant
-    // mass the cluster orbits (must MATCH the shader's u.centerGM). v_circ is the
-    // Keplerian speed around (central SMBH + the field mass interior to r), so
-    // spawn orbits exactly balance the gravity the stars live in → clean fast
-    // circular orbits instead of radial plunge.
-    // SELF-BOUND spawn (2026-06-26): velocity from the FIELD's OWN gravity only.
-    // The old `kCenterGM + fieldEncGM` sized the orbit for the 4.3e6 M☉ central
-    // SMBH; with that crutch toggled OFF (the real-physics base), only the weak
-    // field self-gravity remains, so the over-sped cluster flew apart (meanR
-    // 60→660, unbound, never collapses). Using fieldEncGM alone (enclosed mass
-    // ∝ r³ inside the uniform ball → solid-body v∝r) makes the cluster bound by
-    // its OWN mass — the scale is now self-consistent, so gravity can hold and
-    // collapse it toward a real geometric horizon. Jamal: "scale must be correct".
-    (void)Rc;
-    // COMPOSITE ENCLOSED MASS at r3 (matches the three components drawn
-    // above — v_circ from the mass the star actually orbits inside):
-    //   disk  CDF (r/R_DISK)^1.7, nucleus + halo Plummer m(r) = r³/(r²+a²)^{3/2}
-    auto plumEnc = [](float r, float a, float rt) {
-      double ro = (double)rt / a;
-      double mMax = ro * ro * ro / std::pow(1.0 + ro * ro, 1.5);
-      double x = (double)r / a;
-      double m = x * x * x / std::pow(1.0 + x * x, 1.5);
-      return (float)(std::min(m, mMax) / mMax);   // fraction of the component
-    };
-    float encFrac =
-        F_DISK * std::min(std::pow(r3 / R_DISK, 1.7f), 1.0f) +
-        F_NUC  * plumEnc(r3, A_NUC, R_NUC) +
-        (1.0f - F_DISK - F_NUC) * plumEnc(r3, A_PLUMMER, r_outer);
-    float fieldEncGM = kGM * encFrac;
-    // Per-component support (why: v_rot/σ measured 0.078 for the sphere —
-    // spheroid, no queue, no rim; see the header note):
-    //   disk 0.95 near-circular (+4% dispersion), nucleus 0.30 (collapses →
-    //   fires the horizon), halo 0.90 (holds as the sky).
-    // Nucleus support raised 0.30 → 0.55 with the flattening: it still sinks
-    // and fires the horizon in minutes, but arrives WITH the disk's spin so
-    // the queue is planar, not a shell.
-    // DISK SUPPORT 0.95 → 0.99 (2026-07-17, "fix the collapse"): at 0.95 the
-    // disk was 5% sub-circular → 75% of the mass fell inward, overshot, and
-    // BOUNCED (measured: hollow gap r=1–3 empty, inner core vr=+0.015 outward,
-    // disk puffed 0.5→3.6 = thick 1.9:1 rings, not the NASA razor disk). Near-
-    // circular (0.99) keeps the disk ORBITING in-plane as a thin sheet; the
-    // nucleus (0.55) still sinks and fires the hole → thin disk + central hole,
-    // the reference structure. Inflow becomes viscous (LTRANS), not a plunge.
-    // Nucleus 0.95 tried 2026-07-18 01:52, REVERTED to 0.55 02:05:10: measured
-    // no-op on the empty r=0.4–2 gap (structural collapse-bounce, not a spawn knob;
-    // R_DISK/LTRANS/nucleus 0.55/0.80/0.95 all leave it 0,0,0,0). Path chosen =
-    // render/lens the real r>2 disk around the real particle-shadow, not fill the gap.
-    float support = (component == 0) ? 0.99f : (component == 1) ? 0.55f : 0.90f;
-    float vc = std::sqrt(fieldEncGM / std::max(r3, 0.5f)) * kDt;
-    float vmag = vc * support;
-    float lxy = std::sqrt(p.x * p.x + p.y * p.y);
-    if (lxy > 1e-4f) {
-      // Orbit about +Z (plate plane), sense = the Keplerian playback's
-      // counter-clockwise (+z x r): v = omega*(-y, x, 0).
-      p.vx = -vmag * p.y / lxy;
-      p.vy =  vmag * p.x / lxy;
-      p.vz =  0.0f;
-    } else {
-      p.vx = 0.0f; p.vy = 0.0f; p.vz = 0.0f; // polar axis: radial orbit
+  // ── MEASURED-M_enc KEPLERIAN VELOCITIES (2026-07-19, "proper gravity to
+  // speed ratio") ──────────────────────────────────────────────────────────
+  // The old path scaled orbits from an ANALYTIC composite enclosed-mass model
+  // (disk CDF + two Plummer terms) — a hand model of the realization, ±25% off
+  // per shell ([BALANCE] read sup 0.76–0.99 at birth where 0.99/0.90 was set).
+  // Now each star orbits the mass ACTUALLY interior to it in THIS realization:
+  // sort by radius, prefix-sum the same per-id IMF masses the GPU deposits
+  // (walls r>150 carry 0, matching packForGPU), v_t = √(G·M_enc(r)/r)·kDt.
+  // Disk + halo at TRUE circular (support 1.0): any later sup decay in
+  // [BALANCE] is pure drain physics, not a birth artifact. Nucleus stays 0.55
+  // — the hole fuel still sinks and fires the honest horizon.
+  {
+    // SPAWN↔INTEGRATOR dt MATCH (2026-07-18 09:14:30): Verlet stores velocity
+    // as per-step displacement v·dt; this MUST equal the integrator's pinned
+    // dt (renderer.mm:1002) or every orbit is scaled by kDt/0.0165.
+    const float kDt = 0.0165f;
+    const int n = (int)particles_.size();
+    std::vector<int> order(n);
+    std::vector<float> rad(n);
+    for (int i = 0; i < n; i++) {
+      const auto &q = particles_[i];
+      rad[i] = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+      order[i] = i;
     }
-    if (component == 0) {                       // disk dispersion: 4% of v_circ,
-      float sig = 0.04f * vc;                   // isotropic — ordered structure
-      p.vx += sig * gauss(rng);                 // ships WITH its noise
-      p.vy += sig * gauss(rng);
-      p.vz += sig * gauss(rng);
-      // ECCENTRICITY SPREAD (the organic-character other half): per-star
-      // support jitter ±8% → a mix of slightly plunging / slightly apo-going
-      // ellipses instead of one perfect circular sheet.
-      // Review fix 2026-07-17: disk now orbits in the x–y plane (vz=0);
-      // jittering vx+vz was azimuth-biased (only the x-component scattered).
-      // Scale the full tangential velocity → clean eccentricity at any φ.
-      float ecc = 0.08f * gauss(rng);
-      p.vx *= (1.0f + ecc);
-      p.vy *= (1.0f + ecc);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return rad[a] < rad[b]; });
+    std::vector<double> encMsun(n);
+    double cum = 0.0;
+    for (int k = 0; k < n; k++) {
+      encMsun[order[k]] = cum;                     // mass strictly interior
+      if (rad[order[k]] <= 150.0f)                 // walls deposit 0 mass
+        cum += (double)imf::massOfId((uint32_t)order[k]);
     }
+    // ANCHOR NORMALIZATION (2026-07-19 17:2x fix): we spawn 10M particles but
+    // the GPU simulates only ~2M of them (a uniform 1/5 id-subsample), so the
+    // raw IMF sum here (≈2.97e6) is 5× the mass gravity actually deposits
+    // ([GRAV] Mlive=594276 = units::kMbhMsun, the conservation anchor). Keep
+    // the measured PROFILE, rescale its total to the honest anchor — this is
+    // the same M_enc(fraction)×kMbhMsun estimate [BALANCE] verifies against.
+    const double massNorm =
+        cum > 0.0 ? (double)space::units::kMbhMsun / cum : 0.0;
+    for (int i = 0; i < n; i++) {
+      auto &p = particles_[i];
+      float r3 = rad[i];
+      float vc = (float)(std::sqrt(units::gmSim(encMsun[i] * massNorm) /
+                                   (double)std::max(r3, 0.5f)) * (double)kDt);
+      float support = (comps[i] == 1) ? 0.55f : 1.0f;
+      float vmag = vc * support;
+      float lxy = std::sqrt(p.x * p.x + p.y * p.y);
+      if (lxy > 1e-4f) {
+        // Orbit about +Z (plate plane), sense = the Keplerian playback's
+        // counter-clockwise (+z x r): v = omega*(-y, x, 0).
+        p.vx = -vmag * p.y / lxy;
+        p.vy =  vmag * p.x / lxy;
+        p.vz =  0.0f;
+      } else {
+        p.vx = 0.0f; p.vy = 0.0f; p.vz = 0.0f; // polar axis: radial orbit
+      }
+      if (comps[i] == 0) {                      // disk dispersion: 4% of v_circ
+        float sig = 0.04f * vc;                 // + ±8% eccentricity spread
+        p.vx += sig * gauss(rng);               // (organic character, kept)
+        p.vy += sig * gauss(rng);
+        p.vz += sig * gauss(rng);
+        float ecc = 0.08f * gauss(rng);
+        p.vx *= (1.0f + ecc);
+        p.vy *= (1.0f + ecc);
+      }
+    }
+    printf("[SPAWN] KEPLER-MEASURED v_circ: M_enc profile from this "
+           "realization (raw IMF sum %.4e Msun -> normalized to anchor %.4e), "
+           "support disk/halo=1.00 nucleus=0.55\n",
+           cum, (double)space::units::kMbhMsun);
   }
   printf("[SPAWN] galaxy-disk: %d disk / %d nucleus / %d halo (R_disk=%.0f, "
          "a_nuc=%.1f, a_halo=%.0f)\n",

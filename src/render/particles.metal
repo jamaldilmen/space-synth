@@ -226,6 +226,12 @@ constant float STAR_MAP_CAP    = 100.0f; // silence: NO cap (the star map has no
 // restored ONLY in the play regime; the c-cap stays intact for rest/infall.
 constant float CHLADNI_VCAP    = 1.2f;   // sim/frame — the tuned cymatics speed
 
+// NOTE (2026-07-22): a "play-collapse" experiment (keep a fraction of self-gravity
+// during play to fill the cavity) was tried and REVERTED — gravity is directional
+// (toward COM), so it warped every shape to one side ("one-sided distortion, doesn't
+// close"). The correct fill mechanism is ISOTROPIC thermal pressure (warm trap),
+// not a directional pull. See the gkick block below (kept at gravity-OFF in play).
+
 // ── ERUPTIONS in the hardened areas (magnetic-reconnection / solar-flare) ──
 // Where the Chladni pattern hardens (dense nodes), stress builds; past a
 // threshold the node ERUPTS — a sudden outward plasma burst + heat flash. See
@@ -368,7 +374,16 @@ constant float EIGEN_R        = ORBIT_R_CHLADNI; // 3.0 sim units
 // The old EIGEN_C=5000 dispersion (k_z=√(K²−k_ρ²), K=2πf/c) is DEAD: it clamped
 // to 0 for every voice, and any c that frees the low notes drives k_z ∝ f, giving
 // 240 nodal planes at C5 — sub-particle-spacing haze, not depth. Don't retry it.
-constant float EIGEN_L = M_PI_F * M_PI_F * EIGEN_R;  // = π²R = 29.6088 sim (Jeans)
+// DEPTH OVERRIDE (2026-07-21 13:27, Jamal: "the depth is wrong"). Measured on
+// screen: face-on the cavity is a vertical NEEDLE (we view the tube edge-on),
+// and any tilt stretches the ring/iris cross-section into a tall 2:1 eye —
+// because the Jeans depth π²R ≈ 9.87R makes a ~5:1 needle (L≈59 vs diameter 12
+// at R=6). The axial extent dwarfs the radial pattern from every angle except
+// perfect down-barrel. Overriding the canonical Jeans length with a
+// PROPORTIONATE cavity (depth ≈ diameter = 2R) so the 3D pattern reads as a
+// rounded volume, not a needle, from all view angles. The Jeans derivation
+// above is kept intact — revert this line to `M_PI_F*M_PI_F*EIGEN_R` for canon.
+constant float EIGEN_L = 2.0f * EIGEN_R;  // proportionate cavity: depth = diameter
 // FORCE GAIN IS NOT FREE — the integrator dictates it.
 // nextPos = pos + finalV (no dt), so the time unit is ONE FRAME. Linearising the
 // Gor'kov force about a nodal surface gives a discrete damped oscillator
@@ -1886,7 +1901,16 @@ kernel void compute_physics(
                     // tone (from m+n), no nodal surface is shared by all
                     // voices → the summed potential's minima are
                     // INTERSECTIONS (curves/points) = the volumetric lattice.
-                    int   pAx  = 1 + ((mm + nn) % 3);
+                    // FLAT-DISK / LOW-C-EYE FIX (2026-07-22 02:0x, Jamal: "only
+                    // low C turns to an eye... doesn't make sense"). The old
+                    // 1+((m+n)%3) gave pAx=1 whenever (m+n)%3==0 — which is
+                    // EXACTLY low C (m=0,n=3). pAx=1 = a SINGLE axial node = a
+                    // flat disk = a thin line (the eye) edge-on. 2+((m+n)%3) is
+                    // never 1: low C now gets pAx=2 = TWO axial planes = two
+                    // equal rings side by side (his reference look), and no note
+                    // collapses to a flat disk. Per-tone variation (chord desync)
+                    // is preserved by the %3 term.
+                    int   pAx  = 2 + ((mm + nn) % 3);
                     float kZ   = float(pAx) * M_PI_F / EIGEN_L;         // p·π/L, real by construction
                     float cth  = px / rho, sth = py / rho;              // cosθ, sinθ
                     float mth  = float(mm) * atan2(py, px);
@@ -2625,6 +2649,23 @@ kernel void compute_physics(
                     finalV.x -= vRad * radialDir.x;
                     finalV.y -= vRad * radialDir.y;
                 }
+            }
+            // ── AXIAL BOUND (2026-07-22 01:5x, Jamal: "launches as two rings and
+            // MORPHS into the eye"). The XY clamp above bounds the radius but the
+            // z axis is FREE — an INFINITE tube (the comment above admits it:
+            // "unbounded along z... density smears along the free axis"). The
+            // correct launch pattern is right, then eruptions/thermal/mode leakage
+            // past the cavity ends drift particles along the free z with NOTHING to
+            // pull them back → the shape stretches into the needle/eye. This hits
+            // the sculpt AND the eigenmode identically (it's the shared cavity, not
+            // the play force) — exactly why both morph. Bound |z| to the cavity
+            // half-length (EIGEN_L/2) so the cavity is a CLOSED can, not an open
+            // tube. Same spin-yield as the radial cap.
+            float zCap = EIGEN_L * 0.5f + (1.0f - spinSuppress) * 8.0f;
+            if (fabs(nextPos.z) > zCap) {
+                float zs = sign(nextPos.z);
+                nextPos.z = zs * zCap;
+                if (finalV.z * zs > 0.0f) finalV.z = 0.0f;   // no escape past the end cap
             }
         } else {
             // REST / RELEASE: a star map is a 3D CLUSTER, not a tube. Bound the

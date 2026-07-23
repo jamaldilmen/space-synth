@@ -26,6 +26,7 @@ struct RenderConfig {
   float exposure = 1.0f;    // global HDR exposure (1.0 = neutral, <1 stops down)
   float trailDecay = 0.0f; // Persistence of previous frame (user-controlled via POST-FX)
   float chromaticAmount = 0.0f;
+  bool debugBypassPostFX = false; // B-key whiteout bisect: raw scene + Reinhard only
 
   // New Simulation
   float modeP = 1.0f; // Depth Mode multiplier
@@ -126,7 +127,7 @@ struct PostFXUniforms {
   float edrHeadroom;   // display EDR headroom (1.0 = SDR); keeps 80-byte align
   float pixelStretch;  // 0-1 "5D look" radial pixel-stretch (driven by spin)
   float exposure;      // global HDR exposure multiplier (1.0 = neutral)
-  float _pad0;         // 24 scalars = 96 B → matrices 16-byte aligned, matches MSL
+  float debugBypass;   // >0.5 = raw scene + Reinhard (whiteout bisect); 24 scalars = 96 B → matrices 16-byte aligned, matches MSL
   float inverseViewProj[16];
   float prevViewProj[16];
 };
@@ -312,6 +313,7 @@ public:
   void readbackParticles(GPUParticle *out, int count);
 
   void setScale(float s);
+  void setTimeWarp(float w); // x2/x4/x8 time controls — scales the pinned physics dt
   void triggerReset(); // Phase 12 stability: Force GPU re-seed
   void setCollisionsEnabled(bool enabled);
   bool collisionsEnabled() const;

@@ -326,6 +326,8 @@ int main() {
 
   // ── Simulation pause (SPACE) — physics freezes, render/camera live on ──
   bool simPaused = false;
+  // ── F8 whiteout bisect — raw scene + Reinhard, whole postfx chain off ──
+  bool debugBypassPostFX = false;
   // ── TIME WARP (SHIFT+←/→) — multiplicative ramp, rides key-repeat like
   // the camera arrows: hold to sweep. ×1.3 per tick, range 1/64× … 64×.
   float timeWarp = 1.0f;
@@ -421,6 +423,15 @@ int main() {
     if (e.keyCode == 49 && e.isDown) {
       simPaused = !simPaused;
       printf("[SIM] %s\n", simPaused ? "PAUSED" : "RESUMED");
+      return;
+    }
+
+    // B = whiteout bisect: bypass the ENTIRE postfx composite (raw HDR
+    // scene + plain Reinhard). Whiteout still there → scene/particles;
+    // gone → postfx chain. (B, not F8: mac F-keys are media keys sans Fn.)
+    if (e.keyCode == 11 && e.isDown) {
+      debugBypassPostFX = !debugBypassPostFX;
+      printf("[POSTFX] bypass %s\n", debugBypassPostFX ? "ON (raw scene + Reinhard)" : "OFF");
       return;
     }
 
@@ -1929,7 +1940,14 @@ int main() {
     // rigid rotation of the real particles — no persistence smear. (The 0.96
     // spin-driven feedback fused the rotating shape into a blurry squashy comet
     // with a leading/lagging half. Killed.)
-    config.trailDecay = app.uiTrailDecay;
+    // WHITEOUT DIAGNOSTIC (2026-07-23): trail persistence is max(color,
+    // prev*decay) in postfx — it HOLDS blown-out splat pixels for seconds
+    // (at 0.99 decay and 5 FPS a white pixel outlives its cause by ~20 s of
+    // wall time). Force persistence OFF while PAUSED: if pausing mid-shape
+    // now stays crisp instead of whiting out, the trail feedback is the
+    // whitener confirmed.
+    config.trailDecay = simPaused ? 0.0f : app.uiTrailDecay;
+    config.debugBypassPostFX = debugBypassPostFX;
     // Scope-line gate: spin magnitude (0→cap) drives the oscilloscope beams.
     // 0 when at rest → pure points; ramps to 1 at the clean-120fps spin cap.
     {
@@ -2157,8 +2175,23 @@ int main() {
         // already states the intent: "ALWAYS-ON central gravity -> the galaxy
         // self-collapses over time (the BH is the EMERGENT physical sum of the
         // mass falling in, no note required)." That is the next change.
-        config.envelopePhase    = envState.phase;    // 0 = star map, else playing
-        config.envelopeProgress = envState.progress;
+        // PAUSE FREEZES THE REGIME TOO (2026-07-23 04:21, whiteout root cause
+        // measured by [LUMPROBE]): SPACE froze positions but the envelope
+        // lived on — when the sound died mid-pause, phase→0 flipped the
+        // render into the REST star-luminance regime on a still-PACKED play
+        // shape: avg scene radiance 0.044 → ~1100 (×25k), white blob, and
+        // the overdraw dropped 100 → 7 fps. While paused, hold the envelope
+        // uniforms at their pause-moment values so the frame stays in the
+        // regime it was paused in.
+        static float pausedPhase = 0.0f, pausedProgress = 0.0f;
+        static bool  wasPausedEnv = false;
+        if (simPaused && !wasPausedEnv) {        // capture at the pause edge
+            pausedPhase    = envState.phase;
+            pausedProgress = envState.progress;
+        }
+        wasPausedEnv = simPaused;
+        config.envelopePhase    = simPaused ? pausedPhase : envState.phase;   // 0 = star map, else playing
+        config.envelopeProgress = simPaused ? pausedProgress : envState.progress;
     }
 
     float effectiveTotalAmp = synth.totalAmplitude();
@@ -2180,7 +2213,11 @@ int main() {
     // TIME WARP scales only the PHYSICS clock (audio/camera stay realtime).
     // Above ~8× the Verlet integrator coarsens (forces are per-frame
     // impulses) — honest tradeoff for review speed.
-    float simDt = dt * timeWarp;
+    // Physics uses a PINNED base dt (0.0165) scaled by timeWarp inside the
+    // renderer (fixed step = stable; scaled = time controls work). The clock
+    // advances by that same physics dt so the readout matches what the sim does.
+    renderer.setTimeWarp(timeWarp);
+    float simDt = 0.0165f * timeWarp;
     if (!simPaused) {
       // Tick the universe clock by the PHYSICS time this frame represents
       // (kTimeLapse maps integrator time → real physics seconds).

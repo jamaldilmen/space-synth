@@ -26,7 +26,7 @@ struct PostFXUniforms {
     float edrHeadroom;      // display EDR headroom (1.0 = SDR), drives HDR glow
     float pixelStretch;     // 0-1 "5D look" radial pixel-stretch (driven by spin)
     float exposure;         // global HDR exposure multiplier (1.0 = neutral)
-    float _pad0;            // 24 scalars = 96 B → float4x4 16-byte aligned on both sides
+    float debugBypass;      // >0.5 = raw scene + plain Reinhard, whole chain skipped (whiteout bisect). 24 scalars = 96 B → float4x4 16-byte aligned on both sides
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
@@ -94,6 +94,16 @@ fragment float4 postfx_fragment(
     constant PostFXUniforms& u [[buffer(0)]])
 {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
+
+    // WHITEOUT BISECT (2026-07-23, F8): raw HDR scene + plain Reinhard,
+    // nothing else — no bloom, trails, auto-exposure, bleach, grade, VJ.
+    // Whiteout still present here → scene pass / particle data.
+    // Gone here → this composite chain.
+    if (u.debugBypass > 0.5) {
+        float3 c = currentFrame.sample(s, in.uv).rgb;
+        return float4(c / (1.0 + c), 1.0);
+    }
+
     float2 uv = in.uv;
 
     // ── VJ geometric effects (Resolume-style), applied to sample UV ──────

@@ -241,6 +241,16 @@ constant float ERUPT_THRESHOLD = 0.80f; // intermittency gate (per-cell flare cl
 constant float ERUPT_FORCE     = 80.0f; // outward burst velocity scale
 constant float ERUPT_TEMP      = 4.0f;  // flash temperature (hot plasma)
 
+// REST-STATE GAS RECYCLE (2026-07-23, Jamal's lifecycle loop: eaten matter must
+// return as gas, not pile forever). The BH eats matter to mass≈0 at rest; the
+// resurrection below only pukes it back on PLAY, so at rest the dead pile grows
+// unbounded → the dense core whites out (additive blend of a few ultra-dense
+// cells) and FPS dies and "never recovers". A slow per-frame trickle returns
+// dead matter to its star-map home at rest too, so the core reaches EQUILIBRIUM
+// (a BH still forms — the heavy accretion seeds keep growing, only the dead
+// walls recycle) instead of a runaway pile-up. Tune to taste.
+constant float REST_RECYCLE    = 0.005f; // fraction of dead matter recycled per frame at rest
+
 // ── RADIAL ENCLOSED-MASS PROFILE (honest geometric horizon — full_physics_todo B2) ──
 // Bin live mass into fine radial shells around the BH candidate (u.bh*) so the
 // CPU can find the largest r where r_s(M(<r)) ≥ r = the REAL horizon radius —
@@ -460,7 +470,11 @@ kernel void compute_physics(
     // the stars→BH collapse (the working months-old process). Only the dead walls
     // revive; the seed keeps growing (the accretion engine). The 5.9e9 runaway is
     // a separate concern to address WITHOUT breaking accretion.
-    if ((u.bhToggles & 0x40u) && mass <= 0.001f && u.totalAmplitude > 0.02f) {  // bit6: resurrection
+    // PLAY pukes the whole dead field back at once; REST trickles it back slowly
+    // (the lifecycle recycle) so the eaten pile can't run away into a whiteout.
+    bool reviveNow = (u.totalAmplitude > 0.02f) ||
+                     ((noise(id, u.frameCounter) + 0.5f) < REST_RECYCLE);
+    if ((u.bhToggles & 0x40u) && mass <= 0.001f && reviveNow) {  // bit6: resurrection + rest recycle
         float r_home = p.spinW.x;
         if (r_home > 0.001f) {
             float theta = as_type<float>(p.entanglement.z);

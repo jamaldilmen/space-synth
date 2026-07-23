@@ -9,6 +9,18 @@ struct Particle {
     uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
 };
 
+// MUST match src/render/particles.metal exactly (same buffer, same layout).
+// Bound to particle_vertex so the render can read each particle's local cell
+// density (the hash-grid count) and gate the gaseous kernel on it.
+struct SpatialHashUniforms {
+    int   gridSize;
+    int   particleCount;
+    float cellSize;
+    float invCellSize;
+    int   gridSizeZ;
+    float halfExtent;   // particle field half-extent in sim coords
+};
+
 struct CameraUniforms {
     float4x4 viewProjection;
     float4 cameraPos; // Use float4 to match 16-byte alignment and C++ padding
@@ -240,7 +252,9 @@ vertex VertexOut particle_vertex(
     device const Particle* particlesIn [[buffer(0)]],
     constant CameraUniforms& cam [[buffer(1)]],
     device const Particle* particlesRef [[buffer(2)]],
-    device const float* lensAlphaLUT [[buffer(3)]])
+    device const float* lensAlphaLUT [[buffer(3)]],
+    device const uint* cellCounts [[buffer(4)]],        // hash-grid density (per cell)
+    constant SpatialHashUniforms& su [[buffer(5)]])     // grid params for the cell lookup
 {
     VertexOut out;
     Particle in = particlesIn[vid];
@@ -1096,6 +1110,13 @@ vertex VertexOut particle_vertex(
     // luminance ÷ spread² — flux conserved, same photons over more pixels.
     // Massive stars stay sharp points riding on top. Rest is untouched.
     {
+        // REVERTED 2026-07-23 04:xx — the speed-gated (2026-07-22) and
+        // density-gated (2026-07-23) gas triggers are removed: both failed
+        // their own goals (settled ring stayed popcorn), and the density gate
+        // fired on the paused packed shape — the whole field at ×3 splats =
+        // fragment-overdraw suspect for the pause whiteout + 5 FPS. Back to
+        // the committed PLAY-phase gate only. (cellCounts/su plumbing kept,
+        // unused, for future volumetric work.)
         float gasNess = smoothstep(0.5f, 1.5f, cam.envelopePhase) *
                         (1.0f - smoothstep(1.5f, 3.0f,
                                            clamp(in.posW.w, 0.05f, 500.0f)));

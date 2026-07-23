@@ -171,6 +171,7 @@ struct Renderer::Impl {
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
+  float timeWarpVal = 1.0f;     // physics-clock multiplier (x2/x4/x8 time controls); scales the pinned dt
   float lastParticleSize = 2.0f; // Size slider (1-frame lag) → scales the cluster's mass/gravity
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
@@ -221,6 +222,11 @@ struct Renderer::Impl {
   id<MTLTexture> depthTexture = nil;
   id<MTLTexture> offscreenTexture = nil;
   id<MTLTexture> prevFrameTexture = nil;
+  // Whiteout probe (2026-07-23): 1×1 top-mip HDR frame average, read back
+  // to CPU and printed ~1/s. Diagnostic only.
+  id<MTLBuffer> lumProbeBuf = nil;
+  double lumProbeLastPrint = 0.0;
+  int lumProbeFrames = 0;
 
   CAMetalLayer *metalLayer = nil;
   int particleCount = 0;
@@ -1001,9 +1007,14 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   // A 2:1 clamp still leaked (first-order correction); only a truly fixed step
   // conserves. NOTE: fixed dt decouples the sim rate from real FPS — the proper
   // fix is a fixed-dt accumulator (N substeps/frame) or velocity-Verlet; TBD.
-  dt = 0.0165f;
+  // TIMEWARP RESTORE (2026-07-23): the pinned base (0.0165) stays fixed frame-to-
+  // frame — that's what kills the variable-FPS energy pump above — but it is now
+  // scaled by the time-control multiplier so x2/x4/x8 and pause actually move the
+  // physics clock again. Constant warp ⇒ dt still constant ⇒ tcv=1 ⇒ stability
+  // intact; only a warp CHANGE causes a one-frame tcv blip (a deliberate action).
+  dt = 0.0165f * impl_->timeWarpVal;
   impl_->physicsUniforms.dt = dt;
-  impl_->physicsUniforms.dtPrev = 0.0165f; // tcv = dt/dtPrev = 1 exactly (fixed step)
+  impl_->physicsUniforms.dtPrev = dt; // tcv = dt/dtPrev = 1 exactly (fixed step)
   impl_->lastDt = dt;
   impl_->physicsUniforms.totalAmplitude =
       totalAmplitude; // Phase 17: Pass real synth amplitude for ADSR dynamics
@@ -1437,6 +1448,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
 }
 
 void Renderer::setScale(float s) { impl_->physicsUniforms.plateRadius = s; }
+void Renderer::setTimeWarp(float w) { impl_->timeWarpVal = std::max(w, 1.0e-3f); }
 
 // Internal helper for compute
 void Renderer::triggerReset() { impl_->resetPending = true; }
@@ -2754,6 +2766,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc setVertexBuffer:lensAlphaLUT
                 offset:0
                atIndex:3]; // deflection map α(b/r_s) — world-space lens
+  // Hash-grid density → density-gated gaseous kernel (dense BH ring/collapse =
+  // gas, not sharp points). Guarded in-shader by su.gridSize>0, so a stale/unbuilt
+  // hash frame just falls back to the phase/speed gate.
+  [enc setVertexBuffer:cellCountsBuffer offset:0 atIndex:4];
+  [enc setVertexBuffer:spatialHashUniformBuffer offset:0 atIndex:5];
   // instanceCount — instance 0 = primary image, instance 1 = the SECONDARY
   // lensed image (the Gargantua fold-over). The secondary only EXISTS when a
   // hole is lensing; with no hole it was culled in-shader to pointSize 0 — but
@@ -2828,7 +2845,37 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   if (offscreenTexture.mipmapLevelCount > 1) {
     id<MTLBlitCommandEncoder> mipBlit = [cmdBuf blitCommandEncoder];
     [mipBlit generateMipmapsForTexture:offscreenTexture];
+    // WHITEOUT PROBE (2026-07-23): copy the 1×1 top mip (frame-average HDR
+    // radiance of the RAW scene, pre-postfx) to a shared buffer, print ~1/s
+    // with fps + envelope phase. Question it answers: is the scene already
+    // blown at the moment of pause (constant high number), or does it CLIMB
+    // after pause (something still advancing)?
+    if (!lumProbeBuf)
+      lumProbeBuf = [device newBufferWithLength:8
+                                        options:MTLResourceStorageModeShared];
+    [mipBlit copyFromTexture:offscreenTexture
+                 sourceSlice:0
+                 sourceLevel:offscreenTexture.mipmapLevelCount - 1
+                sourceOrigin:MTLOriginMake(0, 0, 0)
+                  sourceSize:MTLSizeMake(1, 1, 1)
+                    toBuffer:lumProbeBuf
+           destinationOffset:0
+      destinationBytesPerRow:8
+    destinationBytesPerImage:8];
     [mipBlit endEncoding];
+    lumProbeFrames++;
+    double nowP = CACurrentMediaTime();
+    if (lumProbeLastPrint == 0.0) lumProbeLastPrint = nowP;
+    if (nowP - lumProbeLastPrint >= 1.0) {
+      // Reads last COMPLETED frame's value (one-frame lag, fine for a probe).
+      const __fp16 *px = (const __fp16 *)lumProbeBuf.contents;
+      printf("[LUMPROBE] avgRGB=(%.3f %.3f %.3f) fps=%.1f phase=%.2f\n",
+             (float)px[0], (float)px[1], (float)px[2],
+             lumProbeFrames / (nowP - lumProbeLastPrint), config.envelopePhase);
+      fflush(stdout);
+      lumProbeFrames = 0;
+      lumProbeLastPrint = nowP;
+    }
   }
 
   // ── Multi-pass Gaussian blur via ping-pong HDR pool ───────────────
@@ -2978,6 +3025,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.posterize = config.posterize;
   post.pixelStretch = config.pixelStretch; // "5D look" radial pixel-stretch (spin)
   post.exposure = config.exposure; // global iris — scales the HDR scene pre-tonemap
+  post.debugBypass = config.debugBypassPostFX ? 1.0f : 0.0f; // F8 whiteout bisect
   // EDR headroom: how far above SDR white this display can currently go
   // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
   // Drives how hard the HDR glow punches past white. Queried live because it

@@ -245,10 +245,21 @@ Goal: the simplest **correct** per-pixel backward geodesic ray-march for a Metal
 For a non-spinning hole every null geodesic is planar, so we can integrate the photon as a 3-vector **x** with velocity **v = dx/dλ** in ordinary Cartesian coordinates centered on the hole. Let `r = |x|`, and the conserved specific angular momentum `h = |x × v|` (constant along the ray). Then the exact Schwarzschild null geodesic obeys the compact acceleration (equivalent to the orbit equation `d²u/dφ² + u = 3M u²`, u = 1/r):
 
 ```
-d²x/dλ² = − (3/2) · M · h² · x / r⁵            ... with h² = |x × v|² , r = |x|
+d²x/dλ² = − (3/2) · r_s · h² · x / r⁵   ( = −3·M·h²·x/r⁵ )   with h² = |x × v|² , r = |x|
 ```
 
-(Set M in field units: **M = r_s/2 = 0.5**, so r_s = 1.0. Newtonian term is absent for light; the entire bending is the 3/2 h² r⁻⁵ term — this is what produces b_c = 3√3 M, the photon ring, and the wraps.)
+(Set M in field units: **M = r_s/2 = 0.5**, so r_s = 1.0. Newtonian term is absent for light; the entire bending is the (3/2)·r_s·h²·r⁻⁵ term — this is what produces b_c = 3√3 M, the photon ring, and the wraps.)
+
+> **⚠ CORRECTED 2026-07-24 13:56:40 — this line originally read −(3/2)·M·h²·x/r⁵, which is HALF the
+> correct value and does NOT reproduce the shadow.** Derivation: the null geodesic gives
+> `r'' = h²/r³ − (3/2)·h²·r_s/r⁴`, and the flat-space polar decomposition gives
+> `r'' = a_r + h²/r³`, so `a_r = −(3/2)·h²·r_s/r⁴`. Note the equivalence check two lines
+> below (`d²u/dφ² + u = 3Mu²`) is and always was CORRECT — it is what the wrong Cartesian
+> form contradicted. Caught by validating the integrator offline before it shipped
+> (`bc_validate.cpp`): the wrong coefficient measures b_c = √2 (the r = r_s turning point of a
+> half-strength field, which has no photon sphere at all); the corrected one measures
+> b_c = 2.598071 against the exact 3√3·M = 2.598076 (rel err 1.4e-6), with rays just outside
+> b_c skimming rmin = 1.518 → the photon sphere at 1.5 r_s, and |Δh²|/h² < 5e-10.
 
 This is a 6-D first-order system (x, v). It has **no coordinate singularity** (unlike BL r, θ), so the camera can sit anywhere and rays can pass over the poles freely — ideal for a shader.
 
@@ -301,7 +312,7 @@ kernel void bh_march(pixel p):
         // 5. Geodesic step (RK4 on the 6-vector [x,v])
         dλ = STEP_SCALE * pow(r, 1.5)               // adaptive
         (x, v) = rk4_step(x, v, dλ):
-            accel(x) = -1.5 * M * h2 * x / pow(length(x),5)
+            accel(x) = -1.5 * r_s * h2 * x / pow(length(x),5)   // = -3*M*h2*x/r^5
 
     // ran out of steps near shadow → treat as captured
     return blackHoleColor(0)
@@ -320,7 +331,7 @@ Swap §7.1 for the full BL Hamiltonian system A.15 (5 ODEs in r, θ, φ, p_r, p_
 
 ## TIE TO OUR ENGINE — explicit mappings
 
-1. **Units.** Paper M = 1, horizon r = 2. Ours: r_s = 1.0, **M = 0.5**, so **r_field = 0.5·r_paper**. Photon sphere (Schwarzschild) at r = 3M = 1.5 r_s = **1.5 field units**; critical impact parameter b_c = 3√3 M = 2.598 r_s = **2.598 field units**. Use **live M(<r)** in the acceleration term (§7.1) instead of a constant M when the mass is extended — i.e. `accel = −(3/2) M(<r) h² x / r⁵` with M(<r) read from the enclosed-mass profile. Outside all the particles M(<r) → total M and it reduces to point-mass Schwarzschild; that's the correct behavior and it ties the shadow size directly to our **emergent horizon r_h**.
+1. **Units.** Paper M = 1, horizon r = 2. Ours: r_s = 1.0, **M = 0.5**, so **r_field = 0.5·r_paper**. Photon sphere (Schwarzschild) at r = 3M = 1.5 r_s = **1.5 field units**; critical impact parameter b_c = 3√3 M = 2.598 r_s = **2.598 field units**. Use **live M(<r)** in the acceleration term (§7.1) instead of a constant M when the mass is extended — i.e. `accel = −3·M(<r)·h²·x/r⁵` (= −(3/2)·r_s(<r)·h²·x/r⁵) with M(<r) read from the enclosed-mass profile. Outside all the particles M(<r) → total M and it reduces to point-mass Schwarzschild; that's the correct behavior and it ties the shadow size directly to our **emergent horizon r_h**.
 
 2. **Disk = the REAL particle field, not an analytic disk.** In step 4/`sampleParticleField(xd)`, sample **our CIC density grid / spatial hash** at the ray's crossing/segment point to get local emissivity I_em, temperature/colour T_em (from particle blackbody / speed), and opacity κ (∝ local density). This replaces DNGR's Houdini voxel volume with our live 2M-particle field — same math (extinction-based accumulation, §3), our data. March the geodesic in **short linear segments** (DNGR A.6) and at each segment do one grid lookup + `transmittance *= exp(−κ·segLen)`.
 
@@ -335,7 +346,7 @@ Swap §7.1 for the full BL Hamiltonian system A.15 (5 ODEs in r, θ, φ, p_r, p_
 ## Key equations to keep on one card
 ```
 Schwarzschild field units: r_s = 1, M = 0.5, photon sphere r = 1.5, b_c = 2.598
-Geodesic (a=0, Cartesian):  d²x/dλ² = −(3/2) M(<r) |x×v|² x / |x|⁵
+Geodesic (a=0, Cartesian):  d²x/dλ² = −3·M(<r)·|x×v|²·x/|x|⁵   ( = −(3/2)·r_s·h²·x/r⁵ )
 Capture:                    r < r_s  → black (shadow)
 Doppler+grav g-factor:      g = (p·u_obs)/(p·u_emit)
 Colour shift:               T_obs = g · T_emit

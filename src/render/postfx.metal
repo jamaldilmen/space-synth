@@ -99,7 +99,9 @@ fragment float4 postfx_fragment(
     // nothing else — no bloom, trails, auto-exposure, bleach, grade, VJ.
     // Whiteout still present here → scene pass / particle data.
     // Gone here → this composite chain.
-    if (u.debugBypass > 0.5) {
+    // debugBypass is a MODE (layout-safe reuse of the one scalar):
+    // 0 = normal · 1 = B-key full bypass · 2 = N-key bleach-off isolation.
+    if (u.debugBypass > 0.5 && u.debugBypass < 1.5) {
         float3 c = currentFrame.sample(s, in.uv).rgb;
         return float4(c / (1.0 + c), 1.0);
     }
@@ -299,7 +301,10 @@ fragment float4 postfx_fragment(
     // stack, so the bleach only needs the truly nuclear cores: hue intact
     // below 8× peak, full white at ~256×.
     float bleach = smoothstep(3.0f, 8.0f, log2(max(over, 1.0f)));
-    color.rgb = mix(color.rgb, float3(tonedMax), bleach);
+    // N-key isolation (2026-07-23): mode 2 disables the bleach so the
+    // traveling cream "yellow zone" can be attributed on screen.
+    if (abs(u.debugBypass - 2.0f) > 0.25f)
+        color.rgb = mix(color.rgb, float3(tonedMax), bleach);
 
     // (HDR glow composite moved ABOVE the tonemap — scene-referred, Checkpoint
     // A4. It must never be added post-bleach again: that repaints the

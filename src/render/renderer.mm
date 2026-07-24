@@ -169,6 +169,7 @@ struct Renderer::Impl {
   float bhDiskGMSmooth = 0.0f;  // eased posed-disk GM so rotation RAMPS in (no snap at hole-formation)
   float lastHorizonRSmooth = 0.0f; // eased r_h for RENDER keying only (shadow/lens/pose) — the probe steps every few seconds and the hole visibly JUMPED size (2026-07-19); physics keeps the raw value
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
+  id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
   float timeWarpVal = 1.0f;     // physics-clock multiplier (x2/x4/x8 time controls); scales the pinned dt
@@ -581,6 +582,32 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       if (error) NSLog(@"Hole pipeline error: %@", error);
     } else {
       NSLog(@"Missing hole shader functions");
+    }
+  }
+
+  // ── DUST pipeline (design §2b, 2026-07-23): cold+dense gas as ABSORBING
+  // splats. Per-channel darkening blend dst × (1 − src_rgb) — unlike the
+  // hole's scalar (1−α), the colour factor lets dust absorb blue harder than
+  // red, so light through it REDDENS (the physical extinction signature).
+  {
+    id<MTLFunction> dustV = [impl_->library newFunctionWithName:@"dust_vertex"];
+    id<MTLFunction> dustF = [impl_->library newFunctionWithName:@"dust_fragment"];
+    if (dustV && dustF) {
+      MTLRenderPipelineDescriptor *dd = [[MTLRenderPipelineDescriptor alloc] init];
+      dd.vertexFunction = dustV;
+      dd.fragmentFunction = dustF;
+      dd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      dd.colorAttachments[0].blendingEnabled = YES;
+      dd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorZero;
+      dd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+      dd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
+      dd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+      dd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->dustPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:dd error:&error];
+      if (error) NSLog(@"Dust pipeline error: %@", error);
+    } else {
+      NSLog(@"Missing dust shader functions");
     }
   }
 
@@ -1214,6 +1241,13 @@ void Renderer::render(const RenderConfig &config) {
     double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
     impl_->bhPoseClock = now;
     dtP = std::min(std::max(dtP, 0.0), 0.1);
+    // PAUSE FREEZES THE TIME-LAPSE TOO (2026-07-23 16:02, Jamal: "I pause
+    // and it's not properly paused after play"): this clock deliberately ran
+    // through SPACE-pause, so the emergent hole kept churning the frozen
+    // field ("continuing explosions"). Pause = pause everything. The POSED
+    // dial demo (bhPosed branch above, GM from bhSeedMass) keeps its
+    // pause-time playback — that's its entire purpose.
+    if (config.simPaused && !config.pauseHoldTimelapse) dtP = 0.0;
     impl_->bhPoseTime += dtP;
     cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->lastHorizonMass);
     cam.bhPoseTime = (float)impl_->bhPoseTime;
@@ -1411,6 +1445,13 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
     impl_->bhPoseClock = now;
     dtP = std::min(std::max(dtP, 0.0), 0.1);
+    // PAUSE FREEZES THE TIME-LAPSE TOO (2026-07-23 16:02, Jamal: "I pause
+    // and it's not properly paused after play"): this clock deliberately ran
+    // through SPACE-pause, so the emergent hole kept churning the frozen
+    // field ("continuing explosions"). Pause = pause everything. The POSED
+    // dial demo (bhPosed branch above, GM from bhSeedMass) keeps its
+    // pause-time playback — that's its entire purpose.
+    if (config.simPaused && !config.pauseHoldTimelapse) dtP = 0.0;
     impl_->bhPoseTime += dtP;
     cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->lastHorizonMass);
     cam.bhPoseTime = (float)impl_->bhPoseTime;
@@ -2784,6 +2825,28 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
           vertexCount:particleCount
         instanceCount:particleInstances];
 
+  // ── DUST EXTINCTION PASS (design §2b, 2026-07-23): cold+dense gas re-drawn
+  // as absorbing splats OVER the additive image — dark silhouette bodies with
+  // free bright rims where they cut into the glow. Hot/play matter self-gates
+  // to zero (cold factor), so this only lives where matter is settled+dense.
+  // DISABLED 2026-07-23 16:34 — FIELD VERDICT (Jamal): the extinction region
+  // reads as "a low-res shadow thingy / yellow underbelly attached to the
+  // hole" — the un-depth-sorted absorbing splats paint a smooth bounded
+  // yellow zone over the dense core (teal minus absorbed blue = cream).
+  // The CONCEPT (design §2b) stays for the BH overhaul with depth ordering;
+  // this v1 draw is off. Pipeline + shaders kept.
+  if (false && dustPipeline) {
+    [enc setRenderPipelineState:dustPipeline];
+    [enc setDepthStencilState:depthState];
+    [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
+    [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    [enc setVertexBuffer:cellCountsBuffer offset:0 atIndex:2];
+    [enc setVertexBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+    [enc drawPrimitives:MTLPrimitiveTypePoint
+            vertexStart:0
+            vertexCount:particleCount];
+  }
+
   // THE HOLE PASS (2026-07-15): re-draw the r<r_h particles as black
   // occluding splats over the additive image — the matter inside the honest
   // horizon eats the light behind it (render.metal hole_vertex). Only encoded
@@ -3025,7 +3088,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.posterize = config.posterize;
   post.pixelStretch = config.pixelStretch; // "5D look" radial pixel-stretch (spin)
   post.exposure = config.exposure; // global iris — scales the HDR scene pre-tonemap
-  post.debugBypass = config.debugBypassPostFX ? 1.0f : 0.0f; // F8 whiteout bisect
+  post.debugBypass = config.debugBypassPostFX ? 1.0f
+                     : (config.debugNoBleach ? 2.0f : 0.0f); // mode: B bypass / N no-bleach
   // EDR headroom: how far above SDR white this display can currently go
   // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
   // Drives how hard the HDR glow punches past white. Queried live because it

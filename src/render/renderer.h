@@ -27,6 +27,9 @@ struct RenderConfig {
   float trailDecay = 0.0f; // Persistence of previous frame (user-controlled via POST-FX)
   float chromaticAmount = 0.0f;
   bool debugBypassPostFX = false; // B-key whiteout bisect: raw scene + Reinhard only
+  bool debugNoBleach = false;     // N-key: disable sensor bleach (yellow-zone isolation)
+  bool simPaused = false; // SPACE pause: freezes the emergent time-lapse clock too (pause = pause everything)
+  bool pauseHoldTimelapse = false; // SPACE held during pause: let the time-lapse clock run
 
   // New Simulation
   float modeP = 1.0f; // Depth Mode multiplier

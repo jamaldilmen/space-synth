@@ -328,6 +328,12 @@ int main() {
   bool simPaused = false;
   // ── F8 whiteout bisect — raw scene + Reinhard, whole postfx chain off ──
   bool debugBypassPostFX = false;
+  // SPACE held down while paused → the emergent time-lapse keeps running.
+  bool spaceHeld = false;
+  // N key: disable the sensor bleach (yellow-zone isolation instrument).
+  bool debugNoBleach = false;
+  // A long hold LATCHES the time-lapse: stays on after release, cleared by tap.
+  bool pauseTimelapseLatched = false;
   // ── TIME WARP (SHIFT+←/→) — multiplicative ramp, rides key-repeat like
   // the camera arrows: hold to sweep. ×1.3 per tick, range 1/64× … 64×.
   float timeWarp = 1.0f;
@@ -387,6 +393,16 @@ int main() {
       return;
     }
 
+    // SPACE genuinely HELD (auto-repeat fires only on a real hold) while
+    // paused → LATCH the time-lapse: it keeps running after the finger
+    // lifts (Jamal 16:31 "if I hold it it should keep on going even if I
+    // lift the finger"). Cleared by the next tap (resume).
+    if (e.isRepeat && e.keyCode == 49 && e.isDown && simPaused) {
+      if (!pauseTimelapseLatched) printf("[SIM] PAUSED + TIME-LAPSE LATCHED\n");
+      pauseTimelapseLatched = true;
+      return;
+    }
+
     if (e.isRepeat)
       return;
 
@@ -420,9 +436,27 @@ int main() {
 
     // SPACE = pause/resume the ENTIRE simulation (physics freezes in place,
     // render + camera keep working — inspect the frozen field freely).
-    if (e.keyCode == 49 && e.isDown) {
-      simPaused = !simPaused;
-      printf("[SIM] %s\n", simPaused ? "PAUSED" : "RESUMED");
+    // TAP = TOTAL pause (time-lapse clock frozen too). HOLD = the emergent
+    // time-lapse keeps running while the key is down ("it did lowkey feel
+    // nice" — Jamal 2026-07-23 16:20), release → total pause.
+    if (e.keyCode == 49) {
+      if (e.isDown) {
+        simPaused = !simPaused;
+        spaceHeld = simPaused; // pausing press held down = time-lapse alive
+        pauseTimelapseLatched = false; // any tap clears the hold-latch
+        printf("[SIM] %s\n", simPaused ? "PAUSED" : "RESUMED");
+      } else {
+        spaceHeld = false;     // released → total pause unless LATCHED (held long)
+      }
+      return;
+    }
+
+    // N = bleach isolation: disable the sensor bleach only. If the traveling
+    // cream "yellow zone" turns into structured white/colour, the bleach's
+    // partial-wash band is confirmed as the yellow-maker.
+    if (e.keyCode == 45 && e.isDown) {
+      debugNoBleach = !debugNoBleach;
+      printf("[POSTFX] bleach %s\n", debugNoBleach ? "OFF (isolation)" : "ON");
       return;
     }
 
@@ -1948,6 +1982,10 @@ int main() {
     // whitener confirmed.
     config.trailDecay = simPaused ? 0.0f : app.uiTrailDecay;
     config.debugBypassPostFX = debugBypassPostFX;
+    config.debugNoBleach = debugNoBleach;
+    config.simPaused = simPaused; // renderer freezes the emergent time-lapse clock while paused
+    config.pauseHoldTimelapse =
+        simPaused && (spaceHeld || pauseTimelapseLatched); // HOLD/LATCH: time-lapse lives on
     // Scope-line gate: spin magnitude (0→cap) drives the oscilloscope beams.
     // 0 when at rest → pure points; ramps to 1 at the clean-120fps spin cap.
     {
@@ -2424,6 +2462,12 @@ int main() {
       {
         const float bEdges[6] = {1.0f, 3.0f, 6.0f, 10.0f, 20.0f, 1e9f};
         double sr[6] = {0}, svt[6] = {0}; int nB[6] = {0};
+        // RING-RES DEBUG (2026-07-23 18:32, Jamal: "the ring still low res —
+        // debug our situation"): the merger-flash SIZE swell (+4px/flashT,
+        // temp>2.5, up to +20px) was built for transient novae; if ring
+        // matter is CHRONICALLY above threshold, every ring star is a
+        // permanently swollen fat blob = the low-res look. Measure it.
+        double sFl[6] = {0}; int nHot[6] = {0};
         for (int i = 0; i < PROBE_N; i++) {
           const auto &q = probe[i];
           if (q.mass < 0.001f) continue;
@@ -2434,6 +2478,8 @@ int main() {
           float v2 = q.vx*q.vx + q.vy*q.vy + q.vz*q.vz;
           sr[b] += rq;
           svt[b] += std::sqrt(std::max(0.0f, v2 - vrad*vrad));
+          sFl[b] += std::min(std::max(q.temperature - 2.5f, 0.0f), 5.0f);
+          if (q.temperature > 2.5f) nHot[b]++;
           nB[b]++;
         }
         const float kDt = 0.0165f;
@@ -2461,8 +2507,22 @@ int main() {
           // localizes the 90% [ACC] clamp: is it the core only, or the disk too?
           double gacc = space::units::gmSim(Menc) / (meanR * meanR); // per wall-s^2
           double clampR = gacc * (double)kDt / (double)space::units::kCSimPerSec;
-          printf("    r=%.2f n=%4d Menc=%.2e L=%.4f vt=%.4f vcirc=%.4f sup=%.2f clamp=%.2f\n",
-                 meanR, nB[b], Menc, L, meanVt, vcirc, sup, clampR);
+          // EXACT SPEEDS (2026-07-23 18:25, Jamal: "rotation way too slow vs
+          // our global unit system — we need exact speeds"). Two periods per
+          // shell, both in WALL seconds:
+          //   Tmeas = 2π·r / v_measured   what the screen actually does
+          //   Texact= 2π/√(GM_enc/r³)     what the unit law demands (gmSim is
+          //                               per-wall-s², warp already baked in)
+          // Tmeas/Texact = 1 → on-screen rotation is unit-exact; ≫1 names the
+          // speed thief (drag? dilation? playback clock?).
+          double vWall  = meanVt / (double)kDt;                       // sim/wall-s
+          double Tmeas  = vWall > 1e-9 ? 2.0 * M_PI * meanR / vWall : 0.0;
+          double omegaX = std::sqrt(space::units::gmSim(Menc) /
+                                    std::max(meanR * meanR * meanR, 1e-12));
+          double Texact = omegaX > 1e-9 ? 2.0 * M_PI / omegaX : 0.0;
+          printf("    r=%.2f n=%4d Menc=%.2e L=%.4f vt=%.4f vcirc=%.4f sup=%.2f clamp=%.2f Tmeas=%.1fs Texact=%.1fs flash=%.2f hot=%d%%\n",
+                 meanR, nB[b], Menc, L, meanVt, vcirc, sup, clampR, Tmeas, Texact,
+                 sFl[b] / nB[b], (int)(100.0 * nHot[b] / nB[b]));
         }
       }
       // Integration-accuracy budget (same numbers as the HUD [accuracy] row):

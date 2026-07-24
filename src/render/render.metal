@@ -258,6 +258,13 @@ vertex VertexOut particle_vertex(
 {
     VertexOut out;
     Particle in = particlesIn[vid];
+    // PHYSICS position, captured BEFORE the Keplerian pose playback mutates
+    // in.posW below. The hash-grid density lives at physics coordinates —
+    // sampling it at the RENDER-rotated position made the gas hue a static
+    // decal the rotating disk swept through (Jamal 15:45: "the blue is like
+    // an overlay I can look away from til it disappears"). Hue must ride
+    // the matter: always sample density HERE.
+    float3 physPosW = in.posW.xyz;
 
     // ── POSED-BH DISK ROTATION — real Keplerian Ω(r), differential ───────────
     // While a black hole is POSED (cam.bhDiskGM>0, sim paused), spin the disk in
@@ -356,6 +363,40 @@ vertex VertexOut particle_vertex(
     if (cam.horizonR > 0.0f && mass > 0.001f) {
         // distance from the HOLE CENTRE (off-origin after PLAY), not the origin
         if (length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ)) < cam.horizonR) {
+            out.position = float4(0, 0, -2, 1);
+            out.pointSize = 0.0f;
+            out.color = float3(0);
+            out.luminance = 0.0f;
+            out.originDist = 0.0f;
+            out.dist = 1.0f;
+            out.velDir2D = float2(0);
+            out.strDir2D = float2(0);
+            out.sharpness = 5.0f;
+            out.grainAlpha = 0.08f;
+            return out;
+        }
+    }
+
+    // ── C1 (BH OVERHAUL, 2026-07-23): SECONDARY-INSTANCE EARLY-OUT ─────────
+    // The fold-over image only exists within a few Einstein radii of the hole
+    // (relative magnification μ₋/μ₊ < 0.5% beyond u≈6), yet the second
+    // instance ran the FULL heavy shader for all 2M particles whenever a hole
+    // existed — doubling the most expensive pass for matter that can never
+    // fold. Project once, cheaply, and bail beyond 8·θ_E (the margin absorbs
+    // the aspect + dilation approximations of this quick projection).
+    if (isSecondary && mass > 0.001f) {
+        float3 pSpin = applySpin(in.posW.xyz, cam.spinAngleX, cam.spinAngleY,
+                                 cam.spinAngleZ);
+        float3 bSpin = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
+                                 cam.spinAngleX, cam.spinAngleY, cam.spinAngleZ);
+        float4 pClip = cam.viewProjection * float4(pSpin * R, 1.0f);
+        float4 bClip = cam.viewProjection * float4(bSpin * R, 1.0f);
+        bool cullFar = (pClip.w <= 0.0f) || (bClip.w <= 0.0f);
+        if (!cullFar) {
+            float2 dNdc = pClip.xy / pClip.w - bClip.xy / bClip.w;
+            cullFar = length(dNdc) > 8.0f * max(cam.bhShadowNdcRadius, 1e-4f);
+        }
+        if (cullFar) {
             out.position = float4(0, 0, -2, 1);
             out.pointSize = 0.0f;
             out.color = float3(0);
@@ -509,12 +550,22 @@ vertex VertexOut particle_vertex(
         // hug the photon ring — the Gargantua horseshoe the flat-NDC lens
         // could never produce. Ortho camera: transverse world lengths ≡
         // angles, lens plane through the origin.
+        // SKELETON FIX — HOLE-CENTERED LENS (2026-07-23 18:05, his lens-off
+        // A/B: the physical ring is CORRECT and coherent; the bending is
+        // what scrambles it). Axis, depth and every reconstructed image were
+        // measured from the ORIGIN while the hole sits OFF-ORIGIN after
+        // collapse — every arc assembled around a displaced pivot = the
+        // broken skeleton. All geometry is now relative to the hole's true
+        // world position.
+        float3 bhWorld = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
+                                   cam.spinAngleX, cam.spinAngleY,
+                                   cam.spinAngleZ) * cam.plateRadius;
         float rsW   = cam.horizonR * cam.plateRadius;      // r_s in world units
-        float3 dHat = normalize(-cam.cameraPos.xyz);       // camera → hole
-        float along = dot(worldPos, dHat);                 // + = behind the hole
+        float3 dHat = normalize(-cam.cameraPos.xyz);       // view axis (ortho: parallel rays)
+        float along = dot(worldPos - bhWorld, dHat);       // + = behind the hole
         if (isSecondary && along <= rsW) cullThis = true;  // front: no 2nd image
         if (along > rsW) {
-            float3 perp = worldPos - along * dHat;
+            float3 perp = (worldPos - bhWorld) - along * dHat;
             float beta  = length(perp);
             float D     = along;
             if (beta > 1e-4f * rsW) {
@@ -532,7 +583,7 @@ vertex VertexOut particle_vertex(
                     }
                     float thEff = mix(beta, th, cam.tuneLens * lensRamp);
                     out.position = cam.viewProjection *
-                                   float4(along * dHat + pHat * thEff, 1.0f);
+                                   float4(bhWorld + along * dHat + pHat * thEff, 1.0f);
                     // PRIMARY MAGNIFICATION (2026-07-19): lensing conserves
                     // surface brightness — a stretched image is a BRIGHTER
                     // image, by the point-lens μ₊(u) = (u²+2)/(2u√(u²+4)) + ½
@@ -561,7 +612,7 @@ vertex VertexOut particle_vertex(
                     if (th <= 2.605f * rsW) {
                         cullThis = true;   // folded into the photon sphere
                     } else {
-                        float3 target = along * dHat - pHat * th;
+                        float3 target = bhWorld + along * dHat - pHat * th;
                         out.position = cam.viewProjection *
                                        float4(mix(worldPos, target, lensRamp), 1.0f);
                         // Honest relative magnification, real Einstein radius.
@@ -579,7 +630,12 @@ vertex VertexOut particle_vertex(
             }
         }
     } else if (lensActive) {
-        float4 bhClip = cam.viewProjection * float4(0.0, 0.0, 0.0, 1.0);
+        // Hole-centered too (same skeleton fix): centre + front/behind plane
+        // from the hole's world position, not the origin.
+        float3 bhWorldF = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
+                                    cam.spinAngleX, cam.spinAngleY,
+                                    cam.spinAngleZ) * cam.plateRadius;
+        float4 bhClip = cam.viewProjection * float4(bhWorldF, 1.0);
         if (bhClip.w > 0.001f && out.position.w > 0.001f) {
             float2 ndcP  = out.position.xy / out.position.w;
             float2 ndcBH = bhClip.xy / bhClip.w;
@@ -596,8 +652,8 @@ vertex VertexOut particle_vertex(
             // its true 3D position and OCCLUDES the shadow. So the hole sits
             // inside the scene with matter correctly in front of / behind it,
             // instead of the lens always painting a flat disc over everything.
-            float3 viewDir = normalize(-cam.cameraPos.xyz);   // camera → origin/BH
-            bool behindBH = dot(worldPos, viewDir) > 0.0f;    // farther than the BH
+            float3 viewDir = normalize(-cam.cameraPos.xyz);   // view axis
+            bool behindBH = dot(worldPos - bhWorldF, viewDir) > 0.0f; // farther than the HOLE
             if (isSecondary && !behindBH) cullThis = true;    // front matter casts no 2nd image
             if (beta > 1e-5f && behindBH) {
                 float thetaE = cam.bhShadowNdcRadius;
@@ -654,6 +710,40 @@ vertex VertexOut particle_vertex(
     // field in one frame — streaking that jump painted random bright
     // dashes everywhere. Real speeds top out ~60 sim/s; beyond = a jump.
     if (length(velReal) > 60.0f) velReal = float3(0.0f);
+    // ── A1 ORBIT-ARC CONTINUUM (BH OVERHAUL front A, 2026-07-23 16:52) ──
+    // The settled ring is sparse popcorn: a few thousand dots standing in
+    // for a continuum, each nearly motionless on screen → "circles stacked
+    // on each other". A bound particle near the hole is a SAMPLE of its
+    // whole orbit — so its streak uses the analytic Kepler tangential
+    // velocity v=√(GM/r) under the DECLARED time-compression clock (07-15
+    // canon: a declared time-lapse, not a fake force; physics untouched —
+    // this is the streak VECTOR only). Dots stretch into tangential arcs;
+    // overlapping arcs fuse into continuous flowing bands (the reference
+    // anatomy: thin streaks that run into each other). Zone-gated to the
+    // disk band around the honest hole; ramps OFF during play (the shape
+    // regime keeps its true-motion streaks).
+    if (cam.horizonR > 0.0f && cam.bhDiskGM > 0.0f &&
+        cam.envelopePhase < 0.5f) {
+        float2 rel = in.posW.xy - float2(cam.bhX, cam.bhY);
+        float rxy = length(rel);
+        float zRel = fabs(in.posW.z - cam.bhZ);
+        // Disk band: outside the horizon, inside the visible ring region,
+        // near the disk plane — each edge smoothed so the arcs fade, not cut.
+        float zone = smoothstep(cam.horizonR, cam.horizonR * 1.6f, rxy) *
+                     (1.0f - smoothstep(8.0f * cam.horizonR,
+                                        16.0f * cam.horizonR, rxy)) *
+                     (1.0f - smoothstep(2.0f * cam.horizonR,
+                                        5.0f * cam.horizonR, zRel));
+        if (zone > 0.01f && rxy > 1e-4f) {
+            float vK = sqrt(cam.bhDiskGM / max(rxy, cam.horizonR));
+            float2 tang = float2(-rel.y, rel.x) / rxy;  // +Ω about z, matches
+                                                        // the pose playback
+            // Declared clock: fixed here (A1); becomes the B1 flow dial.
+            const float ARC_TIME_COMPRESS = 6.0f;
+            float3 vArc = float3(tang * vK * ARC_TIME_COMPRESS, 0.0f);
+            velReal = mix(velReal, vArc, zone);
+        }
+    }
     velReal = applySpin(velReal, cam.spinAngleX, cam.spinAngleY, cam.spinAngleZ);
     float3 vSpin = cross(float3(cam.spinX, cam.spinY, cam.spinZ), spinPos);
     float3 velWorld = (velReal + vSpin) * R;
@@ -948,6 +1038,97 @@ vertex VertexOut particle_vertex(
                               + dot(in.velW.xyz, in.velW.xyz) * cam.tuneColorK,
                               1000.0f, 40000.0f);
         float3 starColor = blackbodyRGB(kelvinU);
+        // ── GAS STATE (design §2, increment 2 — 2026-07-23 04:38): one
+        // population, two render states, per-particle — NO global phase gate.
+        // The light IMF bulk (M≲2, "they ARE the gas") glows with the
+        // shock-ionization emission-line spectrum WHERE the local medium is
+        // excited (dense + warm); isolated dwarfs and every massive star keep
+        // the honest mass-blackbody. Excitation reads TRILINEAR density from
+        // the hash grid (own-cell counts = square hue patches, the 07-19
+        // de-block lesson) blended with the particle's own temp. HUE ONLY —
+        // luminance/size laws untouched, so no new overdraw and the Lupton
+        // rule (brightness never recolors) survives.
+        // PERF: the secondary lensed instance skips the 8-read trilinear —
+        // its fold-over image is heavily attenuated (imageWeight), hue
+        // precision there is invisible, and at hole-state it doubled the
+        // most expensive pass in the app.
+        if (su.gridSize > 0 && !isSecondary && in.posW.w < 3.0f) {
+            // physPosW, not in.posW: the pose playback rotates in.posW but the
+            // density grid is in physics space (the "overlay" bug fix).
+            float3 gp = (physPosW + su.halfExtent) * su.invCellSize - 0.5f;
+            int3  c0 = int3(floor(gp));
+            float3 f = gp - float3(c0);
+            float triCount = 0.0f;
+            for (int dz = 0; dz <= 1; dz++)
+            for (int dy = 0; dy <= 1; dy++)
+            for (int dx = 0; dx <= 1; dx++) {
+                int3 cc = clamp(c0 + int3(dx, dy, dz),
+                                int3(0), int3(su.gridSize - 1));
+                float w = (dx ? f.x : 1.0f - f.x) *
+                          (dy ? f.y : 1.0f - f.y) *
+                          (dz ? f.z : 1.0f - f.z);
+                triCount += w * float(cellCounts[
+                    uint((cc.z * su.gridSize + cc.y) * su.gridSize + cc.x)]);
+            }
+            // Rest grid = ±64 at 128³ → cell 1.0³; the r≈40-70 shell runs
+            // ~1-2/cell, so only genuine clumps (clusters, the collapse knot,
+            // stream cores) excite. Sparse space stays blackbody-honest.
+            // DE-SATURATED 2026-07-23 15:58 (Jamal: "still the same feel,
+            // blue way larger than the hole"). The old 2..16 range pegged
+            // exc=1 across the whole inner field → one flat cyan, and on the
+            // view-anchored lens arch a flat color reads as a DECAL. Spread
+            // density across the full ramp instead: most excited gas sits
+            // Hα red/orange (real HII regions are red), teal/cyan only in
+            // genuine dense cores. Varied color = the arch reads as body.
+            float exc     = smoothstep(3.0f, 90.0f, triCount);
+            float gasMass = 1.0f - smoothstep(1.5f, 3.0f, in.posW.w);
+            float tN      = clamp(temp * (1.0f / 5.0f), 0.0f, 1.0f);
+            // PER-PARTICLE TURBULENT MIXING (2026-07-23 16:38, Jamal: "the
+            // yellow stuff still there" — his shots show it's not a sprite,
+            // it's THOUSANDS of particles painted the same mid-ramp yellow).
+            // Hue purely as f(density) makes each density band ONE monotone
+            // colour ZONE (teal arms / yellow core) that reads as paint
+            // attached to the hole. Real nebulae are turbulently mixed:
+            // deterministic per-particle scatter on ramp position + blend
+            // strength breaks the bands into natural mottle. Stable per id —
+            // no flicker, the variation rides each particle.
+            float h1 = fract(sin(float(vid) * 12.9898f) * 43758.5453f);
+            float h2 = fract(sin(float(vid) * 78.233f) * 12543.853f);
+            float3 gasCol = supernovaRamp(
+                clamp(0.08f + 0.42f * exc + 0.25f * tN + (h1 - 0.5f) * 0.22f,
+                      0.0f, 0.8f));
+            // Engage the gas hue early (any excitation shifts hue off pure
+            // blackbody) while the ramp POSITION stays low → red/orange.
+            starColor = mix(starColor, gasCol,
+                            gasMass * clamp(exc * 4.0f + tN * 0.3f, 0.0f, 1.0f)
+                                    * (0.6f + 0.4f * h2));
+        }
+        // ── ACCRETION-DISK T(r) — Shakura–Sunyaev (2026-07-23 18:20, Jamal:
+        // "two halves, green and yellow, cut with a knife — the culprit of
+        // the colours around the black hole"). The knife edge was the gas
+        // excitation BANDS meeting at the hole. A real disk has no bands:
+        // its colour IS its temperature profile, T ∝ r^(−3/4), CONTINUOUS —
+        // white-hot at the inner edge cooling to deep orange-red outward
+        // (the reference image's palette is exactly this law; approved plan:
+        // anchor M87*, S–S T(r), blackbody RGB). Inside the disk zone the
+        // radial law replaces the banded hue. Luminance law untouched.
+        if (cam.horizonR > 0.0f) {
+            float2 relD = in.posW.xy - float2(cam.bhX, cam.bhY);
+            float rD = length(relD);
+            float zD = fabs(in.posW.z - cam.bhZ);
+            float dzone = smoothstep(cam.horizonR, cam.horizonR * 1.6f, rD) *
+                          (1.0f - smoothstep(8.0f * cam.horizonR,
+                                             16.0f * cam.horizonR, rD)) *
+                          (1.0f - smoothstep(2.0f * cam.horizonR,
+                                             5.0f * cam.horizonR, zD));
+            if (dzone > 0.01f) {
+                float rIn   = cam.horizonR * 1.5f;   // ISCO-ish inner edge
+                float Tdisk = 26000.0f * pow(rIn / max(rD, rIn), 0.75f);
+                starColor = mix(starColor,
+                                blackbodyRGB(clamp(Tdisk, 1500.0f, 26000.0f)),
+                                dzone);
+            }
+        }
         // ── SUB-PIXEL FLUX CONSERVATION = the depth cue ──────────────────────
         // The old clamp(…, 1.0, 40) gave every distant star a full-bright 1px
         // point → zoomed out, the field collapsed into a uniform noise carpet
@@ -1024,6 +1205,25 @@ vertex VertexOut particle_vertex(
         // not paint the whole field as novae; the rest look returns as the
         // field cools, only true fresh mergers flash.
         float flashT = clamp(temp - 2.5f, 0.0f, 5.0f);
+        // ── NOVA STANDS DOWN IN THE ACCRETION DOMAIN (2026-07-24 00:12,
+        // Jamal: "the ring still gives low res"). MEASURED with the [BALANCE]
+        // flash/hot columns: in the disk shells (r≈2–8) 78–85% of particles
+        // sit permanently above the 2.5 flash threshold (mean flash 1.25–1.75)
+        // — so EVERY ring particle carried a permanent +5–7px swell and a
+        // ×25–35 luminance surge. That is the fat, blown-out "low res" ring.
+        // The threshold was calibrated (06-26) to clear post-play residual
+        // heat; nobody had measured that ACCRETING matter is chronically
+        // hotter than it. A nova is a TRANSIENT merger event out in the
+        // field; the disk's continuous shock heat is not one — its light is
+        // already rendered honestly by the T(r) blackbody law above. So the
+        // swell fades out inside the hole's accretion domain and stays fully
+        // alive everywhere else (real mergers keep flashing).
+        if (cam.horizonR > 0.0f) {
+            float rBHf = length(in.posW.xyz -
+                                float3(cam.bhX, cam.bhY, cam.bhZ));
+            flashT *= smoothstep(16.0f * cam.horizonR,
+                                 32.0f * cam.horizonR, rBHf);
+        }
         if (flashT > 0.01f) {
             // COLOUR SHIFT REMOVED (2026-06-26). This used to push a hot star to
             // blackbodyRGB(Teff + flashT·6000) → blue-white. At rest the engine's
@@ -1076,7 +1276,16 @@ vertex VertexOut particle_vertex(
     // play this branch is skipped and the big star falls through to the play/gas
     // colour path. Render-only: the physics mass is untouched, so rest-state
     // accretion is unaffected.
-    if ((cam.bhToggles & 0x80u) && in.posW.w >= 50.0f && starMix > 0.5f) {  // bit7: seed render
+    // STAND-DOWN WIRED (2026-07-23 16:25, Jamal: "a yellow thing, unnatural,
+    // attached to the black hole, super low-res, tilting with the camera").
+    // This blob is ONE billboard sprite; at a 5e5 M☉ core its R∝M^0.8 size
+    // pins the 220px cap = the giant pale wedge (the hole pass bites the
+    // circle out of it). Its own comment always said the honest shadow
+    // "takes over once the geometric signal trips" — now it actually does:
+    // once the honest horizon exists, the blob stands down and the hole is
+    // ONLY the particles + lens (BH core directive).
+    if ((cam.bhToggles & 0x80u) && in.posW.w >= 50.0f && starMix > 0.5f &&
+        cam.horizonR <= 0.0f) {  // bit7: seed render (pre-horizon only)
         float Mbh = in.posW.w;
         // VISIBLE ACCUMULATION (2026-06-22): render radius grows on the REAL
         // stellar relation R∝M^0.8 (the proof + the star branch + this file's
@@ -1120,6 +1329,22 @@ vertex VertexOut particle_vertex(
         float gasNess = smoothstep(0.5f, 1.5f, cam.envelopePhase) *
                         (1.0f - smoothstep(1.5f, 3.0f,
                                            clamp(in.posW.w, 0.05f, 500.0f)));
+        // ── ACCRETION MATTER IS GAS, NOT STARS (2026-07-24 11:40, Jamal:
+        // "we want the gaseous form for particles near the horizon, not
+        // stars at all"). Matter falling onto the hole is tidally shredded
+        // plasma — a fluid, not discrete suns. So inside the accretion
+        // domain the gas kernel fires REGARDLESS of play phase or mass:
+        // every disk particle spreads into a soft flux-conserving splat and
+        // overlapping splats fuse into a continuous gaseous ring. Field
+        // stars (r ≫ horizon) stay sharp points. Ramp in from 32→4 horizon
+        // radii so the transition from starfield to gas is smooth.
+        if (cam.horizonR > 0.0f) {
+            float rBHg = length(in.posW.xyz -
+                                float3(cam.bhX, cam.bhY, cam.bhZ));
+            float accGas = 1.0f - smoothstep(4.0f * cam.horizonR,
+                                             32.0f * cam.horizonR, rBHg);
+            gasNess = max(gasNess, accGas);
+        }
         if (gasNess > 0.01f) {
             const float GAS_SPREAD = 3.0f;
             float spread = 1.0f + (GAS_SPREAD - 1.0f) * gasNess;
@@ -1451,4 +1676,89 @@ fragment float4 hole_fragment(HoleVertexOut in [[stage_in]],
     // shadow boundary is a sharp light-transport edge.
     float a = smoothstep(1.0f, 0.85f, d);
     return float4(0.0f, 0.0f, 0.0f, a);
+}
+
+// ── DUST EXTINCTION PASS (design §2b, 2026-07-23) ───────────────────────────
+// The Pillars' BODIES are dark — dust silhouettes absorbing the glow behind
+// them; additive light can never draw dark-in-front-of-bright. The COLD+DENSE
+// gas population re-draws as an ABSORBING splat over the additive image
+// (Splotch/SPH-volume-render approach, same blend family as the hole pass).
+// Per-channel: dst × (1 − src_rgb), and dust absorbs BLUE preferentially, so
+// whatever shines through REDDENS — the physical extinction signature
+// (research doc §3: densest dust = deep indigo / dark). Bright rims then
+// emerge FREE: a rim is where an absorbing body cuts into the emissive glow.
+// Hot gas emits instead of absorbing (cold factor → 0), so PLAY matter and
+// fresh shock knots never darken — no phase gate needed, state does it.
+struct DustVertexOut {
+    float4 position [[position]];
+    float  pointSize [[point_size]];
+    float  alpha;
+};
+
+vertex DustVertexOut dust_vertex(
+    uint vid [[vertex_id]],
+    device const Particle* particlesIn [[buffer(0)]],
+    constant CameraUniforms& cam [[buffer(1)]],
+    device const uint* cellCounts [[buffer(2)]],
+    constant SpatialHashUniforms& su [[buffer(3)]])
+{
+    DustVertexOut out;
+    out.position = float4(0, 0, -2, 1);
+    out.pointSize = 0.0f;
+    out.alpha = 0.0f;
+    Particle in = particlesIn[vid];
+    float M = in.posW.w;
+    if (M < 0.001f || M > 3.0f || su.gridSize <= 0) return out;   // gas-mass only
+    // PERF (2026-07-23): reject on the CHEAP per-particle terms BEFORE the
+    // 8-read trilinear — at the formed hole the ring matter is hot, so the
+    // whole 2M-particle pass was paying the density reads just to compute
+    // α=0. If even maximum density can't reach visible α, skip the reads.
+    float cold = 1.0f - clamp(in.prevW.w * (1.0f / 2.5f), 0.0f, 1.0f);
+    float gasM = 1.0f - smoothstep(1.5f, 3.0f, M);
+    if (0.30f * cold * gasM < 0.02f) return out;
+    float3 p = in.posW.xyz;
+    // Outside the hash extent (play grid is ±3) the clamped border cells
+    // would report garbage density — no dust there.
+    if (max(max(abs(p.x), abs(p.y)), abs(p.z)) >= su.halfExtent) return out;
+    // Trilinear density (own-cell counts = square patches — 07-19 lesson).
+    float3 gp = (p + su.halfExtent) * su.invCellSize - 0.5f;
+    int3  c0 = int3(floor(gp));
+    float3 f = gp - float3(c0);
+    float tri = 0.0f;
+    for (int dz = 0; dz <= 1; dz++)
+    for (int dy = 0; dy <= 1; dy++)
+    for (int dx = 0; dx <= 1; dx++) {
+        int3 cc = clamp(c0 + int3(dx, dy, dz), int3(0), int3(su.gridSize - 1));
+        float w = (dx ? f.x : 1.0f - f.x) *
+                  (dy ? f.y : 1.0f - f.y) *
+                  (dz ? f.z : 1.0f - f.z);
+        tri += w * float(cellCounts[
+            uint((cc.z * su.gridSize + cc.y) * su.gridSize + cc.x)]);
+    }
+    // Stricter than the emission gate (2..16): only genuinely dense BODIES
+    // absorb; the ambient diffuse keeps glowing.
+    float dens = smoothstep(6.0f, 30.0f, tri);
+    // cold/gasM hoisted above the trilinear (cheap pre-reject).
+    float a = 0.30f * dens * cold * gasM;
+    if (a < 0.02f) return out;
+    float3 spinPos = applySpin(p, cam.spinAngleX, cam.spinAngleY, cam.spinAngleZ);
+    float3 worldPos = spinPos * cam.plateRadius;
+    out.position = cam.viewProjection * float4(worldPos, 1.0);
+    float dist = max(0.0001f, length(worldPos - cam.cameraPos.xyz));
+    float sizeScale = pow(800.0f / dist, 0.65f);
+    // Diffuse body: wider, soft splat (×3 the star point), capped well below
+    // the 150px star ceiling — extinction must never become the overdraw bug.
+    out.pointSize = clamp(cam.particleSize * 3.0f * sizeScale, 2.0f, 60.0f);
+    out.alpha = a;
+    return out;
+}
+
+fragment float4 dust_fragment(DustVertexOut in [[stage_in]],
+                              float2 pc [[point_coord]])
+{
+    float d = length(pc * 2.0f - 1.0f);
+    float k = smoothstep(1.0f, 0.25f, d) * in.alpha;   // soft body, no crisp edge
+    // Per-channel absorption (blend dst × (1 − src_rgb)): blue eaten hardest
+    // → transmitted light reddens; alpha channel untouched (dst factor One).
+    return float4(k * 0.55f, k * 0.75f, k * 1.0f, 0.0f);
 }

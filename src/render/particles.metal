@@ -2489,6 +2489,34 @@ kernel void compute_physics(
     // self-terminates there (∇Y→0) → sharp threads, not frozen dust. At full
     // hardness only ridgePull acts; on the ridge it's ~0 → still AND sharp. The
     // speed cap below bounds it; the rigid spin folds in later (~1715) → trails live.
+    // ── B2 ORBIT-SUPPORT DRAG EXEMPTION (BH OVERHAUL front B, 2026-07-23
+    // 17:55). Measured drain ([BALANCE] at 17:46): with a formed hole the
+    // field ends as sup=0.25 plunge at r=0.05 plus 43 survivors at r=88 —
+    // NO shell can PARK, because drag+cooling bleed tangential velocity
+    // indiscriminately → support decays → inspiral → eaten → black screen.
+    // Physics: a circular orbit in vacuum does not decay; disk dissipation
+    // acts on radial/shear motion. So: as a particle's orbital support
+    // vt/vcirc → 1 (vcirc from the core's GM — it owns ~97% of the mass
+    // once the hole exists), its drag fades toward conservative. Plunging
+    // matter (sup≪1) keeps full drag — the hole still feeds; supported
+    // matter PARKS — the disk persists. Gated to the formed hole; collapse
+    // and play dynamics untouched.
+    if (u.horizonR > 0.0f && u.bhMass > 1.0f && mass > 0.001f) {
+        float3 relBH = float3(px - u.bhX, py - u.bhY, pz - u.bhZ);
+        float rBH = length(relBH);
+        if (rBH > u.horizonR) {
+            float3 rhat = relBH / max(rBH, 1e-5f);
+            float3 v3   = float3(vpx, vpy, vpz);
+            float3 vt3  = v3 - dot(v3, rhat) * rhat;
+            float G1s   = u.gravGM / max(u.massTotal, 1.0f);
+            // In-kernel velocities are per-FRAME (see r_home kick: vcirc·dt)
+            float vcircF = sqrt(G1s * u.bhMass / max(rBH, u.horizonR)) * dt;
+            float sup    = length(vt3) / max(vcircF, 1e-6f);
+            float keep   = smoothstep(0.5f, 0.95f, clamp(sup, 0.0f, 1.2f));
+            dynamicFric  = mix(dynamicFric, 1.0f, keep * 0.95f);
+            coolMul      = mix(coolMul, 1.0f, keep);
+        }
+    }
     float soften = 1.0f - hardness;
     float3 finalV = (float3(vpx, vpy, vpz) * dynamicFric * coolMul + float3(shiftVx, shiftVy, shiftVz)) * soften
                   + ridgePull * (hardness * 8.0f); // 8.0 = condense strength (lever)

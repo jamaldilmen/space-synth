@@ -20,6 +20,17 @@
 
 namespace space {
 
+// MUST match struct BHMarchUniforms in render.metal exactly (all 4-byte
+// scalars, no vectors, so the layout is identical on both sides by inspection).
+struct BHMarchUniforms {
+  float inverseViewProj[16];
+  float rMarchStart;  // march start radius, in units of r_s
+  float stepScale;    // dl = stepScale * r^1.5
+  float bCull;        // impact-parameter cull, in units of r_s
+  int   maxSteps;
+};
+static_assert(sizeof(BHMarchUniforms) == 80, "BHMarchUniforms layout");
+
 struct Renderer::Impl {
   id<MTLDevice> device;
   id<MTLCommandQueue> commandQueue;        // For rendering
@@ -169,6 +180,12 @@ struct Renderer::Impl {
   float bhDiskGMSmooth = 0.0f;  // eased posed-disk GM so rotation RAMPS in (no snap at hole-formation)
   float lastHorizonRSmooth = 0.0f; // eased r_h for RENDER keying only (shadow/lens/pose) — the probe steps every few seconds and the hole visibly JUMPED size (2026-07-19); physics keeps the raw value
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
+  // METRIC-NATIVE SHADOW (bit15, 2026-07-24): fullscreen backward geodesic
+  // ray-march. Replaces the hole pass's r_h-sized particle silhouette with the
+  // integrated capture set of the honest metric (b_c = 2.598 r_s). See the
+  // shader banner in render.metal for the derivation + offline validation.
+  id<MTLRenderPipelineState> bhMarchPipeline = nil;
+  id<MTLBuffer> bhMarchUniformBuffer = nil;
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
@@ -582,6 +599,31 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       if (error) NSLog(@"Hole pipeline error: %@", error);
     } else {
       NSLog(@"Missing hole shader functions");
+    }
+  }
+
+  // ── METRIC-NATIVE SHADOW pipeline (bit15, 2026-07-24) ──────────────────
+  // Same darkening blend family as the hole pass — the shadow is an absence
+  // of light, so it multiplies what is behind it by (1 − α) and adds nothing.
+  {
+    id<MTLFunction> mV = [impl_->library newFunctionWithName:@"bhmarch_vertex"];
+    id<MTLFunction> mF = [impl_->library newFunctionWithName:@"bhmarch_fragment"];
+    if (mV && mF) {
+      MTLRenderPipelineDescriptor *md = [[MTLRenderPipelineDescriptor alloc] init];
+      md.vertexFunction = mV;
+      md.fragmentFunction = mF;
+      md.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      md.colorAttachments[0].blendingEnabled = YES;
+      md.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorZero;
+      md.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      md.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
+      md.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+      md.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->bhMarchPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:md error:&error];
+      if (error) NSLog(@"BH march pipeline error: %@", error);
+    } else {
+      NSLog(@"Missing bhmarch shader functions");
     }
   }
 
@@ -2851,7 +2893,27 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // occluding splats over the additive image — the matter inside the honest
   // horizon eats the light behind it (render.metal hole_vertex). Only encoded
   // when the horizon actually exists; zero cost otherwise.
-  if (holePipeline && lastHorizonR > 0.0f) {
+  // SHADOW = PURE ABSENCE (bit15, 2026-07-24). The hole is not painted at all:
+  // nothing arrives from BEHIND it (the capture cull in particle_vertex, at the
+  // exact b_c = 2.5980762 r_s) and nothing leaves its INSIDE (the new
+  // horizon-interior cull). So the occluder pass — whose only unique job was
+  // hiding the interior pile — stands down.
+  //
+  // WHY THE FULLSCREEN GEODESIC PAINT WAS WITHDRAWN (same day it shipped):
+  // it was a fullscreen multiply drawn AFTER the particles, so it blacked out
+  // matter clearly in FRONT of the hole (Jamal's verdict). It could not do
+  // otherwise — depth WRITE is off for the particles (see the depthDesc note
+  // above) so no later pass has any depth to order against. Painting a disc
+  // over the finished frame is also exactly the "second layer" the BH core
+  // directive forbids. The march itself is kept (bhmarch_* in render.metal,
+  // pipeline built above, not drawn): it earns its keep at the next increment,
+  // where the ray ACCUMULATES emission from the real particle field — at which
+  // point foreground matter is picked up along the ray and the ordering
+  // problem disappears by construction rather than by a depth test.
+  bool metricShadow = (config.bhToggles & (1u << 15)) != 0u &&
+                      lastHorizonR > 0.0f;
+
+  if (!metricShadow && holePipeline && lastHorizonR > 0.0f) {
     [enc setRenderPipelineState:holePipeline];
     [enc setDepthStencilState:depthState];
     [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];

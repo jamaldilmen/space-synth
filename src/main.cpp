@@ -1266,6 +1266,13 @@ int main() {
           ImGui::Checkbox("Bright seed render", &app.uiTogSeedRender);
           ImGui::SetItemTooltip("Discrete bright accretion blob at rest");
           ImGui::Checkbox("Lens / shadow", &app.uiTogLensShadow);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit8: particle-forward lens (sprite bend)");
+          ImGui::Checkbox("Metric shadow (geodesic march)", &app.uiTogMetricShadow);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit15: shadow COMPUTED by marching null geodesics of the\n"
+                              "honest metric (b_c = 2.598 r_s) instead of the r_h-sized\n"
+                              "particle silhouette. OFF = the old silhouette (A/B).");
           ImGui::SetItemTooltip("Screen-space gravitational lens + shadow");
           ImGui::Checkbox("Adaptive sub-step (central)", &app.uiTogAdaptiveSubstep);
           ImGui::SetItemTooltip("GMAT-style: sub-step the central pull near the core so "
@@ -1958,7 +1965,8 @@ int main() {
         ((app.uiTogSphPressure  ? 1u : 0u) << 11) |
         ((app.uiTogSphVisc      ? 1u : 0u) << 12) |
         ((app.uiTogSphCool      ? 1u : 0u) << 13) |
-        ((app.uiTogNoLegacyPressure ? 1u : 0u) << 14);
+        ((app.uiTogNoLegacyPressure ? 1u : 0u) << 14) |
+        ((app.uiTogMetricShadow ? 1u : 0u) << 15);
     config.sphCoolTau = app.uiSphCoolTau;
     config.collapseFrac = app.uiCollapseFrac;
 

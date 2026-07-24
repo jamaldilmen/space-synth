@@ -469,6 +469,35 @@ vertex VertexOut particle_vertex(
     bool lensWillImage = (cam.bhToggles & 0x100u) &&
                          (cam.bhShadowNdcRadius > 1e-4f) &&
                          (smoothstep(0.2f, 0.9f, cam.bhStrength) > 0.001f);
+
+    // ── HORIZON-INTERIOR CULL (bit15, 2026-07-24) ───────────────────────
+    // Matter inside r_h emits nothing that can reach the camera — that IS the
+    // horizon. Culling it here is what lets the black-painting occluder pass
+    // die: that pass existed ONLY to hide this pile, and it hid it with a
+    // multiply over the finished frame, which also blacked out every particle
+    // in FRONT of the hole (Jamal 2026-07-24: "a black circle that overlays in
+    // front of everything even in front of particles clearly far in front").
+    // A fullscreen multiply cannot know what is in front — renderer.mm:784
+    // disables depth WRITE for the particles so they additively blend, so no
+    // depth information exists for any later pass to order against. Removing
+    // the light at its source is the fix that needs no depth at all.
+    if ((cam.bhToggles & 0x8000u) && cam.horizonR > 0.0f) {
+        float rIn = length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ));
+        if (in.posW.w >= 0.001f && rIn < cam.horizonR) {
+            out.position = float4(0, 0, -2, 1);
+            out.pointSize = 0.0f;
+            out.color = float3(0);
+            out.luminance = 0.0f;
+            out.originDist = 0.0f;
+            out.dist = 1.0f;
+            out.velDir2D = float2(0);
+            out.strDir2D = float2(0);
+            out.sharpness = 5.0f;
+            out.grainAlpha = 0.08f;
+            return out;
+        }
+    }
+
     if (cam.horizonR > 0.0f && !isSecondary) {
         float3 camP = cam.cameraPos.xyz;
         float  camL = length(camP);
@@ -476,7 +505,12 @@ vertex VertexOut particle_vertex(
             float3 d = -camP / camL;                    // view dir, camera → origin
             float  along = dot(worldPos, d);            // >0 = beyond the hole plane
             float3 perp  = worldPos - along * d;
-            float  bCapt = 2.6f * cam.horizonR * R;     // capture radius, world units
+            // EXACT photon-capture radius (2026-07-24): b_c = 3√3·M = (3√3/2)·r_s
+            // = 2.5980762 r_s. Was the rounded 2.6f. This is the analytic
+            // point-mass value — it only becomes non-trivial (and needs the
+            // geodesic march) once the enclosed mass M(<r) is extended, which
+            // is the increment that follows.
+            float  bCapt = 2.5980762f * cam.horizonR * R; // capture radius, world units
             // SLAB CULL REMOVED (2026-07-19 17:58): the "hole-depth slab"
             // exception carved a straight-edged band across the shadow region
             // (Jamal: "it looks like a pokeball"). With the lens on, the lens
@@ -1761,4 +1795,145 @@ fragment float4 dust_fragment(DustVertexOut in [[stage_in]],
     // Per-channel absorption (blend dst × (1 − src_rgb)): blue eaten hardest
     // → transmitted light reddens; alpha channel untouched (dst factor One).
     return float4(k * 0.55f, k * 0.75f, k * 1.0f, 0.0f);
+}
+
+// ── METRIC-NATIVE BLACK HOLE — backward geodesic ray-march ───────────────────
+// (DESIGN_2026-07-24_metric_native_blackhole.md; ratified by Jamal 2026-07-24.)
+//
+// WHY THIS IS NOT THE 2026-06-28 DELETION. That geodesic fullscreen pass was
+// deleted because it PAINTED A DISK — a shader inventing an analytic hole with
+// no connection to the matter. This pass computes the CAPTURE SET of the honest
+// metric g(M) the field itself produces: r_s here is the emergent horizon r_h
+// measured from enclosed mass, and every dark pixel is a null geodesic that was
+// integrated and found to cross it. Nothing is placed. Increment 1 draws only
+// that capture set; the following increments march the SAME rays through the
+// real deposited particle field for emission (the whole point of the pivot).
+//
+// THE ODE (Schwarzschild, Cartesian, the a=0 limit of DNGR's A.15):
+//     d2x/dl2 = -(3/2) * r_s * h^2 * x / r^5 ,   h^2 = |x x v|^2 (conserved)
+// NOTE THE COEFFICIENT. RESEARCH_2026-07-24_interstellar_dngr.md §7.1 prints
+// -(3/2)*M*h^2*x/r^5, which is HALF the correct value and does not reproduce
+// the known shadow. Derivation: the null geodesic gives
+//     r'' = h^2/r^3 - (3/2) h^2 r_s / r^4
+// and the flat-space polar decomposition gives r'' = a_r + h^2/r^3, so
+//     a_r = -(3/2) h^2 r_s / r^4   =>   a = -(3/2) r_s h^2 x / r^5 = -3M h^2 x/r^5.
+// VERIFIED offline before this shipped (scratchpad bc_validate.cpp): the wrong
+// coefficient measures b_c = sqrt(2) (the r=r_s turning point of a half-strength
+// field, no photon sphere at all); the correct one measures b_c = 2.598071 vs
+// the exact 3*sqrt(3)*M = 2.598076 (rel err 1.4e-6), with rays just outside b_c
+// skimming rmin = 1.518 -> the photon sphere at 1.5 r_s, and |dh^2|/h^2 < 5e-10.
+//
+// STEP BUDGET (measured, same file): step scale 0.03 with the march started at
+// 60 r_s costs 264 RK4 steps worst-case (the near-critical rays) and lands b_c
+// to 1.5e-5. Step scale 0.10 BREAKS (b_c collapses to 0.5) — do not raise it.
+//
+// ORTHO = OBSERVER AT INFINITY. The camera sits ~8.5 r_s out, but an ortho
+// projection is parallel rays, i.e. a telescope at infinity. So each ray is
+// back-extended along its own direction to r = 60 r_s and integrated from
+// there; starting at the camera would bend the ray from inside the field.
+
+struct BHMarchUniforms {
+    float inverseViewProj[16]; // same CPU helper the postfx pass already uses
+    float rMarchStart;         // start radius in units of r_s (60)
+    float stepScale;           // dl = stepScale * r^1.5   (0.03; 0.10 breaks)
+    float bCull;               // skip pixels with impact parameter > bCull*r_s
+    int   maxSteps;            // 512 (worst measured 264)
+};
+
+struct BHMarchOut {
+    float4 position [[position]];
+    float2 ndc;
+};
+
+// Fullscreen triangle — no vertex buffer.
+vertex BHMarchOut bhmarch_vertex(uint vid [[vertex_id]]) {
+    float2 p = float2((vid == 2) ? 3.0f : -1.0f, (vid == 1) ? 3.0f : -1.0f);
+    BHMarchOut o;
+    o.position = float4(p, 0.0f, 1.0f);
+    o.ndc = p;
+    return o;
+}
+
+static float4 mulM4(constant float* m, float4 v) {
+    // column-major, matching Renderer::orthoMatrix / invertMatrix4x4
+    return float4(m[0]*v.x + m[4]*v.y + m[8]*v.z  + m[12]*v.w,
+                  m[1]*v.x + m[5]*v.y + m[9]*v.z  + m[13]*v.w,
+                  m[2]*v.x + m[6]*v.y + m[10]*v.z + m[14]*v.w,
+                  m[3]*v.x + m[7]*v.y + m[11]*v.z + m[15]*v.w);
+}
+
+fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
+                                 constant CameraUniforms& cam [[buffer(0)]],
+                                 constant BHMarchUniforms& mu [[buffer(1)]])
+{
+    // No honest hole -> this pass must change NOTHING.
+    if (cam.horizonR <= 0.0f) discard_fragment();
+
+    // Hole centre + r_s in WORLD units — identical construction to the lens
+    // block above (hole-centered, 2026-07-23 18:05), so the two agree on where
+    // the hole is while both exist for the A/B.
+    float3 bhWorld = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
+                               cam.spinAngleX, cam.spinAngleY,
+                               cam.spinAngleZ) * cam.plateRadius;
+    float rsW = cam.horizonR * cam.plateRadius;
+    if (rsW <= 1e-6f) discard_fragment();
+
+    // Unproject this pixel to a world ray (works for ortho AND perspective:
+    // two depths, divide by w, subtract).
+    float4 pn = mulM4(mu.inverseViewProj, float4(in.ndc, 0.0f, 1.0f));
+    float4 pf = mulM4(mu.inverseViewProj, float4(in.ndc, 1.0f, 1.0f));
+    float3 ro = pn.xyz / pn.w;
+    float3 rd = normalize(pf.xyz / pf.w - ro);
+
+    // Impact parameter = |x x v| about the hole. Exact, and it is the whole
+    // cull: b_c = 2.598 r_s, so nothing beyond bCull*r_s can ever be captured.
+    float3 p0 = ro - bhWorld;
+    float  b  = length(cross(p0, rd));
+    if (b > mu.bCull * rsW) discard_fragment();
+
+    // Back-extend to r = rMarchStart * r_s (see ORTHO note above).
+    float R   = mu.rMarchStart * rsW;
+    float pd  = dot(p0, rd);
+    float disc = pd * pd - dot(p0, p0) + R * R;
+    if (disc <= 0.0f) discard_fragment();     // never enters the marched region
+    float tStart = -pd - sqrt(disc);          // the INCOMING root (may be < 0)
+
+    // MARCH IN UNITS OF r_s (x/rsW), NOT world units. The step rule
+    // dl = stepScale * r^1.5 is calibrated for r_s = 1 — that is the geometry
+    // bc_validate.cpp measured. In world units rsW is 90..2000, so r^1.5 would
+    // overshoot the radius by ~10x per step and the shadow would be garbage.
+    // Normalizing here makes this loop bit-for-bit the validated integrator.
+    float3 x = (p0 + rd * tStart) / rsW;
+    float3 v = rd;                            // unit; r_s scaling leaves it unit
+    float3 hv = cross(x, v);
+    float  h2 = dot(hv, hv);                  // conserved along the geodesic
+    float  rEsc = mu.rMarchStart * 1.02f;
+
+    for (int i = 0; i < mu.maxSteps; ++i) {
+        float r = length(x);
+        if (r < 1.0f) {
+            // Captured (r < r_s). This pixel sees the horizon: no light leaves it.
+            return float4(0.0f, 0.0f, 0.0f, 1.0f);
+        }
+        if (r > rEsc && dot(x, v) > 0.0f) discard_fragment();  // escaped
+
+        float dl = mu.stepScale * r * sqrt(r);   // r^1.5
+        // RK4 on the 6-vector (x, v); accel = -(3/2) r_s h^2 x / r^5, r_s = 1.
+        float  q1 = length(x);
+        float3 a1 = x * (-1.5f * h2 / (q1*q1*q1*q1*q1));
+        float3 x2 = x + v * (dl * 0.5f),  v2 = v + a1 * (dl * 0.5f);
+        float  q2 = length(x2);
+        float3 a2 = x2 * (-1.5f * h2 / (q2*q2*q2*q2*q2));
+        float3 x3 = x + v2 * (dl * 0.5f), v3 = v + a2 * (dl * 0.5f);
+        float  q3 = length(x3);
+        float3 a3 = x3 * (-1.5f * h2 / (q3*q3*q3*q3*q3));
+        float3 x4 = x + v3 * dl,          v4 = v + a3 * dl;
+        float  q4 = length(x4);
+        float3 a4 = x4 * (-1.5f * h2 / (q4*q4*q4*q4*q4));
+        x += (v + v2 * 2.0f + v3 * 2.0f + v4) * (dl / 6.0f);
+        v += (a1 + a2 * 2.0f + a3 * 2.0f + a4) * (dl / 6.0f);
+    }
+    // Out of steps = a near-critical ray still winding the photon sphere.
+    // Those are captured-side in the limit; treat as shadow (DNGR does the same).
+    return float4(0.0f, 0.0f, 0.0f, 1.0f);
 }

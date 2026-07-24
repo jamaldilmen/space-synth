@@ -170,6 +170,23 @@ They implemented **three** disk models; the physically-relevant one for us is th
 **Frequency shifts applied to colour AND intensity** (this is the physics we must copy):
 - Compute the **net shift factor** `g ≡ f_c/f₀` from A.16 (Doppler from disk-material orbital velocity + gravitational redshift). On Gargantua the left side approaches at ~0.55c → g ~ 1.5 (blueshift); right side recedes → g ~ 0.4 (redshift), after folding in a ~20% gravitational redshift.
 - **Colour:** the emitted blackbody at temperature T is received as a blackbody at **T_obs = g · T** (a blueshift raises apparent temperature → bluer; redshift → redder). They convolve the shifted blackbody spectrum with motion-picture-film RGB sensitivity curves to get (R,G,B). White balance set so 6500 K → equal RGB.
+
+> **⚠ CORRECTED 2026-07-24 14:33:10 — "colour" and "intensity" below are the SAME
+> operation, not two multiplicative effects. Applying both DOUBLE-COUNTS.**
+> Exactly: `g³·B_ν(ν/g, T) ≡ B_ν(ν, g·T)`. A shifted blackbody IS a blackbody at
+> g·T, so evaluating the Planck function at g·T over FIXED OBSERVER bands already
+> carries the full g⁴ amplitude — no extra g³. Verified numerically both windows
+> independently (ratio 1.00000 across every band, g = 0.4…2.5).
+> Correct implementation is EITHER
+>   (a) `I_obs(ν_obs) = B_ν(ν_obs, g·T)`  — bands in the OBSERVER frame, done; or
+>   (b) `I_obs(ν_obs) = g³ · B_ν(ν_obs/g, T)` — bands in the EMITTER frame.
+> Never both. Only (b) needs an explicit g³, and only if the colour lookup is
+> normalised chromaticity with brightness applied separately.
+> SCOPE: the above is for SPECIFIC INTENSITY along a ray. A march accumulating
+> VOLUME EMISSIVITY transforms differently (invariants I_ν/ν³ vs j_ν/ν² vs ν·α_ν),
+> and a factor legitimately belongs in its TRANSFER step — never in a shared
+> colour LUT, which a point/surface emitter would also consume.
+> See `docs/DESIGN_2026-07-24_spectral_starmap.md` §3.
 - **Intensity (brightness):** by **Liouville's theorem the specific intensity transforms as `I_ν ∝ ν³`** — i.e. observed specific intensity = **g³ × emitted** (bolometric I ∝ g⁴ if integrated, g³ per-frequency). This is what makes the approaching side blindingly bright and the receding side nearly vanish — the famous "relativistic beaming." (Their Fig. 15c caption: "specific intensity shifted in accord with Liouville's theorem, I_ν ∝ ν³.")
 
 **The g-factor, explicitly (Schwarzschild, disk material on circular geodesic in equatorial plane, our practical case):**
@@ -182,8 +199,11 @@ g = (p_α u_obs^α)_camera / (p_α u_emit^α)_disk
 ```
 where p_α is the photon momentum at each end (already integrated) and u^α are the emitter/observer 4-velocities. Then:
 ```
-color_received  = blackbody( g · T_emit )   (or shift the emitted spectrum by g)
-I_received      = g³ · I_emit               (per-frequency; use g⁴ for a grey bolometric emitter)
+# EITHER (observer-frame bands — g^4 is already included, add nothing):
+color_received  = blackbody( g · T_emit )
+# OR (emitter-frame bands):
+I_received      = g³ · I_emit
+# NEVER BOTH — they are the same operation (see the CORRECTED note above).
 ```
 
 > **Movie cheat we should know about:** Nolan/Franklin **turned OFF the Doppler intensity/colour asymmetry** for the final film (kept the disk near-symmetric) because the true g³ lopsidedness (Fig. 15c) was "too confusing for a mass audience," and slowed spin to a/M = 0.6. Fig. 15c is "what the disk would truly look like." **We want the true version** (g³ beaming ON) since realism is the project's whole point.
@@ -303,7 +323,8 @@ kernel void bh_march(pixel p):
             (Iem, Tem, kappa) = sampleParticleField(xd)   // OUR density grid, §TIE
             g  = gFactor(xd, v, cameraFrame)        // §3 : photon·u_emit vs photon·u_obs
             // Doppler+grav shift applied to colour AND intensity:
-            col = blackbodyRGB(g * Tem) * (g*g*g)   // I_ν ∝ ν³  (Liouville)
+            col = blackbodyRGB(g * Tem)             // observer-frame bands: g^4 already in
+            //  ^ do NOT also multiply by g^3 — that double-counts (see CORRECTED note, §3)
             a   = 1 - exp(-kappa * segLen)          // opacity from optical depth
             color        += transmittance * a * col * Iem
             transmittance *= (1 - a)
@@ -349,8 +370,9 @@ Schwarzschild field units: r_s = 1, M = 0.5, photon sphere r = 1.5, b_c = 2.598
 Geodesic (a=0, Cartesian):  d²x/dλ² = −3·M(<r)·|x×v|²·x/|x|⁵   ( = −(3/2)·r_s·h²·x/r⁵ )
 Capture:                    r < r_s  → black (shadow)
 Doppler+grav g-factor:      g = (p·u_obs)/(p·u_emit)
-Colour shift:               T_obs = g · T_emit
-Intensity (Liouville):      I_obs = g³ · I_emit
+Shifted blackbody:          B_ν(ν, g·T) ≡ g³·B_ν(ν/g, T)   — ONE operation
+  observer-frame bands:     evaluate at T_obs = g·T   (g⁴ already included)
+  emitter-frame bands:      I_obs = g³ · I_emit       (never apply both)
 Shadow angular radius:      sinθ_sh = b_c √(1−2M/r_c) / r_c  ≈ b_c/r_c
 ```
 

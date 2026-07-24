@@ -246,6 +246,80 @@ static float lensAlphaSample(device const float* lut, float x) {
     return mix(lut[i], lut[min(i + 1u, 255u)], t - (float)i);
 }
 
+// ── SPECTRAL STARMAP — the one colour law ───────────────────────────────────
+// DESIGN_2026-07-24_spectral_starmap.md §3. ONE spectrum→colour step, TWO
+// consumers: the particle vertex path, and the BH ray-march. PURE — depends
+// only on its scalar arguments plus the two baked LUTs. No Particle, no vid,
+// no position, so a ray sample reading the CIC grid can call it.
+//
+// g IS AN AXIS, NOT A CALLER MULTIPLIER. A shifted blackbody is exactly a
+// blackbody at g·T (g³·B_ν(ν/g,T) ≡ B_ν(ν,g·T)), so the continuum table is
+// indexed by T_eff = g·T and already contains the full g⁴ amplitude. NOTHING
+// multiplies the result by g afterwards — doing so double-counts the shift.
+// (That double-count was an error in RESEARCH_2026-07-24_interstellar_dngr.md
+// §3/§7.3, corrected 2026-07-24 after both windows checked it numerically.)
+// ⚠ SCOPE: exact for SPECIFIC INTENSITY. A march accumulating VOLUME
+// EMISSIVITY carries an extra factor in its TRANSFER step — that factor stays
+// on the march side and must never be folded in here, or the particle path
+// (a point emitter) inherits a term that is meaningless for it.
+//
+// MOTTLE IS DELIBERATELY OUTSIDE. The caller perturbs lineStrength before
+// calling — the particle path hashes POSITION, the ray-march hashes its SAMPLE
+// POINT. That is what retires the vid dependency this file used to have.
+//
+// INCREMENT 1: defined and baked, NEVER CALLED. Verified by [SPEC-LUT] against
+// docs/spectral_bands_reference.txt, not by looking at the screen.
+
+constant int   SPEC_CONT_N    = 256;    // must match spectral_lut.h
+constant float SPEC_CONT_TMIN = 300.0f;
+constant float SPEC_CONT_TMAX = 80000.0f;
+constant int   SPEC_LINES_N   = 128;
+constant float SPEC_LINES_GMIN = 0.30f;
+constant float SPEC_LINES_GMAX = 2.00f;
+
+static float4 specSampleLog(device const float4* lut, int n,
+                            float x, float xMin, float xMax) {
+    float u = log(clamp(x, xMin, xMax) / xMin) / log(xMax / xMin) * float(n - 1);
+    int   i = clamp(int(u), 0, n - 2);
+    return mix(lut[i], lut[i + 1], clamp(u - float(i), 0.0f, 1.0f));
+}
+
+static float4 specSampleLin(device const float4* lut, int n,
+                            float x, float xMin, float xMax) {
+    float u = (clamp(x, xMin, xMax) - xMin) / (xMax - xMin) * float(n - 1);
+    int   i = clamp(int(u), 0, n - 2);
+    return mix(lut[i], lut[i + 1], clamp(u - float(i), 0.0f, 1.0f));
+}
+
+// Returns UN-NORMALISED observer-frame band flux. LUT channel order is
+// (B,G,R) — the generator's ordering — and is swizzled to (R,G,B) on the way
+// out so callers get the render's convention.
+static float3 spectrumToBands(device const float4* contLUT,
+                              device const float4* linesLUT,
+                              float T_kelvin,      // REST-frame temperature
+                              float g,             // shift factor; 1 = none
+                              float lineStrength)  // 0 = pure continuum … 1 = line-dominated
+{
+    float4 cont = specSampleLog(contLUT, SPEC_CONT_N, T_kelvin * max(g, 1e-4f),
+                                SPEC_CONT_TMIN, SPEC_CONT_TMAX);
+    float3 c = float3(cont.z, cont.y, cont.x);          // (B,G,R) → (R,G,B)
+    float s = clamp(lineStrength, 0.0f, 1.0f);
+    if (s <= 0.0f) return c;
+
+    // Lines carry a FRACTION of the same flux, redistributed into whichever
+    // bands they currently land in — so lineStrength is a line-to-continuum
+    // RATIO (§4.3), not an additive brightness. Under redshift the lines walk
+    // out of the band set and the weights go to zero on their own: the gas
+    // reddens and then darkens with no special case (§3.1).
+    float4 lw = specSampleLin(linesLUT, SPEC_LINES_N, g,
+                              SPEC_LINES_GMIN, SPEC_LINES_GMAX);
+    float3 w = float3(lw.z, lw.y, lw.x);
+    float  wt = w.r + w.g + w.b;
+    if (wt < 1e-6f) return c * (1.0f - s);   // all lines redshifted out
+    float total = c.r + c.g + c.b;
+    return c * (1.0f - s) + (w / wt) * (total * s);
+}
+
 vertex VertexOut particle_vertex(
     uint vid [[vertex_id]],
     uint iid [[instance_id]],
@@ -254,7 +328,9 @@ vertex VertexOut particle_vertex(
     device const Particle* particlesRef [[buffer(2)]],
     device const float* lensAlphaLUT [[buffer(3)]],
     device const uint* cellCounts [[buffer(4)]],        // hash-grid density (per cell)
-    constant SpatialHashUniforms& su [[buffer(5)]])     // grid params for the cell lookup
+    constant SpatialHashUniforms& su [[buffer(5)]],     // grid params for the cell lookup
+    device const float4* specContLUT [[buffer(6)]],     // spectral: Planck band flux vs T_eff = g·T
+    device const float4* specLinesLUT [[buffer(7)]])    // spectral: line weight per band vs g
 {
     VertexOut out;
     Particle in = particlesIn[vid];
@@ -1015,7 +1091,34 @@ vertex VertexOut particle_vertex(
         // now actually drive this (they were inert before).
         float3 snCol   = supernovaRamp(thT);
         float  playMix = smoothstep(0.5f, 1.5f, cam.envelopePhase);
-        out.color = mix(thermalCol, snCol, playMix);
+
+        // ── INCREMENT 4 (bit16): THE playMix PHASE GATE DIES ────────────────
+        // There stops being a "play colour" and a "rest colour". powder_toy
+        // lessons: thresholds, NOT phases — kill envelopePhase gating. The two
+        // branches this mix chose between were a blackbody continuum and an
+        // emission-line RAMP; the spectral law contains both at once, so the
+        // choice is no longer needed. Play does not SWITCH the colour, it
+        // raises shock temperature → ionisation → line strength → the colour
+        // moves. The state emerges from the physics instead of from the
+        // envelope.
+        //
+        // lineStrength here is the shock-ionisation proxy clamp(temp/5,0,1) —
+        // the SAME tN the rest path uses, so the two ends of the envelope
+        // agree on what "ionised" means and there is no seam to cross.
+        //
+        // The (0.7 + 0.9·thT) term is PRESERVED verbatim: it is a BRIGHTNESS
+        // modulation that happens to live on thermalCol, and §2 says only the
+        // COLOUR term is replaced. Dropping it here would have dimmed play
+        // while pretending to be a hue change.
+        if (cam.bhToggles & 0x10000u) {
+            float lsPlay = clamp(temp * (1.0f / 5.0f), 0.0f, 1.0f);
+            float3 sb = spectrumToBands(specContLUT, specLinesLUT,
+                                        kelvin, 1.0f, lsPlay);
+            sb /= max(max(sb.r, max(sb.g, sb.b)), 1e-20f);
+            out.color = sb * (0.7f + 0.9f * thT);
+        } else {
+            out.color = mix(thermalCol, snCol, playMix);
+        }
 
         // Speed-based warm boost REMOVED (2026-06-25): this added a warm
         // (0.3,0.2,0.1)·boost wash to every moving particle, clamped to 0.8 and
@@ -1071,7 +1174,22 @@ vertex VertexOut particle_vertex(
         float kelvinU = clamp(5772.0f * pow(Mstar, 0.55f)
                               + dot(in.velW.xyz, in.velW.xyz) * cam.tuneColorK,
                               1000.0f, 40000.0f);
+        // ── SPECTRAL COLOUR LAW (bit16, increment 2, 2026-07-24) ───────────
+        // Replaces the Tanner-Helland blackbody FIT with the real Planck
+        // integral over the band set (spectral_lut.h / [SPEC-LUT]). Same
+        // convention as blackbodyRGB — max-channel normalised, 0..1 — so the
+        // LUMINANCE AND SIZE LAWS ARE UNTOUCHED (spec §2) and Lupton holds:
+        // brightness never recolours. g = 1 and lineStrength = 0 here; the
+        // lines come back at increment 3 through lineStrength, and g becomes
+        // live when the BH window calls the same function per ray sample.
+        // Measured difference at 5772 K: fit gives (1.000,0.950,0.904),
+        // the Planck band integral gives (1.000,0.922,0.668) — warmer, less
+        // blue. That is the expected visible change, not a regression.
+        // INCREMENT 3 (2026-07-24): the spectral call moved BELOW the gas block
+        // so it can consume lineStrength, which the gas block now computes.
+        // bit16 OFF keeps the old fit here and the old ramp mix below.
         float3 starColor = blackbodyRGB(kelvinU);
+        float  lineStrength = 0.0f;   // 0 = pure continuum; set by the gas block
         // ── GAS STATE (design §2, increment 2 — 2026-07-23 04:38): one
         // population, two render states, per-particle — NO global phase gate.
         // The light IMF bulk (M≲2, "they ARE the gas") glows with the
@@ -1133,9 +1251,55 @@ vertex VertexOut particle_vertex(
                       0.0f, 0.8f));
             // Engage the gas hue early (any excitation shifts hue off pure
             // blackbody) while the ramp POSITION stays low → red/orange.
-            starColor = mix(starColor, gasCol,
-                            gasMass * clamp(exc * 4.0f + tN * 0.3f, 0.0f, 1.0f)
-                                    * (0.6f + 0.4f * h2));
+            // ── INCREMENT 3 (bit16): SAME GATE, NEW TARGET ──────────────────
+            // The supernovaRamp hue mix is retired. exc/tN drove a RAMP
+            // POSITION — a lookup that REPLACED the continuum, which is why it
+            // read as paint and pegged whole clumps to one hue. They now drive
+            // the LINE-TO-CONTINUUM RATIO, so the lines are ADDED over the
+            // blackbody as flux, which is what the physics does. Same threshold
+            // mechanism the code already had (threshold, not phase — canon);
+            // only its output target changed. Stated honestly: this is a proxy
+            // for emission measure × ionisation, NOT a Saha calculation.
+            //
+            // The ×4 on exc is DROPPED. It existed to "engage the gas hue
+            // early" because hue came from ramp POSITION, so a low position had
+            // to be pushed off pure blackbody to show anything. With a ratio, a
+            // low value already means "mostly continuum" — the early-engage is
+            // not just unnecessary, it is what saturated exc at triCount≈25 and
+            // pegged whole clumps. lineStrength now tracks exc directly across
+            // its full 3→90 range, so only GENUINELY dense cores go
+            // line-dominated. This is the dial to move if the verdict is
+            // "too much" or "too little".
+            //
+            // MOTTLE STAYS KEYED TO vid, DEVIATING FROM THE SPEC (§3, "the
+            // particle path hashes position"). Hashing the live position
+            // re-hashes every frame as the particle moves = flicker, which is
+            // exactly what the 2026-07-23 16:38 note above says vid-keying
+            // fixed. The contract that matters is unaffected: spectrumToBands
+            // stays a pure 3-scalar map with no vid — the mottle is applied by
+            // the CALLER, outside it, so the ray-march is free to hash its
+            // sample point instead.
+            if (cam.bhToggles & 0x10000u) {
+                lineStrength = gasMass
+                             * clamp(exc + tN * 0.3f, 0.0f, 1.0f)
+                             * (0.6f + 0.4f * h2);
+            } else {
+                starColor = mix(starColor, gasCol,
+                                gasMass * clamp(exc * 4.0f + tN * 0.3f, 0.0f, 1.0f)
+                                        * (0.6f + 0.4f * h2));
+            }
+        }
+
+        // ── THE ONE COLOUR LAW (bit16) ──────────────────────────────────────
+        // Continuum + lines in a single band-integrated evaluation. Max-channel
+        // normalised, matching blackbodyRGB's convention, so the luminance and
+        // size laws stay untouched (spec §2) and Lupton holds. g = 1 here; it
+        // goes live when the BH window calls the same function per ray sample
+        // with its own shift factor.
+        if (cam.bhToggles & 0x10000u) {
+            float3 sb = spectrumToBands(specContLUT, specLinesLUT,
+                                        kelvinU, 1.0f, lineStrength);
+            starColor = sb / max(max(sb.r, max(sb.g, sb.b)), 1e-20f);
         }
         // ── ACCRETION-DISK T(r) — Shakura–Sunyaev (2026-07-23 18:20, Jamal:
         // "two halves, green and yellow, cut with a knife — the culprit of

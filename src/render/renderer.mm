@@ -2,6 +2,7 @@
 #include "core/imf.h"
 #include "core/units.h"
 #include "spacetime/spacetime.h"  // thermodynamics: kUFloorSim (SPH internal energy floor)
+#include "spectral_lut.h"          // spectral starmap: Planck band-flux bake (one colour law)
 #include "backends/imgui_impl_metal.h"
 #include "imgui.h"
 #include <Metal/Metal.h>
@@ -188,6 +189,12 @@ struct Renderer::Impl {
   id<MTLBuffer> bhMarchUniformBuffer = nil;
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
+  // SPECTRAL STARMAP (increment 1, 2026-07-24): the one colour law's tables.
+  // Baked but NOT YET BOUND — nothing calls spectrumToBands() until increment 2,
+  // so this increment cannot change a single pixel. Verification is [SPEC-LUT]
+  // against docs/spectral_bands_reference.txt, not the screen.
+  id<MTLBuffer> spectralContinuumLUT = nil; // 256×float4 band flux (B,G,R,pad) vs T_eff = g·T
+  id<MTLBuffer> spectralLinesLUT = nil;     // 128×float4 line weight per band vs g
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
   float timeWarpVal = 1.0f;     // physics-clock multiplier (x2/x4/x8 time controls); scales the pinned dt
   float lastParticleSize = 2.0f; // Size slider (1-frame lag) → scales the cluster's mass/gravity
@@ -690,6 +697,70 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     NSLog(@"[LENS-LUT] α(2.60)=%.3f α(3.0)=%.3f α(10)=%.3f α(200)=%.4f rad",
           table[0], table[(int)(log(3.0/xMin)/log(xMax/xMin)*(N-1))],
           table[(int)(log(10.0/xMin)/log(xMax/xMin)*(N-1))], table[N-1]);
+  }
+
+  // ── SPECTRAL STARMAP LUTs (increment 1, 2026-07-24) ────────────────────
+  // DESIGN_2026-07-24_spectral_starmap.md §4.1. Same pattern as the lens LUT
+  // above: double-precision CPU bake → shared buffer → NSLog spot values.
+  // The math lives in spectral_lut.h, which the offline check
+  // (scratchpad/spectral_check.cpp) also includes — the shipped table and the
+  // verified table are the SAME code, so they cannot drift.
+  //
+  // ONE AXIS, NOT TWO. The spec sketched a 64×32 (T,g) table; g enters exactly
+  // as a temperature scaling (g³·B_ν(ν/g,T) ≡ B_ν(ν,g·T)), so the continuum
+  // collapses to a 1-D table in T_eff = g·T with NO approximation, and the
+  // full g⁴ amplitude is already inside it. Nothing multiplies by g after.
+  {
+    using namespace space::spectral;
+    const BandSet &bs = kBandVisible;   // §4.2 default; switching rebakes
+
+    float cont[kContinuumN][4];
+    for (int i = 0; i < kContinuumN; ++i) {
+      double f[3];
+      continuumBands(bs, continuumTempAt(i), f);
+      cont[i][0] = (float)f[0];  // B
+      cont[i][1] = (float)f[1];  // G
+      cont[i][2] = (float)f[2];  // R
+      cont[i][3] = 0.0f;
+    }
+    impl_->spectralContinuumLUT =
+        [impl_->device newBufferWithBytes:cont
+                                   length:sizeof(cont)
+                                  options:MTLResourceStorageModeShared];
+
+    float lines[kLinesN][4];
+    for (int i = 0; i < kLinesN; ++i) {
+      double w[3];
+      lineBands(bs, linesGAt(i), w);
+      lines[i][0] = (float)w[0];
+      lines[i][1] = (float)w[1];
+      lines[i][2] = (float)w[2];
+      lines[i][3] = 0.0f;
+    }
+    impl_->spectralLinesLUT =
+        [impl_->device newBufferWithBytes:lines
+                                   length:sizeof(lines)
+                                  options:MTLResourceStorageModeShared];
+
+    // Spot values, NORMALISED per row exactly as the reference table is, so the
+    // log can be compared line-for-line with docs/spectral_bands_reference.txt.
+    auto row = [&](double T, float *r, float *g, float *b) {
+      double f[3];
+      continuumBands(bs, T, f);
+      double m = std::max(f[0], std::max(f[1], f[2]));
+      *r = (float)(f[2] / m); *g = (float)(f[1] / m); *b = (float)(f[0] / m);
+    };
+    float r1,g1,b1, r2,g2,b2, r3,g3,b3;
+    row(2400.0, &r1,&g1,&b1); row(5772.0, &r2,&g2,&b2); row(40000.0, &r3,&g3,&b3);
+    NSLog(@"[SPEC-LUT] band=%s  T=2400 (%.3f,%.3f,%.3f)  T=5772 (%.3f,%.3f,%.3f)  T=40000 (%.3f,%.3f,%.3f)",
+          bs.name, r1,g1,b1, r2,g2,b2, r3,g3,b3);
+    // Line membership at g=1 must read R,G,B (Hα→R, [OIII]→G, Hβ→B) — the
+    // three-band signature that is WHY shocked gas reads teal-green (§3.1).
+    double w1[3]; lineBands(bs, 1.0, w1);
+    double w06[3]; lineBands(bs, 0.6, w06);
+    NSLog(@"[SPEC-LUT] lines g=1.00 B/G/R weight (%.0f,%.0f,%.0f) — expect (1,1,1); "
+          @"g=0.60 (%.0f,%.0f,%.0f) — expect (0,0,0), all three redshifted out",
+          w1[0], w1[1], w1[2], w06[0], w06[1], w06[2]);
   }
 
   // ── Trajectory (oscilloscope scope-line) pipeline ───────────────────
@@ -2854,6 +2925,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // hash frame just falls back to the phase/speed gate.
   [enc setVertexBuffer:cellCountsBuffer offset:0 atIndex:4];
   [enc setVertexBuffer:spatialHashUniformBuffer offset:0 atIndex:5];
+  // Spectral starmap LUTs (increment 2, bit16): the one colour law's tables.
+  [enc setVertexBuffer:spectralContinuumLUT offset:0 atIndex:6];
+  [enc setVertexBuffer:spectralLinesLUT offset:0 atIndex:7];
   // instanceCount — instance 0 = primary image, instance 1 = the SECONDARY
   // lensed image (the Gargantua fold-over). The secondary only EXISTS when a
   // hole is lensing; with no hole it was culled in-shader to pointSize 0 — but

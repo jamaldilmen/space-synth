@@ -1269,6 +1269,11 @@ int main() {
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("bit8: particle-forward lens (sprite bend)");
           ImGui::Checkbox("Metric shadow (geodesic march)", &app.uiTogMetricShadow);
+          ImGui::Checkbox("Spectral colour (Planck bands)", &app.uiTogSpectralColour);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit16: colour from the real Planck band integral\n"
+                              "instead of the blackbody FIT, and the supernovaRamp\n"
+                              "hue mix off. OFF = the old fit + ramp (A/B).");
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("bit15: shadow COMPUTED by marching null geodesics of the\n"
                               "honest metric (b_c = 2.598 r_s) instead of the r_h-sized\n"
@@ -1966,7 +1971,8 @@ int main() {
         ((app.uiTogSphVisc      ? 1u : 0u) << 12) |
         ((app.uiTogSphCool      ? 1u : 0u) << 13) |
         ((app.uiTogNoLegacyPressure ? 1u : 0u) << 14) |
-        ((app.uiTogMetricShadow ? 1u : 0u) << 15);
+        ((app.uiTogMetricShadow ? 1u : 0u) << 15) |
+        ((app.uiTogSpectralColour ? 1u : 0u) << 16);
     config.sphCoolTau = app.uiSphCoolTau;
     config.collapseFrac = app.uiCollapseFrac;
 

@@ -907,6 +907,22 @@ vertex VertexOut particle_vertex(
     // Now the quad grows with the arc and the fragment divides brightness by
     // the same factor, so a fast particle draws a LONG DIM trail at conserved
     // flux — Front A1's "arc length ~ Omega*exposure, luminance conserved".
+    // ⚠ KNOWN DEFECT, DELIBERATELY LEFT IN PLACE (measured + reverted
+    // 2026-07-25 22:33:00). out.pointSize is not assigned until line ~986 —
+    // every write before this point is `= 0.0f` in a branch that returns
+    // immediately — so the `> 0.0f` gate below reads uninitialised memory,
+    // never opens, and lenFac is 1.0 for EVERY particle in the app. Measured:
+    // [STREAKPROBE] ptSize=0.0 streakLen=1.00 over ~973k ring-band particles.
+    // bit18 has therefore never done anything since it was written 2026-07-24.
+    //
+    // Moving it after line 986 WAS tried (21:52) and REVERTED on Jamal's
+    // verdict ("ugly blue sprites", "ugly stripes"): with the growth live, 76%
+    // of ALL drawn particles grew ~9.5x ([SIZEPROBE] avgStreakLen=9.305,
+    // grown>1.5=75.8%), and because the diffraction spikes at :1742 are drawn
+    // in the RAW quad coord they grew with it — giant crosses over the whole
+    // star map, and 21 fps from the ~90x fill area. Re-landing this needs the
+    // spike/star-core interaction solved FIRST (starness must know about sL),
+    // not just the ordering. Do not move it again on its own.
     float streakPx = length(out.velDir2D) * (cam.viewportH * 0.5f); // NDC -> px
     float lenFac   = 1.0f;
     if ((cam.bhToggles & 0x40000u) && out.pointSize > 0.0f) {

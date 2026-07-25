@@ -1269,7 +1269,19 @@ int main() {
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("bit8: particle-forward lens (sprite bend)");
           ImGui::Checkbox("Metric shadow (geodesic march)", &app.uiTogMetricShadow);
-          UiSliderFloat("ISCO orbit (screen seconds)", &app.uiIscoSeconds, 0.25f, 30.0f, "%.2f s");
+          // FLOOR 0.25 -> 0.02 (2026-07-25 22:14:00): the old floor was set when
+          // every value on this dial meant something 43.4334x faster than its
+          // label (the c3 error, units.h). With the honest law the tempo Jamal
+          // called perfect in the held pause is 1/43.4334 = 0.023 s, which the
+          // old floor made unreachable.
+          // LOGARITHMIC (2026-07-25 22:29:00, Jamal: "add the slider for the
+          // speed back"): after the floor went to 0.02 the useful tempo region
+          // sat in the first 0.01% of a LINEAR 0.02..30 track — one pixel of
+          // travel was a 100x tempo jump, so the control was effectively gone.
+          // Log scale spans the 3.2 decades evenly: fine control at 0.023 (the
+          // restored held-pause tempo) AND at 3.27 (true physical real-time).
+          UiSliderFloat("ISCO orbit (screen seconds)", &app.uiIscoSeconds, 0.02f, 30.0f,
+                        "%.3f s", ImGuiSliderFlags_Logarithmic);
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How long ONE ISCO ORBIT takes on screen. LOWER = faster.\n"
                               "The compression is DERIVED from the hole's mass\n"

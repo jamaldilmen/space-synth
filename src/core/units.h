@@ -61,6 +61,22 @@ inline constexpr double kCSimPerSec = st::kCSim * kTLapse; // ≈ 3.515 sim/(wal
 // = warp (sim-time/wall-s) × real-seconds-per-sim-time. Now DERIVED, was 20.58.
 inline constexpr double kTimeLapse = kTLapse * kSimSeconds; // ≈ 20.58 (display only)
 
+// ── ISCO ORBITAL PERIOD, in WALL seconds, for the WARPED coupling ───────────
+// 2026-07-25 22:0x:00 — THE c³ FIX. spacetime::kIscoPeriodPerGM gives
+// T = 2π·6^1.5·GM only in a system where c = 1. gmSim() above is the warped
+// coupling, per wall-second², where c = kCSimPerSec ≈ 3.515 — NOT 1. Redo it:
+//     r_isco = 6GM/c²,  T = 2π·r_isco^1.5/√(GM) = 2π·6^1.5·GM/c³
+// so the c=1 form is too large by c³ = 43.4334. The render time-lapse clock
+// (renderer.mm) used the c=1 form against the warped GM, making the declared
+// "screen-seconds per ISCO orbit" 43.43× too fast — measured live at
+// poseDt = 2.3969 wall-s per frame vs a 0.0165 physics step (×145 net).
+// The [BALANCE] probe's Texact (main.cpp) always used the correct law; the two
+// disagreed by exactly this factor.
+inline constexpr double iscoPeriodWallSec(double gmWarped) {
+  return st::kIscoPeriodPerGM * gmWarped /
+         (kCSimPerSec * kCSimPerSec * kCSimPerSec);
+}
+
 // ── Geometric black-hole criterion (time-independent — pure geometry) ───────
 // r_s(M) = 2GM/c² in sim units. A region of enclosed mass M inside radius R IS
 // a black hole when r_s(M) ≥ R. The whole field crushed into kREnc gives

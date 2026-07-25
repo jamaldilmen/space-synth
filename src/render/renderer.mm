@@ -1375,7 +1375,10 @@ void Renderer::render(const RenderConfig &config) {
     // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
     // so the per-frame delta the streaks measure grows with it.
     double gmNow = space::units::gmSim((double)impl_->bhSeedMass);
-    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
+    // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
+    // clock ran x145 the physics instead of the dial's x3.3. See units.h.
+    double tIsco = space::units::iscoPeriodWallSec(gmNow);  // wall s, REAL
     if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
       dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
@@ -1409,7 +1412,10 @@ void Renderer::render(const RenderConfig &config) {
     // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
     // so the per-frame delta the streaks measure grows with it.
     double gmNow = space::units::gmSim((double)impl_->lastHorizonMass);
-    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
+    // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
+    // clock ran x145 the physics instead of the dial's x3.3. See units.h.
+    double tIsco = space::units::iscoPeriodWallSec(gmNow);  // wall s, REAL
     if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
       dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
@@ -1610,7 +1616,10 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
     // so the per-frame delta the streaks measure grows with it.
     double gmNow = space::units::gmSim((double)impl_->bhSeedMass);
-    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
+    // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
+    // clock ran x145 the physics instead of the dial's x3.3. See units.h.
+    double tIsco = space::units::iscoPeriodWallSec(gmNow);  // wall s, REAL
     if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
       dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
@@ -1644,7 +1653,10 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
     // so the per-frame delta the streaks measure grows with it.
     double gmNow = space::units::gmSim((double)impl_->lastHorizonMass);
-    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
+    // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
+    // clock ran x145 the physics instead of the dial's x3.3. See units.h.
+    double tIsco = space::units::iscoPeriodWallSec(gmNow);  // wall s, REAL
     if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
       dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;

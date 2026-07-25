@@ -30,6 +30,16 @@ struct RenderConfig {
   bool debugNoBleach = false;     // N-key: disable sensor bleach (yellow-zone isolation)
   bool simPaused = false; // SPACE pause: freezes the emergent time-lapse clock too (pause = pause everything)
   bool pauseHoldTimelapse = false; // SPACE held during pause: let the time-lapse clock run
+  // DECLARED TIME-LAPSE, as a PHYSICAL quantity: how many screen-seconds one
+  // ISCO orbit takes. The compression factor is DERIVED from the hole's own
+  // mass (T_isco = kIscoPeriodPerGM * GM), never picked — so it re-derives
+  // itself as the hole eats, where a bare "x20" would drift. spacetime.h
+  // reserves T_lapse as the user's decision, hence a dial. RENDER CLOCK ONLY.
+  float iscoScreenSeconds = 3.8f;
+  int   physicsSubsteps = 1;      // N fixed-dt physics steps per frame (fast sweep w/o dt-blowup)
+  float bhRayEmitScale = 1.0e-6f; // metric ray-march (bit19) emission gain = 10^uiRayEmitLog
+  float bhRayBcull = 16.0f;       // ray-march extent: impact-parameter cull in r_s (disk lives ~3..22)
+  float bhRayInnerR = 2.6f;       // ray-march inner no-emit radius in r_s → the dark shadow
 
   // New Simulation
   float modeP = 1.0f; // Depth Mode multiplier
@@ -174,7 +184,9 @@ struct CameraUniforms {
   float bhX = 0.0f;        // emergent hole CENTRE (= bhPos, sim coords): render spins/culls
   float bhY = 0.0f;        // about THIS, not the origin. Matters after PLAY — the cymatics
   float bhZ = 0.0f;        // displaces matter so the collapsed hole forms off-centre.
-  float spinZ = 0.0f;      // roll rate around Z (rad/s) — appended 2026-07-19, keep LAST
+  float spinZ = 0.0f;      // roll rate around Z (rad/s)
+  float viewportH = 1080.0f; // framebuffer height px — NDC->px for the flux-conserving
+                             // streak arc (appended 2026-07-24, keep LAST)
   float spinAngleZ = 0.0f; // accumulated roll angle Z (rad) — mirror order = render.metal
 };
 

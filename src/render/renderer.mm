@@ -29,8 +29,10 @@ struct BHMarchUniforms {
   float stepScale;    // dl = stepScale * r^1.5
   float bCull;        // impact-parameter cull, in units of r_s
   int   maxSteps;
+  float emitScale;    // emission gain (∫ρ ds → light)
+  float emitInnerR;   // no emission inside this radius (r_s) → dark shadow
 };
-static_assert(sizeof(BHMarchUniforms) == 80, "BHMarchUniforms layout");
+static_assert(sizeof(BHMarchUniforms) == 88, "BHMarchUniforms layout");
 
 struct Renderer::Impl {
   id<MTLDevice> device;
@@ -46,6 +48,7 @@ struct Renderer::Impl {
   id<MTLLibrary> library = nil;
 
   id<MTLComputePipelineState> physicsPipeline = nil;
+  id<MTLComputePipelineState> orbitSubstepPipeline = nil; // light central-gravity substep
   id<MTLRenderPipelineState> particlePipeline = nil;
   id<MTLRenderPipelineState> trajectoryPipeline = nil; // scope-line beams
   id<MTLRenderPipelineState> postPipeline = nil;
@@ -186,7 +189,6 @@ struct Renderer::Impl {
   // integrated capture set of the honest metric (b_c = 2.598 r_s). See the
   // shader banner in render.metal for the derivation + offline validation.
   id<MTLRenderPipelineState> bhMarchPipeline = nil;
-  id<MTLBuffer> bhMarchUniformBuffer = nil;
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   // SPECTRAL STARMAP (increment 1, 2026-07-24): the one colour law's tables.
@@ -220,6 +222,7 @@ struct Renderer::Impl {
   // gives ≈ 2.2 (the old hand-tuned 3.0 was unknowingly close).
   bool collisionsEnabled = false;  // OFF (Jamal 2026-07-07 14:25, A/B vs the god-forms look)
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI), default all-on
+  int physicsSubsteps = 1;        // N fixed-dt physics steps/frame (set from config, read in runComputePass)
   bool bondNetworkEnabled = false; // OFF (Jamal 2026-07-07 14:25, A/B)
 
   // Noether symmetry breaking
@@ -238,6 +241,7 @@ struct Renderer::Impl {
   id<MTLBuffer> uniformBuffer[kMaxInFlightFrames];
   id<MTLBuffer> cameraBuffer[kMaxInFlightFrames];
   id<MTLBuffer> postUniformBuffer[kMaxInFlightFrames];
+  id<MTLBuffer> bhMarchUniformBuffer[kMaxInFlightFrames]; // metric ray-march (per-frame)
 #if HAS_SYPHON
   id<MTLBuffer> postUniformSyphonBuffer[kMaxInFlightFrames]; // SDR uniform (headroom=1)
 #endif
@@ -351,6 +355,18 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
                                                      error:&error];
     if (error)
       NSLog(@"Compute pipeline error: %@", error);
+  }
+
+  // Light orbit substep kernel (physics sub-stepping: cheap central-gravity
+  // orbit advance between full passes).
+  id<MTLFunction> orbitFunc =
+      [impl_->library newFunctionWithName:@"orbit_substep"];
+  if (orbitFunc) {
+    impl_->orbitSubstepPipeline =
+        [impl_->device newComputePipelineStateWithFunction:orbitFunc
+                                                     error:&error];
+    if (error)
+      NSLog(@"orbit_substep pipeline error: %@", error);
   }
 
   // ── Spatial hash compute pipelines ──────────────────────────────────
@@ -609,9 +625,11 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     }
   }
 
-  // ── METRIC-NATIVE SHADOW pipeline (bit15, 2026-07-24) ──────────────────
-  // Same darkening blend family as the hole pass — the shadow is an absence
-  // of light, so it multiplies what is behind it by (1 − α) and adds nothing.
+  // ── METRIC-NATIVE EMISSION pipeline (2026-07-25) ───────────────────────
+  // ADDITIVE now (was darkening for the withdrawn black-paint shadow): the
+  // ray-march ACCUMULATES emission from the real particle field and ADDS it —
+  // emit=0 adds nothing, so no disc is ever painted over the frame (the overlay
+  // regression cannot recur). The shadow is the absence of gathered light.
   {
     id<MTLFunction> mV = [impl_->library newFunctionWithName:@"bhmarch_vertex"];
     id<MTLFunction> mF = [impl_->library newFunctionWithName:@"bhmarch_fragment"];
@@ -621,8 +639,8 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       md.fragmentFunction = mF;
       md.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
       md.colorAttachments[0].blendingEnabled = YES;
-      md.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorZero;
-      md.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      md.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+      md.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
       md.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
       md.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
       md.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
@@ -875,6 +893,9 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
                                    options:MTLResourceStorageModeShared];
     impl_->postUniformBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
+                                   options:MTLResourceStorageModeShared];
+    impl_->bhMarchUniformBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(BHMarchUniforms)
                                    options:MTLResourceStorageModeShared];
 #if HAS_SYPHON
     impl_->postUniformSyphonBuffer[i] =
@@ -1326,6 +1347,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.spinX = config.spinX;
   cam.spinY = config.spinY;
   cam.spinZ = config.spinZ;
+  cam.viewportH = (float)impl_->height;
   cam.spinAngleZ = config.spinAngleZ;
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
@@ -1340,8 +1362,24 @@ void Renderer::render(const RenderConfig &config) {
     double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
     impl_->bhPoseClock = now;
     dtP = std::min(std::max(dtP, 0.0), 0.1);   // guard stalls
+    // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
+    // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
+    // static, and far below the screen-space speed the streak path needs
+    // (elong = speed*1.4), so every sprite stayed a circular dot: THE reason
+    // near-hole matter read as stars instead of gaseous trails. The old
+    // comment claimed this clock was compressed; it was not, dtP was the raw
+    // wall delta.
+    // The factor is NOT a chosen multiplier. The dial states a PHYSICAL fact —
+    // how many screen-seconds one ISCO orbit takes — and the compression falls
+    // out of the hole's own mass, so it re-derives as the hole eats instead of
+    // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
+    // so the per-frame delta the streaks measure grows with it.
+    double gmNow = space::units::gmSim((double)impl_->bhSeedMass);
+    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
+      dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
-    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->bhSeedMass);
+    cam.bhDiskGM   = (float)gmNow;
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
     cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
@@ -1350,19 +1388,32 @@ void Renderer::render(const RenderConfig &config) {
     // passes on a trajectory"): the same Keplerian playback clock, keyed to
     // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
     // keeps running underneath; this compresses the RENDER clock only.
-    double now = CACurrentMediaTime();
-    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
-    impl_->bhPoseClock = now;
-    dtP = std::min(std::max(dtP, 0.0), 0.1);
-    // PAUSE FREEZES THE TIME-LAPSE TOO (2026-07-23 16:02, Jamal: "I pause
-    // and it's not properly paused after play"): this clock deliberately ran
-    // through SPACE-pause, so the emergent hole kept churning the frozen
-    // field ("continuing explosions"). Pause = pause everything. The POSED
-    // dial demo (bhPosed branch above, GM from bhSeedMass) keeps its
-    // pause-time playback — that's its entire purpose.
-    if (config.simPaused && !config.pauseHoldTimelapse) dtP = 0.0;
+    // CLEAN TIME-LAPSE CLOCK (2026-07-25 19:15, Jamal "build the clean
+    // time-lapse"): advance the pose clock by a FIXED per-frame increment, NOT
+    // the wall-clock delta. The wall delta swung with the framerate (23..63 fps)
+    // and, multiplied by the ~10x compression below, AMPLIFIED that jitter →
+    // the jumpy/laggy motion he flagged. A constant per-frame step is smooth by
+    // construction (each rendered frame advances the same). Pause still freezes.
+    double dtP = (config.simPaused && !config.pauseHoldTimelapse) ? 0.0
+                                                                  : (1.0 / 60.0);
+    // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
+    // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
+    // static, and far below the screen-space speed the streak path needs
+    // (elong = speed*1.4), so every sprite stayed a circular dot: THE reason
+    // near-hole matter read as stars instead of gaseous trails. The old
+    // comment claimed this clock was compressed; it was not, dtP was the raw
+    // wall delta.
+    // The factor is NOT a chosen multiplier. The dial states a PHYSICAL fact —
+    // how many screen-seconds one ISCO orbit takes — and the compression falls
+    // out of the hole's own mass, so it re-derives as the hole eats instead of
+    // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
+    // so the per-frame delta the streaks measure grows with it.
+    double gmNow = space::units::gmSim((double)impl_->lastHorizonMass);
+    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
+      dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
-    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->lastHorizonMass);
+    cam.bhDiskGM   = (float)gmNow;
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
     // PLATE-PLANE ALIGNMENT (2026-07-16, item 4): the galaxy now orbits about
@@ -1392,6 +1443,7 @@ void Renderer::render(const RenderConfig &config) {
   cam.tuneHeatK = config.heatGain;
   cam.bhToggles = config.bhToggles;
   impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
+  impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -1530,6 +1582,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.spinX = config.spinX;
   cam.spinY = config.spinY;
   cam.spinZ = config.spinZ;
+  cam.viewportH = (float)impl_->height;
   cam.spinAngleZ = config.spinAngleZ;
   cam.spinAngleX = config.spinAngleX;
   cam.spinAngleY = config.spinAngleY;
@@ -1544,8 +1597,24 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
     impl_->bhPoseClock = now;
     dtP = std::min(std::max(dtP, 0.0), 0.1);   // guard stalls
+    // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
+    // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
+    // static, and far below the screen-space speed the streak path needs
+    // (elong = speed*1.4), so every sprite stayed a circular dot: THE reason
+    // near-hole matter read as stars instead of gaseous trails. The old
+    // comment claimed this clock was compressed; it was not, dtP was the raw
+    // wall delta.
+    // The factor is NOT a chosen multiplier. The dial states a PHYSICAL fact —
+    // how many screen-seconds one ISCO orbit takes — and the compression falls
+    // out of the hole's own mass, so it re-derives as the hole eats instead of
+    // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
+    // so the per-frame delta the streaks measure grows with it.
+    double gmNow = space::units::gmSim((double)impl_->bhSeedMass);
+    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
+      dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
-    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->bhSeedMass);
+    cam.bhDiskGM   = (float)gmNow;
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
     cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
@@ -1554,19 +1623,32 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // passes on a trajectory"): the same Keplerian playback clock, keyed to
     // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
     // keeps running underneath; this compresses the RENDER clock only.
-    double now = CACurrentMediaTime();
-    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
-    impl_->bhPoseClock = now;
-    dtP = std::min(std::max(dtP, 0.0), 0.1);
-    // PAUSE FREEZES THE TIME-LAPSE TOO (2026-07-23 16:02, Jamal: "I pause
-    // and it's not properly paused after play"): this clock deliberately ran
-    // through SPACE-pause, so the emergent hole kept churning the frozen
-    // field ("continuing explosions"). Pause = pause everything. The POSED
-    // dial demo (bhPosed branch above, GM from bhSeedMass) keeps its
-    // pause-time playback — that's its entire purpose.
-    if (config.simPaused && !config.pauseHoldTimelapse) dtP = 0.0;
+    // CLEAN TIME-LAPSE CLOCK (2026-07-25 19:15, Jamal "build the clean
+    // time-lapse"): advance the pose clock by a FIXED per-frame increment, NOT
+    // the wall-clock delta. The wall delta swung with the framerate (23..63 fps)
+    // and, multiplied by the ~10x compression below, AMPLIFIED that jitter →
+    // the jumpy/laggy motion he flagged. A constant per-frame step is smooth by
+    // construction (each rendered frame advances the same). Pause still freezes.
+    double dtP = (config.simPaused && !config.pauseHoldTimelapse) ? 0.0
+                                                                  : (1.0 / 60.0);
+    // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
+    // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
+    // static, and far below the screen-space speed the streak path needs
+    // (elong = speed*1.4), so every sprite stayed a circular dot: THE reason
+    // near-hole matter read as stars instead of gaseous trails. The old
+    // comment claimed this clock was compressed; it was not, dtP was the raw
+    // wall delta.
+    // The factor is NOT a chosen multiplier. The dial states a PHYSICAL fact —
+    // how many screen-seconds one ISCO orbit takes — and the compression falls
+    // out of the hole's own mass, so it re-derives as the hole eats instead of
+    // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
+    // so the per-frame delta the streaks measure grows with it.
+    double gmNow = space::units::gmSim((double)impl_->lastHorizonMass);
+    double tIsco = space::spacetime::kIscoPeriodPerGM * gmNow;  // wall s, REAL
+    if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
+      dtP *= tIsco / (double)config.iscoScreenSeconds;
     impl_->bhPoseTime += dtP;
-    cam.bhDiskGM   = (float)space::units::gmSim((double)impl_->lastHorizonMass);
+    cam.bhDiskGM   = (float)gmNow;
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
     // PLATE-PLANE ALIGNMENT (2026-07-16, item 4): the galaxy now orbits about
@@ -1596,6 +1678,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.tuneHeatK = config.heatGain;
   cam.bhToggles = config.bhToggles;
   impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
+  impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -2400,6 +2483,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // while the spatial hash above keeps rebuilding — so the geodesic raytracer
     // has a fresh grid of the posed disk to sample. Skipped only when posed.
     if (!bhPosed) {
+     // PHYSICS SUB-STEPPING (2026-07-25): N× the FULL physics per frame — the
+     // STABLE version. The cheap light-kernel substep (central gravity only)
+     // EXPLODED: it strips the field's self-gravity/pressure/boundary balance,
+     // so matter flew off its constrained paths (v→0.33c, COLLAPSE 0%). The full
+     // loop keeps every force each step → stable, but costs ~N× physics (FPS)
+     // and runs drain/merge N× too. Keep N small.
+     int nSub = std::max(1, physicsSubsteps);
+     for (int ssub = 0; ssub < nSub; ssub++) {
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:physicsPipeline];
       [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -2437,6 +2528,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
       [comp endEncoding];
+     }
     }
 
     // ── Seed apply: credit each black hole its meals (after physics) ──
@@ -3034,6 +3126,35 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // Black-hole raytracer shadow pass DELETED (2026-06-28). It was a screen-space
   // 2D circle that sampled no useful disk. Real gravitational lensing is applied
   // to the particles in the vertex shader (render.metal).
+
+  // ── METRIC RAY-MARCH EMISSION (bit19, 2026-07-25) ──────────────────────
+  // The "calculate the hole, don't put a lens there" pass (Jamal 07-24/25).
+  // Integrate null geodesics of the honest metric BACKWARD and ADD the emission
+  // of the REAL particle field gathered along each ray: rays winding over the
+  // hole pick up the far side of the disk (the arch = the "outer ring"), rays
+  // that fall in stop gathering (the shadow is the absence of light). Additive,
+  // so emit=0 paints nothing — the withdrawn black-disc overlay cannot recur.
+  // Drawn LAST in the scene pass, over the additive field it samples.
+  bool rayMarchOn = (config.bhToggles & (1u << 19)) != 0u && lastHorizonR > 0.0f;
+  if (rayMarchOn && bhMarchPipeline) {
+    CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+    BHMarchUniforms mu = {};
+    invertMatrix4x4(camStruct->viewProj, mu.inverseViewProj);
+    mu.rMarchStart = 60.0f;   // start radius in r_s
+    mu.stepScale   = 0.05f;   // coarser for FPS (0.03 validated, 0.10 breaks); dl = stepScale·r^1.5
+    mu.bCull       = config.bhRayBcull;     // disk-covering extent (live dial)
+    mu.maxSteps    = 256;     // halved for FPS (coarser stepScale needs fewer)
+    mu.emitScale   = config.bhRayEmitScale; // ∫ρ ds → light gain; live dial
+    mu.emitInnerR  = config.bhRayInnerR;    // inner no-emit radius → shadow (live)
+    memcpy(bhMarchUniformBuffer[frameIdx].contents, &mu, sizeof(mu));
+    [enc setRenderPipelineState:bhMarchPipeline];
+    [enc setDepthStencilState:depthState];
+    [enc setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
+    [enc setFragmentBuffer:bhMarchUniformBuffer[frameIdx] offset:0 atIndex:1];
+    [enc setFragmentBuffer:cellCountsBuffer offset:0 atIndex:2];
+    [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
 
   [enc endEncoding];
 

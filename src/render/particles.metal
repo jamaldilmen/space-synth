@@ -409,6 +409,47 @@ constant float EIGEN_KAPPA = 0.25f;      // K ≤ 0.25 ⇒ well inside K < 2(1+f
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 
+// ── LIGHT ORBIT SUBSTEP (2026-07-25, Jamal) ───────────────────────────────
+// Cheap orbit advance for physics sub-stepping. Runs (N-1)× per frame between
+// full compute_physics passes, doing ONLY the central SMBH gravity (analytic —
+// the force that sets the orbits) + position-Verlet integrate. No field self-
+// gravity loop, no collisions, no SPH, no drain — so N substeps cost ~1 full +
+// (N-1) cheap instead of N full. The orbit advances N× per frame → the fast
+// sweep that makes real trails ("fast by physics, not faked"), WITHOUT the dt-
+// blowup of scaling the step (each step is the stable dt). Matches the full
+// kernel's Verlet scheme (pos + (pos-prev)·fric + a·dt², c·dt-capped) so the
+// orbit does not drift from the full step, which still runs once per frame.
+kernel void orbit_substep(device Particle* particles [[buffer(0)]],
+                          constant PhysicsUniforms& u [[buffer(2)]],
+                          uint id [[thread_position_in_grid]]) {
+    if (id >= (uint)u.particleCount) return;
+    Particle p = particles[id];
+    float mass = p.posW.w;
+    if (mass < 0.001f) return;                 // walls / dead matter: don't move
+    float dt = u.dt;
+    float3 pos  = p.posW.xyz;
+    float3 prev = p.prevW.xyz;
+    // Central SMBH gravity — identical form to compute_physics (central kick,
+    // :1203). Only in the BH/rest regime (bit1 on, not playing).
+    float3 gacc = float3(0.0f);
+    if ((u.bhToggles & 0x2u) && u.totalAmplitude < 0.02f) {
+        float dc2 = dot(pos, pos) + 0.05f;
+        gacc = (-pos) * (u.centerGM * rsqrt(dc2) / dc2);
+    }
+    // Position-Verlet with rest friction; gravity kick capped at c·dt.
+    float3 vel = (pos - prev) * pow(0.99f, dt);
+    float3 gkick = gacc * (dt * dt);
+    float gkmag = length(gkick);
+    float gkmax = u.speedCap * dt;
+    if (gkmag > gkmax && gkmag > 1e-12f) gkick *= (gkmax / gkmag);
+    vel += gkick;
+    float3 newPos = pos + vel;
+    p.prevW.xyz = pos;                          // .w (temperature) preserved
+    p.posW.xyz  = newPos;                       // .w (mass) preserved
+    p.velW.xyz  = vel;                          // .w (phase) preserved → trails
+    particles[id] = p;
+}
+
 kernel void compute_physics(
     device Particle* particles [[buffer(0)]],
     device const VoiceData* voices [[buffer(1)]],

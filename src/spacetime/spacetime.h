@@ -65,6 +65,19 @@ inline constexpr double rsSim(double mSun) {
   return 2.0 * gmSim(mSun) / (kCSim * kCSim);
 }
 
+// ── ISCO ORBITAL PERIOD (the hole's own natural clock for PLAYBACK) ─────────
+// Schwarzschild: r_isco = 6GM (c=1), omega = sqrt(GM/r^3) = 1/(GM*sqrt(216)),
+// so  T_isco = 2*pi*6^(3/2) * GM  in whatever time unit gmSim() is expressed
+// in. This is what lets the render clock be DECLARED IN PHYSICS rather than as
+// a bare multiplier: 'one ISCO orbit takes N screen-seconds' is a statement
+// about the hole, is mass-independent in feel, and re-derives itself as the
+// hole eats. A fixed 'x20' would silently drift as M grows. 2026-07-24, his
+// call: "we want our speed to really scientifically accurate in our unified
+// system not a random number".
+// 2*pi*6^1.5 = 92.34358777165421 (verified numerically against the measured
+// per-shell periods: GM=0.4123 -> 38.07 s, matching the [BALANCE] Texact law).
+inline constexpr double kIscoPeriodPerGM = 92.34358777165421;
+
 // Gravitational tick t_g = GM/c³, in REAL seconds (the system's natural clock).
 inline constexpr double tgSeconds(double mSun) {
   return mSun * kGMsunSI / (kCsqSI * kCSI);

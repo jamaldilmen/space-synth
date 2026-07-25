@@ -57,7 +57,8 @@ struct CameraUniforms {
     float bhX;               // emergent hole centre (= bhPos) — spin/cull about this, not origin
     float bhY;               // (after PLAY the collapsed hole forms off-centre)
     float bhZ;
-    float spinZ;             // roll rate around Z (rad/s) — appended 2026-07-19, keep LAST
+    float spinZ;             // roll rate around Z (rad/s)
+    float viewportH;         // framebuffer height in px — NDC->px for the streak arc (appended 2026-07-24, keep LAST)
     float spinAngleZ;        // accumulated roll angle Z (rad) — mirror order = renderer.h
 };
 
@@ -76,6 +77,19 @@ static float3 applySpin(float3 p, float ax, float ay, float az) {
     return float3(r.x, r.y * cx - r.z * sx, r.y * sx + r.z * cx);
 }
 
+// Exact inverse of applySpin (transpose of each rotation, undone in reverse
+// order Rx→Ry→Rz). The ray-march works in spun-world coords; the hash grid is
+// indexed in physics coords — this maps a world sample point back to physics
+// so the metric ray can read the REAL deposited particle field (2026-07-25).
+static float3 applyInverseSpin(float3 p, float ax, float ay, float az) {
+    float cx = cos(ax), sx = sin(ax);
+    float3 r = float3(p.x, p.y * cx + p.z * sx, -p.y * sx + p.z * cx);
+    float cy = cos(ay), sy = sin(ay);
+    r = float3(r.x * cy - r.z * sy, r.y, r.x * sy + r.z * cy);
+    float cz = cos(az), sz = sin(az);
+    return float3(r.x * cz + r.y * sz, -r.x * sz + r.y * cz, r.z);
+}
+
 // (safe_normalize removed to fix unused warning)
 
 struct VertexOut {
@@ -89,6 +103,7 @@ struct VertexOut {
     float2 strDir2D;   // Partner string connection vector
     float sharpness;   // live render control (Gaussian falloff exponent)
     float grainAlpha;  // live render control (per-particle base alpha)
+    float streakLen;   // arc length in QUAD-HALF units (1 = round dot). Flux-conserving.
 };
 
 // Decode packed phase + band ID from velW.w
@@ -350,25 +365,24 @@ vertex VertexOut particle_vertex(
     // freezes, the BH altering time made visible. pos and prev are rotated (prev
     // by one frame less) so the per-frame velocity stays the TRUE orbital motion,
     // keeping the Doppler/streaks honest. No physics — pure analytic playback.
-    if (cam.bhDiskGM > 0.0f && cam.bhDiskAxisY < 0.5f) {
+    // bit20 gate (2026-07-25): the analytic playback is a RENDER FAKE — it spins
+    // the sprites while the real physics barely moves, and the ray-march samples
+    // the real (slow) field, so the two never agree (Jamal: "a low-res copy of
+    // something slower, sped up weirdly"). DEFAULT OFF → sprites follow the REAL
+    // physics motion (dt = 0.0165·timeWarp, fixed per frame = smooth), coherent
+    // with the emission. ON = the legacy analytic spin, for A/B / posed demo.
+    if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY < 0.5f) {
         float2 c2 = float2(cam.bhX, cam.bhY);   // hole centre (off-origin after PLAY)
         float rxy = length(in.posW.xy - c2);
         // REAL RELATIVISTIC TIME BENDING (2026-07-16, Jamal item 3: "finally
         // introduce the realistic relativistic time bending in proportion to
         // the black hole — it is still way too small"). r_s = the HONEST r_h
         // when the emergent hole drives (legacy posed keeps 1.0); dilation
-        // floor 0.4 → 0.02: the inner edge now genuinely FREEZES toward the
-        // horizon — time visibly stopping, scaling with the hole as it eats.
+        // floor 0.4: inner edge visibly whips while clearly slowed vs the outer.
         // Matter inside r_h doesn't playback-rotate at all (membrane).
         float rsDil = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
         if (rxy > max(1e-3f, cam.horizonR)) {
             float omega = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
-            // Dilation floor 0.02 → 0.4 (2026-07-19 18:30, Jamal: "stuff in
-            // the inner horizon basically doesn't spin at all"): at 0.02 the
-            // inner edge froze solid — GR-correct for a distant observer, but
-            // it reads as DEAD matter. At 0.4 the inner edge visibly whips
-            // while still clearly slowed vs the outer disk: time bending
-            // stays readable without the freeze.
             float tdil  = sqrt(max(0.4f, 1.0f - rsDil / max(rxy, rsDil + 1e-3f)));
             float wEff  = omega * tdil;
             float aNow  = wEff * cam.bhPoseTime;
@@ -390,7 +404,7 @@ vertex VertexOut particle_vertex(
     // r > r_h ONLY (2026-07-16): the interior is causally dead (membrane) —
     // playback-rotating it fought the frozen physics at the boundary
     // (Jamal: "the spin in the center and outside don't add up").
-    if (cam.bhDiskGM > 0.0f && cam.bhDiskAxisY > 0.5f) {
+    if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY > 0.5f) {
         // PLANE FIX (2026-07-19): this block was written 07-15 when the disk
         // orbited about Y (x–z). The 07-16 plate-plane alignment moved the
         // physical disk to x–y about Z — posing about Y on a Z-orbiting disk
@@ -446,6 +460,8 @@ vertex VertexOut particle_vertex(
             out.originDist = 0.0f;
             out.dist = 1.0f;
             out.velDir2D = float2(0);
+            out.streakLen = 1.0f;
+        out.streakLen = 1.0f;
             out.strDir2D = float2(0);
             out.sharpness = 5.0f;
             out.grainAlpha = 0.08f;
@@ -480,6 +496,8 @@ vertex VertexOut particle_vertex(
             out.originDist = 0.0f;
             out.dist = 1.0f;
             out.velDir2D = float2(0);
+            out.streakLen = 1.0f;
+        out.streakLen = 1.0f;
             out.strDir2D = float2(0);
             out.sharpness = 5.0f;
             out.grainAlpha = 0.08f;
@@ -496,6 +514,7 @@ vertex VertexOut particle_vertex(
         out.originDist = 0.0f;
         out.dist = 1.0f;
         out.velDir2D = float2(0);
+        out.streakLen = 1.0f;
         out.strDir2D = float2(0);
         out.sharpness = 5.0f;
         out.grainAlpha = 0.08f;
@@ -567,6 +586,8 @@ vertex VertexOut particle_vertex(
             out.originDist = 0.0f;
             out.dist = 1.0f;
             out.velDir2D = float2(0);
+            out.streakLen = 1.0f;
+        out.streakLen = 1.0f;
             out.strDir2D = float2(0);
             out.sharpness = 5.0f;
             out.grainAlpha = 0.08f;
@@ -599,6 +620,9 @@ vertex VertexOut particle_vertex(
                 out.originDist = 0.0f;
                 out.dist = 1.0f;
                 out.velDir2D = float2(0);
+                out.streakLen = 1.0f;
+            out.streakLen = 1.0f;
+        out.streakLen = 1.0f;
                 out.strDir2D = float2(0);
                 out.sharpness = 5.0f;
                 out.grainAlpha = 0.08f;
@@ -870,6 +894,29 @@ vertex VertexOut particle_vertex(
     v2_screen += (v1_screen - preLensNDC);
     out.velDir2D = (v2_screen - v1_screen) * STREAK_GAIN;
 
+    // ── FLUID STREAK (bit18, 2026-07-24) — THE ARC GETS ITS OWN ROOM ────────
+    // Jamal: "no fluid streak". Two compounding defects, both fixed here:
+    //  (1) the arc was drawn INSIDE a fixed sprite quad (along/lengthX) and the
+    //      radial window zeroed it before the quad edge, so a trail could never
+    //      be longer than ONE sprite no matter how fast the matter moved. Speed
+    //      past elong=1 (clamp(speed*1.4,0,1)) changed nothing at all — that is
+    //      why raising the tempo turned the field to mush instead of flow.
+    //  (2) stretching MULTIPLIED flux: core=pow(1-sqrt(r2),3) in warped coords
+    //      held near-peak brightness over a bigger area, so fast matter emitted
+    //      MORE total light — the blown-out white core.
+    // Now the quad grows with the arc and the fragment divides brightness by
+    // the same factor, so a fast particle draws a LONG DIM trail at conserved
+    // flux — Front A1's "arc length ~ Omega*exposure, luminance conserved".
+    float streakPx = length(out.velDir2D) * (cam.viewportH * 0.5f); // NDC -> px
+    float lenFac   = 1.0f;
+    if ((cam.bhToggles & 0x40000u) && out.pointSize > 0.0f) {
+        // clamped: the quad is the overdraw budget, and play matter is fast.
+        lenFac = clamp(1.0f + 2.0f * streakPx / max(out.pointSize, 1.0f),
+                       1.0f, 12.0f);
+        out.pointSize = min(out.pointSize * lenFac, 400.0f);
+    }
+    out.streakLen = lenFac;
+
     // ── Phase 18: Chord Connections (Entanglement Webbing) ──
     out.strDir2D = float2(0.0f);
     uint partnerID = in.entanglement.x;
@@ -1010,6 +1057,7 @@ vertex VertexOut particle_vertex(
     if (isSecondary) {
         out.luminance *= imageWeight;
         out.velDir2D = float2(0.0f);
+        out.streakLen = 1.0f;
         out.strDir2D = float2(0.0f);
         if (cullThis || imageWeight < 0.02f) out.pointSize = 0.0f;
     }
@@ -1536,7 +1584,19 @@ vertex VertexOut particle_vertex(
         // overlapping splats fuse into a continuous gaseous ring. Field
         // stars (r ≫ horizon) stay sharp points. Ramp in from 32→4 horizon
         // radii so the transition from starfield to gas is smooth.
-        if (cam.horizonR > 0.0f) {
+        // ── A/B GATE (bit17, 2026-07-24) — IS THIS THE "FUZZY AND BLURRY"? ──
+        // Jamal: play forces particles into the shape and makes "the sharp
+        // lines we love", but the hole "is still just fuzzy and blurr". This
+        // block is the prime suspect and it is MINE, from 11:40 today: inside
+        // 4 r_h (ramping out to 32) it multiplies pointSize x3, divides
+        // luminance by 9, and drops the Gaussian falloff exponent from
+        // cam.sharpness (5.0) to 1.2 — a deliberate blur applied to exactly
+        // the region he is calling blurry. He asked for "the gaseous form near
+        // the horizon" and this delivered it as SOFT WIDE SPLATS, which is a
+        // different thing from sharp coherent lines.
+        // OFF (default) = near-hole matter renders as sharp as the field.
+        // ON = today's gaseous softening, unchanged.
+        if ((cam.bhToggles & 0x20000u) && cam.horizonR > 0.0f) {
             float rBHg = length(in.posW.xyz -
                                 float3(cam.bhX, cam.bhY, cam.bhZ));
             float accGas = 1.0f - smoothstep(4.0f * cam.horizonR,
@@ -1579,6 +1639,7 @@ vertex VertexOut particle_vertex(
         out.originDist = 0.0f;
         out.dist = 1.0f;
         out.velDir2D = float2(0);
+        out.streakLen = 1.0f;
         out.strDir2D = float2(0);
         out.sharpness = 5.0f;
         out.grainAlpha = 0.08f;
@@ -1619,9 +1680,17 @@ fragment float4 particle_fragment(
     // Speed → long light-trails. Boosted so fast particles (the spinning disk)
     // streak dramatically — the same trail feel as whipping the camera in
     // perspective. Slow particles stay round dots; fast ones stretch long+thin.
+    // FLUID STREAK (bit18): the VERTEX already grew this quad by in.streakLen,
+    // so the arc spans the full quad along the motion direction — lengthX is 1
+    // in quad units. The quad grew isotropically (point sprites are square), so
+    // ACROSS must be narrowed by the same factor to hold the physical width
+    // constant: that is what makes a fast particle a long THIN ribbon instead
+    // of a big blob. streakLen == 1 for stationary matter → identical to the
+    // old round-dot path.
+    float sL = max(in.streakLen, 1.0f);
     float elong  = clamp(speed * 1.4f, 0.0f, 1.0f);
-    float widthY = mix(1.0f, 0.12f, elong);          // thinner across when fast
-    float lengthX = mix(1.0f, 5.0f,  elong);          // much longer along
+    float widthY = (sL > 1.001f) ? (1.0f / sL) : mix(1.0f, 0.12f, elong);
+    float lengthX = 1.0f;
 
     // Distance in the warped frame (anisotropic Gaussian).
     float2 warped = float2(along / lengthX, across / widthY);
@@ -1646,7 +1715,11 @@ fragment float4 particle_fragment(
     // big star rendered as a SQUARE. Force the profile to true zero before the
     // quad boundary — round core + soft halo, corners gone. Radial window so
     // streaks stay smooth too.
-    float window = 1.0f - smoothstep(0.68f, 0.97f, length(pc));
+    // Window on the WARPED radius, not the raw quad radius: on the raw one a
+    // stretched arc got its ends cut off by the very clip this was added to
+    // fix (square corners). Elliptical window = smooth ends, no corners.
+    float window = 1.0f - smoothstep(0.68f, 0.97f,
+                                     (sL > 1.001f) ? length(warped) : length(pc));
     float glow = exp(-r2 * in.sharpness) * window;
     // Crisp bright CORE — restored from the pre-impostor render. This sharp
     // center is what makes each particle read as a crisp point instead of a
@@ -1675,14 +1748,19 @@ fragment float4 particle_fragment(
     // blending → field saturated to white everywhere. Lower per-particle
     // emission lets dense regions glow bright but sparse stay dim, so the
     // BH void and disk structure remain visible against the field.
-    float3 emission = in.color * in.luminance * (glow * 0.3f + core + spike * 0.6f);
+    // FLUX CONSERVED ALONG THE ARC (bit18): the arc covers sL times the area, so
+    // surface brightness must fall as 1/sL or a fast particle would emit MORE
+    // total light than a slow one — that was the blown-out white core. With
+    // this, fast matter draws a LONG DIM trail and total energy is unchanged.
+    float3 emission = in.color * in.luminance *
+                      (glow * 0.3f + core + spike * 0.6f) / sL;
 
     // Luminance boost DELETED from alpha (2026-07-08): alpha is COVERAGE,
     // emission carries the energy. The old `+ clamp(lum-1,0,2)·0.06` term
     // dominated grainAlpha for every star ≥1 M☉ — it's why the Grain fader
     // measurably did nothing (Jamal). Grain is now an honest iris again.
     float baseAlpha = in.grainAlpha;
-    float alpha = (glow * 0.3f + core + spike * 0.6f) * baseAlpha;
+    float alpha = (glow * 0.3f + core + spike * 0.6f) * baseAlpha / sL;
 
     float fadeDistance = 6.0f;
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));
@@ -2002,6 +2080,8 @@ struct BHMarchUniforms {
     float stepScale;           // dl = stepScale * r^1.5   (0.03; 0.10 breaks)
     float bCull;               // skip pixels with impact parameter > bCull*r_s
     int   maxSteps;            // 512 (worst measured 264)
+    float emitScale;           // emission gain: emit += colour * density * dl * emitScale
+    float emitInnerR;          // no emission inside this radius (r_s) → the dark shadow
 };
 
 struct BHMarchOut {
@@ -2026,63 +2106,110 @@ static float4 mulM4(constant float* m, float4 v) {
                   m[3]*v.x + m[7]*v.y + m[11]*v.z + m[15]*v.w);
 }
 
+// METRIC-NATIVE EMISSION (2026-07-25, Jamal: "calculate the entire black hole,
+// not a lens... how are you gonna calculate the inner and outer ring if it's
+// just a 2D circle"). This pass integrates the null geodesic BACKWARD through
+// the honest metric and ACCUMULATES the emission of the REAL deposited particle
+// field (the CIC hash grid) wherever the ray crosses it. Consequences fall out
+// of the paths, nothing placed by hand: rays winding OVER the hole pick up the
+// far side of the disk (the arch), rays that fall in stop gathering (the shadow
+// is the ABSENCE of gathered light — no black is ever painted, so the overlay
+// problem cannot recur). ADDITIVE blend: emit=0 adds nothing. Honors the BH
+// core directive — the light IS the particles, viewed through g(M), not a decal.
 fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
                                  constant CameraUniforms& cam [[buffer(0)]],
-                                 constant BHMarchUniforms& mu [[buffer(1)]])
+                                 constant BHMarchUniforms& mu [[buffer(1)]],
+                                 device const uint* cellCounts [[buffer(2)]],
+                                 constant SpatialHashUniforms& su [[buffer(3)]])
 {
-    // No honest hole -> this pass must change NOTHING.
-    if (cam.horizonR <= 0.0f) discard_fragment();
+    // No honest hole -> this pass adds NOTHING (additive: transparent black).
+    if (cam.horizonR <= 0.0f) return float4(0.0f);
 
     // Hole centre + r_s in WORLD units — identical construction to the lens
-    // block above (hole-centered, 2026-07-23 18:05), so the two agree on where
-    // the hole is while both exist for the A/B.
+    // block above (hole-centered), so the two agree on where the hole is.
     float3 bhWorld = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
                                cam.spinAngleX, cam.spinAngleY,
                                cam.spinAngleZ) * cam.plateRadius;
     float rsW = cam.horizonR * cam.plateRadius;
-    if (rsW <= 1e-6f) discard_fragment();
+    if (rsW <= 1e-6f) return float4(0.0f);
 
-    // Unproject this pixel to a world ray (works for ortho AND perspective:
-    // two depths, divide by w, subtract).
+    // Unproject this pixel to a world ray (ortho AND perspective).
     float4 pn = mulM4(mu.inverseViewProj, float4(in.ndc, 0.0f, 1.0f));
     float4 pf = mulM4(mu.inverseViewProj, float4(in.ndc, 1.0f, 1.0f));
     float3 ro = pn.xyz / pn.w;
     float3 rd = normalize(pf.xyz / pf.w - ro);
 
-    // Impact parameter = |x x v| about the hole. Exact, and it is the whole
-    // cull: b_c = 2.598 r_s, so nothing beyond bCull*r_s can ever be captured.
+    // Impact-parameter cull: b_c = 2.598 r_s. Pixels well beyond that neither
+    // bend meaningfully nor cross the near-hole disk region we care about.
     float3 p0 = ro - bhWorld;
     float  b  = length(cross(p0, rd));
-    if (b > mu.bCull * rsW) discard_fragment();
+    if (b > mu.bCull * rsW) return float4(0.0f);
 
-    // Back-extend to r = rMarchStart * r_s (see ORTHO note above).
+    // Back-extend to r = rMarchStart * r_s.
     float R   = mu.rMarchStart * rsW;
     float pd  = dot(p0, rd);
     float disc = pd * pd - dot(p0, p0) + R * R;
-    if (disc <= 0.0f) discard_fragment();     // never enters the marched region
+    if (disc <= 0.0f) return float4(0.0f);    // never enters the marched region
     float tStart = -pd - sqrt(disc);          // the INCOMING root (may be < 0)
 
-    // MARCH IN UNITS OF r_s (x/rsW), NOT world units. The step rule
-    // dl = stepScale * r^1.5 is calibrated for r_s = 1 — that is the geometry
-    // bc_validate.cpp measured. In world units rsW is 90..2000, so r^1.5 would
-    // overshoot the radius by ~10x per step and the shadow would be garbage.
-    // Normalizing here makes this loop bit-for-bit the validated integrator.
+    // MARCH IN UNITS OF r_s (x/rsW): the step rule dl = stepScale * r^1.5 is
+    // calibrated for r_s = 1 (bc_validate.cpp). World rsW is 90..2000, so
+    // normalizing here makes this loop the validated integrator bit-for-bit.
     float3 x = (p0 + rd * tStart) / rsW;
-    float3 v = rd;                            // unit; r_s scaling leaves it unit
+    float3 v = rd;
     float3 hv = cross(x, v);
-    float  h2 = dot(hv, hv);                  // conserved along the geodesic
+    float  h2 = dot(hv, hv);
     float  rEsc = mu.rMarchStart * 1.02f;
+
+    float3 emit = float3(0.0f);               // gathered emission (additive out)
 
     for (int i = 0; i < mu.maxSteps; ++i) {
         float r = length(x);
-        if (r < 1.0f) {
-            // Captured (r < r_s). This pixel sees the horizon: no light leaves it.
-            return float4(0.0f, 0.0f, 0.0f, 1.0f);
-        }
-        if (r > rEsc && dot(x, v) > 0.0f) discard_fragment();  // escaped
+        if (r < 1.0f) break;                  // captured: stop gathering (shadow)
+        if (r > rEsc && dot(x, v) > 0.0f) break;  // escaped
 
         float dl = mu.stepScale * r * sqrt(r);   // r^1.5
-        // RK4 on the 6-vector (x, v); accel = -(3/2) r_s h^2 x / r^5, r_s = 1.
+
+        // ── SAMPLE THE REAL PARTICLE FIELD at this ray point ───────────────
+        // world (spun × R) = hole centre + x·r_s  →  physics coords for the grid.
+        // Skip the inner region (r < emitInnerR): matter there is captured /
+        // inside ISCO and must not fill the shadow with light (the "yolk" fix).
+        if (su.gridSize > 0 && r > mu.emitInnerR && emit.r < 60.0f) {
+            float3 q  = bhWorld + x * rsW;
+            float3 pp = applyInverseSpin(q / cam.plateRadius,
+                                         cam.spinAngleX, cam.spinAngleY,
+                                         cam.spinAngleZ);
+            // COHERENT TIME-LAPSE SAMPLING (2026-07-25): the sprite playback
+            // (render.metal:355) sweeps matter FORWARD by Ω(r)·tdil·bhPoseTime
+            // about the hole. Sample the field where that matter came FROM —
+            // rotate pp BACKWARD by the same angle — so the emission rotates
+            // WITH the sprites instead of lagging at the slow physics rate
+            // (Jamal: "a low-res copy of something slower"). Same Ω, tdil.
+            if (cam.bhToggles & 0x100000u) {
+                float2 c2 = float2(cam.bhX, cam.bhY);
+                float2 d  = pp.xy - c2;
+                float rxy = length(d);
+                if (rxy > max(1e-3f, cam.horizonR)) {
+                    float om  = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
+                    float rsD = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
+                    float td  = sqrt(max(0.4f, 1.0f - rsD / max(rxy, rsD + 1e-3f)));
+                    float ang = -om * td * cam.bhPoseTime;   // backward
+                    float ca = cos(ang), sa = sin(ang);
+                    pp.xy = c2 + float2(d.x * ca - d.y * sa, d.x * sa + d.y * ca);
+                }
+            }
+            if (max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < su.halfExtent) {
+                float3 gp = (pp + su.halfExtent) * su.invCellSize - 0.5f;
+                int3 c = clamp(int3(round(gp)), int3(0), int3(su.gridSize - 1));
+                float dens = float(cellCounts[
+                    uint((c.z * su.gridSize + c.y) * su.gridSize + c.x)]);
+                // emission ∝ density × path length (∫ρ ds). Warm accretion hue;
+                // colour/Doppler/redshift refine in a later increment.
+                emit += float3(1.0f, 0.55f, 0.25f) * (dens * dl * mu.emitScale);
+            }
+        }
+
+        // RK4 on the 6-vector (x, v); accel = -(3/2) h^2 x / r^5, r_s = 1.
         float  q1 = length(x);
         float3 a1 = x * (-1.5f * h2 / (q1*q1*q1*q1*q1));
         float3 x2 = x + v * (dl * 0.5f),  v2 = v + a1 * (dl * 0.5f);
@@ -2097,7 +2224,5 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
         x += (v + v2 * 2.0f + v3 * 2.0f + v4) * (dl / 6.0f);
         v += (a1 + a2 * 2.0f + a3 * 2.0f + a4) * (dl / 6.0f);
     }
-    // Out of steps = a near-critical ray still winding the photon sphere.
-    // Those are captured-side in the limit; treat as shadow (DNGR does the same).
-    return float4(0.0f, 0.0f, 0.0f, 1.0f);
+    return float4(min(emit, float3(60.0f)), 1.0f);
 }

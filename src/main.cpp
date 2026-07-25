@@ -1269,7 +1269,67 @@ int main() {
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("bit8: particle-forward lens (sprite bend)");
           ImGui::Checkbox("Metric shadow (geodesic march)", &app.uiTogMetricShadow);
+          UiSliderFloat("ISCO orbit (screen seconds)", &app.uiIscoSeconds, 0.25f, 30.0f, "%.2f s");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How long ONE ISCO ORBIT takes on screen. LOWER = faster.\n"
+                              "The compression is DERIVED from the hole's mass\n"
+                              "(T_isco = 92.3436*GM), not a chosen multiplier.\n"
+                              "Default 0.52 s is DERIVED: play is capped at 72.7x c\n"
+                              "(CHLADNI_VCAP 1.2 vs c*dt 0.0165), so compressing by\n"
+                              "72.7 puts the hole on the same clock as the Chladni\n"
+                              "regime. Gravity is otherwise 176x slower at ISCO.\n"
+                              "Physical orbits are 38s (ISCO) to 12.5min (r=18) —\n"
+                              "visually static, and too slow for the streak path,\n"
+                              "which is why near-hole matter reads as dots.\n"
+                              "1x = true physical rate. Physics never sees this.");
           ImGui::Checkbox("Spectral colour (Planck bands)", &app.uiTogSpectralColour);
+          ImGui::Checkbox("Accretion gas softening", &app.uiTogAccretionGas);
+          ImGui::Checkbox("Fluid streak (flux-conserving arc)", &app.uiTogFluidStreak);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit18: the sprite quad GROWS with the motion arc and\n"
+                              "brightness falls as 1/length (flux conserved), so fast\n"
+                              "matter draws a long dim ribbon. OFF = the old clamped\n"
+                              "streak that could never exceed one sprite.");
+          ImGui::SliderInt("Physics substeps (fast, stable)", &app.uiPhysicsSubsteps, 1, 32);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("N orbit steps/frame. Leave time at x1, dial THIS up:\n"
+                              "advances Nx time per frame (fast trails, volume fill)\n"
+                              "WITHOUT the dt-blowup that x64 causes. Full physics runs\n"
+                              "ONCE; the extra N-1 are the LIGHT orbit kernel (central\n"
+                              "gravity only) so it stays cheap. Rest/BH only, not play.");
+          ImGui::Checkbox("Time-lapse orbit playback", &app.uiTogAnalyticSpin);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit20 DEFAULT ON: the clean time-lapse. Sprites sweep at\n"
+                              "the real Omega(r), fixed-rate clock (smooth, no jitter),\n"
+                              "and the ray-march samples the SAME advanced field so\n"
+                              "emission + sprites agree. A timelapse of the real orbits.\n"
+                              "OFF = raw physics motion (slow ~38s/orbit). ISCO dial = speed.");
+          ImGui::Checkbox("BH ray-march emission (metric hole)", &app.uiTogRayMarch);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit19: CALCULATE the hole. Null geodesics of the honest\n"
+                              "metric, integrated backward; each ray ADDS the real\n"
+                              "particle field it crosses. Far side bends over the top\n"
+                              "(the arch), captured rays go dark (shadow=absence).\n"
+                              "Additive, no black paint. OFF = sprite-lens path only.");
+          UiSliderFloat("  BH emission (log10 gain)", &app.uiRayEmitLog, -8.0f, -2.0f, "%.2f");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("emitScale = 10^this. 1e-3 (-3) was a solid orange yolk;\n"
+                              "sweep DOWN until saturation breaks and the disk/lens\n"
+                              "structure appears. Live dial, no rebuild.");
+          UiSliderFloat("  BH extent (b/r_s)", &app.uiRayBcull, 2.6f, 40.0f, "%.1f");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far out the disk renders. 2.6 = shadow only (the\n"
+                              "filled core); the disk lives at 3..22 r_s, so widen this\n"
+                              "to draw it + its lensed rings. Higher = more pixels (FPS).");
+          UiSliderFloat("  BH shadow radius (r_s)", &app.uiRayInnerR, 0.0f, 6.0f, "%.2f");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Inner no-emit radius: matter inside this doesn't light,\n"
+                              "so the centre goes DARK (the shadow). 0 = fill the core;\n"
+                              "~2.6 = photon-capture shadow; 3 = ISCO gap.");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("bit17: near-hole splat softening (size x3, lum /9,\n"
+                              "falloff 5.0 -> 1.2) inside 4 r_h. OFF = sharp,\n"
+                              "like the rest of the field. The blur A/B.");
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("bit16: colour from the real Planck band integral\n"
                               "instead of the blackbody FIT, and the supernovaRamp\n"
@@ -1972,8 +2032,17 @@ int main() {
         ((app.uiTogSphCool      ? 1u : 0u) << 13) |
         ((app.uiTogNoLegacyPressure ? 1u : 0u) << 14) |
         ((app.uiTogMetricShadow ? 1u : 0u) << 15) |
-        ((app.uiTogSpectralColour ? 1u : 0u) << 16);
+        ((app.uiTogSpectralColour ? 1u : 0u) << 16) |
+        ((app.uiTogAccretionGas ? 1u : 0u) << 17) |
+        ((app.uiTogFluidStreak ? 1u : 0u) << 18) |
+        ((app.uiTogRayMarch ? 1u : 0u) << 19) |
+        ((app.uiTogAnalyticSpin ? 1u : 0u) << 20);
     config.sphCoolTau = app.uiSphCoolTau;
+    config.iscoScreenSeconds = app.uiIscoSeconds;
+    config.bhRayEmitScale = powf(10.0f, app.uiRayEmitLog);
+    config.bhRayBcull = app.uiRayBcull;
+    config.bhRayInnerR = app.uiRayInnerR;
+    config.physicsSubsteps = app.uiPhysicsSubsteps;
     config.collapseFrac = app.uiCollapseFrac;
 
     // ── Update ADSR (Phase 12.6) ──────────────────────────────────

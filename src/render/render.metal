@@ -698,24 +698,53 @@ vertex VertexOut particle_vertex(
         float3 dHat = normalize(-cam.cameraPos.xyz);       // view axis (ortho: parallel rays)
         float along = dot(worldPos - bhWorld, dHat);       // + = behind the hole
         if (isSecondary && along <= rsW) cullThis = true;  // front: no 2nd image
-        if (along > rsW) {
+        // ── THE SEAM, REMOVED (2026-07-26 13:56:00) ──────────────────────────
+        // This used to be `if (along > rsW) { ... }` with NO else, i.e. the bend
+        // was applied to the far HALF-SPACE only: matter one hair behind the
+        // plane was displaced most of the way to the photon ring, matter one hair
+        // in front was drawn untouched. That step IS the artefact Jamal has been
+        // reporting for weeks — "two circles on top of each other", "very much
+        // circles not rings", "that artificial half overlay", "weird depending on
+        // which side you look at it" (the plane is defined by dHat, so it rotates
+        // with the camera), and "two rotations on top of each other": the two
+        // arcs sit at two different APPARENT radii while the Keplerian playback
+        // spins each particle by Ω(r) from its PHYSICS radius, so one ring's worth
+        // of matter shows two radius<->rate laws at once. His lens on/off A/B
+        // confirmed it twice (2026-07-23 18:05, 2026-07-26 13:49): lens off = ONE
+        // coherent ring; lens on = two rings + the crescent.
+        //
+        // The gate was never needed. The solve is β = θ − α(θ)·D, so as D → 0 the
+        // α·D term vanishes and θ → β on its own — the displacement already fades
+        // to nothing at the hole's plane. The D1 intent (2026-06-13, keep
+        // foreground matter IN THE ROOM instead of the hole painting a flat disc)
+        // is preserved for free by D = 0, without a step.
+        // Two things still need the depth: the photon-sphere floor max(th, 2.62rs)
+        // would otherwise shove un-lensed foreground matter outward, and the
+        // magnification would jump. Both are ramped by depthMix, which is 0 at the
+        // plane and 1 one r_s behind it — exactly where the old gate switched on.
+        {
             float3 perp = (worldPos - bhWorld) - along * dHat;
             float beta  = length(perp);
-            float D     = along;
+            float D     = max(along, 0.0f);              // clamp, do not gate
+            float depthMix = smoothstep(0.0f, max(rsW, 1e-6f), D);
             if (beta > 1e-4f * rsW) {
                 float3 pHat = perp / beta;
                 if (!isSecondary) {
                     // PRIMARY image: solve β = θ − α(θ)·D. Weak-field seed
                     // (α=2r_s/θ) then 3 Newton steps on the exact LUT.
-                    float th = 0.5f * (beta + sqrt(beta * beta + 8.0f * rsW * D));
-                    for (int it = 0; it < 3; ++it) {
-                        float a  = lensAlphaSample(lensAlphaLUT, th / rsW);
-                        float a2 = lensAlphaSample(lensAlphaLUT, th * 1.02f / rsW);
-                        float da = (a2 - a) / (0.02f * th);
-                        th -= (th - a * D - beta) / max(1.0f - da * D, 0.25f);
-                        th  = max(th, 2.62f * rsW);
+                    float th = beta;                     // D = 0 → no deflection
+                    if (D > 0.0f) {
+                        th = 0.5f * (beta + sqrt(beta * beta + 8.0f * rsW * D));
+                        for (int it = 0; it < 3; ++it) {
+                            float a  = lensAlphaSample(lensAlphaLUT, th / rsW);
+                            float a2 = lensAlphaSample(lensAlphaLUT, th * 1.02f / rsW);
+                            float da = (a2 - a) / (0.02f * th);
+                            th -= (th - a * D - beta) / max(1.0f - da * D, 0.25f);
+                            th  = max(th, 2.62f * rsW);
+                        }
                     }
-                    float thEff = mix(beta, th, cam.tuneLens * lensRamp);
+                    float thEff = mix(beta, th,
+                                      cam.tuneLens * lensRamp * depthMix);
                     out.position = cam.viewProjection *
                                    float4(bhWorld + along * dHat + pHat * thEff, 1.0f);
                     // PRIMARY MAGNIFICATION (2026-07-19): lensing conserves
@@ -730,8 +759,11 @@ vertex VertexOut particle_vertex(
                     float u   = beta / max(thetaE, 1e-5f * rsW);
                     float muP = (u * u + 2.0f) /
                                 (2.0f * u * sqrt(u * u + 4.0f)) + 0.5f;
+                    // depthMix too (2026-07-26): μ₊ → ∞ as D → 0 because θ_E → 0,
+                    // so without it foreground matter flashed to the ×6 clamp at
+                    // the seam. Now brightness ramps in with the displacement.
                     imageWeight = mix(1.0f, min(muP, 6.0f),
-                                      cam.tuneLens * lensRamp);
+                                      cam.tuneLens * lensRamp * depthMix);
                 } else {
                     // SECONDARY image: opposite side, β = α(θ)·D − θ.
                     float th = 0.5f * (sqrt(beta * beta + 8.0f * rsW * D) - beta);
@@ -756,10 +788,14 @@ vertex VertexOut particle_vertex(
                         imageWeight = lensRamp * clamp((A - 1.0f) / (A + 1.0f), 0.0f, 1.0f);
                     }
                 }
-            } else {
+            } else if (D > 0.0f) {
                 // on-axis (β≈0): the true image is a full Einstein ring a
                 // sprite can't represent; an unlensed draw would leak a dot
                 // INSIDE the shadow (the cull no longer removes it) — cull.
+                // GATED ON D > 0 (2026-07-26): with the half-space gate gone this
+                // block is now reachable by FOREGROUND matter, which is not lensed
+                // at all and must keep drawing — culling it would punch a hole in
+                // the matter in front of the hole.
                 cullThis = true;
             }
         }
@@ -923,15 +959,17 @@ vertex VertexOut particle_vertex(
     // star map, and 21 fps from the ~90x fill area. Re-landing this needs the
     // spike/star-core interaction solved FIRST (starness must know about sL),
     // not just the ordering. Do not move it again on its own.
-    float streakPx = length(out.velDir2D) * (cam.viewportH * 0.5f); // NDC -> px
-    float lenFac   = 1.0f;
-    if ((cam.bhToggles & 0x40000u) && out.pointSize > 0.0f) {
-        // clamped: the quad is the overdraw budget, and play matter is fast.
-        lenFac = clamp(1.0f + 2.0f * streakPx / max(out.pointSize, 1.0f),
-                       1.0f, 12.0f);
-        out.pointSize = min(out.pointSize * lenFac, 400.0f);
-    }
-    out.streakLen = lenFac;
+    //
+    // 2026-07-26 12:33:00 — re-landed at the end of this shader WITH the
+    // starness/sL fix in place (so no star crosses this time), and REJECTED
+    // AGAIN on sight 12:35: "the way that the sprites look now we never ever
+    // want them to move — the entire mechanix is broken and is a relict from
+    // very early days". So the verdict is NOT about the ordering, and NOT about
+    // the spikes: screen-space velocity-stretching of a point sprite is the
+    // wrong mechanism for trails, full stop. Do not re-land this by fixing
+    // details. It needs replacing, not repairing.
+    // (`starness /= sL` at :1757 is KEPT — verified no-op while sL == 1.)
+    out.streakLen = 1.0f;
 
     // ── Phase 18: Chord Connections (Entanglement Webbing) ──
     out.strDir2D = float2(0.0f);
@@ -1214,6 +1252,39 @@ vertex VertexOut particle_vertex(
     // L∝M^3.5, T_eff(M) → blackbody). Most are tiny dim red dwarfs, a rare few
     // are blazing blue giants. Fades to the gas/supernova look as you play.
     float starMix = 1.0f - smoothstep(0.0f, 0.5f, cam.envelopePhase); // 1 at silence
+    // ── STAR BRANCH STANDS DOWN IN THE ACCRETION DOMAIN (2026-07-26 12:56:00) ──
+    // Jamal, pointing at the Chladni shapes: "this is our only mechanic for light
+    // trails — hyper speed and hyper density… that's what we want, the feel, the
+    // look and the way it's rendered at 120 fps at basically zero cost… we need at
+    // least the same way it's rendered for the black hole horizon."
+    //
+    // The bars in those shapes and the dots around the hole come out of the SAME
+    // sprite pass, on opposite sides of this branch. The hole exists ONLY at
+    // silence, and starMix is keyed to silence — so the whole accretion disk was
+    // drawn 100% by the star-map branch below: size from the STELLAR radius law
+    // (R ∝ M^0.8), luminance L ∝ M^3.5, OBAFGKM colour by mass. Through that law a
+    // 1 M☉ particle is sub-pixel, which is exactly the measured near-hole
+    // [STREAKPROBE] ptSize = 1.0 — the disk was a field of dim red dwarfs. Matter
+    // falling onto a black hole is not a field of dwarf stars; it is the same
+    // shocked plasma the play regime draws as bright dense bars.
+    //
+    // Same idiom the nova flash already uses to stand down in this domain (:1487).
+    // Inside ~4 r_h the disk takes the plasma path (heat-driven luminance +
+    // heatSizeBoost + the play colour law); beyond 16 r_h the star field is
+    // untouched; smooth between. No sprite is stretched, nothing is painted, no
+    // new pass — this is a branch selection, so it costs nothing.
+    // DOMAIN WIDENED 16 -> 32 r_h (2026-07-26 13:04:00). At 4..16 with r_h ~ 0.15
+    // this only converted matter inside ~2.5 sim, so most of the visible ring kept
+    // the star branch — Jamal: "a lot that read as the blueish stars… just our
+    // stars". Those are merger remnants: kelvinU = 5772*M^0.55 puts the 126 M☉
+    // biggest body at ~80,000 K (blue-white) with starSize from R ∝ M^0.8, so a few
+    // heavy bodies dominate the ring. 32 r_h is this repo's own outer edge of the
+    // accretion domain (accGas uses 4..32 at :1609, the nova stand-down 16..32 at
+    // :1487) — not a fresh guess.
+    if (cam.horizonR > 0.0f) {
+        float rBHs = length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ));
+        starMix *= smoothstep(4.0f * cam.horizonR, 32.0f * cam.horizonR, rBHs);
+    }
     if (starMix > 0.001f) {
         float Mstar = min(in.posW.w, 500.0f);            // M_sun, merger-grown
         float Lstar = pow(Mstar, 3.5f);                             // L_sun
@@ -1754,9 +1825,40 @@ fragment float4 particle_fragment(
     // coord (pc), NOT the velocity-aligned frame, so spikes are screen-aligned.
     // The spike length = the sprite radius, so big bright stars spike long and
     // tiny dim dwarfs barely spike — physically consistent.
-    float starness = 1.0f - elong;
-    float spikeX = exp(-pc.y * pc.y * 90.0f) * pow(max(0.0f, 1.0f - abs(pc.x)), 1.5f);
-    float spikeY = exp(-pc.x * pc.x * 90.0f) * pow(max(0.0f, 1.0f - abs(pc.y)), 1.5f);
+    // SCALE-AWARE (2026-07-26 12:31:00). The spikes are drawn in the RAW quad
+    // coord pc, so they span whatever the quad is — but the quad is grown by
+    // in.streakLen (sL) when bit18 is live, which multiplied the cross by the
+    // same factor: giant 4-point crosses over the whole star map ("ugly blue
+    // sprites", "ugly stripes", 2026-07-25 22:26). The `1 - elong` gate was
+    // meant to stop this (its own comment: "so the orbiting disk and supernova
+    // streaks stay clean") but elong is computed from SPEED and knows nothing
+    // about the quad growth. Divide by sL so the star signature falls off as
+    // the sprite stretches into a ribbon: a streak is not a star. Flux-
+    // consistent with the emission below, which already divides by sL.
+    // NO-OP while bit18 is dead (sL == 1.0 for every particle) — landed alone,
+    // ahead of the bit18 re-land, so the two can be judged separately.
+    float starness = (1.0f - elong) / sL;   // sL from :1706
+    // GROWTH-INVARIANT SPIKE COORD (2026-07-25 23:xx). pc is QUAD-RELATIVE, so a
+    // cross drawn in pc has a pixel length equal to the quad half-width — it grows
+    // with any bit18 quad growth. That is the giant-crosses / "ugly stripes"
+    // defect measured at 21:52 (76% of particles grew ~9.5x, every cross with
+    // them). The optics do not care how far the matter moved during the exposure:
+    // spike length is a property of the sprite's own radius. sL == lenFac (:934)
+    // and the growth is isotropic, so multiplying by sL undoes it exactly and the
+    // cross holds a CONSTANT pixel size at any streak length.
+    // NOTE this supersedes the "starness must know about sL" plan: scaling the
+    // gate would only DIM an oversized cross; this stops it being oversized.
+    // sL == 1.0 for every particle today (the bit18 gate at :928 reads
+    // out.pointSize before it is assigned, see the comment there), so this line
+    // is arithmetically identical to the old one until bit18 is re-landed.
+    // ⚠ RESIDUAL: pointSize is also clamped to 400px (:932). Where that cap bites
+    // (drawn*lenFac > 400, i.e. deep zoom) the achieved growth is less than sL, so
+    // this over-corrects and draws the cross SMALLER than baseline. That is the
+    // safe direction — never stripes — so it is left as-is rather than adding a
+    // second interpolant to carry the achieved factor.
+    float2 ps = pc * sL;
+    float spikeX = exp(-ps.y * ps.y * 90.0f) * pow(max(0.0f, 1.0f - abs(ps.x)), 1.5f);
+    float spikeY = exp(-ps.x * ps.x * 90.0f) * pow(max(0.0f, 1.0f - abs(ps.y)), 1.5f);
     float spike  = max(spikeX, spikeY) * starness;
 
     // Emission multiplier reduced 1.8 → 0.5. With G=20 gravity, particles
@@ -2214,6 +2316,31 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
                     pp.xy = c2 + float2(d.x * ca - d.y * sa, d.x * sa + d.y * ca);
                 }
             }
+            // ── FINE-GRID GATHER (2026-07-26 13:41:00) — THE LENS RESOLUTION ──
+            // Jamal: "maybe the lens is like too low res… does it actually
+            // properly reflect what it clones… maybe the lens needs to be
+            // oversampled to not break in resolution and to also properly
+            // connect to the rings."
+            //
+            // He was right and the number is brutal: this gather used the COARSE
+            // hash — kGridSize 128 over halfExtent 64 => cellSize 1.0 sim — while
+            // r_h is ~0.15 and the whole visible disk spans ~0.5..2 sim. So the
+            // entire lensed image was being built from about 2-4 cells, with a
+            // NEAREST fetch (int3(round(gp))). No number of march steps or screen
+            // pixels can fix that; the source field had ~2 samples across the
+            // feature. Meanwhile the sprites draw the same matter at sub-pixel
+            // precision — two pictures of one object ~100x apart in resolution,
+            // additively overlaid, which is also why it "doesn't connect to the
+            // rings".
+            //
+            // The fine AMR grid is the same 128³ over ±kAmrFineExtent (4.0 sim)
+            // => cellSize 0.0625, 16x finer, ~32 samples across the disk. It
+            // holds Σ mass in MASS_FP=64 fixed point (bin_fine_mass), so convert
+            // to M☉ and rescale by the cell-volume ratio to keep the magnitude
+            // comparable to the coarse per-cell COUNT the emission dial was tuned
+            // against (particles are ~1 M☉, so count ≈ mass there).
+            // Outside the fine box, fall back to the coarse counts so nothing
+            // goes dark. Still nearest-neighbour — trilinear is the next step.
             if (max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < su.halfExtent) {
                 float3 gp = (pp + su.halfExtent) * su.invCellSize - 0.5f;
                 int3 c = clamp(int3(round(gp)), int3(0), int3(su.gridSize - 1));

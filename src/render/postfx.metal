@@ -246,7 +246,25 @@ fragment float4 postfx_fragment(
                                          level(float(topMip))).rgb;
         float avgLum = dot(avgC, float3(0.2126f, 0.7152f, 0.0722f));
         const float kExpKey = 0.35f;   // wide field avg ≪ this → no change
-        float autoExp = clamp(kExpKey / max(avgLum, 1e-5f), 0.05f, 1.0f);
+        // FLOOR 0.05 -> 0.01 (2026-07-26 16:5x). MEASURED: the iris was JAMMED
+        // against this floor for the whole late rest state, so the frame could
+        // not be stopped down to the key and the sensor bleach below (correctly)
+        // burned the result to featureless white — Jamal: "too whiteish, too blue
+        // sparkly". The numbers, from [LUMPROBE] (which reads the SAME top mip of
+        // offscreenTexture this samples, renderer.mm:3443):
+        //   early rest  avgRGB=(4.68 3.36 4.47) -> avgLum 3.72 -> needs 0.094  OK
+        //   late  rest  avgRGB=(17.2 13.1 16.5) -> avgLum 14.2 -> needs 0.0246 JAMMED
+        // i.e. the old floor ran out of travel at avgLum > kExpKey/0.05 = 7.0,
+        // and the rest state measured twice that. 0.01 = up to 100x stop-down,
+        // which covers the observed 14.2 with real margin.
+        // Play/Chladni states are UNTOUCHED by construction: their avgLum is
+        // 0.03..0.5, far below the key, so autoExp stays pinned at 1.0.
+        // ⚠ This gives the iris its travel back; it does NOT stop the underlying
+        // light runaway (~1% of particles carry ~98% of the emitted light via
+        // starLum = min(M^3.5*2.5, 1000), and merging keeps growing that tail),
+        // and it does NOT address the fps decay, which is fill cost upstream of
+        // the tonemap. Both are separate, still open.
+        float autoExp = clamp(kExpKey / max(avgLum, 1e-5f), 0.01f, 1.0f);
         color.rgb *= autoExp;
     }
 

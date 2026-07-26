@@ -2063,6 +2063,15 @@ int main() {
     // Supernova adds on top of user slider values
     config.bloomIntensity = app.uiBloom;
     config.exposure = app.uiExposure;
+    // A/B RESULT, KEPT AS A LEDGER ENTRY (2026-07-26 19:20:00): a temporary
+    // sweep of this value (1 / 3 / 10, 6 s per step, untouched silent run, 167
+    // samples) showed framerate is FLAT in final-image brightness — within
+    // matched avgLum bins: lum<1 -> 34.2/33.9/34.2 fps, lum 1-4 -> 34.6/35.5/
+    // 35.0, lum 4-8 -> 33.5/34.0. So display saturation costs NOTHING in fps.
+    // The apparent fps-vs-brightness correlation inside a single run is the
+    // COLLAPSE driving both: density raises overlap (fill cost = real frames)
+    // and raises brightness (free). Do not re-chase exposure for performance;
+    // the fps suspect remains sprite fill (handoff 2026-07-26 §3.4).
     // Spin blurs into a solid disk at high RPM: boost the motion-blur feedback
     // with spin speed so fast rotation smears instead of strobing.
     // Trails are the user's Fluidity slider ONLY. The spin must stay a CRISP
@@ -2563,6 +2572,18 @@ int main() {
         // matter is CHRONICALLY above threshold, every ring star is a
         // permanently swollen fat blob = the low-res look. Measure it.
         double sFl[6] = {0}; int nHot[6] = {0};
+        // DISK THICKNESS (2026-07-26, Jamal: the hole "is still a circle with a
+        // camera bend, not a 3D sphere that actually bends anything"). The
+        // metric-native design (DESIGN_2026-07-24 §4) states the hard
+        // requirement: the disk must be a REAL 3D emitter, because a ray-march
+        // of a FLAT annulus has no over/under light paths — the photon ring and
+        // the top/bottom arcs only exist if there is vertical structure to bend
+        // around. Measure what we actually have: H = sqrt(<z^2>) per shell and
+        // the aspect ratio H/R. H/R -> 0 = a sheet of paper (his "0 depth, like
+        // an inward spiral of paper"); a real thin accretion disk is H/R ~ 0.01
+        // -0.1, a thick/ADAF torus ~0.3-1. Also track whether the disk is BORN
+        // flat or COLLAPSES to flat, which decides spawn-vs-physics.
+        double szz[6] = {0}, srcyl[6] = {0};
         for (int i = 0; i < PROBE_N; i++) {
           const auto &q = probe[i];
           if (q.mass < 0.001f) continue;
@@ -2575,6 +2596,8 @@ int main() {
           svt[b] += std::sqrt(std::max(0.0f, v2 - vrad*vrad));
           sFl[b] += std::min(std::max(q.temperature - 2.5f, 0.0f), 5.0f);
           if (q.temperature > 2.5f) nHot[b]++;
+          szz[b] += (double)q.z * (double)q.z;
+          srcyl[b] += std::sqrt((double)q.x*q.x + (double)q.y*q.y);
           nB[b]++;
         }
         const float kDt = 0.0165f;
@@ -2618,6 +2641,14 @@ int main() {
           printf("    r=%.2f n=%4d Menc=%.2e L=%.4f vt=%.4f vcirc=%.4f sup=%.2f clamp=%.2f Tmeas=%.1fs Texact=%.1fs flash=%.2f hot=%d%%\n",
                  meanR, nB[b], Menc, L, meanVt, vcirc, sup, clampR, Tmeas, Texact,
                  sFl[b] / nB[b], (int)(100.0 * nHot[b] / nB[b]));
+        }
+        printf("  [DISKZ] H=sqrt(<z^2>) vertical scale height | H/R aspect (->0 = flat sheet)\n");
+        for (int b = 0; b < 6; b++) {
+          if (nB[b] == 0) continue;
+          double H = std::sqrt(szz[b] / nB[b]);
+          double Rc = srcyl[b] / nB[b];
+          printf("    r=%.2f n=%4d H=%.4f Rcyl=%.3f H/R=%.4f\n",
+                 sr[b] / nB[b], nB[b], H, Rc, (Rc > 1e-6 ? H / Rc : 0.0));
         }
       }
       // Integration-accuracy budget (same numbers as the HUD [accuracy] row):

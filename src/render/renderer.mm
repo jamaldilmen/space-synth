@@ -211,6 +211,33 @@ struct Renderer::Impl {
   bool bhPosed = false;       // analytic BH pose active → spin the posed disk
   double bhPoseTime = 0.0;    // elapsed seconds since pose (render-clock driven)
   double bhPoseClock = 0.0;   // last render timestamp, for the pose dt
+  double poseDtSmooth = 0.0;  // low-pass filtered wall frame delta (time-lapse clock)
+
+  // ── EMERGENT TIME-LAPSE POSE dt (2026-07-26 19:3x) ────────────────────────
+  // Was a FIXED 1.0/60.0 per RENDERED FRAME. That made the spin RATE
+  // proportional to framerate: at 120 fps (paused, cheap frame) the clock
+  // advanced 2.0 phase-seconds per real second; at 34 fps (playing) only 0.57 —
+  // so pausing SPED THE DISK UP 3.5x. Jamal: "the paused mode is so much
+  // smoother 120 fps and the spin is faster than at play, that doesn't make
+  // sense." He is right; a rate that depends on framerate is a unit error, the
+  // same class as the c3 clock bug.
+  // The fixed step existed for a real reason (2026-07-25): the RAW wall delta
+  // swung with the framerate and, multiplied by the ~10x time-lapse
+  // compression, amplified that jitter into jumpy motion. So don't go back to
+  // the raw delta — filter it. An EMA gives BOTH properties: the mean tracks
+  // true wall time (rate is framerate-independent) while frame-to-frame noise
+  // is smoothed over ~10 frames.
+  double emergentPoseDt(bool paused, bool holdTimelapse) {
+    double now = CACurrentMediaTime();
+    double raw = (bhPoseClock > 0.0) ? (now - bhPoseClock) : (1.0 / 60.0);
+    bhPoseClock = now;
+    // Guard stalls and absurd frames before they enter the filter.
+    raw = std::min(std::max(raw, 1.0 / 480.0), 0.1);
+    if (poseDtSmooth <= 0.0) poseDtSmooth = raw;   // cold start = no ramp-in
+    poseDtSmooth += (raw - poseDtSmooth) * 0.1;    // ~10-frame e-fold
+    // Pause still freezes unless the time-lapse is explicitly held.
+    return (paused && !holdTimelapse) ? 0.0 : poseDtSmooth;
+  }
   float bhPoseMass = 0.0f;    // posed BH mass (M_sun) — re-pins bhSeedMass while posed
   float collapseFrac = 0.25f; // UI dial: core fraction = hole 100%
   float lastSphCoolTau = 2.0f; // slice-4 cooling τ₀ [simt] (mod-menu slider)
@@ -1411,14 +1438,11 @@ void Renderer::render(const RenderConfig &config) {
     // passes on a trajectory"): the same Keplerian playback clock, keyed to
     // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
     // keeps running underneath; this compresses the RENDER clock only.
-    // CLEAN TIME-LAPSE CLOCK (2026-07-25 19:15, Jamal "build the clean
-    // time-lapse"): advance the pose clock by a FIXED per-frame increment, NOT
-    // the wall-clock delta. The wall delta swung with the framerate (23..63 fps)
-    // and, multiplied by the ~10x compression below, AMPLIFIED that jitter →
-    // the jumpy/laggy motion he flagged. A constant per-frame step is smooth by
-    // construction (each rendered frame advances the same). Pause still freezes.
-    double dtP = (config.simPaused && !config.pauseHoldTimelapse) ? 0.0
-                                                                  : (1.0 / 60.0);
+    // TIME-LAPSE CLOCK = FILTERED WALL DELTA (2026-07-26). The fixed 1/60 per
+    // rendered frame made the spin rate proportional to framerate (paused at
+    // 120 fps spun 3.5x faster than playing at 34) — see emergentPoseDt().
+    double dtP = impl_->emergentPoseDt(config.simPaused,
+                                       config.pauseHoldTimelapse);
     // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
     // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
     // static, and far below the screen-space speed the streak path needs
@@ -1652,14 +1676,11 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // passes on a trajectory"): the same Keplerian playback clock, keyed to
     // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
     // keeps running underneath; this compresses the RENDER clock only.
-    // CLEAN TIME-LAPSE CLOCK (2026-07-25 19:15, Jamal "build the clean
-    // time-lapse"): advance the pose clock by a FIXED per-frame increment, NOT
-    // the wall-clock delta. The wall delta swung with the framerate (23..63 fps)
-    // and, multiplied by the ~10x compression below, AMPLIFIED that jitter →
-    // the jumpy/laggy motion he flagged. A constant per-frame step is smooth by
-    // construction (each rendered frame advances the same). Pause still freezes.
-    double dtP = (config.simPaused && !config.pauseHoldTimelapse) ? 0.0
-                                                                  : (1.0 / 60.0);
+    // TIME-LAPSE CLOCK = FILTERED WALL DELTA (2026-07-26). The fixed 1/60 per
+    // rendered frame made the spin rate proportional to framerate (paused at
+    // 120 fps spun 3.5x faster than playing at 34) — see emergentPoseDt().
+    double dtP = impl_->emergentPoseDt(config.simPaused,
+                                       config.pauseHoldTimelapse);
     // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
     // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
     // static, and far below the screen-space speed the streak path needs
@@ -3204,12 +3225,45 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     mu.emitScale   = config.bhRayEmitScale; // ∫ρ ds → light gain; live dial
     mu.emitInnerR  = config.bhRayInnerR;    // inner no-emit radius → shadow (live)
     memcpy(bhMarchUniformBuffer[frameIdx].contents, &mu, sizeof(mu));
+    // [MARCH] PROBE (2026-07-26 19:5x). The march self-gates in-shader on
+    // cam.horizonR <= 0 and returns transparent black, so it can be encoded
+    // every frame and still draw NOTHING. The HUD's "hole 100%" is a LATCH and
+    // is decoupled from the honest r_h (07-19), so it cannot be used to tell
+    // whether the march is live — measured this session: r_h ran 0.23..0.31 and
+    // then fell to 0.0000 while the HUD still read hole=1.00L. Without this
+    // line, "I see no difference" is unattributable between (a) the change did
+    // nothing, (b) the pass drew nothing, (c) stale binary.
+    // Also prints the fine-box coverage question directly: the fine AMR grid is
+    // ±kAmrFineExtent (4.0 sim) while the field's meanR measured 32.9 — so the
+    // 16x-finer sampling only ever applies to the inner core.
+    {
+      static double lastMarchPrint = 0.0;
+      double nowM = CACurrentMediaTime();
+      if (nowM - lastMarchPrint >= 1.0) {
+        lastMarchPrint = nowM;
+        printf("[MARCH] encoded=1 camHorizonR=%.4f lastHorizonR=%.4f "
+               "emitScale=%.3g innerR=%.3f bCull=%.2f fineBox=%.1f "
+               "fineBufs=%d -> %s\n",
+               camStruct->horizonR, lastHorizonR, mu.emitScale, mu.emitInnerR,
+               mu.bCull, (double)Impl::kAmrFineExtent,
+               (fineCellMassBuffer && fineHashUniformBuffer) ? 1 : 0,
+               (camStruct->horizonR > 0.0f) ? "DRAWING" : "returns black (no r_h)");
+        fflush(stdout);
+      }
+    }
     [enc setRenderPipelineState:bhMarchPipeline];
     [enc setDepthStencilState:depthState];
     [enc setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
     [enc setFragmentBuffer:bhMarchUniformBuffer[frameIdx] offset:0 atIndex:1];
     [enc setFragmentBuffer:cellCountsBuffer offset:0 atIndex:2];
     [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
+    // FINE AMR GRID for the march (2026-07-26): 16x finer than the coarse hash
+    // and ALREADY binned every 2nd frame in silence by bin_fine_mass, so this is
+    // two extra bindings and no new work. Both may be nil if AMR is disabled
+    // (SS_NO_AMR) — the shader guards on fsu.gridSize > 0 and falls back to the
+    // coarse counts, so a nil/unbuilt fine grid just restores the old picture.
+    [enc setFragmentBuffer:fineCellMassBuffer offset:0 atIndex:4];
+    [enc setFragmentBuffer:fineHashUniformBuffer offset:0 atIndex:5];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   }
 
@@ -3246,9 +3300,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     if (nowP - lumProbeLastPrint >= 1.0) {
       // Reads last COMPLETED frame's value (one-frame lag, fine for a probe).
       const __fp16 *px = (const __fp16 *)lumProbeBuf.contents;
-      printf("[LUMPROBE] avgRGB=(%.3f %.3f %.3f) fps=%.1f phase=%.2f\n",
+      printf("[LUMPROBE] avgRGB=(%.3f %.3f %.3f) fps=%.1f phase=%.2f exp=%.3f\n",
              (float)px[0], (float)px[1], (float)px[2],
-             lumProbeFrames / (nowP - lumProbeLastPrint), config.envelopePhase);
+             lumProbeFrames / (nowP - lumProbeLastPrint), config.envelopePhase,
+             config.exposure);
       fflush(stdout);
       lumProbeFrames = 0;
       lumProbeLastPrint = nowP;

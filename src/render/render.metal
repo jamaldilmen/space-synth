@@ -2320,7 +2320,9 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
                                  constant CameraUniforms& cam [[buffer(0)]],
                                  constant BHMarchUniforms& mu [[buffer(1)]],
                                  device const uint* cellCounts [[buffer(2)]],
-                                 constant SpatialHashUniforms& su [[buffer(3)]])
+                                 constant SpatialHashUniforms& su [[buffer(3)]],
+                                 device const uint* fineCellMass [[buffer(4)]],
+                                 constant SpatialHashUniforms& fsu [[buffer(5)]])
 {
     // No honest hole -> this pass adds NOTHING (additive: transparent black).
     if (cam.horizonR <= 0.0f) return float4(0.0f);
@@ -2423,11 +2425,48 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
             // against (particles are ~1 M☉, so count ≈ mass there).
             // Outside the fine box, fall back to the coarse counts so nothing
             // goes dark. Still nearest-neighbour — trilinear is the next step.
-            if (max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < su.halfExtent) {
+            // FINE GRID FIRST (2026-07-26). The coarse hash is cellSize 1.0 sim
+            // while the visible disk spans ~0.5..2 — 2 to 4 samples for the whole
+            // lensed image, which is Jamal's "the lens is like too low res / it
+            // doesn't properly connect to the rings". The fine AMR grid is the
+            // same 128^3 over ±4.0 => cellSize 0.0625, SIXTEEN times finer,
+            // ~32 samples across the disk.
+            // It costs NOTHING new: bin_fine_mass already runs every 2nd frame
+            // (renderer.mm, gated pmGravityOn && sorFrame && totalAmplitude<0.02)
+            // — i.e. in silence, which is exactly when a horizon exists. The
+            // 2026-07-26 revert of this idea was caused by adding a SECOND
+            // binning pass every frame, not by the fine grid itself; fps did not
+            // return after that revert, which already said the grid was innocent.
+            // Units: bin_fine_mass stores sum(m)*MASS_FP(64) as fixed point, so
+            // /64 gives M_sun. The emission dial was tuned against the coarse
+            // per-cell COUNT, so rescale by the cell-VOLUME ratio to express this
+            // as a density in coarse-cell-equivalent units.
+            // ⚠ CALIBRATION CAVEAT: that equivalence assumes ~1 M_sun/particle.
+            // Measured now, the field is ~82% dwarfs below 0.5 M_sun, so mass
+            // density under-reads count density by roughly 2x. If the march comes
+            // out too dim this factor is the first place to look — it is a scale,
+            // not a bug in the sampling.
+            // Outside the fine box fall back to the coarse counts so nothing goes
+            // dark: the fine box is ORIGIN-centred while the hole drifts
+            // off-origin after PLAY.
+            float dens = -1.0f;
+            if (fsu.gridSize > 0 &&
+                max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < fsu.halfExtent) {
+                float3 gpF = (pp + fsu.halfExtent) * fsu.invCellSize - 0.5f;
+                int3 cf = clamp(int3(round(gpF)), int3(0), int3(fsu.gridSize - 1));
+                float mSun = float(fineCellMass[uint((cf.z * fsu.gridSize + cf.y)
+                                                     * fsu.gridSize + cf.x)])
+                             * (1.0f / 64.0f);
+                float vC = su.cellSize * su.cellSize * su.cellSize;
+                float vF = max(fsu.cellSize * fsu.cellSize * fsu.cellSize, 1e-12f);
+                dens = mSun * (vC / vF);
+            } else if (max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < su.halfExtent) {
                 float3 gp = (pp + su.halfExtent) * su.invCellSize - 0.5f;
                 int3 c = clamp(int3(round(gp)), int3(0), int3(su.gridSize - 1));
-                float dens = float(cellCounts[
+                dens = float(cellCounts[
                     uint((c.z * su.gridSize + c.y) * su.gridSize + c.x)]);
+            }
+            if (dens > 0.0f) {
                 // emission ∝ density × path length (∫ρ ds). Warm accretion hue;
                 // colour/Doppler/redshift refine in a later increment.
                 emit += float3(1.0f, 0.55f, 0.25f) * (dens * dl * mu.emitScale);

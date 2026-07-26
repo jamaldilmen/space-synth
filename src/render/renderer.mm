@@ -144,6 +144,11 @@ struct Renderer::Impl {
   id<MTLBuffer> finePhiBuffer = nil;         // fine PM potential Φ (warm-started)
   id<MTLBuffer> coarsePhiPrevBuffer = nil;   // per-FINE-cell record of the coarse Φ already injected (delta-prolongation)
   id<MTLBuffer> fineHashUniformBuffer = nil; // SpatialHashUniforms with halfExtent=kAmrFineExtent
+  // PLAYBACK PHASE (2026-07-26): per-particle INTEGRAL omega(r(t)) dt for the
+  // time-lapse spin, replacing the absolute omega(r)*bhPoseTime angle that
+  // carried the radial-drift counter-rotation. One float per particle (2M = 8 MB).
+  id<MTLComputePipelineState> posePhasePipeline = nil; // pose_phase_advance
+  id<MTLBuffer> posePhaseBuffer = nil;       // integrated playback phase, wrapped to [0, 2pi)
   float lastMFineEnc = 0.0f;                 // M within kAmrFineExtent (radial profile, 1-frame lag) → fine BC monopole
   float liveUAmbient = 6e-3f;                // mass-weighted mean u (SPH ledger window) → display ambient
   // SPH reaction engine (slice 0 plumbing): per-particle smoothed density ρ and
@@ -430,6 +435,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     if (error) NSLog(@"bin_fine_mass pipeline error: %@", error);
   } else {
     NSLog(@"Missing bin_fine_mass kernel");
+  }
+
+  // ── Playback phase integrator (2026-07-26) ──────────────────────────
+  id<MTLFunction> posePhaseFunc =
+      [impl_->library newFunctionWithName:@"pose_phase_advance"];
+  if (posePhaseFunc) {
+    impl_->posePhasePipeline =
+        [impl_->device newComputePipelineStateWithFunction:posePhaseFunc error:&error];
+    if (error) NSLog(@"pose_phase_advance pipeline error: %@", error);
+  } else {
+    NSLog(@"Missing pose_phase_advance kernel");
   }
 
   // ── AMR fine Poisson (nested coarse-Φ boundary) ─────────────────────
@@ -993,6 +1009,10 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->densityBuffer, count * sizeof(float));  // SPH ρ per particle (slice 0 plumbing)
   allocIfNeeded(impl_->mergeClaimBuffer, count * sizeof(uint32_t)); // cross-cell merge claims
   allocIfNeeded(impl_->pressureBuffer, count * sizeof(float)); // SPH P per particle (slice 0 plumbing)
+  // Integrated playback phase. Fresh MTLBuffers come back zeroed, so a cold
+  // start has every phase at 0 → the render begins exactly at the physics
+  // positions, identical to the old bhPoseTime = 0 behaviour.
+  allocIfNeeded(impl_->posePhaseBuffer, count * sizeof(float));
   {
     // SPH internal energy u: allocate + seed the WHOLE buffer to the cold floor
     // (persistent; shocks heat it, radiation cools it). Re-seed on (re)alloc/upload.
@@ -2992,6 +3012,29 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
 void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
                                       id<MTLCommandBuffer> cmdBuf, int frameIdx,
                                       const RenderConfig &config) {
+  // ── PLAYBACK PHASE INTEGRATION (2026-07-26) ────────────────────────
+  // Advance each particle's integrated orbital phase for the time-lapse spin.
+  // MUST be here and not in runComputePass: that pass is encoded BEFORE this
+  // frame's pose clock (bhPoseTime/bhPoseDt/bhDiskGM) is computed, so it would
+  // integrate with a one-frame-stale dt. Encoded on the render command buffer
+  // ahead of the particle pass, so the vertex shader reads a phase that is
+  // already advanced for this frame. Runs every rendered frame regardless of
+  // whether physics is stepping — the held-pause playback keeps spinning.
+  // The kernel self-gates on bit20 + a live hole, so this is a no-op dispatch
+  // when there is no time-lapse.
+  if (posePhasePipeline && posePhaseBuffer && particleCount > 0) {
+    id<MTLComputeCommandEncoder> pp = [cmdBuf computeCommandEncoder];
+    [pp setComputePipelineState:posePhasePipeline];
+    [pp setBuffer:particleBuffer offset:0 atIndex:0];
+    [pp setBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    [pp setBuffer:posePhaseBuffer offset:0 atIndex:2];
+    NSUInteger tg = std::min((NSUInteger)256,
+                             posePhasePipeline.maxTotalThreadsPerThreadgroup);
+    [pp dispatchThreads:MTLSizeMake(particleCount, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+    [pp endEncoding];
+  }
+
   // ── First Pass: Render particles to offscreen texture ──────────────
   MTLRenderPassDescriptor *offscreenPass =
       [MTLRenderPassDescriptor renderPassDescriptor];
@@ -3032,6 +3075,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // Spectral starmap LUTs (increment 2, bit16): the one colour law's tables.
   [enc setVertexBuffer:spectralContinuumLUT offset:0 atIndex:6];
   [enc setVertexBuffer:spectralLinesLUT offset:0 atIndex:7];
+  // Integrated playback phase (pose_phase_advance, dispatched above this pass).
+  [enc setVertexBuffer:posePhaseBuffer offset:0 atIndex:8];
   // instanceCount — instance 0 = primary image, instance 1 = the SECONDARY
   // lensed image (the Gargantua fold-over). The secondary only EXISTS when a
   // hole is lensing; with no hole it was culled in-shader to pointSize 0 — but

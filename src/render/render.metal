@@ -335,6 +335,71 @@ static float3 spectrumToBands(device const float4* contLUT,
     return c * (1.0f - s) + (w / wt) * (total * s);
 }
 
+// ── POSED / TIME-LAPSE ORBITAL RATE — ONE definition ────────────────────────
+// Used by BOTH pose_phase_advance (which integrates it) and particle_vertex
+// (which needs it for the one-frame back-step). Duplicating the expression in
+// two places is how the integrator and the renderer would silently drift apart.
+// r_s in the dilation = the HONEST r_h when the emergent hole drives, else the
+// legacy posed 1.0; floor 0.4 so the inner edge visibly whips while clearly
+// slowed against the outer.
+static inline float poseOmegaEff(float rxy, float diskGM, float horizonR) {
+    float rsDil = (horizonR > 0.0f) ? horizonR : 1.0f;
+    float omega = sqrt(diskGM / (rxy * rxy * rxy));
+    float tdil  = sqrt(max(0.4f, 1.0f - rsDil / max(rxy, rsDil + 1e-3f)));
+    return omega * tdil;
+}
+
+// ── PLAYBACK PHASE INTEGRATOR (2026-07-26) ──────────────────────────────────
+// THE BUG THIS EXISTS TO KILL. The playback angle used to be built as an
+// ABSOLUTE angle from an unbounded accumulator: aNow = wEff * cam.bhPoseTime.
+// Differentiate that and you get
+//     dtheta/dt = omega * (dPoseTime/dt)  +  bhPoseTime * (domega/dr) * v_r
+// The second term is not a rotation rate at all — it is radial drift amplified
+// by TOTAL elapsed pose time. Consequences, all of which Jamal reported:
+//   • paused: physics frozen, v_r = 0, the term VANISHES -> one clean coherent
+//     spin, "everything follows". That is why the held pause always looked right.
+//   • running: v_r != 0, so neighbouring particles at the same radius rotate at
+//     wildly different rates, and the apparent rotation REVERSES sign with the
+//     sign of v_r — infalling and outward matter spin opposite ways on the same
+//     ring. "It just runs in weird directions." Measured: reverses at
+//     v_r = 1.31e-3 sim/s after 10 min of runtime (docs handoff 2026-07-26 §0).
+//   • it degrades monotonically the longer the app runs, which is why earlier in
+//     a session always looked better.
+// The fix is not a render trick, it is an integration error: accumulate the
+// phase per particle, theta = INTEGRAL omega(r(t)) dt, instead of evaluating
+// omega now and multiplying by all of history.
+//
+// Runs as its own dispatch on the RENDER command buffer (not runComputePass,
+// which executes BEFORE the pose clock for this frame is computed), so it sees
+// this frame's bhPoseDt and is ordered ahead of the vertex shader that reads it.
+// It must NOT live in the vertex shader: instance 0 and instance 1 (the
+// secondary lensed image) are one draw call with no ordering guarantee between
+// them, so the secondary would nondeterministically read the pre- or
+// post-increment value — a flickering ~0.05 rad offset between the two images.
+//
+// Phase is WRAPPED to [0, 2pi). cos/sin are periodic so the wrap is exact, and
+// it holds float32 resolution constant forever instead of decaying as the
+// accumulator grows (the old form reached 1987 rad in 10 minutes).
+kernel void pose_phase_advance(
+    device const Particle* particlesIn [[buffer(0)]],
+    constant CameraUniforms& cam       [[buffer(1)]],
+    device float* posePhase            [[buffer(2)]],
+    uint vid [[thread_position_in_grid]])
+{
+    // Mirror the vertex gate EXACTLY (bit20 + a posed/emergent hole + the
+    // legacy z-axis branch, which is the only one the host ever selects).
+    if (!(cam.bhToggles & 0x100000u) || cam.bhDiskGM <= 0.0f ||
+        cam.bhDiskAxisY >= 0.5f) return;
+    float2 c2  = float2(cam.bhX, cam.bhY);
+    float  rxy = length(particlesIn[vid].posW.xy - c2);
+    // Inside the honest horizon the matter is causally dead (membrane) and does
+    // not playback-rotate — hold its phase rather than advancing it.
+    if (rxy <= max(1e-3f, cam.horizonR)) return;
+    float ph = posePhase[vid] +
+               poseOmegaEff(rxy, cam.bhDiskGM, cam.horizonR) * cam.bhPoseDt;
+    posePhase[vid] = ph - 6.28318530718f * floor(ph * (1.0f / 6.28318530718f));
+}
+
 vertex VertexOut particle_vertex(
     uint vid [[vertex_id]],
     uint iid [[instance_id]],
@@ -345,7 +410,8 @@ vertex VertexOut particle_vertex(
     device const uint* cellCounts [[buffer(4)]],        // hash-grid density (per cell)
     constant SpatialHashUniforms& su [[buffer(5)]],     // grid params for the cell lookup
     device const float4* specContLUT [[buffer(6)]],     // spectral: Planck band flux vs T_eff = g·T
-    device const float4* specLinesLUT [[buffer(7)]])    // spectral: line weight per band vs g
+    device const float4* specLinesLUT [[buffer(7)]],    // spectral: line weight per band vs g
+    device const float* posePhase [[buffer(8)]])        // integrated playback phase (pose_phase_advance)
 {
     VertexOut out;
     Particle in = particlesIn[vid];
@@ -380,13 +446,18 @@ vertex VertexOut particle_vertex(
         // when the emergent hole drives (legacy posed keeps 1.0); dilation
         // floor 0.4: inner edge visibly whips while clearly slowed vs the outer.
         // Matter inside r_h doesn't playback-rotate at all (membrane).
-        float rsDil = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
         if (rxy > max(1e-3f, cam.horizonR)) {
-            float omega = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
-            float tdil  = sqrt(max(0.4f, 1.0f - rsDil / max(rxy, rsDil + 1e-3f)));
-            float wEff  = omega * tdil;
-            float aNow  = wEff * cam.bhPoseTime;
-            float aPrev = wEff * (cam.bhPoseTime - cam.bhPoseDt);
+            // INTEGRATED PHASE (2026-07-26). Was `wEff * cam.bhPoseTime` — an
+            // absolute angle off an unbounded accumulator, which carried a
+            // `bhPoseTime * (domega/dr) * v_r` drift term that vanished when
+            // paused and reversed sign with v_r when running. See the full
+            // derivation and the measured magnitudes on pose_phase_advance above.
+            // aPrev is one frame BACK along the same phase, so the per-frame
+            // velocity the Doppler/streak path measures stays the true orbital
+            // motion, exactly as before.
+            float wEff  = poseOmegaEff(rxy, cam.bhDiskGM, cam.horizonR);
+            float aNow  = posePhase[vid];
+            float aPrev = aNow - wEff * cam.bhPoseDt;
             float cN = cos(aNow),  sN = sin(aNow);
             float cP = cos(aPrev), sP = sin(aPrev);
             float2 p = in.posW.xy - c2,  q = in.prevW.xy - c2;   // rotate ABOUT the hole centre
@@ -404,6 +475,17 @@ vertex VertexOut particle_vertex(
     // r > r_h ONLY (2026-07-16): the interior is causally dead (membrane) —
     // playback-rotating it fought the frozen physics at the boundary
     // (Jamal: "the spin in the center and outside don't add up").
+    // ⚠ DEAD CODE — VERIFIED 2026-07-26. This block needs bhDiskAxisY > 0.5, and
+    // renderer.mm assigns bhDiskAxisY = 0.0f at ALL SEVEN of its assignment sites
+    // (:1388, :1429, :1432, :1629, :1670, :1673 and the header default) — the
+    // posed branch AND the emergent branch both select the z-axis block above
+    // ("the y-axis branch sleeps", :1425-1429). It is therefore unreachable in
+    // every configuration, and it still carries the OLD absolute-angle form
+    // (wEff * bhPoseTime) that was just removed above. The 2026-07-26 handoff
+    // called this the "twin at :422" and expected it to need the same fix; it
+    // does not, because it never runs. If it is ever revived, port the integrated
+    // phase (posePhase[vid]) into it FIRST — as written it reintroduces the
+    // counter-rotation drift.
     if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY > 0.5f) {
         // PLANE FIX (2026-07-19): this block was written 07-15 when the disk
         // orbited about Y (x–z). The 07-16 plate-plane alignment moved the

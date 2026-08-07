@@ -17,3 +17,7 @@ third_party/syphon/
 
 # soak logs — durable across scratchpad wipes, not repo content
 logs/
+
+# measure_n build artifacts (the .mm/.metal sources ARE tracked)
+tools/measure_n/measure_n
+tools/measure_n/osc.metallib

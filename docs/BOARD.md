@@ -63,7 +63,7 @@ should be re-measured before anyone acts on them.
 | C1 | Bloom → mip pyramid | ✅ | `postfx.metal:547` — *"this bloom is looking a lot better"* | done |
 | C2 | Grade LUT stage, 33³ RGBA16F after the live tonemap | ✅ built + approved, now committed | `postfx.metal:361` samples it; `renderer.mm:811` uploads it; `:3884` binds it; `:3919` same grade on the Syphon feed. ⚠️ **ADDED stage — the live tonemap is NOT ACES, never replace it** | done |
 | **C7** | **The Cartwheel delta.** Our colour organisation is a **half-space** split (orange one side, blue-white the other, down the middle); JWST's is **radial** (orange dust ring outside, blue population inside). Their ring closes; ours is a crescent. Biggest single visual delta. | ⬜ | 🚨 **UNDIAGNOSED.** Grepped this pass: only one `half-space` mention survives in the renderer and it is a *removed* gate (`render.metal:1001`). The old "two circles" half-space bug is a **lead, not a finding.** Measure before changing anything. | **?** — measure first (**S**), fix unknown |
-| **C3** | **Star size floor** — 99.2% of stars pinned to one pixel. Nothing pre-FX can look cinematic until this moves. | ⬜ | `render.metal:1246` `out.pointSize = drawn`; `:1916` the clamp. 🚨 **BUILD THE DIALS FIRST** — 4 attempts, 0 progress, all reverted | **M** |
+| **C3** | **Star size floor** — 99.2% of stars pinned to one pixel. Nothing pre-FX can look cinematic until this moves. | ⬜ | `render.metal:1246` `out.pointSize = drawn`; `:1916` the clamp. 🚨 **BUILD THE DIALS FIRST** — 4 attempts, 0 progress, all reverted | **L** (was `M`; corrected on the 4-attempt record) |
 | C8 | **Chladni sharpness** — *"almoooost."* Standing physics finding: `ridgePull` uses the SCULPT gradient, not the eigenmode ∇Ψ, and there is no node dissipation. This is a physics fix, not a postfx one. | ⬜ | `space_synth_chladni_alpha_is_hz_2026-07-28` | **M** — 🚨 **ask what "sharp" means numerically first** |
 | C4 | **Motion vectors** — prerequisite for real motion blur AND TAA. The real blocker is a design decision, not plumbing: additive blending with depth-write off means **nothing decides which particle OWNS a pixel's vector.** | ⬜ | 08-02 doc | **L** |
 | C5 | Chromatic aberration → proper spectral/lens model (currently a flat radial RGB offset) | ⬜ | `postfx.metal:170` | **M** |
@@ -103,6 +103,60 @@ Confirmed this pass: `git status src/ui/` is clean and has been across the whole
 
 ---
 
+## WORKLOAD PER SECTION
+
+**These are estimates, not measurements.** Nothing below was derived from a log or a timing. The one
+number that IS grounded in the record is C3 — see the note under section C. Treat the totals as a
+shape, not a schedule.
+
+**Unit:** one **session** = a block where I build and he verdicts. Roughly:
+`S` = half a session, one change and one verdict · `M` = one session · `L` = 2–4 sessions, needs its
+own dedicated block · `?` = cannot be estimated until something is measured or he answers a question.
+
+| Section | Open rows | S | M | L | ? | **Est. sessions** |
+|---|---|---|---|---|---|---|
+| **A — Blockers** | 5 | 3 | 2 | 0 | 1 | **≈ 3.5** + 1 unknown |
+| **B — Physics** | 8 | 3 | 2 | 2 | 1 | **≈ 9.5** + 1 unknown |
+| **C — Visual** | 9 | 3 | 2 | 2 | 2 | **≈ 10** + 2 unknowns |
+| **D — Audio** | 3 | 2 | 0 | 1 | 0 | **≈ 4** |
+| **E — UI** | 4 | 2 | 1 | 1 | 0 | **≈ 5** |
+| **TOTAL** | **29** | 13 | 7 | 6 | 4 | **≈ 32 sessions + 4 unknowns** |
+
+### What each section's total is actually made of
+
+- **A ≈ 3.5.** Cheap in isolation and it is the whole BH track's gate. A1 (M) is the only real work;
+  A2 is a *test*, not a build; A3③ is a one-line latch condition. **A3② has a split cost** — the
+  `if (false)` takes minutes to unlock, but nobody knows what the honest centring rule should be, and
+  that is the unknown in this row. Best return per session on the board.
+- **B ≈ 9.5, and two thirds of it is two rows.** B6 (corpse compaction) and B7 (kill the tube) are
+  both `L` and both structural. B6 also *conflicts* with the refund — `imfMassOfId(id)` needs slots
+  never to move. Everything else in B is small. **B8 is an unknown because he has not said what he
+  means**, not because it is hard.
+- **C ≈ 10, and it is the least trustworthy total here.** Two rows are `?` (C7's fix, C11) and one is
+  evidence-corrected upward. This section is his stated priority and it is also the section where the
+  estimates are weakest, because the two headline items are undiagnosed.
+- **D ≈ 4, but it is 1 small + 1 small + 1 large.** D6 and D3 are both `S` and both unblock things.
+  D1 is the whole feature and is `L`. The track is at literally zero code, so there is no partial
+  credit banked anywhere.
+- **E ≈ 5.** E5 alone is `S` and pays back into A1/A2 by making them visible. E1 is the `L`.
+
+### ⚠️ The estimate I corrected
+
+**C3 (star size floor) was `M` — it should be `L`.** The record says 4 attempts, 0 progress, all
+reverted. An item that has already consumed four attempts is not a one-session item, and calling it
+one again would be repeating the mistake that produced those four. The `L` in section C's row is
+C3 and C4. The standing instruction on it — **build the dials first** — is the reason: the work is
+not "change the size", it is "make size dialable so we can find the right one".
+
+### ⚠️ What these totals do NOT say
+
+**≈32 sessions does not fit in 26 days at any believable pace.** That is the useful finding here.
+This board is not a list to finish before Berlin — it is a list to **triage**. Anything not on the
+Berlin path below is post-Berlin work by default, and saying so now is cheaper than discovering it
+on 2026-09-01.
+
+---
+
 ## THE TWO PATHS
 
 **Shortest path to a working black hole:** A1 → A2 → A3① . Nothing else in the BH track is testable
@@ -133,4 +187,5 @@ is an `S`.
 
 | When | What |
 |---|---|
+| 2026-08-07 12:18:44 | Added **WORKLOAD PER SECTION** at his request. Totals ≈32 sessions + 4 unknowns against 26 days — recorded explicitly that this board is a triage list, not a finish list. One estimate corrected on evidence: **C3 `M` → `L`**, because an item with 4 reverted attempts on the record is not a one-session item. |
 | 2026-08-07 12:02:31 | Created. Every A/B/C row re-verified against source at commit `3a36438`; D and E verified as zero-code. Two corrections to the inherited docs recorded: A3② is an `if (false)` ORIGIN LOCK (blunter than "the profile is centred on origin"), and B1 is not a separate item — it IS A3②. C7's half-space lead is explicitly downgraded to undiagnosed: the only surviving `half-space` mention in the renderer is a *removed* gate. |

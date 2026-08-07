@@ -65,7 +65,8 @@ should be re-measured before anyone acts on them.
 | **C7** | **The Cartwheel delta.** Our colour organisation is a **half-space** split (orange one side, blue-white the other, down the middle); JWST's is **radial** (orange dust ring outside, blue population inside). Their ring closes; ours is a crescent. Biggest single visual delta. | ⬜ | 🚨 **UNDIAGNOSED.** Grepped this pass: only one `half-space` mention survives in the renderer and it is a *removed* gate (`render.metal:1001`). The old "two circles" half-space bug is a **lead, not a finding.** Measure before changing anything. | **?** — measure first (**S**), fix unknown |
 | **C3** | **Star size floor** — 99.2% of stars pinned to one pixel. Nothing pre-FX can look cinematic until this moves. | ⬜ | `render.metal:1246` `out.pointSize = drawn`; `:1916` the clamp. 🚨 **BUILD THE DIALS FIRST** — 4 attempts, 0 progress, all reverted | **L** (was `M`; corrected on the 4-attempt record) |
 | C8 | **Chladni sharpness** — *"almoooost."* Standing physics finding: `ridgePull` uses the SCULPT gradient, not the eigenmode ∇Ψ, and there is no node dissipation. This is a physics fix, not a postfx one. | ⬜ | `space_synth_chladni_alpha_is_hz_2026-07-28` | **M** — 🚨 **ask what "sharp" means numerically first** |
-| C4 | **Motion vectors** — prerequisite for real motion blur AND TAA. The real blocker is a design decision, not plumbing: additive blending with depth-write off means **nothing decides which particle OWNS a pixel's vector.** | ⬜ | 08-02 doc | **L** |
+| **C4a** | **Camera motion blur — BUILT, DISABLED, bug diagnosed.** `prevViewProj` is fully plumbed and a screen-space velocity is computed **every frame**: unproject through `inverseViewProj`, reproject through `prevViewProj`, difference the UVs. The consumer is switched off behind **`if (false && velLen > 0.002)`** — the **second `if (false)`** on this board. **Why:** it dimmed the glow when the camera moved (his *"FX bug out / glow turns off when I move the camera"*). Reading the stage order, the cause is sharper than the source comment says: the block sits **after** the tonemap (`:285`), the grade LUT (`:338`) and the neon/VJ grades, so `color` is fully display-referred — but `:430` samples the **raw HDR** input and runs it through **`acesTonemap`**, which is *not* this pipeline's tonemap. **Two mismatches — graded-vs-ungraded, and ACES-vs-the-real-tonemap — then a divide by N.** Fix = make the samples match the base, do not reintroduce ACES. | 🔨 | `renderer.h:162`; `renderer.mm:343`, `:3866`, `:3871`; `postfx.metal:401-414` (live), `:420` (the `if (false)`), `:432` (the wrong tonemap) | **S** |
+| C4b | **Per-particle motion vectors** — genuinely not started. C4a's velocity is **camera-only**: `ndcPos` hardcodes `z = 0.99`, so everything is assumed at the far plane and nothing about particle motion is captured. This is where the real blocker lives — additive blending with depth-write off means **nothing decides which particle OWNS a pixel's vector.** Prerequisite for TAA. | ⬜ | `postfx.metal:401` the hardcoded `0.99` | **L** |
 | C5 | Chromatic aberration → proper spectral/lens model (currently a flat radial RGB offset) | ⬜ | `postfx.metal:170` | **M** |
 | C6 | Scanlines — rebuild or remove. Currently a Nyquist-rate sine with no filtering: that is aliasing, not an effect. | ⬜ | `postfx.metal:446` | **S** |
 | C9 | `bit18` flux-conserving arc **has never executed** — `sL ≡ 1.0` for every particle since it was written 2026-07-24 | ⬜ | `render.metal:1158` says so in the source comment; `:2233` confirms the downstream branch is a no-op | **S** to delete, **M** to revive |
@@ -201,9 +202,17 @@ the three changes what the audience sees on 2026-09-02.**
 | C9 bit18 dead arc | `sL ≡ 1`; **delete it** rather than revive it before a show | S |
 | C10 build warnings | `render.metal:485` is real | S |
 
-**Deferred out of C: C4, C11 — ≈3 sessions.** C4 (motion vectors) is `L` and its real blocker is an
-unmade design decision about which particle owns a pixel's vector; it buys nothing visible on its
-own. C11 has no defined starting point.
+**Deferred out of C: C4b, C11 — ≈3 sessions.** C4b (per-particle motion vectors) is `L` and its real
+blocker is an unmade design decision about which particle owns a pixel's vector. C11 has no defined
+starting point.
+
+**↩️ PULLED BACK IN — C4a, `S`, 2026-08-07 12:31:07.** He asked *"we started motion vectors didn't
+we"* and he was right; my ⬜ came from the 08-02 doc, not from the code. The camera half is **built
+and running** — only its consumer is switched off, behind a documented bug with a specific cause
+(`postfx.metal:432` tonemaps blur samples with **ACES** while the base pixel is already through this
+pipeline's own tonemap *and* the grade LUT). Re-enabling it is a matched-sampling fix, not a build.
+⚠️ **Do NOT fix it by reintroducing `acesTonemap` anywhere** — the live tonemap is deliberately not
+ACES. Berlin cut is now **≈14 sessions.**
 
 ### What the cut leaves
 
@@ -249,6 +258,7 @@ is an `S`.
 
 | When | What |
 |---|---|
+| 2026-08-07 12:31:07 | **He was right and the board was wrong: motion vectors WERE started.** I had marked C4 ⬜ with "08-02 doc" in the evidence column — hearsay by this file's own standard, and the one row I did not read the code for. Split into **C4a** (camera half: BUILT and running, consumer disabled behind the board's *second* `if (false)`, bug diagnosed to mismatched tonemaps at `postfx.metal:432`) — `S`, **pulled back into the Berlin cut** — and **C4b** (per-particle, genuinely not started, still `L`, still deferred). **Lesson: a row without a `file:line` is not a status, it is a rumour.** |
 | 2026-08-07 12:24:09 | **His triage: A, B, C are the show. D and E are post-Berlin.** Added the TRIAGE section. Because A+B+C is still ≈23 sessions vs 26 days, cut one level deeper: deferred B6/B7/B8 and C4/C11 (≈9 sessions, none of them visible on stage), leaving **≈13.5 sessions**. D6 flagged to him as a show-risk exception living in a deferred section — **parked, not dismissed.** |
 | 2026-08-07 12:18:44 | Added **WORKLOAD PER SECTION** at his request. Totals ≈32 sessions + 4 unknowns against 26 days — recorded explicitly that this board is a triage list, not a finish list. One estimate corrected on evidence: **C3 `M` → `L`**, because an item with 4 reverted attempts on the record is not a one-session item. |
 | 2026-08-07 12:02:31 | Created. Every A/B/C row re-verified against source at commit `3a36438`; D and E verified as zero-code. Two corrections to the inherited docs recorded: A3② is an `if (false)` ORIGIN LOCK (blunter than "the profile is centred on origin"), and B1 is not a separate item — it IS A3②. C7's half-space lead is explicitly downgraded to undiagnosed: the only surviving `half-space` mention in the renderer is a *removed* gate. |

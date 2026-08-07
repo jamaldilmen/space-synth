@@ -157,6 +157,68 @@ on 2026-09-01.
 
 ---
 
+## 🎯 TRIAGE — HIS CALL, 2026-08-07 12:24:09
+
+> *"A B C these are the most important for the show"*
+
+**Sections D and E are post-Berlin by his decision.** Do not spend a session there without asking.
+
+⚠️ **One exception flagged to him at the time of the call: D6.** It sits in section D but it is a
+*show* item — `Synth::processBlock` takes a blocking `lock_guard` on the RT audio thread
+(`synth.cpp:90`). If it stalls mid-set the audio drops on stage. It is an `S`. It is **parked, not
+dismissed**, and it stays parked until he says otherwise.
+
+### A/B/C alone is still too big
+
+A + B + C = **≈23 sessions + 4 unknowns** against 26 days. Narrowing to three sections does not
+close the gap on its own, because **6 of B's 9.5 sessions and 3 of C's 10 sit in rows that never
+appear on screen.** The cut has to go one level deeper.
+
+### The deeper cut — what actually serves a stage
+
+**A — all of it. ≈3.5 sessions.** No cut. It is the gate on the entire BH track and it is the
+cheapest section on the board.
+
+| Keep in B | Why | Cost |
+|---|---|---|
+| B2 `RADIAL_MAX_R` cutoff | the seed leaves the measuring window — serves A3② | S |
+| B3 bit4 origin-pin | unblocks B4 and the pull gate | M |
+| B4 pull-gate step 2 | the interaction he specified | M |
+| B5 −280 M☉ drift | small, and mass books should stay exact after the refund | S |
+| B9 merger flash invisible | a merger you cannot SEE is not a show event | S |
+
+**Deferred out of B: B6, B7, B8 — ≈6 sessions.** B6 (corpse compaction) is a perf/architecture job
+that *fights* the refund. B7 (kill the tube) is a foundational rewrite. B8 is undefined. **None of
+the three changes what the audience sees on 2026-09-02.**
+
+| Keep in C | Why | Cost |
+|---|---|---|
+| C7 Cartwheel delta | the single biggest visual delta, and his own 02:55 call | ? — measure first (S) |
+| C3 star size floor | 99.2% of stars are one pixel; nothing pre-FX looks cinematic until this moves | L |
+| C8 Chladni sharpness | *"almoooost"* — ask what sharp means first | M |
+| C5 chromatic aberration | currently a flat radial offset, not a lens | M |
+| C6 scanlines | rebuild or remove — right now it is aliasing, not an effect | S |
+| C9 bit18 dead arc | `sL ≡ 1`; **delete it** rather than revive it before a show | S |
+| C10 build warnings | `render.metal:485` is real | S |
+
+**Deferred out of C: C4, C11 — ≈3 sessions.** C4 (motion vectors) is `L` and its real blocker is an
+unmade design decision about which particle owns a pixel's vector; it buys nothing visible on its
+own. C11 has no defined starting point.
+
+### What the cut leaves
+
+| | Sessions |
+|---|---|
+| A (all) | ≈3.5 |
+| B (kept) | ≈3.5 |
+| C (kept) | ≈6.5 + C7's unknown |
+| **Berlin total** | **≈13.5 + 1 unknown** |
+
+**≈13.5 sessions in 26 days is plausible.** ≈23 was not. The deferred ≈9 sessions are all still on
+this board — they are post-Berlin, not cancelled.
+
+---
+
 ## THE TWO PATHS
 
 **Shortest path to a working black hole:** A1 → A2 → A3① . Nothing else in the BH track is testable
@@ -187,5 +249,6 @@ is an `S`.
 
 | When | What |
 |---|---|
+| 2026-08-07 12:24:09 | **His triage: A, B, C are the show. D and E are post-Berlin.** Added the TRIAGE section. Because A+B+C is still ≈23 sessions vs 26 days, cut one level deeper: deferred B6/B7/B8 and C4/C11 (≈9 sessions, none of them visible on stage), leaving **≈13.5 sessions**. D6 flagged to him as a show-risk exception living in a deferred section — **parked, not dismissed.** |
 | 2026-08-07 12:18:44 | Added **WORKLOAD PER SECTION** at his request. Totals ≈32 sessions + 4 unknowns against 26 days — recorded explicitly that this board is a triage list, not a finish list. One estimate corrected on evidence: **C3 `M` → `L`**, because an item with 4 reverted attempts on the record is not a one-session item. |
 | 2026-08-07 12:02:31 | Created. Every A/B/C row re-verified against source at commit `3a36438`; D and E verified as zero-code. Two corrections to the inherited docs recorded: A3② is an `if (false)` ORIGIN LOCK (blunter than "the profile is centred on origin"), and B1 is not a separate item — it IS A3②. C7's half-space lead is explicitly downgraded to undiagnosed: the only surviving `half-space` mention in the renderer is a *removed* gate. |

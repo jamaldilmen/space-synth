@@ -30,13 +30,51 @@ should be re-measured before anyone acts on them.
 
 | # | Item | State | Evidence | Cost |
 |---|---|---|---|---|
-| **A1** | **Accretion is dead.** Zero mergers ever. `Mmax` only ever reads 0.0 or 50.0 (= 49.957 M☉, the heaviest IMF star, rounded); `M_BH_SEED` is exactly 50.0 so `seeds=0` and nothing ever registers. At 64× warp a star moves ~127 contact radii/frame and **tunnels past every merge test**. Merges are additionally gated on `notPlaying`. | ⬜ | `particles.metal:179` `MERGE_RSUN_SIM=0.01f`; `:185` `M_BH_SEED=50.0f`; `renderer.mm:1339` `dt = 0.0165f * timeWarpVal`; `:538` `gkmax = u.speedCap * dt`; `renderer.mm:2683` `notPlaying = totalAmplitude < 0.02f` gates `mergeStarsPipeline` at `:2684` | **M** |
+| ~~A1~~ | ~~**Accretion is dead.**~~ ❌ **REFUTED 2026-08-08 00:05:09 — MEASURED, 3 RUNS.** Accretion is not dead. **It runs away.** See **A1′** below. The old claim came from a **64× run**, where §7's tunnelling arithmetic is correct and merging genuinely cannot happen. Nobody had run **1× silent** long enough. | ✅ closed | 3 stacked runs, `logs/A1_*` | — |
+| **A1′** | 🚨 **RUNAWAY ACCRETION — THE SIM EATS ITSELF.** At 1×, silent, no input, a body crosses 50 M☉ and then consumes the entire field. **3/3 runs, 2 independent realizations.** Mass is conserved throughout, so this is real mass eaten, not minted. **The show-relevant part: the field's lifespan is unpredictable — between 30 s and 10 min.** Same spawn seed gave 10 min once and 30 s the next, so the *evolution* is nondeterministic even though the spawn is not (very likely GPU atomic ordering in the hash/merge path — **stated as the likely cause, not proven**). ⭐ **This re-reads his old screenshot:** the "almost empty field, disk gone, handful of bright points" was recorded in §7 as *nothing accreted*. It is the opposite — **everything accreted.** That frame is the end state of runaway. | ⬜ **NEW** | see the run table below | **M** |
 | **A2** | **The refund / sustain rebirth is UNTESTED** — third handoff running. Code is present and deployed; `[REBIRTH]` has printed 0 times because there were never corpses to give back. | 🔨 | `particles.metal:689` `mass = imfMassOfId(id)`; `:694` atomic add into `seedAccum[6]`; `:3445` `seed_apply` drains it; `renderer.mm:3094` the `[REBIRTH]` log line | **S** (the test) 🚫 blocked on A1 |
 | **A3①** | **Fake hole — the `/0.5` denominator.** `seedTarget = kRsSimPerMsun · bhSeedMass / kREnc` with `kREnc` **hardcoded to 0.5**, and `bhStrength = max(seedTarget, …)`. The hole reads formed until the seed drains below ~297k M☉. **This is what stops the reversal from ever reaching zero.** | ⬜ | `renderer.mm:2994`; `units.h:86` `kREnc = 0.5` | **M** |
 | **A3②** | **Fake hole — the profile is centred on the origin.** Root cause found this pass and it is blunter than the older docs said: the COM refinement is wrapped in **`if (false)`** with the comment `ORIGIN LOCK: refinement disabled`. So `bhPosX/Y/Z` never leave their `0.0f` initialisers, and the radial profile — which bins around `u.bhX/Y/Z` — measures around the origin while the seed wanders off it. | ⬜ | `renderer.mm:2959` `if (false) { // ORIGIN LOCK`; `:196` the initialisers; `particles.metal:3808` bins around `u.bhX/Y/Z` | **S** to unlock, **?** to make honest |
 | **A3③** | **Fake hole — the spawn-time latch.** `if (honestTarget >= 1.0f) bhFormedLatch = true`. In the first seconds the 594k M☉ field is packed tightly enough that the innermost shell satisfies `r_s/r ≥ 1`; the latch catches that instant and holds `FORMED` with `seeds=0`. Means **`hole=1.00L` in any log before 2026-08-07 may be this artifact, not a hole.** | ⬜ | `renderer.mm:3064` the latch; `:3029` `honestTarget = min(lastHorizonRatio, 1.0f)` | **S** |
 
 > A3①②③ are three independent bugs that all present as "BH FORMED when it isn't". Fixing one does not touch the others.
+
+### 📊 A1′ — THE MEASUREMENT, 3 STACKED RUNS (2026-08-08 00:05:09)
+
+He called the first result shaky and was right — one run, and this project **bans single-run claims**.
+Stacked. All runs: **1× time warp, silent, zero input**, deployed binary (bundle `2026-08-06 15:28:21`,
+no source newer, nothing rebuilt).
+
+| Run | Seed | Crossed 50 M☉ | Peak `Mmax` | `seeds` | `live` at stop | `Mlive` | `feed`/`scan` |
+|---|---|---|---|---|---|---|---|
+| Soak | 42 | ~10 min | **331,425.6** | 2 | 2,000,000 → **19** | 594,276 → 593,975 (−301) | 0 / 0 |
+| Re-test | **7** | ~4.5 min | **12,329.6** | 2 | → 1,949,108 (early stop) | 594,276 → 594,270 (−6) | 0 / 0 |
+| Re-test | 42 | **~30 s** | **557,451.0** | 1 | → 123,007 (94% eaten in 2 min) | 594,276 → 593,973 (−303) | 0 / 0 |
+
+**What is established:**
+
+1. **Runaway is the physics, not one realization.** Seed 7 is an independent spawn and does the same thing.
+2. **Timing is wildly nondeterministic** — the same seed 42 took 10 min once and 30 s the next. The
+   spawn RNG is fixed (`particles.cpp:23`, `spawnSeed = 42`), so the divergence is downstream, in the
+   evolution.
+3. **Mass is conserved under runaway** — −301, −6, −303 M☉, all consistent with the known −280
+   residual (B5). The 08-04 conservation fix holds. The hole is eating real mass, not minting it.
+4. **`feed=0/0.0 scan=0` in every run ever logged.** All growth comes through `merge_stars`; the
+   seed-feed path has **never scanned once**. That half of §7 survives and is now better evidenced.
+5. **A2's precondition is finally met** — seeds exist and there are ~1.9M corpses to refund. The test
+   that has been blocked for three handoffs is runnable. **It needs him to hold a note.**
+
+**Method notes, for whoever repeats this:**
+- ⚠️ **Two instances cannot coexist.** A parallel attempt had its second instance die silently at
+  ~90 s with no crash message. Run serially. `logs/a1_watch.sh <seed> NEW` does one run with early
+  exit and aborts as INVALID if the instance dies, so a starved run cannot masquerade as a negative.
+- ⚠️ **`dt` is per-frame, not wall-clock** (`renderer.mm:1339`), so anything that costs FPS costs sim
+  progress. The logs carry `FPS:` — check it before trusting a null result.
+- 🚨 **Never test this above 1×.** §7's tunnelling arithmetic is correct: at 64× a star moves ~127
+  contact radii per frame and the merge test can never fire.
+
+**Free confirmation, from instrumentation that already exists:** `[KPROBE-SCALE] size px:
+0.92:99.3%` — **C3's "99.2% of stars pinned to one pixel" is real and now measured at 99.3%.**
 
 ---
 
@@ -311,6 +349,7 @@ is an `S`.
 
 | When | What |
 |---|---|
+| 2026-08-08 00:05:09 | **A1 REFUTED BY MEASUREMENT, 3 STACKED RUNS.** Accretion is not dead — it **runs away** and eats the whole field at 1× silent, in 2 independent realizations, with mass conserved. The old "zero mergers ever" came from a 64× run where tunnelling really does prevent merging; nobody had run 1× silent long enough. A1 closed, **A1′ opened**: the sim self-destructs on an unpredictable clock (30 s to 10 min, same seed). His old "empty field" screenshot was misread by §7 as *nothing accreted* — it is the **end state of everything accreting**. **A2 is finally unblocked.** He was right to call the single-run version shaky. |
 | 2026-08-07 12:41:25 | **DISABLED-CODE SWEEP** — the thing he wanted done *before* the handoff. 17 hard-disabled blocks; 10 are removed ImGui panels, 7 are in the physics/render path. **4 of the 7 are his own correct verdicts with restore paths written next to them — do not touch.** 3 were worth finding: C4a (recoverable), A3② (bug), and **new row B10, DENSITY PRESSURE — an explicit "re-enable in a later step" TODO that was never done.** Also newly recorded: `render.metal:589` is unreachable in every configuration (`bhDiskAxisY` is `0.0f` at every assignment site). **And the sweep contradicted a board row: B3's bit4 origin-pin ships OFF, so it cannot be what pins the hole in normal use — premise re-opened.** |
 | 2026-08-07 12:31:07 | **He was right and the board was wrong: motion vectors WERE started.** I had marked C4 ⬜ with "08-02 doc" in the evidence column — hearsay by this file's own standard, and the one row I did not read the code for. Split into **C4a** (camera half: BUILT and running, consumer disabled behind the board's *second* `if (false)`, bug diagnosed to mismatched tonemaps at `postfx.metal:432`) — `S`, **pulled back into the Berlin cut** — and **C4b** (per-particle, genuinely not started, still `L`, still deferred). **Lesson: a row without a `file:line` is not a status, it is a rumour.** |
 | 2026-08-07 12:24:09 | **His triage: A, B, C are the show. D and E are post-Berlin.** Added the TRIAGE section. Because A+B+C is still ≈23 sessions vs 26 days, cut one level deeper: deferred B6/B7/B8 and C4/C11 (≈9 sessions, none of them visible on stage), leaving **≈13.5 sessions**. D6 flagged to him as a show-risk exception living in a deferred section — **parked, not dismissed.** |

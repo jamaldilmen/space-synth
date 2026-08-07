@@ -46,7 +46,8 @@ should be re-measured before anyone acts on them.
 |---|---|---|---|---|
 | B1 | Centre the horizon test on the mass, not the origin | ⬜ | Same as A3② — **these are the same fix.** Folded. | — |
 | B2 | `RADIAL_MAX_R = 5.0` hard cutoff — the seed wanders outside the measuring window entirely | ⬜ | `particles.metal:300`; guard at `:3814` | **S** |
-| B3 | **bit4 origin-pin** — a bounded spring dragging any body ≥ 50 M☉ toward `(0,0,0)`, off only during play. Blocks multi-BH *and* makes the fake-pull gate circular. | ⬜ | `particles.metal:1170` | **M** |
+| B3 | **bit4 origin-pin — PREMISE RE-OPENED 2026-08-07 12:41:25.** The spring exists (a bounded pull on any body ≥ 50 M☉ toward `(0,0,0)`, gated off during play) — but **it ships OFF** and only the UI checkbox or the `SS_INERT_KEEP` ladder can enable it. So in the default launch config it is **not** what blocks multi-BH; the unconditional ORIGIN LOCK (A3②) is. Inherited from 08-04 §4 and not re-derivable from the code as written. **Re-establish what this row is for, or fold it into A3② and close it.** | ⬜ premise unverified | `particles.metal:1170` the spring; `app_state.h:48` `= false`; `main.cpp:2135` the pack, `:1260` the checkbox, `:270` the ladder | **S** to settle, then **?** |
+| B10 | **DENSITY PRESSURE — an unfinished TODO, not a decision.** Disabled with *"TEMP DISABLED for Step 1 verification… **Re-enable in a later step** after we have orbital dynamics holding particles in place."* That later step never came. It was overpowering gravity (pressure scale 12 vs gravity scale 1) and blowing the Gaussian spawn outward. ⚠️ **Do NOT simply switch it on: it OPPOSES collapse, and A1 needs collapse.** Settle A1 first, then decide whether this is revived at a sane scale or deleted. | ⬜ **NEW** | `particles.metal:863` `if (false /* su.gridSize > 0 */)` | **M** |
 | B4 | Pull-gate step 2 | 🚫 | blocked on B3 | **M** |
 | B5 | The −280 M☉ residual drift (wall/park exclusion) | ⬜ | not re-verified — from 08-04 §1 | **S** |
 | B6 | **Corpse compaction.** 64% of the buffer was corpses; every compute dispatch is 2,000,000 threads regardless. In **direct tension** with `imfMassOfId(id)` requiring that particles never change slots — the refund depends on that property. Needs its own session. | ⬜ | `particles.metal:131` `imfMassOfId`; measurement from 08-07 §3 | **L** |
@@ -158,6 +159,58 @@ on 2026-09-01.
 
 ---
 
+## 🔎 DISABLED-CODE SWEEP — 2026-08-07 12:41:25
+
+He asked for this **before** the handoff and I did it after, having been caught by C4. Full sweep for
+`if (false)`, `&& false`, `#if 0`, and dead-by-comment markers across `src/`.
+
+**17 hard-disabled blocks. 10 are ImGui panels removed 2026-06-26** — deliberate, documented, not
+hidden work. **7 are in the physics/render path**, and they are not all the same kind of thing:
+
+| # | Where | What | Kind |
+|---|---|---|---|
+| 1 | `postfx.metal:421` | Camera motion blur (**C4a**) | 🔨 **built, recoverable — bug** |
+| 2 | `renderer.mm:2959` | ORIGIN LOCK — COM refinement (**A3②**) | 🐛 **bug** |
+| 3 | `particles.metal:863` | **DENSITY PRESSURE** (**B10**, new) | ⏳ **unfinished TODO** |
+| 4 | `renderer.mm:3470` | Dust extinction pass | ✅ his verdict, parked |
+| 5 | `renderer.mm:3533` | Analytic arc trail ribbons | ✅ his verdict, correctly dead |
+| 6 | `particles.metal:2293` | Elastic shell restoring force | ✅ deliberate, documented |
+| 7 | `particles.metal:2856` | Direct envelope→radius coupling | ✅ deliberate, documented |
+
+**Verdict: 4 of the 7 are correct.** They are his own calls, each with the reason and a restore path
+written next to it — dust extinction (*"a low-res shadow thingy / yellow underbelly"*, 2026-07-23),
+the arc ribbons (*"fake trails centered to a tube shape"*, 2026-06-25), and the two cymatics blocks
+that were preventing particles from flowing through the sphere. **Do not "fix" any of these four.**
+The dust-extinction *concept* is explicitly retained for the BH overhaul once depth ordering exists.
+
+**Three were worth finding: one bug, one recoverable feature, one abandoned TODO.**
+
+### Also confirmed dead, and NOT on the board before
+
+- **`render.metal:589` is unreachable in every configuration.** It needs `cam.bhDiskAxisY > 0.5f`,
+  and `renderer.mm` assigns `bhDiskAxisY = 0.0f` at **every** assignment site (`:1551`, `:1589`,
+  `:1592`) plus the header default (`renderer.h:200`). Both the posed and emergent branches select
+  the z-axis block at `:539` instead. It still carries the **old absolute-angle form** that was
+  removed from its live twin. ⚠️ **If it is ever revived, port the integrated phase in FIRST** — as
+  written it reintroduces the counter-rotation drift.
+
+### ⚠️ A board row this sweep contradicts
+
+**B3 says the bit4 origin-pin blocks multi-BH. bit4 ships OFF.** `app_state.h:48`
+`uiTogOriginPin = false`, packed at `main.cpp:2135`, and the only things that can turn it on are the
+UI checkbox (`main.cpp:1260`) and the `SS_INERT_KEEP` diagnostic ladder (`main.cpp:270`). **In the
+default launch configuration that spring does not run**, so it cannot be what pins the hole to the
+origin in normal use — the ORIGIN LOCK at `renderer.mm:2959` is, and that one is unconditional.
+**B3's premise is re-opened, not confirmed.** See the row.
+
+### The pattern
+
+Two of the three findings were features that got **built → hit a bug → switched off → recorded as
+"not started"**. That is how C4 ended up ⬜ on this board. The lesson from the change log holds and
+now has a second and third data point: **a row without a `file:line` is a rumour.**
+
+---
+
 ## 🎯 TRIAGE — HIS CALL, 2026-08-07 12:24:09
 
 > *"A B C these are the most important for the show"*
@@ -258,6 +311,7 @@ is an `S`.
 
 | When | What |
 |---|---|
+| 2026-08-07 12:41:25 | **DISABLED-CODE SWEEP** — the thing he wanted done *before* the handoff. 17 hard-disabled blocks; 10 are removed ImGui panels, 7 are in the physics/render path. **4 of the 7 are his own correct verdicts with restore paths written next to them — do not touch.** 3 were worth finding: C4a (recoverable), A3② (bug), and **new row B10, DENSITY PRESSURE — an explicit "re-enable in a later step" TODO that was never done.** Also newly recorded: `render.metal:589` is unreachable in every configuration (`bhDiskAxisY` is `0.0f` at every assignment site). **And the sweep contradicted a board row: B3's bit4 origin-pin ships OFF, so it cannot be what pins the hole in normal use — premise re-opened.** |
 | 2026-08-07 12:31:07 | **He was right and the board was wrong: motion vectors WERE started.** I had marked C4 ⬜ with "08-02 doc" in the evidence column — hearsay by this file's own standard, and the one row I did not read the code for. Split into **C4a** (camera half: BUILT and running, consumer disabled behind the board's *second* `if (false)`, bug diagnosed to mismatched tonemaps at `postfx.metal:432`) — `S`, **pulled back into the Berlin cut** — and **C4b** (per-particle, genuinely not started, still `L`, still deferred). **Lesson: a row without a `file:line` is not a status, it is a rumour.** |
 | 2026-08-07 12:24:09 | **His triage: A, B, C are the show. D and E are post-Berlin.** Added the TRIAGE section. Because A+B+C is still ≈23 sessions vs 26 days, cut one level deeper: deferred B6/B7/B8 and C4/C11 (≈9 sessions, none of them visible on stage), leaving **≈13.5 sessions**. D6 flagged to him as a show-risk exception living in a deferred section — **parked, not dismissed.** |
 | 2026-08-07 12:18:44 | Added **WORKLOAD PER SECTION** at his request. Totals ≈32 sessions + 4 unknowns against 26 days — recorded explicitly that this board is a triage list, not a finish list. One estimate corrected on evidence: **C3 `M` → `L`**, because an item with 4 reverted attempts on the record is not a one-session item. |

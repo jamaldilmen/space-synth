@@ -66,7 +66,7 @@ no source newer, nothing rebuilt).
 
 **Method notes, for whoever repeats this:**
 - ⚠️ **Two instances cannot coexist.** A parallel attempt had its second instance die silently at
-  ~90 s with no crash message. Run serially. `logs/a1_watch.sh <seed> NEW` does one run with early
+  ~90 s with no crash message. Run serially. `tools/a1_watch.sh <seed> NEW` does one run with early
   exit and aborts as INVALID if the instance dies, so a starved run cannot masquerade as a negative.
 - ⚠️ **`dt` is per-frame, not wall-clock** (`renderer.mm:1339`), so anything that costs FPS costs sim
   progress. The logs carry `FPS:` — check it before trusting a null result.

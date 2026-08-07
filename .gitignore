@@ -14,3 +14,6 @@ third_party/syphon/
 
 # secrets — never commit
 .env
+
+# soak logs — durable across scratchpad wipes, not repo content
+logs/

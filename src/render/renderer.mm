@@ -3,6 +3,7 @@
 #include "core/units.h"
 #include "spacetime/spacetime.h"  // thermodynamics: kUFloorSim (SPH internal energy floor)
 #include "spectral_lut.h"          // spectral starmap: Planck band-flux bake (one colour law)
+#include "grade_lut.h"             // display grade LUT bake (derivation of every number lives there)
 #include "backends/imgui_impl_metal.h"
 #include "imgui.h"
 #include <Metal/Metal.h>
@@ -55,12 +56,23 @@ struct Renderer::Impl {
   // Ping-pong HDR pool for multi-pass effects (blur/echo/feedback)
   id<MTLRenderPipelineState> blurPipeline = nil;
   id<MTLTexture> pingTexture[2] = {nil, nil};
-  // HDR glow (bloom): bright-pass extraction → ping-pong blur → composite.
-  // Two dedicated half-res HDR buffers so the glow's own blur never collides
-  // with the user-facing blur slider's ping-pong pool.
+  // HDR glow (bloom): bright-pass extraction → MIP PYRAMID → composite.
+  // Dedicated buffers so the glow never collides with the user-facing blur
+  // slider's ping-pong pool. bloomMip[0] IS bloomTexture (half-res, the
+  // bright-pass target and the finished glow bound at texture(2)); levels 1..n
+  // halve from there. 8 slots covers any display down to the 8 px floor.
+  static constexpr int kBloomMaxLevels = 8;
   id<MTLRenderPipelineState> brightPipeline = nil;
+  id<MTLRenderPipelineState> bloomDownPipeline = nil; // 13-tap partial box
+  id<MTLRenderPipelineState> bloomUpPipeline = nil;   // 3x3 tent, additive
   id<MTLTexture> bloomTexture = nil;  // finished glow, bound at texture(2)
-  id<MTLTexture> bloomScratch = nil;  // ping-pong partner for the glow blur
+  id<MTLTexture> bloomMip[kBloomMaxLevels] = {nil, nil, nil, nil,
+                                              nil, nil, nil, nil};
+  int bloomLevels = 0;                // derived from resolution, not hardcoded
+  // Display grade LUT: 33^3 RGBA16F 3D texture, hardware trilinear = exactly
+  // the interpolation a .cube grade needs. Resolution-independent, so it is
+  // baked ONCE at init and never touched by resize().
+  id<MTLTexture> gradeLutTexture = nil;
 
   // Spatial hash pipelines
   id<MTLComputePipelineState> assignCellsPipeline = nil;
@@ -186,6 +198,15 @@ struct Renderer::Impl {
   float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
   float lastHorizonMass = 0.0f; // M(<r_h) [M_sun] — drives the emergent time-lapse disk GM
+  // HOW CLOSE THE FIELD IS TO BEING A HOLE, continuously: sup over the radial
+  // profile of r_s(M(<r))/r. This is the SAME geometric criterion the horizon
+  // search runs — the horizon is exactly where this crosses 1 — but kept as the
+  // raw ratio instead of thresholded to a bool, so approach is a ramp, not a
+  // step. The 2026-06-13 canon already specified strength = r_s(M_enc)/R_ENC;
+  // it was unusable only because it was pinned to the single fixed shell
+  // R_ENC=0.5 (needs 2.97e5 M_sun there). Measured where it is actually
+  // largest, the same formula is live and reachable. (2026-08-03)
+  float lastHorizonRatio = 0.0f;
   float bhDiskGMSmooth = 0.0f;  // eased posed-disk GM so rotation RAMPS in (no snap at hole-formation)
   float lastHorizonRSmooth = 0.0f; // eased r_h for RENDER keying only (shadow/lens/pose) — the probe steps every few seconds and the hole visibly JUMPED size (2026-07-19); physics keeps the raw value
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
@@ -288,6 +309,15 @@ struct Renderer::Impl {
   id<MTLBuffer> lumProbeBuf = nil;
   double lumProbeLastPrint = 0.0;
   int lumProbeFrames = 0;
+  // [KPROBE] (2026-07-28): 16-bin log-Kelvin histogram of the star path, three
+  // weightings (count / luminance / luminance×area). Written by particle_vertex
+  // buffer(9), cleared every frame, read back one frame late. Diagnostic only —
+  // answers whether the visible star population is selection-biased blue.
+  // Indexed by frameIdx: the semaphore guarantees the slot we are about to
+  // overwrite belongs to a frame the GPU has FINISHED, so reading it before the
+  // clear is race-free (no completion handler needed).
+  id<MTLBuffer> kProbeBuf[kMaxInFlightFrames] = {nil};
+  double kProbeLastPrint = 0.0;
 
   CAMetalLayer *metalLayer = nil;
   int particleCount = 0;
@@ -760,6 +790,48 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
           table[(int)(log(10.0/xMin)/log(xMax/xMin)*(N-1))], table[N-1]);
   }
 
+  // ── DISPLAY GRADE LUT (2026-08-03) ─────────────────────────────────────
+  // Same contract as the spectral LUT below: the math lives in a shared header
+  // (grade_lut.h) so the shipped bake and any offline verifier are the SAME
+  // code and cannot drift. RGBA16Float because the chain is HDR throughout and
+  // a half-float grade has no banding at 33 nodes.
+  {
+    using namespace space::grade;
+    const int N = kGradeLutN;
+    std::vector<float> lut((size_t)N * N * N * 4);
+    bakeGradeLut(lut.data(), N);
+
+    MTLTextureDescriptor *ld = [[MTLTextureDescriptor alloc] init];
+    ld.textureType = MTLTextureType3D;
+    ld.pixelFormat = MTLPixelFormatRGBA32Float; // bake is float32; no conversion step
+    ld.width = (NSUInteger)N;
+    ld.height = (NSUInteger)N;
+    ld.depth = (NSUInteger)N;
+    ld.usage = MTLTextureUsageShaderRead;
+    impl_->gradeLutTexture = [impl_->device newTextureWithDescriptor:ld];
+    [impl_->gradeLutTexture replaceRegion:MTLRegionMake3D(0, 0, 0, N, N, N)
+                             mipmapLevel:0
+                                   slice:0
+                               withBytes:lut.data()
+                             bytesPerRow:(NSUInteger)N * 4 * sizeof(float)
+                           bytesPerImage:(NSUInteger)N * N * 4 * sizeof(float)];
+
+    // Spot values, so the bake is verifiable from the log without a screenshot.
+    // Pure black must receive the FULL tint (weight 1: no luma, no chroma), and
+    // mid-grey must be untouched (above the toe), and a saturated red must be
+    // untouched at ANY brightness (chroma guard — this is the one that proves
+    // faint stars keep their colour).
+    float k[3], mg[3], dr[3];
+    gradeSample(0.0f, 0.0f, 0.0f, &k[0], &k[1], &k[2]);
+    gradeSample(0.5f, 0.5f, 0.5f, &mg[0], &mg[1], &mg[2]);
+    gradeSample(0.06f, 0.0f, 0.0f, &dr[0], &dr[1], &dr[2]);
+    NSLog(@"[GRADE-LUT] %d^3  black→(%.4f,%.4f,%.4f) expect (%.3f,0,%.3f) · "
+          @"mid-grey→(%.4f,%.4f,%.4f) expect identity · "
+          @"faint red→(%.4f,%.4f,%.4f) expect identity (chroma guard)",
+          N, k[0], k[1], k[2], kTintR * kLift, kTintB * kLift,
+          mg[0], mg[1], mg[2], dr[0], dr[1], dr[2]);
+  }
+
   // ── SPECTRAL STARMAP LUTs (increment 1, 2026-07-24) ────────────────────
   // DESIGN_2026-07-24_spectral_starmap.md §4.1. Same pattern as the lens LUT
   // above: double-precision CPU bake → shared buffer → NSLog spot values.
@@ -819,8 +891,14 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     // three-band signature that is WHY shocked gas reads teal-green (§3.1).
     double w1[3]; lineBands(bs, 1.0, w1);
     double w06[3]; lineBands(bs, 0.6, w06);
-    NSLog(@"[SPEC-LUT] lines g=1.00 B/G/R weight (%.0f,%.0f,%.0f) — expect (1,1,1); "
-          @"g=0.60 (%.0f,%.0f,%.0f) — expect (0,0,0), all three redshifted out",
+    // EXPECTATION UPDATED 2026-07-30: per-line Case B strengths replaced the
+    // equal 1.0 weights (spectral_lut.h). At g=1 the three lands are unchanged
+    // (Hα→R, [OIII]→G, Hβ→B) but the WEIGHTS are now Hβ=1.00, [OIII]=3.00,
+    // Hα=2.86 → B/G/R = (1.00, 3.00, 2.86). Membership behaviour at g=0.60 is
+    // untouched. Printed at 2dp so the ratios are actually checkable.
+    NSLog(@"[SPEC-LUT] lines g=1.00 B/G/R weight (%.2f,%.2f,%.2f) — expect "
+          @"(1.00,3.00,2.86) Case B; g=0.60 (%.2f,%.2f,%.2f) — expect "
+          @"(0,0,0), all three redshifted out",
           w1[0], w1[1], w1[2], w06[0], w06[1], w06[2]);
   }
 
@@ -903,6 +981,44 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
         [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (error)
       NSLog(@"Bright-pass pipeline error: %@", error);
+  }
+
+  // ── Bloom pyramid pipelines (downsample / upsample) ──────────────────
+  // The downsample writes (DontCare → Store). The upsample is ADDITIVE: each
+  // level is accumulated onto the level above, which is what makes the finished
+  // glow the sum of every scale instead of one radius.
+  id<MTLFunction> bloomDownFunc =
+      [impl_->library newFunctionWithName:@"bloom_down_fragment"];
+  if (postVertexFunc && bloomDownFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = postVertexFunc;       // reuse fullscreen triangle
+    desc.fragmentFunction = bloomDownFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+    impl_->bloomDownPipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Bloom downsample pipeline error: %@", error);
+  }
+  id<MTLFunction> bloomUpFunc =
+      [impl_->library newFunctionWithName:@"bloom_up_fragment"];
+  if (postVertexFunc && bloomUpFunc) {
+    MTLRenderPipelineDescriptor *desc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = postVertexFunc;       // reuse fullscreen triangle
+    desc.fragmentFunction = bloomUpFunc;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+    desc.colorAttachments[0].blendingEnabled = YES;
+    desc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+    impl_->bloomUpPipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (error)
+      NSLog(@"Bloom upsample pipeline error: %@", error);
   }
 
   // Geodesic BH pipeline DELETED (2026-06-28) — fullscreen disk shader, not particles.
@@ -1491,6 +1607,16 @@ void Renderer::render(const RenderConfig &config) {
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
   cam.tuneHeatK = config.heatGain;
+  // STAR LAW DIALS (2026-07-28) — identity defaults, see renderer.h.
+  cam.tuneStarLumExp = config.starLumExp;
+  cam.tuneStarLumGain = config.starLumGain;
+  cam.tuneStarLumCeil = config.starLumCeil;
+  cam.tuneStarKelvinA = config.starKelvinA;
+  cam.tuneStarKelvinP = config.starKelvinP;
+  cam.tuneStarSizeGain = config.starSizeGain;
+  cam.tuneStarSizeExp = config.starSizeExp;
+  cam.tuneStarSizeFloor = config.starSizeFloor;
+  cam.tuneStarSizeCeil = config.starSizeCeil;
   cam.bhToggles = config.bhToggles;
   impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
   impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
@@ -1729,6 +1855,16 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
   cam.tuneHeatK = config.heatGain;
+  // STAR LAW DIALS (2026-07-28) — identity defaults, see renderer.h.
+  cam.tuneStarLumExp = config.starLumExp;
+  cam.tuneStarLumGain = config.starLumGain;
+  cam.tuneStarLumCeil = config.starLumCeil;
+  cam.tuneStarKelvinA = config.starKelvinA;
+  cam.tuneStarKelvinP = config.starKelvinP;
+  cam.tuneStarSizeGain = config.starSizeGain;
+  cam.tuneStarSizeExp = config.starSizeExp;
+  cam.tuneStarSizeFloor = config.starSizeFloor;
+  cam.tuneStarSizeCeil = config.starSizeCeil;
   cam.bhToggles = config.bhToggles;
   impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
   impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
@@ -2455,6 +2591,68 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                 fp[ix(c + 32, c, c)], cp[ix(c, c, c)], cp[ix(c + 1, c, c)], lastMFineEnc);
       }
 
+      // ── [GRIDPROBE] — READ-ONLY. Is the Chladni pattern resolved by the
+      // hash grid, and are the voids Jamal sees cell-shaped?
+      // (2026-07-29, his pick. Measures; changes nothing.)
+      // cellCounts is StorageModeShared and was filled by THIS frame's hash
+      // dispatch; we read it on the next probe tick, so no fence is needed
+      // (same access pattern as [AMR] above).
+      // Cavity is EIGEN_R=3 / EIGEN_L=6 about the origin. Scan ±6 sim so we
+      // see the pattern AND its surroundings.
+      if (cellCountsBuffer && physicsUniforms.envelopePhase > 2.5f &&
+          (physicsUniforms.frameCounter % 120u) == 7u) {
+        const uint32_t *cc = (const uint32_t *)cellCountsBuffer.contents;
+        const int N = Impl::kGridSize;
+        const float cs = 2.0f * lastHashExtent / (float)N;   // sim per cell
+        const int   c  = N / 2;                              // world origin cell
+        const int   rad = (int)std::ceil(6.0f / cs);         // ±6 sim in cells
+        auto ix = [&](int i, int j, int k) { return (k * N + j) * N + i; };
+
+        double sum = 0.0, sum2 = 0.0;
+        uint32_t mn = 0xFFFFFFFFu, mx = 0;
+        long occupied = 0, scanned = 0;
+        int lo[3] = {N, N, N}, hi[3] = {-1, -1, -1};
+        for (int k = c - rad; k <= c + rad; ++k)
+          for (int j = c - rad; j <= c + rad; ++j)
+            for (int i = c - rad; i <= c + rad; ++i) {
+              if (i < 0 || j < 0 || k < 0 || i >= N || j >= N || k >= N) continue;
+              uint32_t v = cc[ix(i, j, k)];
+              ++scanned; sum += v; sum2 += (double)v * v;
+              if (v < mn) mn = v;
+              if (v > mx) mx = v;
+              if (v > 0) {
+                ++occupied;
+                int p[3] = {i, j, k};
+                for (int a = 0; a < 3; ++a) {
+                  if (p[a] < lo[a]) lo[a] = p[a];
+                  if (p[a] > hi[a]) hi[a] = p[a];
+                }
+              }
+            }
+        double mean = scanned ? sum / (double)scanned : 0.0;
+        double var  = scanned ? (sum2 / (double)scanned) - mean * mean : 0.0;
+        double cv   = (mean > 0.0) ? std::sqrt(std::max(var, 0.0)) / mean : 0.0;
+        // "void" = a cell inside the occupied bounding box holding <10% of mean
+        long voids = 0, inBox = 0;
+        if (hi[0] >= lo[0])
+          for (int k = lo[2]; k <= hi[2]; ++k)
+            for (int j = lo[1]; j <= hi[1]; ++j)
+              for (int i = lo[0]; i <= hi[0]; ++i) {
+                ++inBox;
+                if (cc[ix(i, j, k)] < (uint32_t)(0.1 * mean)) ++voids;
+              }
+        fprintf(stderr,
+                "[GRIDPROBE] cellSize=%.4f sim | pattern spans %dx%dx%d CELLS "
+                "(%.1fx%.1fx%.1f sim) | occupied=%ld/%ld | count mean=%.0f min=%u "
+                "max=%u CV=%.2f | sub-10%% cells inside box=%ld/%ld (%.1f%%) | "
+                "total=%.0f\n",
+                cs, hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1,
+                (hi[0] - lo[0] + 1) * cs, (hi[1] - lo[1] + 1) * cs,
+                (hi[2] - lo[2] + 1) * cs, occupied, scanned, mean, mn, mx, cv,
+                voids, inBox, inBox ? 100.0 * (double)voids / (double)inBox : 0.0,
+                sum);
+      }
+
 
       // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
       if (reduceCellMaxPipeline && cellMaxPartialsBuffer && !skipCellMax) {
@@ -2585,8 +2783,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     // ── Seed apply: credit each black hole its meals (after physics) ──
-    if (seedApplyPipeline && seedAccumBuffer &&
-        physicsUniforms.totalAmplitude < 0.02f) {  // no meal-crediting while playing
+    // GATE MOVED INTO THE SHADER (2026-08-04 22:46:41). This condition used to
+    // carry `physicsUniforms.totalAmplitude < 0.02f`, which skipped the whole
+    // dispatch while playing. Sustain rebirth now WITHDRAWS mass from the hole
+    // and seed_apply is what applies that withdrawal — and it only ever happens
+    // while playing, so the kernel must run then. seed_apply re-tests the same
+    // amplitude condition internally before crediting meals, so meal-crediting
+    // behaviour is unchanged.
+    if (seedApplyPipeline && seedAccumBuffer) {
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:seedApplyPipeline];
       [comp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -2635,7 +2839,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           float ke, mx, my, sumMass;
           float sumTemp, maxTemp, sumSpeed, maxSpeed;
           float sumPx, sumPy, sumPz, sumCount;
-          float sumR, maxR, maxMass, pad3;
+          // sumSeedMass was pad3 (2026-08-03) — MUST stay in lockstep with
+          // PartialStats in particles.metal or every field after it misreads.
+          float sumR, maxR, maxMass, sumSeedMass;
           float sumEncX, sumEncY, sumEncZ, sumEncMass;
         };
         const PartialStats *sums =
@@ -2648,6 +2854,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         double totalPX = 0, totalPY = 0, totalPZ = 0, totalCT = 0;
         double totalSM = 0;
         float gMaxMass = 0;
+        double totalSeedM = 0;   // Σ mass in seed-class bodies (m ≥ M_BH_SEED)
         double totalSR = 0;
         float gMaxR = -1e9f;
         double totalEX = 0, totalEY = 0, totalEZ = 0, totalEC = 0;
@@ -2671,6 +2878,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           totalSR += sums[i].sumR;
           if (sums[i].maxR > gMaxR) gMaxR = sums[i].maxR;
           if (sums[i].maxMass > gMaxMass) gMaxMass = sums[i].maxMass;
+          totalSeedM += sums[i].sumSeedMass;
           totalEX += sums[i].sumEncX;
           totalEY += sums[i].sumEncY;
           totalEZ += sums[i].sumEncZ;
@@ -2689,14 +2897,18 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           const uint32_t *radial = (const uint32_t *)radialMassStableBuffer.contents;
           const double dr = 5.0 / 256.0;           // RADIAL_MAX_R / RADIAL_SHELLS
           const double kRsSimPerMsun = 1.6825e-6;  // units.h
-          double cum = 0.0, r_h = 0.0, mEncRh = 0.0;
+          double cum = 0.0, r_h = 0.0, mEncRh = 0.0, maxRatio = 0.0;
           for (int s = 0; s < 256; s++) {
             cum += radial[s] / 256.0;              // un-scale fixed-point → M_sun
             double r = (s + 1) * dr;
-            if (kRsSimPerMsun * cum >= r) { r_h = r; mEncRh = cum; } // horizon here
+            // The criterion itself, as a number: r_s(M(<r))/r. >= 1 IS a horizon.
+            double ratio = kRsSimPerMsun * cum / r;
+            if (ratio > maxRatio) maxRatio = ratio;
+            if (ratio >= 1.0) { r_h = r; mEncRh = cum; } // horizon here
           }
           lastHorizonR = (float)r_h;   // → uniform next frame: pressure yields inside r_h
           lastHorizonMass = (float)mEncRh; // → emergent time-lapse disk GM
+          lastHorizonRatio = (float)maxRatio; // continuous approach signal → formation ramp
           if ((physicsUniforms.frameCounter % 120u) == 0u) {
             fprintf(stderr,
                     "[HORIZON] r_h=%.4f sim  M(<r_h)=%.3e Msun  (honest geometric, observe-only)\n",
@@ -2787,7 +2999,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // proxy = enclosed mass / total). The literal Schwarzschild criterion at
         // R_ENC=0.5 is unreachable at our field mass, so concentration is the
         // honest trigger for the at-once collapse. Latched below → forms and stays.
-        float encFrac = bhMassEnc / std::max(physicsUniforms.massTotal, 1.0f);
+        // DENOMINATOR FIX (2026-08-03): was physicsUniforms.massTotal — the SAME
+        // wrong denominator caught on 2026-07-18 02:38:40 for fieldMassMsun, left
+        // behind here. massTotal is sMassTotal × the Size-slider massScale, a
+        // scaled GRAVITY anchor; bhMassEnc is a sum of real posW.w masses. Mixing
+        // them made this ratio read Size-dependent nonsense: measured live at
+        // Size=0.80, massScale=0.318 → Menc 105096 / 189044 = 56% "gathered" when
+        // the honest figure against Σ posW.w (594276) is 17.7%, a 3.14× inflation
+        // that fed straight into densTarget and the on-screen hole %. totalSM is
+        // the live Σ the same reduce already computed — one mass definition.
+        float encFrac = bhMassEnc / std::max((float)totalSM, 1.0f);
         float dt01 = (encFrac - 0.40f) / 0.30f;          // ramp 40%→70% gathered
         dt01 = dt01 < 0.0f ? 0.0f : (dt01 > 1.0f ? 1.0f : dt01);
         float densTarget = dt01 * dt01 * (3.0f - 2.0f * dt01); // smoothstep
@@ -2796,7 +3017,16 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // approximate is now reachable and firing (first: r_h=0.82,
         // 2026-07-15 14:27:08). It drives the formed-latch (secondary
         // lensed image, raytracer gates) directly.
-        float honestTarget = (lastHorizonR > 0.0f) ? 1.0f : 0.0f;
+        // THE TRANSITION STEP (2026-08-03): this was `(lastHorizonR > 0) ? 1 : 0`
+        // — a BOOLEAN. The frame the innermost shell crossed the criterion, the
+        // target went 0 → 1 and the latch pinned bhStrength to 1, so everything
+        // keyed to it switched on at once: the lens ramp (smoothstep 0.2→0.9),
+        // the raytracer gate (>0.5) and the doubled particle instancing (>0.5).
+        // That one-frame snap is the "jumps to a weird stage" — the sim wasn't
+        // entering a wrong state, it was entering the RIGHT state instantly.
+        // The criterion is a continuous quantity; only the thresholding made it
+        // binary. Feed the ratio itself, so formation ARRIVES instead of firing.
+        float honestTarget = std::min(lastHorizonRatio, 1.0f);
         float target = std::max({seedTarget, densTarget, honestTarget});
         (void)collapseFrac;                      // UI dial now unused by formation
         // SMOOTH + LATCH: the raw enclosure signal wobbles with disk slosh
@@ -2805,14 +3035,34 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // black hole — mass inside doesn't leave. The latch clears only on
         // true dissolution (field reset: Menc < 1% of total).
         bhStrengthEma += (target - bhStrengthEma) * 0.04f;
-        if (target >= 1.0f) bhFormedLatch = true;
-        // Once a hole, ALWAYS a hole (agreed): the enclosure dips whenever
-        // the seed wanders >0.5 off origin or a chord yanks the disk — that
-        // must NOT un-form it ('exists then ceases to exist'). The latch
-        // clears only when the biggest BODY is gone too, i.e. a true field
-        // reset — no merger product survives a respawn.
-        if (bhMassEnc < 0.01f * physicsUniforms.massTotal && gMaxMass < 50.0f)
-          bhFormedLatch = false;
+        // ── FORMED == THE HONEST HORIZON EXISTS (2026-08-03) ─────────────────
+        // Was: set on `target >= 1` (the max of the seed-mass and density-
+        // concentration PROXIES) and cleared on
+        // `bhMassEnc < 1% of total && gMaxMass < 50`. Both halves of that clear
+        // are unreachable by construction, so the latch could only ever be set:
+        //   - gMaxMass is MONOTONE (mass is conserved into the seed and the
+        //     seed only ever eats), so once a merger product passes 50 M_sun it
+        //     never drops below it again while that body exists;
+        //   - bhMassEnc is the mass within R_ENC=0.5 of the ORIGIN, which is a
+        //     few percent for ANY centrally-concentrated cluster — even a
+        //     perfect respawn lands around 2%, never under 1%.
+        // Result: "BH FORMED" survived the hole being destroyed, and with it
+        // bhStrength pinned at 1 (lens, secondary image, raytracer, and the
+        // doubled particle instancing at renderer.mm:3355 all stayed on).
+        // The proxies were invented in 2026-06 BECAUSE the literal geometric
+        // criterion was unreachable at our field mass. It has been reachable
+        // and firing since 2026-07-15 (first r_h=0.82), so the proxy is no
+        // longer needed to declare formation — and, being unlatched from any
+        // physical horizon, it was the thing declaring a hole that isn't there.
+        // A black hole exists exactly while its horizon does. r_h is recomputed
+        // every frame from the radial mass profile (via the flicker-free stable
+        // mirror), so this is reversible without being twitchy: destroy the
+        // mass concentration and r_h goes to 0 and the hole un-forms; leave the
+        // seed alive and r_h stays > 0 and it correctly STAYS formed — a
+        // scattered disk around a surviving 5e5 M_sun body is still a hole.
+        // The proxies keep driving the sub-1 EMA ramp; they no longer latch.
+        if (honestTarget >= 1.0f) bhFormedLatch = true;
+        if (lastHorizonR <= 0.0f)  bhFormedLatch = false;
         bhStrength = bhFormedLatch ? std::max(bhStrengthEma, 1.0f)
                                    : bhStrengthEma;
         // POSE OVERRIDE: a posed BH is declared formed of bhPoseMass — the posed
@@ -2826,9 +3076,47 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         }
         if ((physicsUniforms.frameCounter % 120u) == 0u) {
           fprintf(stderr,
-                  "[BH-POP] encFrac=%.2f densTarget=%.2f seedTarget=%.3f -> bhStrength=%.2f%s\n",
-                  encFrac, densTarget, seedTarget, bhStrength,
+                  "[BH-POP] rs/r=%.3f encFrac=%.2f densTarget=%.2f seedTarget=%.3f -> bhStrength=%.2f%s\n",
+                  lastHorizonRatio, encFrac, densTarget, seedTarget, bhStrength,
                   bhFormedLatch ? " LATCH" : "");
+          // ── REBIRTH WITHDRAWAL (2026-08-04 22:46:41) ───────────────────────
+          // seedAccum slot-0 word [6] is the global per-frame withdrawal ledger
+          // (mass ×64), cleared every frame like the rest of the buffer, so this
+          // is a PER-FRAME rate, not a running total (1-frame readback lag, same
+          // as the meal figures above). `hole` is gMaxMass: watch it FALL under
+          // a held note — that is the whole point of the change, and it is the
+          // first time this quantity has ever been non-monotone.
+          if (seedAccumBuffer) {
+            const uint32_t *a = (const uint32_t *)seedAccumBuffer.contents;
+            float wdraw = (float)a[6] / 64.0f;
+            if (wdraw > 0.0f)
+              fprintf(stderr,
+                      "[REBIRTH] withdraw=%.1f Msun/frame  hole=%.1f  seedTarget=%.3f%s\n",
+                      wdraw, gMaxMass, seedTarget,
+                      (wdraw > gMaxMass) ? "  SHORTFALL(minted)" : "");
+          }
+          // ── FAKE-PULL GATE MEASUREMENT (2026-08-03, step 1 of 2) ───────────
+          // Jamal: the origin spring "must only exist once multiple bodies of a
+          // lot of mass have already formed and a lot of all particles is about
+          // to collapse". Measure BOTH terms of that sentence over a natural
+          // collapse FIRST; the thresholds get derived from this curve, not
+          // picked. share = fraction of live mass already organised into
+          // seed-class bodies; biggest = how much of that is one body (share
+          // high with nSeed 1 means ONE lump, not "multiple bodies").
+          // nReg/nProbe: the registry counter is read at [4] by the `seeds=`
+          // field above while its alloc comment calls [0] the count — printing
+          // both, because the gate must key off whichever is truly the count.
+          {
+            const uint32_t *sc =
+                seedCountBuffer ? (const uint32_t *)seedCountBuffer.contents : nullptr;
+            double share = (totalSM > 1.0) ? (totalSeedM / totalSM) : 0.0;
+            fprintf(stderr,
+                    "[PULLGATE] nReg=%u nProbe=%u seedM=%.0f share=%.4f "
+                    "biggest=%.0f bigShare=%.4f Mlive=%.0f\n",
+                    sc ? sc[0] : 0u, sc ? sc[4] : 0u,
+                    totalSeedM, share, gMaxMass,
+                    (totalSM > 1.0) ? (gMaxMass / totalSM) : 0.0, totalSM);
+          }
         }
 
         // TEMP validation log (Step-1 bring-up): liveCount MUST read the full
@@ -3070,6 +3358,62 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   offscreenPass.depthAttachment.storeAction = MTLStoreActionDontCare;
   offscreenPass.depthAttachment.clearDepth = 1.0;
 
+  // [KPROBE] (2026-07-28): allocate once, zero every frame BEFORE the particle
+  // pass writes into it, so the readback below is exactly one frame's histogram
+  // and not an unbounded accumulation. 64 uints = 256 B (52 used).
+  if (!kProbeBuf[frameIdx])
+    kProbeBuf[frameIdx] = [device newBufferWithLength:128 * sizeof(uint32_t)
+                                             options:MTLResourceStorageModeShared];
+  {
+    // READ FIRST (this slot's last completed frame), THEN clear for this frame.
+    const uint32_t *kp = (const uint32_t *)kProbeBuf[frameIdx].contents;
+    double nowK = CACurrentMediaTime();
+    if (kProbeLastPrint == 0.0) kProbeLastPrint = nowK;
+    if (nowK - kProbeLastPrint >= 1.0 && kp[48] > 0) {
+      kProbeLastPrint = nowK;
+      double cSum = 0, lSum = 0, aSum = 0;
+      for (int b = 0; b < 16; b++) {
+        cSum += kp[b]; lSum += kp[16 + b]; aSum += kp[32 + b];
+      }
+      // Bin b covers [1000·40^(b/16), 1000·40^((b+1)/16)) K.
+      printf("[KPROBE] sampled=%u culled=%u  (bin: Kmin  count%%  lum%%  area%%)\n",
+             kp[48], kp[49]);
+      for (int b = 0; b < 16; b++) {
+        if (!kp[b] && !kp[16 + b] && !kp[32 + b]) continue;
+        double kmin = 1000.0 * pow(40.0, b / 16.0);
+        printf("[KPROBE]  %2d %7.0fK  %5.1f%%  %5.1f%%  %5.1f%%\n", b, kmin,
+               cSum > 0 ? 100.0 * kp[b] / cSum : 0.0,
+               lSum > 0 ? 100.0 * kp[16 + b] / lSum : 0.0,
+               aSum > 0 ? 100.0 * kp[32 + b] / aSum : 0.0);
+      }
+      // ── SCALE (2026-07-28): the never-measured number. out.pointSize is in
+      // PIXELS, so szSum/drawn is literally the average star's on-screen
+      // diameter at his real zoom.
+      double szN = 0, mN = 0;
+      for (int b = 0; b < 16; b++) { szN += kp[50 + b]; mN += kp[66 + b]; }
+      printf("[KPROBE-SCALE] drawn=%.0f  meanPx=%.2f  maxPx=%.2f\n", szN,
+             szN > 0 ? (kp[83] / 100.0) / szN : 0.0, kp[82] / 100.0);
+      printf("[KPROBE-SCALE] size px:");
+      for (int b = 0; b < 16; b++) {
+        if (!kp[50 + b]) continue;
+        printf("  %.2f:%.1f%%", pow(2.0, -2.0 + b * 10.0 / 16.0),
+               100.0 * kp[50 + b] / (szN > 0 ? szN : 1));
+      }
+      printf("\n[KPROBE-SCALE] mass Msun:");
+      for (int b = 0; b < 16; b++) {
+        if (!kp[66 + b]) continue;
+        printf("  %.3g:%.1f%%", pow(10.0, -2.0 + b * 5.0 / 16.0),
+               100.0 * kp[66 + b] / (mN > 0 ? mN : 1));
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+    id<MTLBlitCommandEncoder> zk = [cmdBuf blitCommandEncoder];
+    [zk fillBuffer:kProbeBuf[frameIdx]
+             range:NSMakeRange(0, 128 * sizeof(uint32_t)) value:0];
+    [zk endEncoding];
+  }
+
   id<MTLRenderCommandEncoder> enc =
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
@@ -3098,6 +3442,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   [enc setVertexBuffer:spectralLinesLUT offset:0 atIndex:7];
   // Integrated playback phase (pose_phase_advance, dispatched above this pass).
   [enc setVertexBuffer:posePhaseBuffer offset:0 atIndex:8];
+  // [KPROBE] Kelvin histogram target — write-only from the vertex shader.
+  [enc setVertexBuffer:kProbeBuf[frameIdx] offset:0 atIndex:9];
   // instanceCount — instance 0 = primary image, instance 1 = the SECONDARY
   // lensed image (the Gargantua fold-over). The secondary only EXISTS when a
   // hole is lensing; with no hole it was culled in-shader to pointSize 0 — but
@@ -3354,16 +3700,19 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     postSource = src;
   }
 
-  // ── HDR glow: bright-pass → wide ping-pong blur (half-res) ─────────
-  // Modern bloom split: extract HDR energy above a soft knee into a half-res
-  // buffer, then blur it wide and cheap. The finished glow lands in
-  // bloomTexture, which the final post pass adds back additively. Decoupled
-  // from the user blur slider via its own two buffers. Bypassed at intensity 0.
-  if (brightPipeline && blurPipeline && config.bloomIntensity > 0.001f &&
-      bloomTexture && bloomScratch) {
-    int bw = width / 2 > 0 ? width / 2 : 1;
-    int bh = height / 2 > 0 ? height / 2 : 1;
-
+  // ── HDR glow: bright-pass → MIP PYRAMID → composite ────────────────
+  // Extract HDR energy above a soft knee into a half-res buffer, then build a
+  // pyramid from it: halve down to the 8 px floor, then progressively upsample
+  // and ACCUMULATE back up. The finished glow lands in bloomMip[0], which the
+  // final post pass adds back additively. Bypassed at intensity 0.
+  //
+  // Replaced 2026-08-02: the old chain was 3 iterations of a 9-tap Gaussian at
+  // radius 2.5 on ONE half-res buffer. Blurring at a single resolution can only
+  // produce a single glow radius, which is why it read as cheap. The pyramid is
+  // scale-invariant AND cheaper: 6 half-res passes before, now one pass per
+  // level over a geometric series that sums to ~1.33x a single half-res pass.
+  if (brightPipeline && bloomDownPipeline && bloomUpPipeline &&
+      config.bloomIntensity > 0.001f && bloomLevels > 0 && bloomMip[0]) {
     // 1) Bright-pass: extract from the scene about to be shown → bloomTexture
     struct BrightU {
       float threshold;
@@ -3391,37 +3740,69 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [bre endEncoding];
     }
 
-    // 2) Wide separable blur, ping-ponging bloomTexture ↔ bloomScratch.
-    // Each iteration is H then V, so the result lands back in bloomTexture.
-    struct BlurU {
-      float dir[2];
-      float radius;
-      float pad;
+    // 2) DOWNSAMPLE chain: mip[k-1] → mip[k], 13-tap partial box.
+    // The kernel's offsets are in SOURCE texels, so the same kernel is correct
+    // at every level — that self-similarity is what makes the glow
+    // scale-invariant rather than one blur radius applied harder.
+    struct BloomDownU {
+      float srcTexel[2];
+      float pad[2];
     };
-    int iterations = 3;          // wide, soft halo
-    float radius = 2.5f;         // half-res texels → covers a lot of screen
-    for (int it = 0; it < iterations; it++) {
-      for (int axis = 0; axis < 2; axis++) {
-        id<MTLTexture> src = (axis == 0) ? bloomTexture : bloomScratch;
-        id<MTLTexture> dst = (axis == 0) ? bloomScratch : bloomTexture;
-        BlurU bu;
-        bu.dir[0] = (axis == 0) ? (1.0f / (float)bw) : 0.0f;
-        bu.dir[1] = (axis == 1) ? (1.0f / (float)bh) : 0.0f;
-        bu.radius = radius;
-        bu.pad = 0.0f;
-        MTLRenderPassDescriptor *bp =
-            [MTLRenderPassDescriptor renderPassDescriptor];
-        bp.colorAttachments[0].texture = dst;
-        bp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-        bp.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> be =
-            [cmdBuf renderCommandEncoderWithDescriptor:bp];
-        [be setRenderPipelineState:blurPipeline];
-        [be setFragmentTexture:src atIndex:0];
-        [be setFragmentBytes:&bu length:sizeof(bu) atIndex:0];
-        [be drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-        [be endEncoding];
-      }
+    for (int k = 1; k < bloomLevels; k++) {
+      id<MTLTexture> src = bloomMip[k - 1];
+      id<MTLTexture> dst = bloomMip[k];
+      if (!src || !dst)
+        break;
+      BloomDownU du;
+      du.srcTexel[0] = 1.0f / (float)src.width;
+      du.srcTexel[1] = 1.0f / (float)src.height;
+      du.pad[0] = 0.0f;
+      du.pad[1] = 0.0f;
+      MTLRenderPassDescriptor *dp =
+          [MTLRenderPassDescriptor renderPassDescriptor];
+      dp.colorAttachments[0].texture = dst;
+      dp.colorAttachments[0].loadAction = MTLLoadActionDontCare; // full write
+      dp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> de =
+          [cmdBuf renderCommandEncoderWithDescriptor:dp];
+      [de setRenderPipelineState:bloomDownPipeline];
+      [de setFragmentTexture:src atIndex:0];
+      [de setFragmentBytes:&du length:sizeof(du) atIndex:0];
+      [de drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [de endEncoding];
+    }
+
+    // 3) UPSAMPLE chain: mip[k] → mip[k-1], 3x3 tent, ADDITIVELY blended.
+    // loadAction MUST be Load here — the destination already holds its own
+    // downsampled content, and the sum of the levels IS the finished glow.
+    // filterRadius = one SOURCE texel: the tent then spans exactly the
+    // destination neighbourhood that source texel covers, so levels tile.
+    struct BloomUpU {
+      float filterRadius[2];
+      float pad[2];
+    };
+    for (int k = bloomLevels - 1; k >= 1; k--) {
+      id<MTLTexture> src = bloomMip[k];
+      id<MTLTexture> dst = bloomMip[k - 1];
+      if (!src || !dst)
+        continue;
+      BloomUpU uu;
+      uu.filterRadius[0] = 1.0f / (float)src.width;
+      uu.filterRadius[1] = 1.0f / (float)src.height;
+      uu.pad[0] = 0.0f;
+      uu.pad[1] = 0.0f;
+      MTLRenderPassDescriptor *up =
+          [MTLRenderPassDescriptor renderPassDescriptor];
+      up.colorAttachments[0].texture = dst;
+      up.colorAttachments[0].loadAction = MTLLoadActionLoad; // accumulate
+      up.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> ue =
+          [cmdBuf renderCommandEncoderWithDescriptor:up];
+      [ue setRenderPipelineState:bloomUpPipeline];
+      [ue setFragmentTexture:src atIndex:0];
+      [ue setFragmentBytes:&uu length:sizeof(uu) atIndex:0];
+      [ue drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [ue endEncoding];
     }
   }
 
@@ -3459,6 +3840,10 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.exposure = config.exposure; // global iris — scales the HDR scene pre-tonemap
   post.debugBypass = config.debugBypassPostFX ? 1.0f
                      : (config.debugNoBleach ? 2.0f : 0.0f); // mode: B bypass / N no-bleach
+  post.gradeAmount = config.gradeAmount; // display grade LUT blend (0 = exact bypass)
+  post.gradePad0 = 0.0f;
+  post.gradePad1 = 0.0f;
+  post.gradePad2 = 0.0f;
   // EDR headroom: how far above SDR white this display can currently go
   // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
   // Drives how hard the HDR glow punches past white. Queried live because it
@@ -3496,6 +3881,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [postEnc setFragmentTexture:prevFrameTexture atIndex:1];
     [postEnc setFragmentTexture:bloomTexture atIndex:2]; // HDR glow
     [postEnc setFragmentTexture:offscreenTexture atIndex:3]; // auto-exposure avg (top mip)
+    [postEnc setFragmentTexture:gradeLutTexture atIndex:4];  // display grade LUT (33^3)
     [postEnc setFragmentBuffer:postUniformBuffer[frameIdx] offset:0 atIndex:0];
     [postEnc drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0
@@ -3530,6 +3916,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [syEnc setFragmentTexture:postSource atIndex:0];
     [syEnc setFragmentTexture:prevFrameTexture atIndex:1];
     [syEnc setFragmentTexture:bloomTexture atIndex:2];
+    [syEnc setFragmentTexture:gradeLutTexture atIndex:4]; // same grade on the feed as on screen
     [syEnc setFragmentBuffer:postUniformSyphonBuffer[frameIdx] offset:0 atIndex:0];
     [syEnc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [syEnc endEncoding];
@@ -3637,16 +4024,39 @@ void Renderer::resize(int width, int height) {
   // Ping-pong HDR pool (two reused buffers for multi-pass effects)
   impl_->pingTexture[0] = [impl_->device newTextureWithDescriptor:hdrDesc];
   impl_->pingTexture[1] = [impl_->device newTextureWithDescriptor:hdrDesc];
-  // HDR glow buffers at half-res — bloom is low-frequency, so half-res is
-  // invisible and the blur taps cover twice the screen distance for free.
-  MTLTextureDescriptor *bloomDesc = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
-                                   width:(NSUInteger)(width / 2 > 0 ? width / 2 : 1)
-                                  height:(NSUInteger)(height / 2 > 0 ? height / 2 : 1)
-                               mipmapped:NO];
-  bloomDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-  impl_->bloomTexture = [impl_->device newTextureWithDescriptor:bloomDesc];
-  impl_->bloomScratch = [impl_->device newTextureWithDescriptor:bloomDesc];
+  // HDR glow: a MIP PYRAMID, not one buffer. Level 0 is half-res (bloom is
+  // low-frequency, so half-res is invisible and every tap covers twice the
+  // screen distance for free); each level halves again.
+  //
+  // The LEVEL COUNT IS DERIVED FROM THE RESOLUTION, never hardcoded: keep
+  // halving while the smaller dimension stays >= 8 px. Below 8 px the 13-tap
+  // downsample kernel (±2 texels) is mostly clamped against the edges, so the
+  // level stops carrying real information — that 8 is the kernel's own reach,
+  // not a taste choice. At 2560x1440 this yields 7 levels, the widest spanning
+  // the full frame; the pyramid therefore covers every scale the display has.
+  {
+    int bw = width / 2 > 0 ? width / 2 : 1;
+    int bh = height / 2 > 0 ? height / 2 : 1;
+    impl_->bloomLevels = 0;
+    for (int k = 0; k < Impl::kBloomMaxLevels; k++) {
+      int lw = bw >> k;
+      int lh = bh >> k;
+      if (k > 0 && (lw < 8 || lh < 8))
+        break;
+      MTLTextureDescriptor *bloomDesc = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                       width:(NSUInteger)(lw > 0 ? lw : 1)
+                                      height:(NSUInteger)(lh > 0 ? lh : 1)
+                                   mipmapped:NO];
+      bloomDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      impl_->bloomMip[k] = [impl_->device newTextureWithDescriptor:bloomDesc];
+      impl_->bloomLevels = k + 1;
+    }
+    // Level 0 stays the texture bound at texture(2) by the composite passes.
+    impl_->bloomTexture = impl_->bloomMip[0];
+    NSLog(@"[BLOOM-PYRAMID] %d levels from %dx%d (floor 8px)",
+          impl_->bloomLevels, bw, bh);
+  }
 
   // Feedback texture must match the EDR drawable (RGBA16Float) — it's a
   // blit-copy of the drawable each frame, so trails keep their HDR highlights.

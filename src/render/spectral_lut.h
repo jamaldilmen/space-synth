@@ -101,15 +101,52 @@ inline double linesGAt(int i) {
                           (double)(kLinesN - 1);
 }
 
-// Per-band line weight at shift g. out[0]=B,1=G,2=R; each line contributes 1
-// to whichever band it lands in, 0 if it has left the set.
+// ── PER-LINE STRENGTHS — 2026-07-30 02:3x ───────────────────────────────────
+// Was `out[b] += 1.0` for every line: all three weighted EQUALLY. At g=1 the
+// three lines land one per band (Hα→R, [OIII]→G, Hβ→B), so an equal-weight
+// line component is spectrally FLAT — it adds grey. Added over the continuum it
+// DESATURATES rather than colours, and the more ionised the gas the greyer it
+// got. That is the "everything goes purple" Jamal reported, and the defect was
+// already measured and written down as a known limitation when bit16 landed
+// (commit 0f6a091, 2026-07-24) rather than fixed.
+//
+// Real ratios, Case B recombination, T_e = 10⁴ K, n_e = 100 cm⁻³
+// (Osterbrock & Ferland, *Astrophysics of Gaseous Nebulae and AGN*, 2nd ed.,
+// the standard Case B table). Normalised to Hβ = 1:
+//   Hα  6563 Å : 2.86   ← the Balmer decrement. Fixed atomic physics.
+//   Hβ  4861 Å : 1.00   ← reference
+//   [OIII] 5007 Å : 3.0 ← see caveat
+//
+// ⚠ [OIII]/Hβ IS NOT A CONSTANT. It is an ionisation diagnostic and physically
+// ranges ~1–5 in HII regions (Orion ≈ 3–4) and higher in planetary nebulae.
+// 3.0 is a representative HII value, and it is the ONE number here that should
+// become a function of the ionisation the caller already computes
+// (`lineStrength`/`exc`). That needs a signature change to lineBands, which
+// this header shares with the offline verifier, so it is deliberately left as a
+// stated constant rather than smuggled in. THIS IS THE DIAL for a
+// "too green"/"not green enough" verdict.
+//
+// Because Hα dominates at 2.86 and lands in R, ionised gas now reads WARM
+// (red/orange) with an [OIII] green lift — which is what emission nebulae
+// actually look like — instead of neutral grey over the continuum.
+//
+// ⚠ REGENERATE `docs/spectral_bands_reference.txt`: the [SPEC-LUT] probe
+// compares the baked table against it, and the LINE rows will now differ by
+// design. The continuum rows are untouched.
+inline constexpr double kLineWHalpha = 2.86; // Case B, Hα/Hβ
+inline constexpr double kLineWOIII   = 3.00; // representative HII; the dial
+inline constexpr double kLineWHbeta  = 1.00; // reference
+
+// Per-band line weight at shift g. out[0]=B,1=G,2=R; each line contributes its
+// Case B strength to whichever band it lands in, 0 if it has left the set.
 inline void lineBands(const BandSet &bs, double g, double out[3]) {
   out[0] = out[1] = out[2] = 0.0;
-  const double lines[3] = {kLineHalpha, kLineOIII, kLineHbeta};
+  const double lines[3]   = {kLineHalpha,  kLineOIII,   kLineHbeta};
+  const double weight[3]  = {kLineWHalpha, kLineWOIII,  kLineWHbeta};
   for (int L = 0; L < 3; ++L) {
     double lobs = lines[L] / g;
     for (int b = 0; b < 3; ++b)
-      if (lobs >= bs.lo[b] && lobs < bs.hi[b]) out[b] += 1.0;
+      if (lobs >= bs.lo[b] && lobs < bs.hi[b]) out[b] += weight[L];
   }
 }
 

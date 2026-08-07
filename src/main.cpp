@@ -1483,10 +1483,88 @@ int main() {
         // lens/shadow/analytic-arc-trail layers (the de-stacking). Kept: the
         // dials that drive REAL physics-colour/motion.
         ImGui::SeparatorText("COLOUR");
-        UiSliderFloat("Colour Spectrum", &app.uiColorTempK, 0.0f, 100000.0f, "%.0f");
+        // ── LOGARITHMIC FADERS (2026-08-02 19:3x) — Jamal: "first millimeter
+        // feels like more variety then the last 99% of the fader."
+        // Both dials add KELVIN, and colour-vs-Kelvin is a logarithmic
+        // relationship — the continuum LUT is itself log-spaced
+        // (spectral_lut.h continuumTempAt: TMin·(TMax/TMin)^(i/N), 300 K→80 kK
+        // over 256 bins). So equal SCREEN travel must mean equal RATIO in K,
+        // not equal absolute K. On the old linear taper the entire visible
+        // red→orange→white→blue walk happened in the bottom few percent and
+        // the top 90% of throw was all clamped blue-white — exactly what he
+        // felt. ImGuiSliderFlags_Logarithmic makes travel proportional to the
+        // ratio, so the perceptual range spreads across the whole fader.
+        // Not a range change: both end values are unchanged, only the taper.
+        UiSliderFloat("Colour Spectrum", &app.uiColorTempK, 0.0f, 100000.0f, "%.0f",
+                      ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Speed->temperature colour gain: low = warm/red field, high = full red->blue spectrum (hot matter blue)");
-        UiSliderFloat("Plasma Heat", &app.uiHeatGain, 0.0f, 6000.0f, "%.0f");
+        UiSliderFloat("Plasma Heat", &app.uiHeatGain, 0.0f, 6000.0f, "%.0f",
+                      ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Thermal heat->colour gain: low = warm/red field (white rare), high = play-heat drives white/blue plasma");
+
+        // ── STAR LAWS (2026-07-28) — these were hardcoded constants in
+        // render.metal; every star experiment cost a rebuild. Defaults below
+        // reproduce those constants exactly. Ranges are LOGARITHMIC where the
+        // quantity spans decades: a linear slider on a 27,000:1 range spends
+        // ~99% of its travel in the top decade and is unusable.
+        // Right-click any of these to snap back to the shipped default.
+        ImGui::SeparatorText("STAR LAWS");
+        UiSliderFloat("Lum Exponent", &app.uiStarLumExp, 0.5f, 4.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarLumExp = 3.5f;
+        ImGui::SetItemTooltip(
+            "L = M^this. THE colour lever, per the [KPROBE] measurement: at 3.5 "
+            "about 1%% of stars (all >10,000K) emit 75%% of the light, so the "
+            "visible field is blue while 73%% of your stars are actually below "
+            "2515K. LOWER this to lift the orange bulk into view. Physical = 3.5.");
+        UiSliderFloat("Lum Gain", &app.uiStarLumGain, 0.01f, 100.0f, "%.3f",
+                      ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarLumGain = 2.5f;
+        ImGui::SetItemTooltip("Overall star brightness multiplier. Exposure "
+                              "calibration point: sun-type reads as a visible point at 2.5.");
+        UiSliderFloat("Lum Ceiling", &app.uiStarLumCeil, 10.0f, 65000.0f, "%.0f",
+                      ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarLumCeil = 1000.0f;
+        ImGui::SetItemTooltip(
+            "Hard clip on star luminance. Everything above it is EXACTLY one "
+            "brightness. WARNING: raising this was the 07-26 asinh failure - it "
+            "pushes more pixels into the sensor bleach and whitens MORE of the "
+            "field. Lower the exponent instead.");
+        UiSliderFloat("Kelvin Scale", &app.uiStarKelvinA, 1000.0f, 15000.0f, "%.0f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarKelvinA = 5772.0f;
+        ImGui::SetItemTooltip("K = this * M^p. 5772 = the Sun's T_eff, so a 1 "
+                              "solar-mass particle renders as the Sun.");
+        UiSliderFloat("Kelvin Exponent", &app.uiStarKelvinP, 0.0f, 1.2f, "%.3f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarKelvinP = 0.55f;
+        ImGui::SetItemTooltip(
+            "K = A * M^this. Sets the WIDTH of the colour spread: 0 = every star "
+            "the same temperature, 0.55 spans 2944K (0.3 Msun, orange) to "
+            "14,140K (5 Msun, blue-white).");
+        // ── STAR SIZE (2026-07-28) — measured meanPx 1.02, 99.2% of stars
+        // pinned at the 1 px floor. A 1 px sprite has no area to carry hue.
+        ImGui::SeparatorText("STAR SIZE  (measured: mean 1.02 px)");
+        UiSliderFloat("Size Gain", &app.uiStarSizeGain, 0.1f, 100.0f, "%.2f",
+                      ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarSizeGain = 1.0f;
+        ImGui::SetItemTooltip(
+            "Blunt multiplier on every star's sprite diameter. START HERE: at "
+            "1.0 the whole dwarf bulk is pinned to the 1 px floor and cannot "
+            "show colour or a core. Watch [KPROBE-SCALE] meanPx in the log.");
+        UiSliderFloat("Size Exponent", &app.uiStarSizeExp, 0.0f, 2.0f, "%.3f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarSizeExp = 0.8f;
+        ImGui::SetItemTooltip(
+            "R = M^this. 0.8 = the true stellar radius relation. LOWER = dwarfs "
+            "and giants converge in size; 0 = every star identical size.");
+        UiSliderFloat("Size Floor (px)", &app.uiStarSizeFloor, 0.25f, 16.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarSizeFloor = 1.0f;
+        ImGui::SetItemTooltip(
+            "Minimum sprite diameter in PIXELS. This is what currently pins "
+            "99.2%% of the field to one size - the same condition that got the "
+            "old saturation-PSF law removed for looking 'weirdly the same size'.");
+        UiSliderFloat("Size Ceiling (px)", &app.uiStarSizeCeil, 4.0f, 400.0f, "%.0f",
+                      ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiStarSizeCeil = 48.0f;
+        ImGui::SetItemTooltip("Soft (tanh) ceiling in PIXELS. Measured max is "
+                              "16.3 px, so at 48 this is not currently binding.");
         // Streak Length + Collapse % REMOVED (2026-06-26, Jamal: dead).
 
         UiSliderFloat("Sharpness", &app.uiSharpness, 1.0f, 40.0f, "%.1f");
@@ -1783,6 +1861,18 @@ int main() {
           app.uiNeonGrade = 0.0f;
         ImGui::SetItemTooltip("Cyberpunk color grade (indigo/magenta/cyan)");
 
+        UiSliderFloat("Grade LUT", &app.uiGradeAmount, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+          app.uiGradeAmount = 0.0f;
+        ImGui::SetItemTooltip(
+            "Display grade LUT (33^3, applied after the tonemap).\n"
+            "Shadow lift toward hue 280 deg — the ONE arc neither the Planck\n"
+            "locus nor the supernova emission lines occupy, so it cannot\n"
+            "compete with a real colour. Gated on chroma, so faint stars keep\n"
+            "their hue; only the neutral void takes the tint.\n"
+            "Lift is capped at 0.03, under sRGB's 0.04045 linear-segment\n"
+            "threshold, so it stays inside the display's defined toe.");
+
         UiSliderFloat("Vignette", &app.uiVignette, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiVignette = 0.0f;
@@ -2025,6 +2115,16 @@ int main() {
     config.trailGain = app.uiTrailGain;
     config.streakLen = app.uiStreakLen;
     config.colorTempK = app.uiColorTempK;
+    // STAR LAW DIALS (2026-07-28) — identity defaults.
+    config.starLumExp = app.uiStarLumExp;
+    config.starLumGain = app.uiStarLumGain;
+    config.starLumCeil = app.uiStarLumCeil;
+    config.starKelvinA = app.uiStarKelvinA;
+    config.starKelvinP = app.uiStarKelvinP;
+    config.starSizeGain = app.uiStarSizeGain;
+    config.starSizeExp = app.uiStarSizeExp;
+    config.starSizeFloor = app.uiStarSizeFloor;
+    config.starSizeCeil = app.uiStarSizeCeil;
     config.heatGain = app.uiHeatGain;
     // Pack the BH mechanism toggles into the bitmask uniform.
     config.bhToggles =
@@ -2118,6 +2218,7 @@ int main() {
     config.glitchAmount = app.uiGlitch;
     config.scanlineAmount = app.uiScanlines;
     config.neonGrade = app.uiNeonGrade;
+    config.gradeAmount = app.uiGradeAmount;
     config.vignette = app.uiVignette;
     config.fxTime = app.uiFxTime;
     config.audioLevel = std::min(1.0f, synth.totalAmplitude());

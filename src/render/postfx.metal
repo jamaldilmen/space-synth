@@ -26,7 +26,13 @@ struct PostFXUniforms {
     float edrHeadroom;      // display EDR headroom (1.0 = SDR), drives HDR glow
     float pixelStretch;     // 0-1 "5D look" radial pixel-stretch (driven by spin)
     float exposure;         // global HDR exposure multiplier (1.0 = neutral)
-    float debugBypass;      // >0.5 = raw scene + plain Reinhard, whole chain skipped (whiteout bisect). 24 scalars = 96 B → float4x4 16-byte aligned on both sides
+    float debugBypass;      // >0.5 = raw scene + plain Reinhard, whole chain skipped (whiteout bisect)
+    // Scalars MUST stay a multiple of 4 so the float4x4s below keep their
+    // 16-byte alignment on both sides. Was 24 (=96 B); now 28 (=112 B).
+    float gradeAmount;      // 0-1 blend of the display grade LUT (0 = exact bypass)
+    float gradePad0;
+    float gradePad1;
+    float gradePad2;
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
@@ -91,6 +97,7 @@ fragment float4 postfx_fragment(
     texture2d<float> previousFrame [[texture(1)]],
     texture2d<float> bloomTex [[texture(2)]],
     texture2d<float> sceneAvgTex [[texture(3)]], // mipped HDR scene → top mip = frame average (auto-exposure)
+    texture3d<float> gradeLut [[texture(4)]],    // display grade LUT (grade_lut.h bake), 33^3 RGBA16F
     constant PostFXUniforms& u [[buffer(0)]])
 {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
@@ -328,6 +335,33 @@ fragment float4 postfx_fragment(
     // A4. It must never be added post-bleach again: that repaints the
     // un-bleached core on top and resurrects the yellow blob.)
 
+    // ── DISPLAY GRADE LUT (2026-08-03) ───────────────────────────────────
+    // The creative grade stage this chain never had. It composites AFTER the
+    // display transform (the asinh tonemap + sensor bleach above) and BEFORE
+    // neonGrade and the VJ effects, because those are performance layers that
+    // belong on top of a graded base — the same order a real pipeline uses.
+    //
+    // The LUT contents are baked by src/render/grade_lut.h, which carries the
+    // derivation of every number in it. Exact bypass at 0.
+    if (u.gradeAmount > 0.001) {
+        constexpr sampler ls(mag_filter::linear, min_filter::linear,
+                             address::clamp_to_edge);
+        // A .cube grade is DEFINED on display-referred [0,1]. Anything above
+        // paper-white is EDR headroom the LUT has no opinion about, so it is
+        // split off, passed through untouched, and added back — the grade can
+        // never eat the HDR cores.
+        float3 over = max(color.rgb - 1.0, 0.0);
+        float3 base = saturate(color.rgb);
+        // HALF-TEXEL INSET. The N^3 grid's nodes are texel CENTRES, so the
+        // sample coordinate is (c·(N-1) + 0.5)/N. Omitting this samples the
+        // endpoints half a texel outside the grid and shifts the entire grade —
+        // it is the classic LUT bug, not an optional refinement.
+        const float N = 33.0;   // must match space::grade::kGradeLutN
+        float3 luv = (base * (N - 1.0) + 0.5) / N;
+        float3 graded = gradeLut.sample(ls, luv).rgb + over;
+        color.rgb = mix(color.rgb, graded, u.gradeAmount);
+    }
+
     // ── Neon cyberpunk color grade ───────────────────────────────────────
     // Remaps tonal range to a synth palette: shadows → deep indigo, mids →
     // magenta, highlights → cyan. Keeps per-pixel brightness so it grades
@@ -508,4 +542,109 @@ fragment float4 bright_fragment(
     // Firefly clamp: down-weight tiny ultra-bright spikes so the blur is stable
     bright *= 1.0 / (1.0 + luma);
     return float4(bright, 1.0);
+}
+
+// ── Bloom mip pyramid: downsample + upsample ────────────────────────────────
+// Replaces the old single-scale chain (one half-res buffer, 3 iterations of the
+// 9-tap Gaussian at radius 2.5). Three passes of a small Gaussian at ONE
+// resolution can only produce ONE characteristic glow radius — a modest halo
+// hugging each bright thing. That is what reads as cheap.
+//
+// A pyramid is scale-INVARIANT: the bright-pass result is halved repeatedly,
+// then progressively upsampled and accumulated, so a single bright star throws
+// a tight core glow AND a soft wash across a large fraction of the screen at
+// the same time. Reference: Jimenez, "Next Generation Post Processing in Call
+// of Duty: Advanced Warfare" (SIGGRAPH 2014) — the same source as the soft-knee
+// bright-pass above, which is why the two compose correctly.
+
+struct BloomDownUniforms {
+    float2 srcTexel;  // 1 / source resolution — the sample offsets are in
+                      // SOURCE texels, so the kernel is identical at every level
+    float2 pad;
+};
+
+// 13-tap partial-box downsample. A naive 2x2 box (or bilinear) aliases: at each
+// halving it drops the odd samples, so a bright point flickers between levels
+// as the camera moves. This kernel samples five overlapping 2x2 boxes — the
+// centre box weighted 0.5, the four corner boxes 0.125 each (sum = 1.0, energy
+// preserving) — which is stable because every source texel contributes to every
+// destination texel it touches.
+fragment float4 bloom_down_fragment(
+    PostVertexOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]],
+    constant BloomDownUniforms& u [[buffer(0)]])
+{
+    constexpr sampler s(mag_filter::linear, min_filter::linear,
+                        address::clamp_to_edge);
+    float2 t = u.srcTexel;
+    float2 uv = in.uv;
+
+    // Sample layout (o = centre), offsets in source texels:
+    //   a . b . c        (-2,-2) ( 0,-2) ( 2,-2)
+    //   . d . e .        (-1,-1) ( 1,-1)
+    //   f . o . h        (-2, 0) ( 0, 0) ( 2, 0)
+    //   . i . j .        (-1, 1) ( 1, 1)
+    //   k . l . m        (-2, 2) ( 0, 2) ( 2, 2)
+    float3 a = src.sample(s, uv + float2(-2.0, -2.0) * t).rgb;
+    float3 b = src.sample(s, uv + float2( 0.0, -2.0) * t).rgb;
+    float3 c = src.sample(s, uv + float2( 2.0, -2.0) * t).rgb;
+    float3 d = src.sample(s, uv + float2(-1.0, -1.0) * t).rgb;
+    float3 e = src.sample(s, uv + float2( 1.0, -1.0) * t).rgb;
+    float3 f = src.sample(s, uv + float2(-2.0,  0.0) * t).rgb;
+    float3 o = src.sample(s, uv).rgb;
+    float3 h = src.sample(s, uv + float2( 2.0,  0.0) * t).rgb;
+    float3 i = src.sample(s, uv + float2(-1.0,  1.0) * t).rgb;
+    float3 j = src.sample(s, uv + float2( 1.0,  1.0) * t).rgb;
+    float3 k = src.sample(s, uv + float2(-2.0,  2.0) * t).rgb;
+    float3 l = src.sample(s, uv + float2( 0.0,  2.0) * t).rgb;
+    float3 m = src.sample(s, uv + float2( 2.0,  2.0) * t).rgb;
+
+    float3 col = (d + e + i + j) * (0.500 * 0.25);   // centre box
+    col       += (a + b + o + f) * (0.125 * 0.25);   // top-left box
+    col       += (b + c + h + o) * (0.125 * 0.25);   // top-right box
+    col       += (f + o + l + k) * (0.125 * 0.25);   // bottom-left box
+    col       += (o + h + m + l) * (0.125 * 0.25);   // bottom-right box
+    return float4(col, 1.0);
+}
+
+struct BloomUpUniforms {
+    float2 filterRadius; // UV offset for the tent's outer ring
+    float2 pad;
+};
+
+// 3x3 tent upsample. Bilinear alone would reintroduce the blocky structure of
+// the small level; the tent (weights 1,2,1 / 2,4,2 / 1,2,1, sum 16) reconstructs
+// a smooth field. The result is blended ADDITIVELY onto the level above, so the
+// finished glow is the sum of every scale — that sum is the whole point.
+//
+// filterRadius is set by the renderer to exactly ONE SOURCE TEXEL, which is half
+// a destination texel: the tent then spans the destination neighbourhood the
+// source texel actually covers, so successive levels tile without gaps or
+// double-counting. It is not a tuned number; it is the level ratio.
+fragment float4 bloom_up_fragment(
+    PostVertexOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]],
+    constant BloomUpUniforms& u [[buffer(0)]])
+{
+    constexpr sampler s(mag_filter::linear, min_filter::linear,
+                        address::clamp_to_edge);
+    float x = u.filterRadius.x;
+    float y = u.filterRadius.y;
+    float2 uv = in.uv;
+
+    float3 a = src.sample(s, uv + float2(-x,  y)).rgb;
+    float3 b = src.sample(s, uv + float2(0.0, y)).rgb;
+    float3 c = src.sample(s, uv + float2( x,  y)).rgb;
+    float3 d = src.sample(s, uv + float2(-x, 0.0)).rgb;
+    float3 e = src.sample(s, uv).rgb;
+    float3 f = src.sample(s, uv + float2( x, 0.0)).rgb;
+    float3 g = src.sample(s, uv + float2(-x, -y)).rgb;
+    float3 h = src.sample(s, uv + float2(0.0,-y)).rgb;
+    float3 i = src.sample(s, uv + float2( x, -y)).rgb;
+
+    float3 col = e * 4.0;
+    col += (b + d + f + h) * 2.0;
+    col += (a + c + g + i);
+    col *= (1.0 / 16.0);
+    return float4(col, 1.0);
 }

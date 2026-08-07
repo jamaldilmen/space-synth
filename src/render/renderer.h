@@ -38,7 +38,7 @@ struct RenderConfig {
   float iscoScreenSeconds = 3.8f;
   int   physicsSubsteps = 1;      // N fixed-dt physics steps per frame (fast sweep w/o dt-blowup)
   float bhRayEmitScale = 1.0e-6f; // metric ray-march (bit19) emission gain = 10^uiRayEmitLog
-  float bhRayBcull = 16.0f;       // ray-march extent: impact-parameter cull in r_s (disk lives ~3..22)
+  float bhRayBcull = 7.0f;        // ray-march extent: impact-parameter cull in r_s. Mirror of AppState::uiRayBcull (main.cpp copies it in every frame) — keep the two in step. See app_state.h for why 7.
   float bhRayInnerR = 2.6f;       // ray-march inner no-emit radius in r_s → the dark shadow
 
   // New Simulation
@@ -71,6 +71,16 @@ struct RenderConfig {
   float streakLen = 1.0f;
   float colorTempK = 27000.0f; // colour spectrum: |v|²→Kelvin gain (live tune)
   float heatGain = 3000.0f;    // thermal heat→Kelvin gain (live tune; was HEAT_K_PER_T)
+  // STAR LAW DIALS (2026-07-28) — see CameraUniforms below for what each does.
+  float starLumExp = 3.5f;
+  float starLumGain = 2.5f;
+  float starLumCeil = 1000.0f;
+  float starKelvinA = 5772.0f;
+  float starKelvinP = 0.55f;
+  float starSizeGain = 1.0f;
+  float starSizeExp = 0.8f;
+  float starSizeFloor = 1.0f;
+  float starSizeCeil = 48.0f;
   float collapseFrac = 0.25f; // fraction of field mass in core = hole 100%
   float sphCoolTau = 2.0f;    // slice-4 radiative cooling τ₀ [simt] at T_cap, ρ=1 (~1 simt ≈ 1 s wall)
 
@@ -83,6 +93,7 @@ struct RenderConfig {
   float glitchAmount = 0.0f;   // RGB block displacement, beat-reactive
   float scanlineAmount = 0.0f; // CRT scanlines
   float neonGrade = 0.0f;      // cyberpunk color grade
+  float gradeAmount = 0.0f;    // display grade LUT blend (grade_lut.h); 0 = bypass
   float vignette = 0.0f;       // edge darkening
   float audioLevel = 0.0f;     // total amplitude (drives reactive FX)
   float fxTime = 0.0f;         // running seconds for animated FX
@@ -140,7 +151,13 @@ struct PostFXUniforms {
   float edrHeadroom;   // display EDR headroom (1.0 = SDR); keeps 80-byte align
   float pixelStretch;  // 0-1 "5D look" radial pixel-stretch (driven by spin)
   float exposure;      // global HDR exposure multiplier (1.0 = neutral)
-  float debugBypass;   // >0.5 = raw scene + Reinhard (whiteout bisect); 24 scalars = 96 B → matrices 16-byte aligned, matches MSL
+  float debugBypass;   // >0.5 = raw scene + Reinhard (whiteout bisect)
+  // Scalars MUST stay a multiple of 4 so the matrices below keep 16-byte
+  // alignment and match MSL. Was 24 (=96 B); now 28 (=112 B).
+  float gradeAmount;   // 0-1 display grade LUT blend (0 = exact bypass)
+  float gradePad0;
+  float gradePad1;
+  float gradePad2;
   float inverseViewProj[16];
   float prevViewProj[16];
 };
@@ -188,6 +205,20 @@ struct CameraUniforms {
   float viewportH = 1080.0f; // framebuffer height px — NDC->px for the flux-conserving
                              // streak arc (appended 2026-07-24, keep LAST)
   float spinAngleZ = 0.0f; // accumulated roll angle Z (rad) — mirror order = render.metal
+  // ── STAR LAW DIALS (2026-07-28) — the two laws the [KPROBE] histogram
+  // measured. Every default below reproduces the previous hardcoded constant
+  // EXACTLY, so at defaults the picture is unchanged. Mirror order = render.metal.
+  float tuneStarLumExp = 3.5f;    // L = M^this          (was hardcoded 3.5)
+  float tuneStarLumGain = 2.5f;   // starLum = L * this  (was hardcoded 2.5)
+  float tuneStarLumCeil = 1000.0f;// min(starLum, this)  (was hardcoded 1000)
+  float tuneStarKelvinA = 5772.0f;// K = this * M^p      (was hardcoded 5772)
+  float tuneStarKelvinP = 0.55f;  // K = A * M^this      (was hardcoded 0.55)
+  // ── STAR SIZE DIALS (2026-07-28 15:21, measured: meanPx 1.02, 99.2% of stars
+  // pinned at the 1 px FLOOR). Defaults reproduce the old constants exactly.
+  float tuneStarSizeGain = 1.0f;  // rawStar *= this     (new, identity at 1.0)
+  float tuneStarSizeExp = 0.8f;   // Rstar = M^this      (was hardcoded 0.8)
+  float tuneStarSizeFloor = 1.0f; // STAR_MIN_PX         (was hardcoded 1.0)
+  float tuneStarSizeCeil = 48.0f; // tanh soft ceiling   (was hardcoded 48.0)
 };
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

@@ -60,6 +60,17 @@ struct CameraUniforms {
     float spinZ;             // roll rate around Z (rad/s)
     float viewportH;         // framebuffer height in px — NDC->px for the streak arc (appended 2026-07-24, keep LAST)
     float spinAngleZ;        // accumulated roll angle Z (rad) — mirror order = renderer.h
+    // ── STAR LAW DIALS (2026-07-28) — mirror order = renderer.h. Defaults
+    // reproduce the previous hardcoded constants exactly.
+    float tuneStarLumExp;    // L = M^this          (was 3.5)
+    float tuneStarLumGain;   // starLum = L * this  (was 2.5)
+    float tuneStarLumCeil;   // min(starLum, this)  (was 1000)
+    float tuneStarKelvinA;   // K = this * M^p      (was 5772)
+    float tuneStarKelvinP;   // K = A * M^this      (was 0.55)
+    float tuneStarSizeGain;  // rawStar *= this     (new, identity at 1.0)
+    float tuneStarSizeExp;   // Rstar = M^this      (was 0.8)
+    float tuneStarSizeFloor; // STAR_MIN_PX         (was 1.0)
+    float tuneStarSizeCeil;  // tanh soft ceiling   (was 48.0)
 };
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -318,7 +329,36 @@ static float3 spectrumToBands(device const float4* contLUT,
     float4 cont = specSampleLog(contLUT, SPEC_CONT_N, T_kelvin * max(g, 1e-4f),
                                 SPEC_CONT_TMIN, SPEC_CONT_TMAX);
     float3 c = float3(cont.z, cont.y, cont.x);          // (B,G,R) → (R,G,B)
-    float s = clamp(lineStrength, 0.0f, 1.0f);
+    // ── LINES CAN NEVER FULLY REPLACE THE CONTINUUM — 2026-08-02 18:4x ──────
+    // Jamal, A/B on the bit16 checkbox: spectral ON = "everything is salmon
+    // pinkish", OFF = "i have color variety". Same scene, same physics.
+    //
+    // THE MECHANISM (not the line weights — those were a red herring I chased
+    // first). The mix below is
+    //     c*(1-s) + (w/wt)*(total*s)
+    // where w/wt is a FIXED normalised hue. At s = 1 the continuum term is
+    // multiplied by ZERO, so every particle returns the identical line colour
+    // and TEMPERATURE IS COMPLETELY DISCARDED. The play-path proxy is
+    // lineStrength = clamp(temp/5, 0, 1) (:1325) on a temperature scale whose
+    // play values sit far above 5 — so s SATURATES AT 1.0 for essentially the
+    // whole field, and 2M particles collapse onto one hue. With the old equal
+    // (1,1,1) weights that hue was grey (the documented "desaturates" defect);
+    // with Case B weights it is salmon. Same flaw, different tint — which is
+    // why fixing the weights alone did not help.
+    //
+    // THE PHYSICS: emission lines sit ON TOP of a continuum. An ionised gas
+    // still radiates free-free and bound-free continuum — a spectrum with
+    // lines and NO continuum does not exist. So the line-to-continuum ratio
+    // must be bounded below 1. LINE_FRAC_MAX = 0.5 is the statement "lines may
+    // at most EQUAL the continuum, never replace it", which keeps the Planck
+    // temperature signature (and therefore the colour variety he can see with
+    // bit16 off) alive at every ionisation level.
+    //
+    // ⚠ 0.5 IS THE DIAL for a "too washed"/"not gassy enough" verdict. It is a
+    // bound, not a measurement — unlike the Case B ratios, which are atomic
+    // physics. Lower = more temperature colour, higher = more line character.
+    const float LINE_FRAC_MAX = 0.5f;
+    float s = clamp(lineStrength, 0.0f, 1.0f) * LINE_FRAC_MAX;
     if (s <= 0.0f) return c;
 
     // Lines carry a FRACTION of the same flux, redistributed into whichever
@@ -333,6 +373,48 @@ static float3 spectrumToBands(device const float4* contLUT,
     if (wt < 1e-6f) return c * (1.0f - s);   // all lines redshifted out
     float total = c.r + c.g + c.b;
     return c * (1.0f - s) + (w / wt) * (total * s);
+}
+
+// ── THE UNIFIED KELVIN LAW — ONE definition, both consumers ─────────────────
+// Checkpoint A2, 2026-07-08, Jamal: "UNIFIED. not phases." The law was ALWAYS
+// meant to be one continuum for every state; :1443 still claims the star path
+// uses "the SAME kelvin law the play path uses". It did not. The two had
+// drifted into separate expressions:
+//
+//   PLAY (:1317)  clamp(5772*pow(max(M,0.08),0.55)          <- hardcoded A,p
+//                       + clamp(temp,0,5)*tuneHeatK          <- heat pedestal
+//                       + ke*tuneColorK, 1000, 40000)
+//   STAR (:1462)  clamp(tuneStarKelvinA*pow(min(M,500),      <- dialed A,p
+//                                            tuneStarKelvinP)
+//                       + ke*tuneColorK, 1000, 40000)        <- NO heat term
+//
+// Three real divergences: the star path was dialable and the play path was
+// hardcoded (so the 2026-07-28 A/p dials silently did nothing while a note
+// sounded); the mass was floored at 0.08 in one and ceilinged at 500 in the
+// other; and the HEAT PEDESTAL was removed from the star path on 2026-07-10
+// (":1451 — +4500 K on a 3000 K dwarf → white … buried after the first note")
+// but LEFT LIVE in the play path. That last one is why Jamal saw "white f" at
+// play and colour only at release: clamp(temp,0,5) saturates while a note
+// sounds, so every particle took a flat +15,000 K at the old 3000 gain and the
+// whole OBAFGKM spread collapsed onto one blue-white.
+//
+// One function now. Fixing the law in one place fixes it in every state, which
+// is the entire point of a unified system — and a divergence like the one above
+// becomes impossible to reintroduce by editing a single call site.
+// Dials are passed in rather than reading `cam` so this stays a pure function
+// of scalars, the same contract spectrumToBands holds.
+static inline float unifiedKelvin(float massMsun, float temp, float ke,
+                                  float kelvinA, float kelvinP,
+                                  float heatGain, float colorK)
+{
+    // Mass bounds are the UNION of what the two paths used: floor 0.08 (the
+    // play path's guard against pow(0) at the IMF's low end) and ceiling 500
+    // (the star path's guard on merger-grown monsters).
+    float M = clamp(massMsun, 0.08f, 500.0f);
+    return clamp(kelvinA * pow(M, kelvinP)
+                 + clamp(temp, 0.0f, 5.0f) * heatGain
+                 + ke * colorK,
+                 1000.0f, 40000.0f);
 }
 
 // ── POSED / TIME-LAPSE ORBITAL RATE — ONE definition ────────────────────────
@@ -388,8 +470,20 @@ kernel void pose_phase_advance(
 {
     // Mirror the vertex gate EXACTLY (bit20 + a posed/emergent hole + the
     // legacy z-axis branch, which is the only one the host ever selects).
+    // PLAY GATE (2026-08-03, Jamal: "these rings appear after black hole first
+    // formed and i play again + then the shapes are only rings and blurry").
+    // wEff is Keplerian, √(GM/r³) — RADIUS-DEPENDENT, so this playback is
+    // DIFFERENTIAL rotation. Differential rotation destroys angular structure
+    // by construction: neighbouring radii sweep at different rates, so every
+    // m≠0 Chladni lobe is sheared azimuthally into a concentric RING and the
+    // shear smears it (the "blurry"). bhDiskGM goes non-zero the frame a hole
+    // forms and never returns to 0, and bit20 is DEFAULT ON (app_state.h:56) —
+    // so from the first hole onward the render spun the field FOREVER, through
+    // every subsequent note. Canon it broke: PLAY MUST BE PURE CYMATICS
+    // (space_synth_tube_play_vs_bh_regime) — the time-lapse belongs to the
+    // silence/BH regime only. envelopePhase: 0 = silence, 1-4 = ADSR.
     if (!(cam.bhToggles & 0x100000u) || cam.bhDiskGM <= 0.0f ||
-        cam.bhDiskAxisY >= 0.5f) return;
+        cam.bhDiskAxisY >= 0.5f || cam.envelopePhase >= 0.5f) return;
     float2 c2  = float2(cam.bhX, cam.bhY);
     float  rxy = length(particlesIn[vid].posW.xy - c2);
     // Inside the honest horizon the matter is causally dead (membrane) and does
@@ -411,7 +505,8 @@ vertex VertexOut particle_vertex(
     constant SpatialHashUniforms& su [[buffer(5)]],     // grid params for the cell lookup
     device const float4* specContLUT [[buffer(6)]],     // spectral: Planck band flux vs T_eff = g·T
     device const float4* specLinesLUT [[buffer(7)]],    // spectral: line weight per band vs g
-    device const float* posePhase [[buffer(8)]])        // integrated playback phase (pose_phase_advance)
+    device const float* posePhase [[buffer(8)]],        // integrated playback phase (pose_phase_advance)
+    device atomic_uint* kProbe [[buffer(9)]])           // [KPROBE] Kelvin histogram — MEASUREMENT ONLY, never read back into the picture
 {
     VertexOut out;
     Particle in = particlesIn[vid];
@@ -437,7 +532,12 @@ vertex VertexOut particle_vertex(
     // something slower, sped up weirdly"). DEFAULT OFF → sprites follow the REAL
     // physics motion (dt = 0.0165·timeWarp, fixed per frame = smooth), coherent
     // with the emission. ON = the legacy analytic spin, for A/B / posed demo.
-    if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY < 0.5f) {
+    // + PLAY GATE (2026-08-03): must mirror pose_phase_advance EXACTLY. The
+    // phase is frozen during a note there, and here it is not APPLIED, so a
+    // played note renders at the true physics positions — pure cymatics. See
+    // the full mechanism note on pose_phase_advance above.
+    if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY < 0.5f &&
+        cam.envelopePhase < 0.5f) {
         float2 c2 = float2(cam.bhX, cam.bhY);   // hole centre (off-origin after PLAY)
         float rxy = length(in.posW.xy - c2);
         // REAL RELATIVISTIC TIME BENDING (2026-07-16, Jamal item 3: "finally
@@ -619,6 +719,30 @@ vertex VertexOut particle_vertex(
     // stays fast (the trails live there) and only the INNER edge lags, so it
     // winds subtly without freezing. (The 1.5·r_s/r circular-orbit form froze
     // the whole inner disk inside the photon sphere → "not moving fast enough".)
+    // ── THE DILATION SHEAR IS A FEATURE. KEEP IT, AND MATCH IT. ─────────────
+    // (2026-07-26 21:06:52, restored after a 9-minute regression.)
+    // spinAngle{X,Y,Z} scaled by a PER-PARTICLE tDilate means the view rotation
+    // is a SHEAR: inner radii turn less than outer ones, so rotating the view
+    // smears the field differentially. That smear is Jamal's "time warp traces"
+    // — 21:00: "rotating the thingy doesn't time warp traces any more, like no
+    // more beautiful time warpeyssss." I removed it at 20:58 as a rigid-camera
+    // correctness fix and it killed the effect on sight. A rigid rotation moves
+    // the whole cloud together, so there is nothing left to trail.
+    // WHAT I GOT WRONG in that diagnosis: the capture cull (:697) tests the
+    // DRAWN worldPos, so it follows the shear and was never inconsistent. The
+    // only consumer that actually disagreed is the RAY-MARCH, which samples the
+    // hash grid through applyInverseSpin at the FULL angle while the sprites are
+    // drawn sheared — two images of one field, rotated differently. That is the
+    // "hole in front of the ring".
+    // WHY BOTH ARE POSSIBLE: applySpin is a rotation, so it preserves |p|, and
+    // tDilate depends only on |p|. The shear is therefore EXACTLY invertible —
+    // the march recovers the same tDilate from the radius of its sample point
+    // (see the matching block in bhmarch_fragment). Sprites and march now live
+    // in the same sheared frame instead of one being "fixed" to the other.
+    // ⚠ hole_vertex (:2135) uses the same pattern with a DIFFERENT profile
+    // (rsDil = live horizonR, floor 0.02, vs 0.57/0.4 here) despite its comment
+    // claiming they must match exactly. Not encoded while bit15 is ON (default),
+    // so it is off the live path; reconcile before trusting the bit15-OFF A/B.
     float rDil  = length(in.posW.xyz);
     float tDilate = sqrt(max(0.4f, 1.0f - BH_R_IN_SIM / max(rDil, BH_R_IN_SIM + 1e-3f)));
     float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate, cam.spinAngleZ * tDilate);
@@ -1240,8 +1364,6 @@ vertex VertexOut particle_vertex(
         // Replaces the disk-temperature baseline that pinned everything to
         // orange/white (the "2D filter" — Jamal 2026-06-25). Shock/play heat
         // (heatK) and kinetic add ON TOP, so collisions/supernovae go blue-white.
-        float diskK  = 5772.0f * pow(max(in.posW.w, 0.08f), 0.55f);
-        float heatK  = clamp(temp, 0.0f, 5.0f) * cam.tuneHeatK;
         float ke     = dot(in.velW.xyz, in.velW.xyz);       // |v|² ∝ kinetic temperature
         // INTRINSIC temperature → colour (2026-06-26). Doppler/gravShift are
         // VIEW-DEPENDENT (line-of-sight); folding them into the colour made the
@@ -1249,7 +1371,11 @@ vertex VertexOut particle_vertex(
         // camera ("linear filter", not colour the particles own — Jamal). Colour
         // now comes from the particle's OWN state only: mass + play-heat +
         // kinetic. Doppler still drives BEAMING (out.luminance, above), not hue.
-        float kelvin = clamp(diskK + heatK + ke * cam.tuneColorK, 1000.0f, 40000.0f);
+        // UNIFIED 2026-08-02: was its own expression with hardcoded 5772/0.55
+        // and a live heat pedestal. Now THE one law (see unifiedKelvin).
+        float kelvin = unifiedKelvin(in.posW.w, temp, ke,
+                                     cam.tuneStarKelvinA, cam.tuneStarKelvinP,
+                                     cam.tuneHeatK, cam.tuneColorK);
         float thT    = clamp((kelvin - 1000.0f) / (40000.0f - 1000.0f), 0.0f, 1.0f);
         float3 thermalCol = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
 
@@ -1367,10 +1493,14 @@ vertex VertexOut particle_vertex(
         float rBHs = length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ));
         starMix *= smoothstep(4.0f * cam.horizonR, 32.0f * cam.horizonR, rBHs);
     }
+    // [KPROBE] (2026-07-28) captured for the Kelvin histogram at the end of this
+    // shader. 0 = the star branch never ran for this particle, so it is excluded
+    // from the histogram entirely (it emitted no starlight to attribute).
+    float probeKelvin = 0.0f;
     if (starMix > 0.001f) {
         float Mstar = min(in.posW.w, 500.0f);            // M_sun, merger-grown
-        float Lstar = pow(Mstar, 3.5f);                             // L_sun
-        float Rstar = pow(Mstar, 0.8f);                             // R_sun (size)
+        float Lstar = pow(Mstar, cam.tuneStarLumExp);               // L_sun (dialed 2026-07-28, was 3.5)
+        float Rstar = pow(Mstar, cam.tuneStarSizeExp);              // R_sun (size; dialed 2026-07-28, was 0.8)
         // ── UNIFIED COLOUR LAW (Checkpoint A2, 2026-07-08, Jamal: "UNIFIED.
         // not phases.") — the SAME kelvin law the play path uses (line ~610):
         // mass-Teff baseline + collision/play heat × Plasma-Heat slider +
@@ -1388,9 +1518,16 @@ vertex VertexOut particle_vertex(
         // Lupton 2004 (PASP 116,133), the standard NASA/SDSS composite: an
         // object's COLOUR must not depend on its brightness — stretch the
         // intensity, never the hue. Heat belongs in luminance, not in Kelvin.
-        float kelvinU = clamp(5772.0f * pow(Mstar, 0.55f)
-                              + dot(in.velW.xyz, in.velW.xyz) * cam.tuneColorK,
-                              1000.0f, 40000.0f);
+        // DIALED 2026-07-28: A and p were hardcoded 5772 / 0.55. Same numbers by
+        // default — this is plumbing, not a law change.
+        // UNIFIED 2026-08-02: THE one law, identical to the play path above.
+        // This path had no heat term at all (removed 2026-07-10) while play
+        // kept it — the divergence that made colour state-dependent.
+        float kelvinU = unifiedKelvin(Mstar, temp,
+                                      dot(in.velW.xyz, in.velW.xyz),
+                                      cam.tuneStarKelvinA, cam.tuneStarKelvinP,
+                                      cam.tuneHeatK, cam.tuneColorK);
+        probeKelvin = kelvinU;   // [KPROBE]
         // ── SPECTRAL COLOUR LAW (bit16, increment 2, 2026-07-24) ───────────
         // Replaces the Tanner-Helland blackbody FIT with the real Planck
         // integral over the band set (spectral_lut.h / [SPEC-LUT]). Same
@@ -1603,15 +1740,81 @@ vertex VertexOut particle_vertex(
         // points (lum 2.5 × grain 0.08 ≈ 0.2), the dwarf bulk is a faint
         // collective glow, and everything ≥~5 M☉ saturates → bleaches white.
         // Full well 1000 keeps half-float accumulation + bloom energy sane.
-        float starLum = min(Lstar * 2.5f, 1000.0f);
+        // ── THE CLIP WAS THE FLATTENER (2026-07-26 21:52:40) ────────────────
+        // WAS: min(Lstar * 2.5f, 1000.0f). Lstar = M^3.5, so the cap binds at
+        // M^3.5 * 2.5 = 1000 => M ~ 5.5 M_sun. EVERY star above 5.5 M_sun came
+        // out at EXACTLY 1000 — and those are precisely the ones bright enough
+        // to see, so the entire visible population was one single brightness,
+        // then bleached to one single white. Jamal 21:45, after the spike test:
+        // "ok fewer diamonds but just the shape changed not the brightness or
+        // color." Shape was never the complaint; this is.
+        // The old comment defended it as "a handful of stars dominate" — true
+        // for a handful, but at 2-10M particles the >5.5 M_sun population is
+        // thousands of bodies, all clipped identical. A hard min() destroys the
+        // ordering BEFORE the tonemap, so no display transform can recover it;
+        // that is also why postfx being a hue-preserving max-channel tonemap
+        // (already true) never fixed the whitening.
+        // NOW: Lupton 2004 asinh softening — the VERIFIED reference already on
+        // file (reference_stellar_render_sources). asinh is linear at the faint
+        // end and logarithmic at the bright end, so it PRESERVES the exposure
+        // calibration exactly where it was tuned and only compresses where the
+        // clip used to amputate:
+        //   M=1  -> 2.5   (unchanged: the sun-type calibration point)
+        //   M=2  -> 28    (unchanged)
+        //   M=5  -> 437   (was 699)
+        //   M=10 -> 1036  (was 1000, clipped)
+        //   M=50 -> 2444  (was 1000, clipped)
+        //  M=500 -> 4450  (was 1000, clipped)
+        // Ordering now survives across the whole mass range instead of pinning.
+        // Peak rises ~4.5x over the old 1000 "full well". Half-float additive
+        // accumulation is fine with that (max 65504) and the auto-exposure iris
+        // has the travel since its floor went 0.05 -> 0.01 earlier today. If it
+        // blooms too hot, LOWER kLumSoft — do not put the min() back.
+        // REVERTED 2026-07-26 21:53:10 — asinh made it WORSE on sight (Jamal:
+        // "now they all look like theyre not supposed to"): plain round white
+        // dots. Raising the peak 1000 -> 4450 pushed MORE stars past the sensor
+        // bleach, so hue was destroyed in more of the field, not less. The clip
+        // is ugly but it BOUNDS the saturation. The real lesson from the A/B:
+        // colour never changed across the spike gate, spike=0, OR asinh — so
+        // the whiteness does not live in the luminance path at all. Do not
+        // re-try this until the bleach/hue path is understood; then it may be
+        // the right change with the ceiling handled downstream.
+        // ── MEASURED 2026-07-28 12:23 ([KPROBE], 23.8k samples/frame) ────────
+        // 73% of stars are below 2515 K and deliver 15% of the light; ~1% are
+        // above 10,000 K and deliver 75%. A 15,905 K star counts 108x its
+        // abundance on screen, a 1,586 K star 0.2x. So the field's hue is NOT
+        // dying downstream — the orange stars are there and this law makes them
+        // invisible. The lever is tuneStarLumExp: LOWERING it compresses the
+        // M-to-L range and lifts the faint end into view. That is the opposite
+        // direction from the 07-26 asinh attempt, which raised the bright end
+        // (peak 1000 -> 4450), pushed more pixels into the sensor bleach and
+        // made it worse WITHOUT lifting a single dwarf. Do not raise the ceiling
+        // to fix colour; lower the exponent.
+        float starLum = min(Lstar * cam.tuneStarLumGain, cam.tuneStarLumCeil);
         // SIZE = the approved law (Checkpoint A1): linear in the true stellar
         // radius R∝M^0.8, tanh soft ceiling so ordering survives at any slider
         // setting (bbbe6c8, Jamal: "looks amazing"). The saturation-PSF law
         // (99.9% of stars at exactly 1px) is out — his on-screen verdict:
         // "all stars weirdly the same size".
-        float rawStar = cam.particleSize * Rstar * sizeScale * 0.5f;
-        const float STAR_MIN_PX = 1.0f;
-        float starSize = max(48.0f * tanh(rawStar * (1.0f / 48.0f)), STAR_MIN_PX);
+        // ── MEASURED 2026-07-28 15:21 ([KPROBE-SCALE]) ───────────────────────
+        // meanPx = 1.02, maxPx = 16.3, and 99.2% of all stars land in the
+        // 0.92-1.41 px bin. They are not spread across it — they are PINNED to
+        // STAR_MIN_PX by the max() below. With the Kroupa mode at 0.087 M_sun,
+        // Rstar = 0.087^0.8 = 0.142, so rawStar is ~0.14 px and the floor takes
+        // over for the entire dwarf bulk.
+        // Note the irony recorded in the comment above: the saturation-PSF law
+        // was REMOVED because it put "99.9% of stars at exactly 1px" and Jamal
+        // said "all stars weirdly the same size". This floor reintroduced the
+        // identical condition through a different door, and it has been the
+        // state ever since.
+        // A 1 px sprite cannot carry hue and cannot show a core — which is why
+        // raising brightness only grows the spike cross ("all looks like only
+        // diamonds", 2026-07-28).
+        float rawStar = cam.particleSize * Rstar * sizeScale * 0.5f
+                        * cam.tuneStarSizeGain;
+        float starSize = max(cam.tuneStarSizeCeil
+                             * tanh(rawStar / max(cam.tuneStarSizeCeil, 1e-3f)),
+                             cam.tuneStarSizeFloor);
         // ── MERGER FLASH — the "sense of collision" ──────────────────────────
         // A star that just ATE carries a temperature spike (merge kernel,
         // base 2.0 + violence) that the T⁴ cooling decays over seconds:
@@ -1741,9 +1944,37 @@ vertex VertexOut particle_vertex(
         // fragment-overdraw suspect for the pause whiteout + 5 FPS. Back to
         // the committed PLAY-phase gate only. (cellCounts/su plumbing kept,
         // unused, for future volumetric work.)
-        float gasNess = smoothstep(0.5f, 1.5f, cam.envelopePhase) *
-                        (1.0f - smoothstep(1.5f, 3.0f,
-                                           clamp(in.posW.w, 0.05f, 500.0f)));
+        // ── PLAY-PHASE GAS SPLAT DISABLED — 2026-07-30 02:2x ────────────────
+        // THE SHARPNESS REGRESSION. Located by building 0edde58 (2026-07-18,
+        // pre-eigenmode) and comparing on screen: that build draws thin bright
+        // filaments and discrete sparkling points — Jamal's reference, "harry
+        // potter vs voldemort wand flashes" — and he confirmed "this lvl of
+        // detail is non existent in the new version".
+        //
+        // This block landed 2026-07-19 23:44 in 1bb9c70, the commit he named.
+        // The old expression was:
+        //   gasNess = smoothstep(0.5, 1.5, cam.envelopePhase)
+        //           * (1 - smoothstep(1.5, 3.0, clamp(in.posW.w, 0.05, 500)));
+        // i.e. gated on ENVELOPE PHASE (play only) and on mass ≲2 M☉ — which
+        // this block's own comment puts at ~90% of the field. It then applied,
+        // to nine tenths of the particles, only while playing:
+        //   pointSize ×3, luminance ÷9, and Gaussian falloff 5.0 → 1.2.
+        // The falloff is the decisive one: a tight core becomes a wide soft
+        // cloud. That is why the uiParticleSize dial could not fix it — the
+        // dial scales the base size, GAS_SPREAD multiplies on top, and
+        // sharpness=1.2 keeps every dot soft at any size. It is also why every
+        // physics-side change measured "unchanged": the render widened and
+        // softened whatever the physics delivered.
+        //
+        // A LATER SESSION FOUND THE SAME BUG AND HALF-FIXED IT: the near-hole
+        // copy directly below is behind bit17, default OFF, with the comment
+        // "this block is the prime suspect and it is MINE". The play-phase copy
+        // was left on and never gated. This completes that fix.
+        //
+        // TO RESTORE the gaseous play look, put the two smoothsteps back.
+        // The bit17 accretion path below is UNTOUCHED and still works —
+        // it raises gasNess via max(), so it is independent of this line.
+        float gasNess = 0.0f;
         // ── ACCRETION MATTER IS GAS, NOT STARS (2026-07-24 11:40, Jamal:
         // "we want the gaseous form for particles near the horizon, not
         // stars at all"). Matter falling onto the hole is tidally shredded
@@ -1815,6 +2046,69 @@ vertex VertexOut particle_vertex(
         return out;
     }
 
+    // ── [KPROBE] KELVIN HISTOGRAM (2026-07-28) — MEASUREMENT ONLY ────────────
+    // Question it answers, and ONLY this one: what Kelvin does the light on
+    // screen actually COME FROM — as opposed to what Kelvin exists in the field?
+    // §3.2 of the 07-28 handoff says the hue is computed correctly and lost
+    // downstream. blackbodyRGB was checked by hand this session and is fine
+    // (2944K→orange, 14140K→blue-white), so the surviving candidate is that the
+    // VISIBLE POPULATION is selection-biased blue: starLum = M^3.5 means only
+    // high-mass (= high-Kelvin) stars are bright enough to see, and dwarfs sit
+    // at 0.037. If that is what is happening, §3.2 and §3.3 are ONE bug.
+    //
+    // Three histograms over the same 16 log-spaced Kelvin bins (1000..40000 K):
+    //   [0..15]  raw COUNT           — what Kelvin EXISTS
+    //   [16..31] LUMINANCE-weighted  — what Kelvin the light comes from
+    //   [32..47] luminance×AREA      — same, but paying for sprite footprint
+    // A broad count histogram against a blue-spiked luminance histogram is the
+    // signature of the population bias. If BOTH are broad, the hue really is
+    // dying downstream and this hypothesis is dead — which is equally useful.
+    //
+    // Cost: every 64th particle, primary instance only (the secondary is the
+    // same matter counted twice) ≈ 15k atomics/frame at 1M, not 1M. Nothing here
+    // is read back into the picture — `out` is already final above this point.
+    if ((vid & 63u) == 0u && !isSecondary && probeKelvin > 0.0f) {
+        // log2(40000/1000) = log2(40) = 5.321928
+        float u   = log2(probeKelvin / 1000.0f) * (1.0f / 5.321928f);
+        uint  bin = uint(clamp(u * 16.0f, 0.0f, 15.0f));
+        // lum×64: keeps the full 27,000:1 span inside uint32 while still
+        // resolving a 0.037 dwarf as 2 rather than truncating it to zero.
+        uint qLum  = uint(clamp(out.luminance, 0.0f, 1000.0f) * 64.0f);
+        // Saturates at 65535 for the very brightest+biggest sprites. That bias
+        // UNDERSTATES the bright end, i.e. it argues against the hypothesis —
+        // so a blue spike that survives this clamp is real.
+        uint qArea = uint(min(out.luminance * out.pointSize * out.pointSize,
+                              65535.0f));
+        atomic_fetch_add_explicit(&kProbe[bin],            1u,    memory_order_relaxed);
+        atomic_fetch_add_explicit(&kProbe[16u + bin],      qLum,  memory_order_relaxed);
+        atomic_fetch_add_explicit(&kProbe[32u + bin],      qArea, memory_order_relaxed);
+        atomic_fetch_add_explicit(&kProbe[48u],            1u,    memory_order_relaxed);
+        if (out.pointSize <= 0.0f)
+            atomic_fetch_add_explicit(&kProbe[49u],        1u,    memory_order_relaxed);
+
+        // ── SCALE (2026-07-28, his ask: "the SCALE of weight is still issue…
+        // if jacked up all looks like only diamonds… maybe our scale should be
+        // checked"). §4 of the handoff has said since 07-26 that avgPtSize at
+        // his real zoom has NEVER been measured. These two histograms are that
+        // number. out.pointSize is in PIXELS (Metal [[point_size]]), so this is
+        // literally how many pixels each star covers on his screen.
+        //   [50..65] sprite size, 16 log2 bins over 0.25 px .. 256 px
+        //   [66..81] mass,        16 log10 bins over 0.01 .. 1000 M_sun
+        //   [82] max size x100 (atomic_max)   [83] sum size x100 (-> mean)
+        if (out.pointSize > 0.0f) {
+            float su2 = clamp((log2(out.pointSize) + 2.0f) * (16.0f / 10.0f),
+                              0.0f, 15.0f);
+            atomic_fetch_add_explicit(&kProbe[50u + uint(su2)], 1u,
+                                      memory_order_relaxed);
+            uint qsz = uint(min(out.pointSize * 100.0f, 1.0e7f));
+            atomic_fetch_max_explicit(&kProbe[82u], qsz, memory_order_relaxed);
+            atomic_fetch_add_explicit(&kProbe[83u], qsz, memory_order_relaxed);
+        }
+        float mB = clamp((log10(max(in.posW.w, 1.0e-4f)) + 2.0f) * (16.0f / 5.0f),
+                         0.0f, 15.0f);
+        atomic_fetch_add_explicit(&kProbe[66u + uint(mB)], 1u, memory_order_relaxed);
+    }
+
     return out;
 }
 
@@ -1859,7 +2153,26 @@ fragment float4 particle_fragment(
     float sL = max(in.streakLen, 1.0f);
     float elong  = clamp(speed * 1.4f, 0.0f, 1.0f);
     float widthY = (sL > 1.001f) ? (1.0f / sL) : mix(1.0f, 0.12f, elong);
-    float lengthX = 1.0f;
+    // ── ALONG-MOTION STRETCH RESTORED — 2026-07-30 02:2x ────────────────────
+    // Was `float lengthX = 1.0f;`. In 0edde58 (2026-07-18, the build Jamal
+    // verified sharp: "DO U SEE THE LVL OF DETAIL IN THIS", "harry potter vs
+    // voldemort wand flashes, which was the reference") this line read
+    //     float lengthX = mix(1.0f, 5.0f, elong);   // much longer along
+    // Together with widthY = mix(1, 0.12, elong) a moving particle was drawn
+    // 5× LONG and 0.12 THIN — a fine bright line. Thousands of those ARE the
+    // filament look. Flattening it to 1.0 left only the across-narrowing, so a
+    // fast particle became a short dash and the field reads as round grain.
+    //
+    // It was flattened when bit18 (flux-conserving arc, 2026-07-24) took over
+    // elongation by growing the QUAD instead of warping inside it — but bit18
+    // has never executed: `sL ≡ 1` for every particle in the app, from a
+    // documented uninitialised read of out.pointSize (measured
+    // [STREAKPROBE] ptSize=0.0 streakLen=1.00). So the mechanism was removed
+    // and its replacement never ran.
+    //
+    // Branch kept: if bit18 is ever revived (sL > 1) the quad already carries
+    // the arc length, so lengthX must stay 1 there. Live path is the else.
+    float lengthX = (sL > 1.001f) ? 1.0f : mix(1.0f, 5.0f, elong);
 
     // Distance in the warped frame (anisotropic Gaussian).
     float2 warped = float2(along / lengthX, across / widthY);
@@ -1938,10 +2251,48 @@ fragment float4 particle_fragment(
     // this over-corrects and draws the cross SMALLER than baseline. That is the
     // safe direction — never stripes — so it is left as-is rather than adding a
     // second interpolant to carry the achieved factor.
+    // ── SPIKES ARE FOR BRIGHT SOURCES ONLY (2026-07-26 21:38:09) ────────────
+    // Jamal 21:33, at 10M particles: "the fucking stars bro we need to tackle
+    // em" + "it still looks wrong but its what we need... we need to unify it
+    // now". The screenshot is a uniform field of identical 4-point diamonds.
+    // MECHANISM: sL == 1 for every particle (bit18 is dead), so `starness`
+    // reduced to (1 - elong) — a SPEED gate and nothing else. At rest elong ~ 0,
+    // so EVERY particle drew a full-strength cross. The block comment above
+    // claims the strength "scales with the star's brightness (in.luminance)",
+    // but it does not: `spike` is a fixed 0.6 fraction of each particle's own
+    // luminance (see the emission line below), so a dwarf at luminance 0.037 and
+    // a giant at 1000 draw the SAME cross shape, just scaled. Relative, never
+    // absolute — so the signature that is supposed to say "this one is a star"
+    // was stamped on all 10 million.
+    // FIX: a real diffraction cross is a property of the TELESCOPE and only
+    // appears on sources bright enough to saturate it. Gate on ABSOLUTE
+    // luminance. starLum = min(M^3.5 * 2.5, 1000), so this threshold selects
+    // by mass: fade in at ~1.5 M_sun, full cross by ~2.6 M_sun. Measured field
+    // is ~82% dwarfs below 0.5 M_sun (luminance < 0.22) — those now draw as
+    // clean points, which is what lets the gas coat read as ONE surface instead
+    // of a carpet of stamps.
+    // ⛔ REVERTED 2026-07-28 09:31:05 — the brightness gate above is REMOVED.
+    // It was a logical no-op for what can be SEEN (it stripped spikes from
+    // dwarfs, but dwarfs are too dim to see; the bright stars filling the screen
+    // are exactly the ones it kept) and it left the star path in a state Jamal
+    // could no longer reason about: "u need to undo more than u did. its still
+    // broken". The star render is now bit-for-bit the pre-2026-07-26 baseline.
+    // DO NOT re-add a gate here until the STAR ATTRIBUTE DIALS exist — see the
+    // handoff's "the real loophole": every star attribute in this file is a
+    // hardcoded constant, so each experiment costs a rebuild and none of them
+    // can be A/B'd live. Build the dials first, then tune.
     float2 ps = pc * sL;
     float spikeX = exp(-ps.y * ps.y * 90.0f) * pow(max(0.0f, 1.0f - abs(ps.x)), 1.5f);
     float spikeY = exp(-ps.x * ps.x * 90.0f) * pow(max(0.0f, 1.0f - abs(ps.y)), 1.5f);
     float spike  = max(spikeX, spikeY) * starness;
+    // DIAGNOSTIC REMOVED 2026-07-28 09:12:44. `spike = 0.0f` sat here from
+    // 21:48 to answer one question and it did: with it forced off Jamal saw
+    // "fewer diamonds but just the shape changed not the brightness or color".
+    // So SOME of the diamond is this cross and some is the radial core at small
+    // sprite size — but neither is the actual complaint, which is that every
+    // star is the same brightness and the same colour. Leaving it in turned the
+    // field into plain dots ("turn them back into stars theire just dots rn").
+    // Spikes are back on, gated by kSpikeLumKnee/kSpikeLumFull above.
 
     // Emission multiplier reduced 1.8 → 0.5. With G=20 gravity, particles
     // orbit fast and the velocity-aligned streaks pile up under additive
@@ -2306,6 +2657,10 @@ static float4 mulM4(constant float* m, float4 v) {
                   m[3]*v.x + m[7]*v.y + m[11]*v.z + m[15]*v.w);
 }
 
+// (triSampleGrid removed 2026-07-28 09:33:41 — the trilinear gather was
+// pulled on 2026-07-26 and the helper has been dead code since. The blob was
+// never a sampling problem; see the handoff.)
+
 // METRIC-NATIVE EMISSION (2026-07-25, Jamal: "calculate the entire black hole,
 // not a lens... how are you gonna calculate the inner and outer ring if it's
 // just a 2D circle"). This pass integrates the null geodesic BACKWARD through
@@ -2377,10 +2732,29 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
         // Skip the inner region (r < emitInnerR): matter there is captured /
         // inside ISCO and must not fill the shadow with light (the "yolk" fix).
         if (su.gridSize > 0 && r > mu.emitInnerR && emit.r < 60.0f) {
-            float3 q  = bhWorld + x * rsW;
-            float3 pp = applyInverseSpin(q / cam.plateRadius,
-                                         cam.spinAngleX, cam.spinAngleY,
-                                         cam.spinAngleZ);
+            // ── MATCH THE SPRITES' DILATION SHEAR (2026-07-26 21:07:41) ──────
+            // particle_vertex draws every body at applySpin(posW, spinAngle *
+            // tDilate(|posW|)) — a radius-dependent SHEAR, not a rigid turn
+            // (that shear is the "time warp traces"). This gather used the FULL
+            // angle, so the march was sampling the field in a DIFFERENT frame
+            // from the one the sprites are drawn in, rotated apart by
+            // spinAngle*(1-tDilate). Two pictures of one disk at two rotations
+            // is Jamal's "the black hole is in front of the ring which can't
+            // even be" (2026-07-26 20:41).
+            // Invertible EXACTLY: applySpin is a rotation so it preserves |p|,
+            // and tDilate is a function of |p| alone — so the radius of the
+            // sample point in spun coords recovers the very tDilate the sprite
+            // was drawn with. Same constant (BH_R_IN_SIM) and same 0.4 floor as
+            // particle_vertex; if that profile changes, change it in both.
+            float3 q   = bhWorld + x * rsW;
+            float3 qp  = q / cam.plateRadius;
+            float  rDl = length(qp);
+            float  tDl = sqrt(max(0.4f, 1.0f - BH_R_IN_SIM
+                                        / max(rDl, BH_R_IN_SIM + 1e-3f)));
+            float3 pp  = applyInverseSpin(qp,
+                                          cam.spinAngleX * tDl,
+                                          cam.spinAngleY * tDl,
+                                          cam.spinAngleZ * tDl);
             // COHERENT TIME-LAPSE SAMPLING (2026-07-25): the sprite playback
             // (render.metal:355) sweeps matter FORWARD by Ω(r)·tdil·bhPoseTime
             // about the hole. Sample the field where that matter came FROM —
@@ -2452,6 +2826,12 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
             float dens = -1.0f;
             if (fsu.gridSize > 0 &&
                 max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < fsu.halfExtent) {
+                // TRILINEAR PULLED 2026-07-26 21:14:22 on Jamal's verdict ("no
+                // huuuge difference... it's not that the bending is blocky it's
+                // just annoying and wrong"). The triSampleGrid() helper was
+                // deleted 2026-07-28 once it was clear the blob is not a
+                // sampling artefact at all — see the handoff. It cost 8 gathers
+                // per march step for no visible win.
                 float3 gpF = (pp + fsu.halfExtent) * fsu.invCellSize - 0.5f;
                 int3 cf = clamp(int3(round(gpF)), int3(0), int3(fsu.gridSize - 1));
                 float mSun = float(fineCellMass[uint((cf.z * fsu.gridSize + cf.y)

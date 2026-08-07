@@ -121,6 +121,24 @@ static float noise(uint id, uint frame) {
     return (float(x & 0x7FFFu) / 32767.0f) - 0.5f;
 }
 
+// EXACT MSL MIRROR of core/imf.h::massOfId — same hash, same inverse-CDF, same
+// float math. The spawn (core/particles.cpp packForGPU) writes massOfId(i) into
+// posW.w at buffer index i, and particles NEVER change slots (a merger parks the
+// loser at its own index), so the thread id IS the id that drew this mass. That
+// makes the spawn mass field RECOVERABLE at any time — which is what lets a
+// reset actually destroy an accreted black hole instead of only moving it.
+// 🚨 Change this and you MUST change core/imf.h identically (physics_constants.h).
+static inline float imfMassOfId(uint id) {
+    uint h = id * 2654435761u;
+    h ^= h >> 15;
+    h *= 0x2c1b3c6du;
+    h ^= h >> 12;
+    float u01 = (float)(h & 0xFFFFFFu) / (float)0xFFFFFF;
+    const float aI = pow(0.08f, -1.3f);
+    const float bI = pow(50.0f, -1.3f);
+    return pow(aI + u01 * (bI - aI), 1.0f / -1.3f);
+}
+
 // Bit-level non-finite test (exponent all-ones ⇒ inf or NaN). Metal compiles
 // with fast-math, which makes isnan()/isinf() unreliable — integer bits don't
 // lie and can't be optimized away.
@@ -251,6 +269,29 @@ constant float ERUPT_TEMP      = 4.0f;  // flash temperature (hot plasma)
 // walls recycle) instead of a runaway pile-up. Tune to taste.
 constant float REST_RECYCLE    = 0.005f; // fraction of dead matter recycled per frame at rest
 
+// ── SUSTAIN REBIRTH RATE (2026-08-03) ───────────────────────────────────────
+// Fraction of the dead pile returned per frame while a note is HELD. 1/180:
+// 180 frames = 1.5 s at 120 fps, so a normal hold keeps feeding the shape for
+// its whole length instead of dumping the pile in a single frame — the gesture
+// is tied to how long the note is held, which is the point of putting it on
+// sustain. A short stab gives some matter back, a long drone gives all of it.
+constant float SUSTAIN_REBIRTH = 0.0056f;
+// Newborns appear beside a living particle, offset by this much. 5x the contact
+// radius MERGE_RSUN_SIM (0.01): any closer and merge_stars eats the newborn on
+// the frame it appears, which would make the rebirth invisible AND feed the
+// seed it just escaped. Far enough to survive, close enough to read as "in the
+// shape" at any zoom where the pattern itself is resolved.
+constant float REBIRTH_JITTER  = 0.05f;
+// Mass a returning particle carries. The abyss gives back LIGHT, not stars: the
+// eaten mass is conserved inside the seed that ate it and is NOT refunded here
+// (refunding it would destroy the accretion engine — the 2026-06-22 lesson at
+// the resurrection block). 0.01 M_sun is 10x the >0.001 alive gate so the
+// particle renders and moves, and below the IMF floor 0.08 so returned light
+// can never masquerade as a star. Whole pile (~46% of 2M) adds ~1.5% to field
+// mass — the conservation watchdog [GRAV] Mlive will drift up by that much on
+// a long hold, and that is expected, not a leak.
+constant float REBIRTH_MASS    = 0.01f;
+
 // ── RADIAL ENCLOSED-MASS PROFILE (honest geometric horizon — full_physics_todo B2) ──
 // Bin live mass into fine radial shells around the BH candidate (u.bh*) so the
 // CPU can find the largest r where r_s(M(<r)) ≥ r = the REAL horizon radius —
@@ -287,40 +328,77 @@ inline float besselSeries(int n, float x) {
     for (int i = 1; i <= n; i++) term *= hx / float(i); // hx^n / n!
     float sum = term;
     float hx2 = hx * hx;
-    for (int k = 1; k <= 20; k++) {
+    for (int k = 1; k <= 24; k++) {   // 24 = the count validated 2026-07-29
         term *= -hx2 / (float(k) * float(k + n));
         sum += term;
     }
     return sum;
 }
 
-// Large-x branch: Hankel asymptotic expansion (Abramowitz & Stegun 9.2.1),
-// P through 2 terms, Q through 2 terms. Loop-free (cannot retrigger the PSO
-// hang). REQUIRED, not an optimization: past x≈14 the power series above loses
-// ALL precision to float32 cancellation — its max term reaches ~1e7 while the
-// true |J| ≤ 1, so no term count can recover it (measured: J_6(20.32) returned
-// 0.186 instead of 0, i.e. the nodal shell at the cavity wall dissolved).
-inline float besselAsym(int n, float x) {
-    float mu = 4.0f * float(n) * float(n);
-    float t  = 8.0f * x;
-    float m1 = mu - 1.0f, m9 = mu - 9.0f, m25 = mu - 25.0f, m49 = mu - 49.0f;
-    float P = 1.0f - (m1 * m9) / (2.0f * t * t)
-                   + (m1 * m9 * m25 * m49) / (24.0f * t * t * t * t);
-    float Q = m1 / t - (m1 * m9 * m25) / (6.0f * t * t * t);
-    float chi = x - (0.5f * float(n) + 0.25f) * M_PI_F;
-    return sqrt(2.0f / (M_PI_F * x)) * (P * cos(chi) - Q * sin(chi));
-}
+// REMOVED 2026-07-29: the Hankel asymptotic large-x branch (A&S 9.2.1). Its own
+// note below was right that the power series dies past x≈14 — but the asymptotic
+// replacement only holds while x >> m², so it was silently valid ONLY for the old
+// m≤6 table and failed at 8.9e-1 abs error on the extended one. Miller's
+// recurrence (in besselJm) covers the whole domain at 2.6e-7 and is what serves
+// large x now. Kept in git history; do not reintroduce without re-measuring.
+// The original note, preserved because the DIAGNOSIS in it is still correct:
+//   "past x≈14 the power series loses ALL precision to float32 cancellation —
+//    its max term reaches ~1e7 while the true |J| ≤ 1, so no term count can
+//    recover it (measured: J_6(20.32) returned 0.186 instead of 0, i.e. the
+//    nodal shell at the cavity wall dissolved)."
 
-// Crossover measured against the true J_n over n=0..6, x∈[0,21.5]: worst abs
-// err 1.28e-3 at x=14; at every ZEROS[] wall |J| ≤ 1.1e-4. Verified on CPU
-// with the identical float32 code (tools/measure/, 2026-07-09).
-constant float BESSEL_ASYM_X = 14.0f;
+// ── REPLACED 2026-07-29: series+asymptotic → series+MILLER RECURRENCE ────────
+// WHY. The old split was series below x=14, Hankel asymptotic above. That is
+// correct ONLY while x >> m², so it held for the old m≤6 / x≤20.4 table and
+// nothing more. Measured against 80-digit ground truth (scratchpad/
+// bessel_truth.py, 5889 samples):
+//     m≤6,  x≤20.4  (old table)      worst abs err 1.5e-3   ← matches its own comment
+//     m≤11, x≤43.4  (extended table) worst abs err 8.9e-1   ← TOTAL FAILURE
+// |J| ≤ 1 everywhere, so 0.89 is garbage — the asymptotic P/Q terms carry
+// (mu-1)(mu-9)(mu-25)(mu-49) ≈ 4.6e10 at m=11 and diverge at moderate x. No
+// crossover value rescues it (swept 14/16/20/24). So extending the zeros table
+// REQUIRED replacing the evaluator; doing only the table would have shipped a
+// broken field.
+//
+// NOW: power series below x=4, Miller downward recurrence above.
+//   J_{k-1} = (2k/x)·J_k − J_{k+1} is stable DOWNWARD. Seed at order M with a
+//   tiny value, recur down, normalise with J_0 + 2·(J_2+J_4+…) = 1.
+// Measured worst abs err 2.6e-7 over m=0..12, x∈[1e-4, 43.4] — 5700× better
+// than the old code inside its OWN range, over twice the range.
+//
+// TWO CONSTRAINTS BAKED IN, both learned the hard way:
+//  1. NO DATA-DEPENDENT BREAK. Fixed iteration count — a variable-length break
+//     inlined 7× hung PSO creation (2026-07-09).
+//  2. NO 1/x NEAR THE AXIS. Miller divides by x, which is exactly what produced
+//     Inf/NaN on the cylinder axis and zeroed the whole sim (2026-07-09). The
+//     series branch owns x < 4, so the recurrence never sees a small x.
+//     Verified: J_0(1e-4)=1.00000000, J_1(1e-4)=5.0e-5, J_11(1e-4)=0, and zero
+//     non-finite results across all 5889 samples.
+// M=64 is the measured knee: 2.6e-7 at M=64 and M=96 alike, degrading to
+// 3.8e-5 at M=56 and 9.9e-3 at M=48. Sweep in scratchpad/msweep.cpp.
+constant float BESSEL_SERIES_X = 4.0f;   // series below, Miller above
+constant int   BESSEL_MILLER_M = 64;     // recurrence start order
 
-// J_m(x) over the FULL cavity range x∈[0, 20.4] (= max ZEROS[6][3] = 20.3208).
 inline float besselJm(int n, float x) {
     float ax = fabs(x);
     if (ax < 1e-6f) return (n == 0) ? 1.0f : 0.0f;
-    float J = (ax < BESSEL_ASYM_X) ? besselSeries(n, ax) : besselAsym(n, ax);
+    float J;
+    if (ax < BESSEL_SERIES_X) {
+        J = besselSeries(n, ax);
+    } else {
+        float jkp1 = 0.0f, jk = 1.0e-20f, norm = 0.0f, res = 0.0f;
+        for (int k = BESSEL_MILLER_M; k >= 1; k--) {
+            float jkm1 = (2.0f * float(k) / ax) * jk - jkp1;
+            jkp1 = jk;
+            jk   = jkm1;
+            if (k - 1 == n) res = jk;
+            if (((k - 1) & 1) == 0) norm += (k - 1 == 0) ? jk : 2.0f * jk;
+            if (fabs(jk) > 1e18f) {          // rescale, no branch on data length
+                jk *= 1e-18f; jkp1 *= 1e-18f; norm *= 1e-18f; res *= 1e-18f;
+            }
+        }
+        J = res / norm;
+    }
     // J_n(-x) = (-1)^n J_n(x); call sites pass x ≥ 0, kept for correctness.
     return (x < 0.0f && (n & 1)) ? -J : J;
 }
@@ -351,14 +429,31 @@ inline float2 besselJmD(int m, float x) {
 // "Bessel zero value". Using it as k_ρ·R drove x=k_ρρ into the hundreds and
 // the power series to ±1e17 → Inf force → the finite-guard froze the field
 // (root cause of the 2026-07-09 eigenmode freeze).
-constant float BESSEL_ZEROS[28] = {
-    2.4048f,  5.5201f,  8.6537f, 11.7915f,   // J_0
-    3.8317f,  7.0156f, 10.1735f, 13.3237f,   // J_1
-    5.1356f,  8.4172f, 11.6198f, 14.7960f,   // J_2
-    6.3802f,  9.7610f, 13.0152f, 16.2235f,   // J_3
-    7.5883f, 11.0647f, 14.3725f, 17.6160f,   // J_4
-    8.7715f, 12.3386f, 15.7002f, 18.9801f,   // J_5
-    9.9361f, 13.5893f, 17.0038f, 20.3208f,   // J_6
+// ── EXTENDED 2026-07-29: 7x4 (m≤6, n≤4) → 12x9 (m≤11, n≤9). Flat [m*9 + (n-1)].
+// WHY. modes.cpp produces m = pitchClass = 0..11 and n = octave = 1..9, but this
+// table only reached m=6, n=4 — and the lookup below CLAMPED to fit. So F#, G,
+// G#, A, A# and B all collapsed onto m=6 (six of twelve semitones drawing the
+// IDENTICAL shape) and every octave from 4 up collapsed onto n=4. That is the
+// live cause of "the chladni shapes look wrong its only rings now on almost all
+// notes" (Jamal 2026-07-28). The whole keyboard now maps to a distinct mode.
+// Generated in 80-digit Decimal (scratchpad/bessel_truth.py) and cross-checked
+// against published values to 12 digits; the original 7x4 block above is
+// reproduced EXACTLY, so this is a strict extension, not a re-derivation.
+// Max is now 43.3684 (J_11 9th zero), up from 20.3208 — which is precisely why
+// besselJm had to be replaced first (see the note above it).
+constant float BESSEL_ZEROS[108] = {
+     2.4048f,  5.5201f,  8.6537f, 11.7915f, 14.9309f, 18.0711f, 21.2116f, 24.3525f, 27.4935f, // J_0
+     3.8317f,  7.0156f, 10.1735f, 13.3237f, 16.4706f, 19.6159f, 22.7601f, 25.9037f, 29.0468f, // J_1
+     5.1356f,  8.4172f, 11.6198f, 14.7960f, 17.9598f, 21.1170f, 24.2701f, 27.4206f, 30.5692f, // J_2
+     6.3802f,  9.7610f, 13.0152f, 16.2235f, 19.4094f, 22.5827f, 25.7482f, 28.9084f, 32.0649f, // J_3
+     7.5883f, 11.0647f, 14.3725f, 17.6160f, 20.8269f, 24.0190f, 27.1991f, 30.3710f, 33.5371f, // J_4
+     8.7715f, 12.3386f, 15.7002f, 18.9801f, 22.2178f, 25.4303f, 28.6266f, 31.8117f, 34.9888f, // J_5
+     9.9361f, 13.5893f, 17.0038f, 20.3208f, 23.5861f, 26.8202f, 30.0337f, 33.2330f, 36.4220f, // J_6
+    11.0864f, 14.8213f, 18.2876f, 21.6415f, 24.9349f, 28.1912f, 31.4228f, 34.6371f, 37.8387f, // J_7
+    12.2251f, 16.0378f, 19.5545f, 22.9452f, 26.2668f, 29.5457f, 32.7958f, 36.0256f, 39.2404f, // J_8
+    13.3543f, 17.2412f, 20.8070f, 24.2339f, 27.5837f, 30.8854f, 34.1544f, 37.4001f, 40.6286f, // J_9
+    14.4755f, 18.4335f, 22.0470f, 25.5095f, 28.8874f, 32.2119f, 35.4999f, 38.7618f, 42.0042f, // J_10
+    15.5898f, 19.6160f, 23.2759f, 26.7733f, 30.1791f, 33.5264f, 36.8336f, 40.1118f, 43.3684f, // J_11
 };
 
 // Cavity wall = the play cap itself: the radius clamp at the bottom of this
@@ -513,18 +608,95 @@ kernel void compute_physics(
     // a separate concern to address WITHOUT breaking accretion.
     // PLAY pukes the whole dead field back at once; REST trickles it back slowly
     // (the lifecycle recycle) so the eaten pile can't run away into a whiteout.
-    bool reviveNow = (u.totalAmplitude > 0.02f) ||
-                     ((noise(id, u.frameCounter) + 0.5f) < REST_RECYCLE);
-    if ((u.bhToggles & 0x40u) && mass <= 0.001f && reviveNow) {  // bit6: resurrection + rest recycle
-        float r_home = p.spinW.x;
-        if (r_home > 0.001f) {
-            float theta = as_type<float>(p.entanglement.z);
-            float aphi  = as_type<float>(p.entanglement.w);
-            float st = sin(theta);
-            float3 home = r_home * float3(st * cos(aphi), st * sin(aphi), cos(theta));
-            px = home.x; py = home.y; pz = home.z;
-            prevX = home.x; prevY = home.y; prevZ = home.z;  // v = 0
-            mass = 1.0f;                                       // alive, weightless tracer
+    // ── SUSTAIN REBIRTH — THE ABYSS GIVES ITS LIGHT BACK (2026-08-03) ────────
+    // Jamal: "when i sustain a note the particles from within the black hole
+    // respawn into the shape. this way we also finally solve the fucking
+    // invisible abyss of light where all particles perpetually land in once
+    // eaten by a black hole." Eaten matter is parked at 4000+ with mass 0 by
+    // merge_stars and NEVER comes back — that pile (measured ~46% of the field)
+    // is the abyss. Holding a note now streams it back INTO the Chladni figure.
+    // The note-driven revive is SUSTAIN-ONLY now (was any amplitude > 0.02) and
+    // its destination is the shape, not the star-map home. The slow rest
+    // trickle keeps its old home destination, unchanged.
+    // envelopePhase: 0 silence, 1 attack, 2 decay, 3 sustain, 4 release.
+    bool sustainHeld = (u.envelopePhase >= 2.5f && u.envelopePhase < 3.5f);
+    bool streamNow   = sustainHeld &&
+                       ((noise(id, u.frameCounter + 977u) + 0.5f) < SUSTAIN_REBIRTH);
+    // ── REST TRICKLE CUT FROM bit6 (2026-08-04 00:07:15) ─────────────────────
+    // MEASURED, 5.5 min rest soak, nothing touched, envelopePhase 0.0 throughout:
+    // Mlive 594563 -> 664608, +11.8% (~12.7k M_sun/min). streamNow cannot fire
+    // outside sustain (phase 2.5-3.5), so 100% of that minted mass came through
+    // this path. Reviving a corpse ALWAYS creates mass: its own mass was handed
+    // to the seed that ate it and is deliberately never refunded (2026-06-22),
+    // so any revive mass is new mass. Lowering 1.0 -> REBIRTH_MASS slowed the
+    // pump 100x but did not close it, and a drifting Mlive makes every mass
+    // fraction (share, encFrac, seedTarget) a ratio against a moving denominator.
+    // The rest trickle was NEVER default-on before bit6 flipped for sustain
+    // rebirth — it rode in as collateral, and Jamal asked for the sustain
+    // feature, not this. Cutting it restores mass conservation at rest and
+    // leaves the requested feature intact. REST_RECYCLE is kept as the record of
+    // the old rate; it is deliberately unreferenced now.
+    if ((u.bhToggles & 0x40u) && mass <= 0.001f && streamNow) {
+        bool born = false;
+        if (streamNow) {
+            // INTO THE SHAPE, without evaluating the eigenmode here: the pattern
+            // IS wherever the living matter currently is, so being born beside a
+            // random live particle lands in the correct Chladni figure for ANY
+            // mode, chord or sculpt state, and stays correct if the mode changes
+            // mid-hold. Read from prevParticles (the previous-frame snapshot) so
+            // this never races the writes happening around it this frame.
+            uint n = uint(max(u.particleCount, 1));
+            for (uint t = 0u; t < 4u && !born; ++t) {
+                float rnd = noise(id, u.frameCounter + 31u * (t + 1u)) + 0.5f;
+                uint  j   = uint(rnd * float(n)) % n;
+                float4 hp = prevParticles[j].posW;
+                // Reject the dead and the parked: a host must be a living
+                // particle inside the domain, else we would seed the newborn
+                // into the abyss it is escaping (park sits at 4000+, domain
+                // is +-64 and the measured field maxR is 100).
+                if (hp.w > 0.001f && !notFinite3(hp.xyz) && length(hp.xyz) < 200.0f) {
+                    float3 hv = hp.xyz - prevParticles[j].prevW.xyz; // host's per-frame step
+                    float3 off = float3(noise(id, u.frameCounter + 7u),
+                                        noise(id, u.frameCounter + 13u),
+                                        noise(id, u.frameCounter + 19u)) *
+                                 (2.0f * REBIRTH_JITTER);
+                    float3 pos = hp.xyz + off;
+                    px = pos.x; py = pos.y; pz = pos.z;
+                    // Born MOVING WITH the shape. At v=0 the pattern's own
+                    // motion would read as the newborn being flung, and the
+                    // Verlet step would book that jump as a real velocity.
+                    prevX = pos.x - hv.x; prevY = pos.y - hv.y; prevZ = pos.z - hv.z;
+                    // ── THE HOLE PAYS FOR THE REBIRTH (2026-08-04 22:46:41) ──
+                    // Jamal: "BH IS NOT A PERPETUAL STATE it can be reversed
+                    // through play... what if mass could get sucked OUT of a
+                    // black hole." Was REBIRTH_MASS (0.01) — minted from
+                    // nothing, measured live: live 713711→1351715 in one
+                    // 120-frame sustain window, Mlive +6382 = 638004 × 0.01
+                    // exactly. Ghosts: too light to see, and the seed kept all
+                    // 578934 M_sun, so bhStrength (= seedTarget = r_s(gMaxMass)
+                    // /0.5, monotone) could never fall and the hole never
+                    // un-formed. Now the corpse comes back at its OWN SPAWN
+                    // MASS and that mass is WITHDRAWN from the hole, so the
+                    // shape strengthens with real matter and gMaxMass becomes
+                    // NON-MONOTONE for the first time — the only way the hole
+                    // can shrink under play.
+                    // This reverses the 2026-06-22 "never refund" rule, which
+                    // existed to protect the accretion engine. Explicit call by
+                    // Jamal, 2026-08-04: reversibility wins. Rest still eats.
+                    // 🚨 imfMassOfId(id) is the EXACT spawn mass of this slot
+                    // (particles never change slots), so this returns precisely
+                    // what was taken — no more, no less.
+                    mass = imfMassOfId(id);
+                    // Global withdrawal ledger, mass ×64 (same fixed point as
+                    // the meal accumulator [0]). Charged to the single most
+                    // massive body in seed_apply — which IS the hole, exactly
+                    // as renderer.mm defines it (bhSeedMass = gMaxMass).
+                    atomic_fetch_add_explicit(&seedAccum[6],
+                                              uint(mass * 64.0f + 0.5f),
+                                              memory_order_relaxed);
+                    born = true;
+                }
+            }
         }
     }
 
@@ -583,6 +755,19 @@ kernel void compute_physics(
         py = r_new * sin(ph_new) * sin(th_new);
         pz = r_new * cos(ph_new);
         vpx = 0.0f; vpy = 0.0f; vpz = 0.0f;
+        // ── RESET MUST DESTROY THE HOLE (2026-08-03) ─────────────────────────
+        // This block used to move ONLY position and velocity. Mass lives in
+        // posW.w and was left untouched, so the accreted seed — a single body
+        // holding 3-5e5 M_sun of swallowed stars — SURVIVED every reset, and
+        // every eaten star stayed dead (parked at mass 0). The sim was then
+        // right to keep reporting a black hole: r_h = kRsSimPerMsun * M_seed
+        // ~= 0.82 stayed > 0, which keeps the one-way membrane alive in
+        // spatial_hash.metal and lets a phantom half-million-solar-mass point
+        // dominate the re-scattered field. "Reset" was a lie about the state.
+        // Restoring the deterministic spawn draw un-eats the field in one
+        // step: the seed drops back to its own star's mass and every corpse
+        // comes back alive at its spawn mass. THIS is the destruction.
+        mass = imfMassOfId(id);
     }
 
     // Accumulate velocity pulses and position corrections globally
@@ -1936,12 +2121,15 @@ kernel void compute_physics(
                                  ? 1.0f : EIGEN_COUPLE;
                 float rho = sqrt(px * px + py * py);
                 // Outside the cavity wall there is NO mode → no radiation force.
-                // This also bounds k_ρρ ≤ α ≤ 20.3208, inside besselJm's range.
+                // This also bounds k_ρρ ≤ α ≤ 43.3684 (2026-07-29: was 20.3208
+                // on the 7x4 table), inside besselJm's validated range.
                 if (rho < EIGEN_R) {
                     rho = max(rho, 1e-4f);                              // axis guard
-                    int   mm   = clamp(int(voices[vi].m), 0, 6);
-                    int   nn   = clamp(int(voices[vi].n), 1, 4);
-                    float alphaZero = BESSEL_ZEROS[mm * 4 + (nn - 1)];  // J_m(α)=0
+                    // CLAMPS WIDENED 2026-07-29 to the full keyboard: m was
+                    // pinned to 0..6 (F#..B all drew m=6) and n to 1..4.
+                    int   mm   = clamp(int(voices[vi].m), 0, 11);
+                    int   nn   = clamp(int(voices[vi].n), 1, 9);
+                    float alphaZero = BESSEL_ZEROS[mm * 9 + (nn - 1)];  // J_m(α)=0
                     float kRho = alphaZero / EIGEN_R;                   // cavity-quantized
                     // Axial mode number p: an integer, so the standing wave FITS
                     // the tube (k_z = pπ/L). p is a musical mapping — same status
@@ -3227,7 +3415,12 @@ kernel void seed_mark(
 
 // seedAccum layout per slot (8 uints): [0] mass ×64, [1] meals,
 // [2,3,4] momentum ×65536 (signed, two's-complement wrap), [5] KE ×65536,
-// [6,7] reserved.
+// [7] reserved.
+// ⚠️ [6] IS NOT PER-SLOT. Slot 0's word 6 is a GLOBAL ledger: Σ mass ×64
+// withdrawn from the hole by sustain rebirth this frame (2026-08-04 22:46:41).
+// The whole 1024×8 buffer is cleared every frame (renderer.mm), so it is a
+// per-frame total like the rest. Only slot 0's [6] is used; slots 1.. keep
+// [6] unused.
 kernel void seed_apply(
     device Particle* particles [[buffer(0)]],
     device const uint* seedMeta [[buffer(1)]],
@@ -3236,7 +3429,48 @@ kernel void seed_apply(
     constant PhysicsUniforms& u [[buffer(4)]],
     uint tid [[thread_position_in_grid]])
 {
-    if (tid >= min(seedMeta[0], 1024u)) return;
+    uint nS = min(seedMeta[0], 1024u);
+
+    // ── WITHDRAWAL: THE HOLE PAYS FOR SUSTAIN REBIRTH (2026-08-04 22:46:41) ──
+    // THREAD 0 ONLY, and it is the sole writer of a mass in this block — the
+    // scan below reads every seed's mass, so any other thread writing
+    // concurrently would race the max-determination. One writer removes that
+    // by construction.
+    // No overlap with meal-crediting: withdrawal is non-zero only during
+    // sustain (amplitude high), crediting runs only at rest (amplitude < 0.02),
+    // so the two paths are mutually exclusive in practice.
+    // Charged to the MOST MASSIVE body, which is the definition of the hole
+    // used everywhere else (renderer.mm: bhSeedMass = gMaxMass).
+    if (tid == 0u) {
+        float wTot = float(atomic_load_explicit(&seedAccum[6],
+                                                memory_order_relaxed)) * (1.0f / 64.0f);
+        if (wTot > 0.0f && nS > 0u) {
+            uint  bestSlot = 0xFFFFFFFFu;
+            float bestM    = 0.0f;
+            for (uint k = 0u; k < nS; ++k) {
+                uint kid = seedIds[k];
+                if (kid >= uint(u.particleCount)) continue;
+                float mk = particles[kid].posW.w;
+                if (mk > bestM) { bestM = mk; bestSlot = k; }
+            }
+            // Clamp at 0: the corpses' total spawn mass cannot exceed what the
+            // hole ate, so this should never bind. If it ever does, the excess
+            // WAS minted — renderer.mm logs the shortfall rather than hiding it.
+            if (bestSlot != 0xFFFFFFFFu) {
+                float drain = min(wTot, bestM);
+                particles[seedIds[bestSlot]].posW.w = bestM - drain;
+            }
+        }
+    }
+
+    // ── MEAL CREDITING ───────────────────────────────────────────────────────
+    // Gate moved here from the renderer's dispatch condition (2026-08-04
+    // 22:46:41): the CPU-side `totalAmplitude < 0.02` meant this kernel did not
+    // run AT ALL while playing, so the withdrawal above — which only ever
+    // happens while playing — would never have been applied. Crediting keeps
+    // exactly its old behaviour; only the place the test lives changed.
+    if (u.totalAmplitude >= 0.02f) return;    // no meal-crediting while playing
+    if (tid >= nS) return;
     uint sid = seedIds[tid];
     if (sid >= uint(u.particleCount)) return;
     float gain = float(atomic_load_explicit(&seedAccum[tid * 8u + 0u],
@@ -3448,7 +3682,12 @@ struct PartialStats {
     float sumR;      // Σ |r| of live stars (→ mean radius)
     float maxR;      // farthest live star
     float maxMass;   // heaviest body (M_sun) — watches the seed grow
-    float pad3;
+    // Σ mass held by SEED-CLASS bodies (m ≥ M_BH_SEED), i.e. how much of the
+    // field has already organised into heavy bodies rather than loose stars.
+    // Added 2026-08-03 into the old pad3 slot (no new buffer, no new dispatch)
+    // to measure the fake-pull gate BEFORE choosing its thresholds. maxMass
+    // only ever reports the single biggest body; this reports the population.
+    float sumSeedMass;
     float sumEncX;   // Σ mass·position of stars within R_ENC of the candidate
     float sumEncY;   //   → enclosed MASS (M_sun) + refined core COM
     float sumEncZ;
@@ -3478,6 +3717,7 @@ kernel void reduce_stats(
     threadgroup float sharedCT[256];  // live star count
     threadgroup float sharedSM[256];  // Σ stellar mass (M_sun)
     threadgroup float sharedMM[256];  // max stellar mass (the seed watch)
+    threadgroup float sharedSD[256];  // Σ mass of seed-class bodies (m ≥ M_BH_SEED)
     threadgroup float sharedSR[256];  // Σ radius
     threadgroup float sharedMR[256];  // max radius
     threadgroup float sharedEX[256];  // Σ m·pos within R_ENC of BH candidate
@@ -3553,6 +3793,11 @@ kernel void reduce_stats(
     sharedCT[tid] = real ? 1.0f : 0.0f;
     sharedSM[tid] = lm;
     sharedMM[tid] = lm;
+    // lm already excludes walls (pmass < 1e8) and the dead, so the seed test is
+    // just the mass threshold — the SAME M_BH_SEED the origin-pin and the
+    // capture paths gate on, so this measures exactly the population that fake
+    // pull acts upon.
+    sharedSD[tid] = (lm >= M_BH_SEED) ? lm : 0.0f;
     float lr = length(lpos);
     sharedSR[tid] = real ? lr : 0.0f;
     sharedMR[tid] = real ? lr : -1e9f;
@@ -3591,6 +3836,7 @@ kernel void reduce_stats(
             sharedCT[tid] += sharedCT[tid + stride];
             sharedSM[tid] += sharedSM[tid + stride];
             sharedMM[tid]  = max(sharedMM[tid], sharedMM[tid + stride]);
+            sharedSD[tid] += sharedSD[tid + stride];
             sharedSR[tid] += sharedSR[tid + stride];
             sharedEX[tid] += sharedEX[tid + stride];
             sharedEY[tid] += sharedEY[tid + stride];
@@ -3609,6 +3855,7 @@ kernel void reduce_stats(
         partialSums[tgId].momentumY = sharedMY[0];
         partialSums[tgId].sumMass  = sharedSM[0];
         partialSums[tgId].maxMass  = sharedMM[0];
+        partialSums[tgId].sumSeedMass = sharedSD[0];
         partialSums[tgId].sumTemp  = sharedST[0];
         partialSums[tgId].maxTemp  = sharedMT[0];
         partialSums[tgId].sumSpeed = sharedSS[0];

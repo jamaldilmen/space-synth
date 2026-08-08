@@ -184,6 +184,48 @@ constant float MERGE_RSUN_SIM = 0.01f;
 // feeding. Must match the 50.0f in render.metal's dark-cull.
 constant float M_BH_SEED = 50.0f;
 
+// ── VISCOUS ACCRETION RATE LIMIT (2026-08-08) ───────────────────────────────
+// WHY: the FORMED regime's capture radius is 3·r_s, which is LINEAR in mass, so
+// cross-section ∝ M² and dM/dt ∝ M² — a finite-time blow-up. Measured: Mmax
+// jumped 475 → 322,919 M☉ between two consecutive log samples, with ZERO
+// samples in between (docs/MEASURED_2026-08-08_A1_runaway_cause.md). The field
+// was eaten down to live=19.
+//
+// The cause is that nothing limits the RATE. Matter touching the capture radius
+// falls straight in, i.e. the sim accretes at the free-fall ceiling. Real discs
+// are limited by VISCOSITY — how fast matter sheds angular momentum — which is
+// slower by 1/(α·(h/r)²).
+//
+// EVERY NUMBER BELOW IS DERIVED FROM THIS SIM'S OWN MEASURED TELEMETRY.
+// Nothing here was picked to feel right.
+//
+//   h/r = c_s/v_φ, evaluated at two independent places in our own disc:
+//     inner: T=3.65e11 K → c_s=0.3052c ; v_φ=0.4092c → h/r = 0.746
+//     mean : T=2.95e10 K → c_s=0.0868c ; v_φ=0.1125c → h/r = 0.771
+//   Temperatures 12× apart, velocities 3.6× apart, answers agree to 3% — the
+//   disc genuinely has a uniform aspect ratio ≈0.75. That is thick, which is
+//   correct: our anchor Sgr A* is a RIAF, not a thin disc.
+//
+//   SCALE CHECK, independent: measured orbV max = 0.4092c vs the theoretical
+//   ISCO speed √(1/6) = 0.4082c — 0.23%. We are exactly at scale.
+constant float SS_ALPHA      = 0.1f;      // Shakura–Sunyaev viscosity parameter
+constant float DISK_H_OVER_R = 0.746f;    // MEASURED (above), not chosen
+constant float V_ISCO_C      = 0.40825f;  // √(1/6), c ≡ 1 in sim units
+constant float KRS_SIM_PER_MSUN = 1.6825e-6f; // KEEP IN SYNC with units.h
+constant float KTLAPSE_SIM_PER_WALLSEC = 3.51513f; // units.h kTLapse
+//   T_isco[sim] = 2π·(3·r_s)/v_isco = 6π·kRs·M/v_isco   →  LINEAR in M
+//   t_visc      = T_isco/(α·(h/r)²)
+//   dM/dt       = M/t_visc = α·(h/r)²·v_isco/(6π·kRs)
+// ⭐ The M cancels. The ceiling is MASS-INDEPENDENT, so the hole grows LINEARLY
+//   and the M² divergence is gone BY CONSTRUCTION — not by a clamp.
+constant float MDOT_MSUN_PER_SIMTIME =
+    SS_ALPHA * DISK_H_OVER_R * DISK_H_OVER_R * V_ISCO_C /
+    (6.0f * 3.14159265f * KRS_SIM_PER_MSUN);          // ≈ 716 M☉ / sim-time
+// dt reaches this kernel in WALL seconds, so convert: ≈ 2517 M☉ / wall-second.
+// At that rate 50 M☉ → the whole 594,276 M☉ field takes ≈ 3.9 minutes.
+constant float MDOT_MSUN_PER_WALLSEC =
+    MDOT_MSUN_PER_SIMTIME * KTLAPSE_SIM_PER_WALLSEC;
+
 // ── Unified BH constants ────────────────────────────────────────────────────
 // All BH-related sizes derive from BH_M (the visual Schwarzschild radius in
 // sim coords). Must match `M` in blackhole.metal:5.
@@ -1251,10 +1293,42 @@ kernel void compute_physics(
                         rt2 = min(rt2, reach * reach);
                     }
                     if (dS2 >= rt2) continue;
-                    // EATEN: exact mass to the seed's plate, then die parked.
-                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 0u],
-                                              uint(mass * 64.0f + 0.5f),
-                                              memory_order_relaxed);
+                    // ── VISCOUS RATE LIMIT (2026-08-08) ─────────────────────
+                    // The hole cannot swallow faster than its own viscous
+                    // timescale allows. Budget = MDOT · dt for THIS frame.
+                    // 🚨 CHECKED HERE, BEFORE THE VICTIM DIES — deliberately.
+                    // Clamping later, at the credit step in seed_apply, would
+                    // DESTROY the excess: the victim is already dead by then
+                    // and its mass would vanish from the books. Refusing the
+                    // meal instead leaves the star alive and orbiting, so mass
+                    // is conserved exactly and it simply gets eaten later.
+                    // ⚠️ HARD limit, via compare-exchange. The first version of
+                    // this used a plain load-then-add, which is NOT atomic as a
+                    // pair: every thread could observe "budget free" in the same
+                    // instant and all of them would then add. MEASURED overshoot
+                    // was 1.90× (4,780 M☉/wall-s against the derived 2,517).
+                    // A thread must now CLAIM the budget, not merely observe it
+                    // free — the add only lands if the plate is still what we
+                    // read. Residual overshoot is at most ONE victim (≤50 M☉),
+                    // because the last meal that fits may cross the line.
+                    uint  budgetFx = uint(max(MDOT_MSUN_PER_WALLSEC * dt, 0.0f) * 64.0f);
+                    uint  myFx     = uint(mass * 64.0f + 0.5f);
+                    device atomic_uint *plate = &seedAccum[(slot - 1u) * 8u + 0u];
+                    uint cur = atomic_load_explicit(plate, memory_order_relaxed);
+                    bool reserved = false;
+                    while (cur < budgetFx) {
+                        // On failure Metal writes the observed value back into
+                        // `cur`, so the loop retries against fresh state.
+                        if (atomic_compare_exchange_weak_explicit(
+                                plate, &cur, cur + myFx,
+                                memory_order_relaxed, memory_order_relaxed)) {
+                            reserved = true;
+                            break;
+                        }
+                    }
+                    if (!reserved) continue;   // hole is full this frame
+                    // EATEN: mass already claimed on the plate by the CAS above
+                    // (do NOT fetch_add word 0 again — that would double-count).
                     atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 1u],
                                               1u, memory_order_relaxed);
                     // MOMENTUM LEDGER (2026-07-07): my m·v goes with my mass —

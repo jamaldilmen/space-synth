@@ -279,8 +279,33 @@ built for the counter-rotation bug is the sonification's phase source.
 | `velW.w` low 29 bits | ∫\|v\|dt — path length, "Feynman arrow". **Wrong for audio.** | particles.metal:2772 |
 | `posePhase[]` | ∫ω dt — **true orbital angle. This one.** | render.metal:383 |
 
-⚠️ `pose_phase_advance` is gated on bit20 + `bhDiskAxisY < 0.5` — it only runs in time-lapse
-mode. Audio needs it always.
+⚠️ **CORRECTED 2026-08-10 09:56:38 — the gate is FOUR conditions, not two, and the two that
+matter are not the two named here.** Read in source at `render.metal:486-487`:
+
+    bit20 (bhToggles & 0x100000)  &&  bhDiskGM > 0.0
+                                  &&  bhDiskAxisY < 0.5
+                                  &&  envelopePhase < 0.5
+
+- `bhDiskAxisY < 0.5` — **always true, a no-op condition.** `bhDiskAxisY` is `0.0f` at every
+  assignment site (`renderer.mm:1551`, `:1589`, `:1592`) and in the header default
+  (`renderer.h:200`).
+- `bit20` — **default ON** (`app_state.h:56`, `uiTogAnalyticSpin = true`). Not a practical gate.
+- 🚨 **`bhDiskGM > 0` — `posePhase` does not advance until a black hole has FORMED.** The fuse
+  is 3–16 minutes of wall clock (board row A5), so for most of a run every particle's phase
+  sits at its zeroed initial value (`renderer.mm:1158` — fresh `MTLBuffer`s come back zeroed).
+- 🚨 **`envelopePhase < 0.5` — the PLAY GATE, added 2026-08-03, AFTER this document was
+  written.** `posePhase` freezes the instant a note sounds and stays frozen for the whole ADSR.
+  **The state with the most angular structure is exactly the state where the phase source is
+  dead.**
+
+**And the gate is right for what it was built for.** The kernel banner at `render.metal:471-484`
+records why: the playback ω is Keplerian, so it is *differential* rotation, and differential
+rotation shears every m≠0 lobe into a concentric ring. That was his own bug report ("the shapes
+are only rings and blurry"). **So audio cannot simply un-gate it.**
+
+⭐ **This is now an open design decision, not a plumbing note:** audio needs an *unconditional*
+∫ω dt, which means either a second accumulator or splitting the one buffer's two uses. Costed
+nowhere yet.
 
 **Coherence.** Whether a group sounds like a tone or like noise depends on whether its
 members move together. Per group: accumulate Σcos φ and Σsin φ → the mean-phase vector
@@ -313,10 +338,21 @@ bandwidth, not arithmetic** — the sum must read per-particle state every block
 1. **N** — §8. Everything downstream depends on it.
 2. **Does our disk actually ring at κ?** Test-particle prediction vs. a self-gravitating SPH
    field. Measurable, unmeasured.
-3. **`pose_phase_advance` is gated to time-lapse mode.** Audio needs it unconditionally.
+3. ⚠️ **`pose_phase_advance` — RESTATED 2026-08-10 09:56:38, this is bigger than it read.** Not
+   "gated to time-lapse mode": gated on a **formed black hole** *and* **silence** (§7). Audio
+   needs an unconditional ∫ω dt, and it cannot get one by deleting the gate — the gate prevents
+   a real visual bug. **Open: one accumulator with two consumers, or two accumulators.**
 4. **Redshift floor.** `poseOmegaEff` clamps the dilation at 0.4. Audio may need the honest form.
 5. **Audio-thread safety.** The field snapshot must reach the audio callback lock-free.
    `AudioRingBuffer` (audio_engine.h:18) is SPSC and exists as a pattern.
+   ⭐ **ADDED 2026-08-10 09:56:38 — the readback is cheaper than this row assumed.** Particle
+   buffers are allocated `MTLResourceStorageModeShared` (`renderer.mm:1138`), so on this
+   hardware they are already CPU-addressable — **no blit, no staging buffer, no round trip.**
+   `grep` finds **zero** CPU reads of `particleBufferRead.contents` today, so the path does not
+   exist, but nothing structural blocks it. **Consequence for §10 step 2: solo at N = 1 needs no
+   GPU synthesis path at all** — one particle's state is a pointer offset. The CPU→GPU→CPU
+   problem flagged in `MEASURED_2026-08-08_N_voices.md` is a step-3 problem, not a step-2 one.
+   🚨 **But the audio thread must not be the one doing the read** — see item 10.
 6. **Rest-regime gating.** Several BH paths gate on `totalAmplitude < 0.02f` (renderer.mm:1384).
    Audio must not inherit a gate that silences it on play.
 7. **`fft.cpp` is forward-only** (analysis). vDSP does inverse; that path is new code.
@@ -324,6 +360,16 @@ bandwidth, not arithmetic** — the sum must read per-particle state every block
    constants. Honest sentence: *"the frequencies a real 5.9×10⁵ M☉ system would produce,
    transposed by exactly 16 octaves."* Do not inflate it.
 9. **§11 — the player's hand (MPE/Ableton) is NOT designed.**
+10. 🚨 **THE RT PATH IS NOT LOCK-FREE TODAY, AND IT IS A SHOW RISK (board D6).** ADDED
+    2026-08-10 09:56:38. Before any of this lands, `Synth::processBlock` — the CoreAudio render
+    callback — takes an unconditional blocking `lock_guard` on `queueMutex_` at **`synth.cpp:91`**,
+    and a **second** one at `synth.cpp:138` when the voice `try_lock` was missed. The other side
+    of that mutex is `noteOn` (`:162`) and `noteOff` (`:175`), which hold it **across a
+    `std::sort` of up to 256 elements** from the UI/MIDI thread (7 call sites in `main.cpp`).
+    The voice mutex right below at `:99` is correctly `try_to_lock` — *"never blocks the RT
+    thread"* — so the rule was known and applied to one mutex and not the other. **`CLAUDE.md`
+    states the convention: "Lock-free only between audio and render threads."** This is the
+    existing violation, and everything in this document runs on top of it.
 
 ---
 
@@ -399,6 +445,21 @@ Read from code or computed from `spacetime.h`, 2026-07-26/28. Nothing from memor
 | decorative LFO drives size/radius/jitter | main.cpp:2007–2018 |
 | `fineCellMassBuffer` gated on SS_AMR (default OFF), rest-only, ±4 sim | renderer.mm:2356, 119 |
 
+**Added 2026-08-10 09:56:38** — read in source this session, nothing from memory or from another
+agent's summary:
+
+| fact | source |
+|---|---|
+| `pose_phase_advance` gate is **4** conditions: bit20 ∧ `bhDiskGM>0` ∧ `bhDiskAxisY<0.5` ∧ `envelopePhase<0.5` | render.metal:486-487 |
+| `bhDiskAxisY` is `0.0f` at every assignment site → that condition is a no-op | renderer.mm:1551, :1589, :1592; renderer.h:200 |
+| bit20 (`uiTogAnalyticSpin`) defaults **ON** | app_state.h:56 |
+| particle buffers allocated `MTLResourceStorageModeShared` → CPU-addressable, no round trip | renderer.mm:1138 |
+| **zero** CPU reads of `particleBufferRead.contents` exist | `grep`, 2026-08-10 09:52 |
+| RT audio callback blocks on `queueMutex_` at `:91` and again at `:138` | synth.cpp:91, :138 |
+| `noteOn`/`noteOff` hold `queueMutex_` across a `std::sort` (≤256), 7 call sites | synth.cpp:162, :175; main.cpp:177, 181, 477, 481, 509, 514, 2046 |
+| live RT path is `audioOutputCallback` → `processBlock` (not a dead overload) | audio_engine.mm:59, :80 |
+| N measured: ~250k voices at 10% GPU share; 2M infeasible | docs/MEASURED_2026-08-08_N_voices.md |
+
 **Corrections logged:**
 - The memory note that `fineCellMassBuffer` is "already binned, just read it" is **wrong** —
   gated behind `SS_AMR`, default off, rest-only, ±4 sim.
@@ -406,8 +467,24 @@ Read from code or computed from `spacetime.h`, 2026-07-26/28. Nothing from memor
   sonification literature's ~3-stream limit). Wrong: that limit governs stream *segregation*;
   we want *fusion*. Jamal caught it — *"every particle is a part of the oscillator."*
 - **v1's radial-histogram architecture is withdrawn entirely.** §0.2.
+- **2026-08-10 09:56:38 — §7 and §9.3 described the `pose_phase_advance` gate WRONG.** They named
+  two conditions; there are four, and the two they named are both no-ops in practice while the
+  two they missed (`bhDiskGM > 0`, `envelopePhase < 0.5`) are the ones that make the phase source
+  unavailable for most of a run and during every note. The `envelopePhase` term did not exist
+  when this document was written — it was added 2026-08-03 to fix a real visual bug. **The doc
+  was not wrong when written; it went stale and nobody re-read the kernel.** Corrected in place.
+- **2026-08-10 09:56:38 — §9.5 was pessimistic.** Particle buffers are already `Shared` storage,
+  so the CPU can read particle state directly. Step 2 (solo, N=1) does not need the ring-buffer
+  architecture this row implies.
 
 ---
 
-**Last Updated:** 2026-07-28 20:12:02
-**Next:** §10 step 1 — measure N. No musical content, no verdict needed. Awaiting his go.
+**Last Updated:** 2026-08-10 09:56:38 — correction pass (audio window). No code written, nothing
+built, nothing deployed. Three stale claims corrected against source: the `pose_phase_advance`
+gate (§7, §9.3), the readback cost (§9.5), and the RT-thread lock hazard added as §9.10.
+
+**Step 1 is DONE** — N measured 2026-08-08 01:18:15, `docs/MEASURED_2026-08-08_N_voices.md`.
+**Next:** §10 step 2 — the per-particle voice at N = 1 (the solo path). *Verdict: does one star
+sound like anything.* ⚠️ **Step 2 must resolve §9.3 first** — the design assumes `posePhase` as
+its phase source and `posePhase` is unavailable in the state a solo would most likely be taken
+in (paused, pre-hole). **Awaiting his go.**

@@ -995,7 +995,8 @@ int main() {
               (float)(std::log10(std::max((double)hs.avgTemp, 1.0)) / 13.0),
               ImVec4(1.0f, 0.7f, 0.3f, 1), vb);
         ImGui::Spacing();
-        ImGui::TextDisabled("Field %.2e M_sun   ·   biggest %.0f M_sun",
+        // Same %.0f -> %.2f precision fix as "Biggest body" below (2026-08-08).
+        ImGui::TextDisabled("Field %.2e M_sun   ·   biggest %.2f M_sun",
                             (double)hs.fieldMassMsun, hs.maxBodyMsun);
       }
       ImGui::Separator();
@@ -1055,19 +1056,40 @@ int main() {
         double rg_AU      = bh.r_g_m / AU;
         double scale_AU   = bh.m_per_sim / AU;       // 1 sim unit = 2 r_g
         double a          = bh.spin_a;
-        double horizon_AU = (1.0 + std::sqrt(1.0 - a * a)) * rg_AU;
+        // (the anchor's own horizon/ISCO period are gone — both are LIVE now)
         double fieldMass  = (double)app.uiParticleCount * (PARTICLE_MASS_UNIT / M_SUN); // M_sun
         double fieldPct   = 100.0 * fieldMass / NSC_MASS_MSUN;
         double isco_rg    = 6.0;                       // ~Schwarzschild ISCO (low spin)
         double v_c        = std::sqrt(1.0 / isco_rg);  // v/c at the inner stable orbit
         double GM         = G * bh.mass_Msun * M_SUN;
         double r_isco     = isco_rg * bh.r_g_m;
-        double T_isco_min = 2.0 * PI * std::sqrt(r_isco * r_isco * r_isco / GM) / 60.0;
 
-        ImGui::Text("Anchor:   %s  (Milky Way center)", bh.name);
-        ImGui::Text("BH mass:  %.3e M_sun", bh.mass_Msun);
-        ImGui::Text("Spin a*:  %.2f", a);
-        ImGui::Text("r_g:      %.4f AU  (%.2e km)", rg_AU, bh.r_g_m / 1000.0);
+        // ── LIVE HOLE — derived from THIS sim, not from the anchor ──────────
+        // 2026-08-08 00:36, Jamal: "Static info in a ui is stupid. Why would it
+        // be static... this is groundwork everything else builds on." He is
+        // right: every line below used to read BH_ANCHOR (Sgr A*'s textbook
+        // numbers), so the largest block on screen could never move no matter
+        // what the simulation did. It now reads the running sim.
+        //   r_g = G·M/c², M = the heaviest body the sim actually has.
+        //   G·M_sun/c² = 1476.6 m, so r_g[m] = 1476.6 · (M/M_sun).
+        // The one number that stays fixed is the SCALE, and it is labelled as
+        // the calibration it is rather than dressed as telemetry.
+        const auto hstat  = renderer.getPhysicsStats();
+        double holeM      = (double)hstat.maxBodyMsun;          // M_sun, LIVE
+        double rgLive_m   = (G * M_SUN / C2) * holeM;           // G·M/c²  [m]
+        double rgLive_AU  = rgLive_m / AU;
+        bool   haveHole   = (holeM > 0.0);
+
+        ImGui::Text("Anchor:   %s  (scale calibration only)", bh.name);
+        if (haveHole) {
+          ImGui::Text("Hole mass:%.4g M_sun   [LIVE]", holeM);
+          ImGui::Text("r_g:      %.3e AU  (%.3e km)   [LIVE]",
+                      rgLive_AU, rgLive_m / 1000.0);
+        } else {
+          ImGui::TextDisabled("Hole mass: --   (no body yet)");
+          ImGui::TextDisabled("r_g:       --");
+        }
+        ImGui::Text("Spin a*:  %.2f  (not simulated — Schwarzschild)", a);
         // Cosmic distance in LIGHT-units (light travels 1 AU in ~499 s). Adaptive
         // so it reads in human light-distance (light-sec → light-min → ... →
         // light-years) — the "light-years stuff" in honest units for this scale.
@@ -1082,9 +1104,23 @@ int main() {
         };
         char lbuf[32];
         lightStr(scale_AU, lbuf, sizeof(lbuf));
-        ImGui::Text("Scale:    1 sim unit = %.4f AU  (%s)", scale_AU, lbuf);
-        lightStr(horizon_AU, lbuf, sizeof(lbuf));
-        ImGui::Text("Horizon:  %.4f AU  (%s)", horizon_AU, lbuf);
+        ImGui::TextDisabled("Scale:    1 sim unit = %.4f AU  (%s)  [FIXED CAL]",
+                            scale_AU, lbuf);
+        // MEASURED horizon: the largest r where r_s(M(<r)) >= r, computed every
+        // frame from the radial mass profile. Was never plumbed to the UI, so
+        // this line used to print the anchor's horizon and never moved.
+        if (hstat.horizonR > 0.0f) {
+          double horizLive_AU = (double)hstat.horizonR * scale_AU;
+          lightStr(horizLive_AU, lbuf, sizeof(lbuf));
+          ImGui::Text("Horizon:  %.4f sim = %.3e AU  (%s)   [MEASURED]",
+                      (double)hstat.horizonR, horizLive_AU, lbuf);
+          ImGui::Text("  M(<r_h): %.4g M_sun   [LIVE]",
+                      (double)hstat.horizonMassMsun);
+        } else {
+          // Not "no data" — a real, continuously measured approach signal.
+          ImGui::Text("Horizon:  none yet   sup r_s/r = %.3f   [LIVE]",
+                      (double)hstat.horizonRatio);
+        }
         ImGui::Separator();
         ImGui::Text("Particle: 1.00 M_sun  (1 star)");
         ImGui::Text("Field:    %.2e stars = %.2e M_sun (Kroupa IMF)",
@@ -1092,9 +1128,21 @@ int main() {
                     (double)renderer.getPhysicsStats().fieldMassMsun);
         ImGui::Text("          %.1f%% of the nuclear star cluster", fieldPct);
         ImGui::Separator();
+        // ISCO of the LIVE hole. v/c at 6 r_g is sqrt(1/6) for ANY Schwarzschild
+        // mass — that one is genuinely a constant and is marked as such. The
+        // RADIUS and the PERIOD both scale with M, so they move with the sim.
         ImGui::Text("Inner orbit (ISCO ~6 r_g):");
-        ImGui::Text("  v = %.2f c  (%.2e km/s)", v_c, v_c * C / 1000.0);
-        ImGui::Text("  period = %.1f min  (real time)", T_isco_min);
+        ImGui::TextDisabled("  v = %.2f c  (%.2e km/s)  [mass-independent]",
+                            v_c, v_c * C / 1000.0);
+        if (haveHole) {
+          double GMlive     = G * holeM * M_SUN;
+          double r_iscoLive = isco_rg * rgLive_m;
+          double T_live_min = 2.0 * PI *
+                              std::sqrt(r_iscoLive * r_iscoLive * r_iscoLive / GMlive) / 60.0;
+          ImGui::Text("  period = %.4g min  (real time)   [LIVE]", T_live_min);
+        } else {
+          ImGui::TextDisabled("  period = --   (no body yet)");
+        }
 
         // ── LIVE telemetry — the actual running sim, mapped to real units.
         // Provisional calibration (see physics_constants.h); reacts on play.
@@ -1122,7 +1170,17 @@ int main() {
           ImGui::Text("  Center mass:  %.0f M_sun", s.coreMassMsun);
           ImGui::Text("  Collapsed:    %.1f%%   (still outside: %.1f%%)",
                       pctIn, 100.0f - pctIn);
-          ImGui::Text("  Biggest body: %.0f M_sun", s.maxBodyMsun);
+          // PRECISION FIX (2026-08-08 00:33, Jamal: "its 50 from the start its
+          // always 50 ive observed it before u even were aware of it" — he was
+          // right and it is a readout bug, not a physics one). The heaviest star
+          // the IMF spawns is 49.957 M_sun and M_BH_SEED is exactly 50.0, so
+          // %.0f printed "50" from frame one: a value sitting exactly ON the seed
+          // threshold when it is really BELOW it, and nothing had formed. It then
+          // looked frozen because a merger has to add a full solar mass before
+          // the rounding ticks. Show hundredths so the gap to the threshold is
+          // visible and small growth reads. Mark whether it has actually crossed.
+          ImGui::Text("  Biggest body: %.2f M_sun%s", s.maxBodyMsun,
+                      (s.maxBodyMsun >= 50.0f) ? "  [SEED]" : "  (< 50 seed)");
           if (holePct >= 100.0f)
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f),
                                "  BLACK HOLE: FORMED");
@@ -2387,6 +2445,15 @@ int main() {
         envState.intensity = vjMaxAmp;
     }
 
+    // A4 SETTLE-HOLD TRIED AND REVERTED, 2026-08-10 16:12:00, on his order.
+    // A 2 s hold of the release regime after the audio envelope went Off was
+    // built (16:07:41) and rejected on sight: "noo because now the stuck moment
+    // is before the pause u just introduced. thats where the snap is at."
+    // The hold did not hide the snap, it ISOLATED it -- by inserting a visible
+    // pause after the transition, it proved the discontinuity happens EARLIER,
+    // at or just after note-off, not at the release->silence edge. So the
+    // release->silence boundary is NOT the remaining A4 defect. Do not re-try a
+    // settle hold here; it has been measured and it is the wrong end.
     renderer.setEnvelopeState(envState.phase, envState.progress,
                               envState.intensity);
     renderer.setDiskThickness(app.uiDiskThickness);

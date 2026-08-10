@@ -314,6 +314,14 @@ struct PhysicsStats {
   float fieldMassMsun; // total field mass budget (M_sun)
   float maxBodyMsun;   // heaviest single body (M_sun)
   float bhStrength;    // 0..1 collapse fraction signal (1 = full shadow)
+  // ── Honest horizon, MEASURED (2026-08-08) ────────────────────────────────
+  // These existed in the renderer since the geometric-criterion work but were
+  // never exposed, so the UI had no live horizon to show and the GALAXY panel
+  // fell back on Sgr A* constants. Jamal 2026-08-08 00:36: "Static info in a ui
+  // is stupid... this is groundwork everything else builds on."
+  float horizonR;        // largest r where r_s(M(<r)) >= r  [sim units], 0 = none
+  float horizonMassMsun; // enclosed mass inside horizonR    [M_sun]
+  float horizonRatio;    // sup of r_s(M(<r))/r — continuous approach, 1.0 = horizon
   // ── Accuracy measurement (Step 2 slice) ──
   float maxAccRatio;   // field-wide max gravity-kick / light-step (gkmag/gkmax),
   int   accOverCount;  // particles whose kick exceeded the c·dt budget this frame (clamp fired)

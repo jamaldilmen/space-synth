@@ -1746,8 +1746,22 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
         : impl_->lastHorizonRSmooth;
     float bSim = 2.6f * rsEff * config.shadowRadius; // photon capture b = 2.6 r_s
     bool bhLensActive = (impl_->physicsUniforms.totalAmplitude < 0.02f); // lens OFF during play
+    // A0 TEST, 2026-08-10 09:58:00 — the `config.orthoMode &&` term is REMOVED.
+    // It forced this radius to literally 0.0f whenever ortho was off, and every
+    // shader gate keys on `> 1e-4` (render.metal:671, :771, :879), so the hole
+    // was not drawn AT ALL in perspective — it never degraded, it ceased to
+    // exist. That is his standing "it needs to survive non-ortho mode".
+    // The ortho path is UNCHANGED (the term was already true there); this only
+    // adds the perspective case.
+    // KNOWN-WRONG SCALE, stated BEFORE the measurement: `/frustum` is the ORTHO
+    // world→NDC map (frustum = cameraRho*1.2 = the screen's world half-height).
+    // Perspective's half-height is d*tan(fovY/2) = d*0.414214 at 45°, so this
+    // radius should come out ~1.2/0.414214 = 2.897x TOO SMALL. And `d` must be
+    // camera→HOLE, not cameraRho (camera→ORIGIN) — the seed wanders, so the
+    // error should grow as it drifts off-origin. Fixing the divisor is the NEXT
+    // change, deliberately not batched into this one.
     cam.bhShadowNdcRadius =
-        (config.orthoMode && frustum > 1e-4f && bhLensActive)
+        (frustum > 1e-4f && bhLensActive)
             ? bSim * config.plateRadius / frustum
             : 0.0f;
     cam.aspect = (float)impl_->width / (float)impl_->height;
@@ -3272,6 +3286,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         latestStats.fieldMassMsun = (float)totalSM;
         latestStats.maxBodyMsun = gMaxMass;
         latestStats.bhStrength = bhStrength;
+        // Expose the MEASURED horizon to the UI (2026-08-08). Computed every
+        // frame from the radial mass profile since the geometric-criterion work
+        // but never published, so the GALAXY panel had nothing live to read.
+        latestStats.horizonR        = lastHorizonR;
+        latestStats.horizonMassMsun = lastHorizonMass;
+        latestStats.horizonRatio    = lastHorizonRatio;
         // Accuracy measurement readback (1-frame lag, like seedAccum). uint
         // milli-ratio → fraction of a light-step the worst gravity kick wanted.
         if (accDiagBuffer) {

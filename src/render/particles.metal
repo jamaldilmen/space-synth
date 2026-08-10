@@ -1199,6 +1199,38 @@ kernel void compute_physics(
     // equal tracer, no BH). saturates at amp≈0.025 = any audible note.
     float playGate = smoothstep(0.0f, 0.025f, u.totalAmplitude);
 
+    // ── GRAVITY SUPPORT — the frozen→star-map fix (2026-08-10 16:41:00) ──────
+    // His report: the ONE spot that feels off is the handover from the held
+    // shape to the star map. Cause, found by reading the chain end to end:
+    // self-gravity is scaled by (1 - playGate), and playGate is
+    // smoothstep(0, 0.025, amp) — a THRESHOLD, not a ramp. Amplitude sits above
+    // 0.025 for the whole hold AND for nearly the whole release (which itself
+    // lasts 0.4-1.5 s, scaled by hold length). So gravity is fully OFF the
+    // entire time and snaps fully ON in the last few milliseconds, when the
+    // amplitude tail finally dives through 2.5%. That snap IS the transition he
+    // sees. It is a gate, not a damper.
+    //
+    // The physical reading, and the reason this is a fix rather than a tweak:
+    // while a note sounds, the acoustic field HOLDS THE MATTER UP against the
+    // field's own gravity — it is a support term. Support is not a switch; it is
+    // proportional to how loud the note still is. So gravity should return in
+    // proportion to how much the sound has faded, which is exactly what a real
+    // cloud does when its pressure support decays and it collapses under its own
+    // weight. Nothing switches, no branch is crossed, one coefficient moves.
+    //
+    // Separate from playGate ON PURPOSE: playGate also gates collisions, the
+    // seed sink, accretion relaxation, mass-inertia and the velocity cap, and
+    // this change has no business touching those. Gravity only.
+    //
+    // ⚖️ The 0.5 band is a FIRST VALUE, not derived — said plainly. Sustain sits
+    // at targetAmp × 0.700 (envelope.h:19), so a normal held note is above 0.5
+    // and support saturates: THE HELD SHAPE IS UNCHANGED BY THIS. The ramp lives
+    // entirely in the release, below half amplitude. Widen it to start the
+    // collapse earlier in the release, narrow it to start later.
+    // ⭐ Falls out for free: a QUIET note now supports less than a loud one, so
+    // it collapses sooner. That is the correct behaviour and nobody asked for it.
+    float gravSupport = smoothstep(0.0f, 0.5f, u.totalAmplitude);
+
     // ── SEED SINK — mass segregation, the express lane ───────────────────────
     // A body 100-1000× the field-star mass sinks to the potential minimum on
     // a dynamical time (Chandrasekhar friction ∝ M — far beyond the resolved
@@ -1453,8 +1485,13 @@ kernel void compute_physics(
     // MUST run BEFORE the lifecycle capture below — the silence-immunity
     // restore wipes everything after it, and gravity must act at rest.
     if (mass > 0.001f && mass < 1e8f && u.gravGM > 0.0f &&
-        playGate < 0.5f) {  // incl. BH seeds; SKIP the whole near-field scan while
-                            // playing (was running + zeroing the result = wasted compute)
+        gravSupport < 0.999f) {  // incl. BH seeds. Was `playGate < 0.5f`: skip the
+                            // near-field scan while playing (running + zeroing the
+                            // result = wasted compute). Now keyed to gravSupport so
+                            // the scan RESUMES as support fades through the release
+                            // instead of staying skipped until the amplitude tail.
+                            // Full support (held note) still skips exactly as before,
+                            // so the play-path cost is unchanged.
         float Mtot = max(u.massTotal, 1.0f);
         float G1   = u.gravGM / Mtot;            // GM of ONE solar mass
         float3 gpos = float3(px, py, pz);
@@ -1930,7 +1967,12 @@ kernel void compute_physics(
                 atomic_fetch_add_explicit(&accDiag[1], 1u, memory_order_relaxed);
         }
         if (gkmag > gkmax && gkmag > 1e-12f) gkick *= (gkmax / gkmag);
-        gkick *= (1.0f - playGate);          // self-gravity OFF while playing (no center pull)
+        gkick *= (1.0f - gravSupport);       // was (1 - playGate): a threshold that
+                                             // snapped gravity on at the very end of
+                                             // the release. Now gravity returns in
+                                             // proportion to how far the sound has
+                                             // faded — the support term, see the
+                                             // gravSupport comment above.
         // ── SS_TEST_NOPULL (bit26, 2026-07-19 probe) — once the honest hole
         // exists (r_h>0), strip the INWARD radial component of the gravity
         // kick toward it: pure rotation, nothing pulls in. Observe-only
@@ -2762,6 +2804,29 @@ kernel void compute_physics(
         // Release is now a drag-driven gravitational inspiral (see baseFric):
         // |v| decays, the ORBITAL DIRECTION survives, matter spirals in and
         // settles into the accretion disk. Dissipation, not amputation.
+        //
+        // A4 FIX, 2026-08-10 15:13:00 — THE CRYSTAL LOCK IS RELAXED, NOT DROPPED.
+        // His report: "after play when i release it kinda jumps into the next
+        // phase... like another thing was at work. post play for a split sec."
+        // Cause: the sustain branch below multiplies velocity by `lock`, which
+        // reaches 0.05 at full hardness — a 95%-per-frame velocity kill. At the
+        // 3.5 boundary that multiply STOPPED IN ONE FRAME, so matter that was
+        // being scrubbed to a standstill every frame was abruptly free and the
+        // standing forces (self-gravity, spin, voice residue) expressed at full
+        // strength over the next few frames. That ramp-up from frozen to moving
+        // IS the "split sec" jump.
+        // Worse: `hardness` KEEPS INTEGRATING UP through release — the gate at
+        // the crystallization block is `envelopePhase > 2.5`, true here too — so
+        // the state kept hardening while its only consumer was disconnected.
+        // Fix is a RAMP ACROSS the boundary, not a fifth branch: carry the same
+        // lock and ease it out over the release with envelopeProgress.
+        //   t=0 (release starts) -> lock == the sustain lock exactly  -> continuous
+        //   t=1 (release ends)   -> lock == 1.0, matching silence      -> continuous
+        // Continuous at BOTH ends, so nothing pops at either edge.
+        float lock = mix(mix(1.0f, 0.05f, hardness), 1.0f, t);
+        vpx *= lock;
+        vpy *= lock;
+        vpz *= lock;
     } else if (u.envelopePhase > 2.5f) {
         // Sustain: CRYSTALLIZE by LOCAL hardness (density + dwell), not a global
         // envelope ramp. A dense region held over time has H→1 and locks its

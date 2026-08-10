@@ -15,6 +15,13 @@ mkdir -p "${RESOURCES_DIR}"
 
 # 2. Build the project
 echo "🔨 Building project..."
+# `build/` is gitignored, so it does NOT exist in a fresh clone or a new git
+# worktree. Without this mkdir the `cd build` below fails, `set -e` aborts the
+# script — and because SpaceSynth.app IS tracked in git, the tree still contains
+# the COMMITTED binary. You get a failed build sitting next to an app bundle that
+# looks perfectly valid, i.e. the 2026-06-14 stale-binary trap with a new cause.
+# Found 2026-08-10 10:38:24 setting up the camera worktree.
+mkdir -p build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(sysctl -n hw.ncpu)

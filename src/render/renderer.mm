@@ -15,6 +15,7 @@
 #import <Syphon/SyphonMetalServer.h>
 #endif
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <simd/simd.h>
 #include <mach/mach_time.h>
@@ -194,6 +195,11 @@ struct Renderer::Impl {
   // region + the stellar mass enclosed within R_ENC of it. The hole's
   // existence/strength derives from THIS, not from envelope phases.
   float bhPosX = 0.0f, bhPosY = 0.0f, bhPosZ = 0.0f;
+  // Mean particle radius from the reduce (the [GRAV] line's meanR), retained
+  // per frame to normalise the depth cue against WHERE MATTER ACTUALLY IS
+  // rather than where it is permitted to be. See §H10. Seeded at the silence
+  // cap so frame 0 is sane before the first reduce lands.
+  float measuredMeanR = 100.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
   float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
@@ -302,6 +308,27 @@ struct Renderer::Impl {
   id<MTLDepthStencilState> depthState = nil;
   id<MTLDepthStencilState> bgDepthState = nil;
   id<MTLTexture> depthTexture = nil;
+  // ── DEPTH PRE-PASS (2026-08-11, board §H1/§H1b — P1 step 1) ───────────────
+  // The project has never had a readable depth buffer: `depthState` is
+  // write-OFF (:1033) and the main pass's depth attachment is
+  // storeAction=DontCare (:3356), so the buffer is allocated, cleared every
+  // frame, never written, and discarded. Consequences on the board: no
+  // occlusion (P1), C4a's camera blur unprojects every pixel at a hardcoded
+  // far-plane z=0.99 because there is nothing else to read, and C4b (per-
+  // particle motion vectors → TAA) is blocked outright.
+  // This writes NEAREST depth for the particle cloud into its OWN texture.
+  // ⭐ A SEPARATE TEXTURE IS THE WHOLE POINT: the main colour pass keeps its own
+  // cleared-and-discarded attachment, byte-for-byte untouched, so this cannot
+  // change a pixel. Sharing one buffer would force the colour pass's `Less`
+  // test to start REJECTING fragments the moment depth became non-empty —
+  // a large, silent image change. Do not "simplify" these into one.
+  id<MTLTexture> depthPrepassTexture = nil;
+  id<MTLRenderPipelineState> depthPrepassPipeline = nil;
+  id<MTLDepthStencilState> depthWriteState = nil;
+  // particle_vertex's ONLY write target is the [KPROBE] atomic histogram
+  // (buffer 9). Running the shader a second time would DOUBLE every bin, so
+  // the pre-pass binds this scratch buffer instead and the probe stays honest.
+  id<MTLBuffer> kProbeDummy = nil;
   id<MTLTexture> offscreenTexture = nil;
   id<MTLTexture> prevFrameTexture = nil;
   // Whiteout probe (2026-07-23): 1×1 top-mip HDR frame average, read back
@@ -667,6 +694,23 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
         [impl_->device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (error)
       NSLog(@"Render pipeline error: %@", error);
+
+    // ── DEPTH PRE-PASS pipeline — same vertex shader, NO fragment stage ──────
+    // fragmentFunction = nil is a depth-only pipeline: the rasteriser runs and
+    // writes depth, and no colour is produced because there is no colour
+    // attachment. Reusing particle_vertex verbatim is deliberate — the depth
+    // must land where the sprite lands, so any other vertex path would drift
+    // out of agreement with the star pass the first time either changed.
+    MTLRenderPipelineDescriptor *dpDesc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    dpDesc.vertexFunction = vertexFunc;
+    dpDesc.fragmentFunction = nil;
+    dpDesc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    NSError *dpErr = nil;
+    impl_->depthPrepassPipeline =
+        [impl_->device newRenderPipelineStateWithDescriptor:dpDesc error:&dpErr];
+    if (dpErr)
+      NSLog(@"Depth pre-pass pipeline error: %@", dpErr);
   } else {
     NSLog(@"Missing shader functions: vertex=%@, fragment=%@", vertexFunc,
           fragmentFunc);
@@ -1034,6 +1078,18 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   impl_->depthState =
       [impl_->device newDepthStencilStateWithDescriptor:depthDesc];
 
+  // ── Depth state for the DEPTH PRE-PASS: the one place that WRITES depth ───
+  // Less + write ON = nearest-surface depth, the standard z-prepass. This is
+  // the project's first and only depth write; `depthState` above stays
+  // write-OFF so the additive star pass is unaffected (see the note on
+  // depthPrepassTexture).
+  MTLDepthStencilDescriptor *dpDepthDesc =
+      [[MTLDepthStencilDescriptor alloc] init];
+  dpDepthDesc.depthCompareFunction = MTLCompareFunctionLess;
+  dpDepthDesc.depthWriteEnabled = YES;
+  impl_->depthWriteState =
+      [impl_->device newDepthStencilStateWithDescriptor:dpDepthDesc];
+
   // ── Depth state for Background (Black Hole) ─────────────────────────
   MTLDepthStencilDescriptor *bgDepthDesc =
       [[MTLDepthStencilDescriptor alloc] init];
@@ -1398,232 +1454,19 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->hasCompute = true;
 }
 
-void Renderer::render(const RenderConfig &config) {
-  impl_->renderPhaseSmooth +=
-      (config.envelopePhase - impl_->renderPhaseSmooth) * 0.04f;
-  impl_->collapseFrac = config.collapseFrac;
-  impl_->lastSphCoolTau = config.sphCoolTau;
-  impl_->lastParticleSize = config.particleSize; // → mass/gravity scale in runComputePass
-  if (impl_->particleCount == 0 || !impl_->particlePipeline)
-    return;
-
-  dispatch_semaphore_wait(impl_->inFlightSemaphore, DISPATCH_TIME_FOREVER);
-  int frameIdx = impl_->currentFrame;
-
-  id<CAMetalDrawable> drawable = [impl_->metalLayer nextDrawable];
-  if (!drawable) {
-    dispatch_semaphore_signal(impl_->inFlightSemaphore);
-    return;
-  }
-
-  // 1. Create a dedicated Async Compute Command Buffer
-  id<MTLCommandBuffer> computeCmdBuf =
-      [impl_->computeCommandQueue commandBuffer];
-  impl_->runComputePass(computeCmdBuf, frameIdx);
-
-  // Signal an event when compute for this frame finishes
-  impl_->frameEventValue++;
-  uint64_t computeFinishedTicket = impl_->frameEventValue;
-  [computeCmdBuf encodeSignalEvent:impl_->frameEvent
-                             value:computeFinishedTicket];
-  [computeCmdBuf commit];
-
-  // 2. Create the standard Render Command Buffer
-  id<MTLCommandBuffer> renderCmdBuf = [impl_->commandQueue commandBuffer];
-
-  __block dispatch_semaphore_t block_sema = impl_->inFlightSemaphore;
-  [renderCmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-    dispatch_semaphore_signal(block_sema);
-  }];
-
-  // Wait for compute to finish BEFORE we rasterize those exact particles
-  [renderCmdBuf encodeWaitForEvent:impl_->frameEvent
-                             value:computeFinishedTicket];
-
-  // ── Camera ──────────────────────────────────────────────────────────
-  float R = config.plateRadius;
-  float aspect = (float)impl_->width / (float)impl_->height;
-  float halfH = R * 1.3f;
-  float halfW = halfH * aspect;
-
-  CameraUniforms cam = {};
-  orthoMatrix(cam.viewProj, -halfW, halfW, -halfH, halfH, -R * 3.0f, R * 3.0f);
-  cam.cameraPos[0] = 0;
-  cam.cameraPos[1] = R;
-  cam.cameraPos[2] = 0;
-  cam.cameraPad = config.cameraRho;
-  cam.particleSize = config.particleSize;
-  cam.plateRadius = R;
-  cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
-  cam.waveDepth = config.modeP * 20.0f; // Using modeP to scale depth
-  cam.envelopePhase = impl_->renderPhaseSmooth; // smoothed (render-only)
-  cam.envelopeProgress = config.envelopeProgress;
-  cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
-  {
-    float frustum = config.cameraRho * 1.2f;
-    // PHYSICAL Einstein radius: the lens ring derives from the HOLE'S REAL
-    // MASS (photon capture b = 2.6·r_s(M_core)), not an arbitrary UI size —
-    // that mismatch made the lens sphere and the physical disk read as two
-    // layered bodies. "BH Size" is now a ×multiplier (default 1 = physics):
-    // the lens grows as the hole eats, always matching the disk it carved.
-    // HONEST-HORIZON RE-KEY (2026-07-15): when the geometric criterion has
-    // fired (lastHorizonR > 0 — real enclosed mass, no cheats), the lens
-    // derives from THAT r_s. The legacy seed-mass path remains as fallback
-    // for the posed/cheat modes (bhSeedMass ≈ 50 M☉ in the honest bed —
-    // an invisible 2e-4 lens — which is why the first honest hole had no
-    // lensing at all).
-    // HONEST LENS KEY (2026-07-19): the lens exists iff the honest hole does.
-    // The old unconditional seed-mass fallback kept rsEff > 0 after play
-    // fattened the seeds, so the lens SURVIVED the hole's death and its size
-    // stopped tracking r_h ("lensing stays even if black hole disappears...
-    // not in scale with the actual event horizon"). Seed-mass keying now only
-    // serves the DECLARED posed hole (setBlackHolePose).
-    // SMOOTH HONEST r_h (2026-07-19 18:20): the probe updates r_h every few
-    // seconds, so everything keyed to it JUMPED size at each step ("it just
-    // jumps, doesn't smoothly grow"). Same cure as bhDiskGMSmooth: ease the
-    // RENDER keying (~0.7 s e-fold). Physics keeps the raw honest value.
-    impl_->lastHorizonRSmooth +=
-        (impl_->lastHorizonR - impl_->lastHorizonRSmooth) * 0.03f;
-    if (impl_->lastHorizonRSmooth < 1e-4f && impl_->lastHorizonR == 0.0f)
-      impl_->lastHorizonRSmooth = 0.0f;   // settle the tail to true zero
-    float rsEff = impl_->bhPosed
-        ? std::max(impl_->lastHorizonRSmooth,
-                   (float)space::units::kRsSimPerMsun *
-                       std::max(impl_->bhSeedMass, 0.0f))
-        : impl_->lastHorizonRSmooth;
-    float bSim = 2.6f * rsEff * config.shadowRadius; // photon capture b = 2.6 r_s
-    // LENS OFF DURING PLAY: the BH gravitational lens warps the whole field
-    // toward screen-center (the "squeeze to the middle / eckig, not fluid"
-    // distortion + bright center dot). No hole while a note sounds → no lens.
-    // Returns at rest. The center pull was a RENDER lens, not a physics force
-    // (the log showed 99.9% of mass is OUT of the core during play). Jamal 2026-06-14.
-    bool bhLensActive = (impl_->physicsUniforms.totalAmplitude < 0.02f);
-    cam.bhShadowNdcRadius =
-        (config.orthoMode && frustum > 1e-4f && bhLensActive)
-            ? bSim * config.plateRadius / frustum
-            : 0.0f;
-    cam.aspect = aspect;
-  }
-  cam.sharpness = config.sharpness;
-  cam.grainAlpha = config.grainAlpha;
-  cam.oscAmount = config.oscAmount;
-  cam.spinX = config.spinX;
-  cam.spinY = config.spinY;
-  cam.spinZ = config.spinZ;
-  cam.viewportH = (float)impl_->height;
-  cam.spinAngleZ = config.spinAngleZ;
-  cam.spinAngleX = config.spinAngleX;
-  cam.spinAngleY = config.spinAngleY;
-  cam.bhStrength = impl_->bhStrength;
-  // ── Posed-BH disk rotation: feed real Keplerian Ω(r) to the vertex shader ──
-  // Advance a render-clock (runs even while the sim is PAUSED) and pass GM +
-  // elapsed time so the shader spins the posed disk at Ω(r)=√(GM/r³). Zeroed
-  // when not posed → zero effect on the live sim. Only one render() overload
-  // runs per frame, so the clock advances once.
-  if (impl_->bhPosed) {
-    double now = CACurrentMediaTime();
-    double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
-    impl_->bhPoseClock = now;
-    dtP = std::min(std::max(dtP, 0.0), 0.1);   // guard stalls
-    // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
-    // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
-    // static, and far below the screen-space speed the streak path needs
-    // (elong = speed*1.4), so every sprite stayed a circular dot: THE reason
-    // near-hole matter read as stars instead of gaseous trails. The old
-    // comment claimed this clock was compressed; it was not, dtP was the raw
-    // wall delta.
-    // The factor is NOT a chosen multiplier. The dial states a PHYSICAL fact —
-    // how many screen-seconds one ISCO orbit takes — and the compression falls
-    // out of the hole's own mass, so it re-derives as the hole eats instead of
-    // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
-    // so the per-frame delta the streaks measure grows with it.
-    double gmNow = space::units::gmSim((double)impl_->bhSeedMass);
-    // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
-    // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
-    // clock ran x145 the physics instead of the dial's x3.3. See units.h.
-    double tIsco = space::units::iscoPeriodWallSec(gmNow);  // wall s, REAL
-    if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
-      dtP *= tIsco / (double)config.iscoScreenSeconds;
-    impl_->bhPoseTime += dtP;
-    cam.bhDiskGM   = (float)gmNow;
-    cam.bhPoseTime = (float)impl_->bhPoseTime;
-    cam.bhPoseDt   = (float)dtP;
-    cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
-  } else if (impl_->lastHorizonR > 0.0f && impl_->lastHorizonMass > 0.5f) {
-    // EMERGENT-HOLE TIME-LAPSE (2026-07-15, Jamal: "rotation means time
-    // passes on a trajectory"): the same Keplerian playback clock, keyed to
-    // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
-    // keeps running underneath; this compresses the RENDER clock only.
-    // TIME-LAPSE CLOCK = FILTERED WALL DELTA (2026-07-26). The fixed 1/60 per
-    // rendered frame made the spin rate proportional to framerate (paused at
-    // 120 fps spun 3.5x faster than playing at 34) — see emergentPoseDt().
-    double dtP = impl_->emergentPoseDt(config.simPaused,
-                                       config.pauseHoldTimelapse);
-    // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
-    // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
-    // static, and far below the screen-space speed the streak path needs
-    // (elong = speed*1.4), so every sprite stayed a circular dot: THE reason
-    // near-hole matter read as stars instead of gaseous trails. The old
-    // comment claimed this clock was compressed; it was not, dtP was the raw
-    // wall delta.
-    // The factor is NOT a chosen multiplier. The dial states a PHYSICAL fact —
-    // how many screen-seconds one ISCO orbit takes — and the compression falls
-    // out of the hole's own mass, so it re-derives as the hole eats instead of
-    // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
-    // so the per-frame delta the streaks measure grows with it.
-    double gmNow = space::units::gmSim((double)impl_->lastHorizonMass);
-    // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
-    // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
-    // clock ran x145 the physics instead of the dial's x3.3. See units.h.
-    double tIsco = space::units::iscoPeriodWallSec(gmNow);  // wall s, REAL
-    if (config.iscoScreenSeconds > 1e-3f && tIsco > 0.0)
-      dtP *= tIsco / (double)config.iscoScreenSeconds;
-    impl_->bhPoseTime += dtP;
-    cam.bhDiskGM   = (float)gmNow;
-    cam.bhPoseTime = (float)impl_->bhPoseTime;
-    cam.bhPoseDt   = (float)dtP;
-    // PLATE-PLANE ALIGNMENT (2026-07-16, item 4): the galaxy now orbits about
-    // Z (the Chladni plate's plane, face-on at launch) — the emergent
-    // time-lapse uses the legacy z-axis playback (which also matches the
-    // legacy Doppler plane). The y-axis branch sleeps.
-    cam.bhDiskAxisY = 0.0f;
-  } else {
-    cam.bhDiskGM = 0.0f; cam.bhPoseTime = 0.0f; cam.bhPoseDt = 0.0f;
-    cam.bhDiskAxisY = 0.0f;
-    impl_->bhPoseClock = 0.0;                  // clock re-arms on next hole
-  }
-  // ROTATION EASE-IN (2026-07-18 14:40:10): cam.bhDiskGM jumps 0→gmSim(M(<r_h)) the frame
-  // the horizon forms, SNAPPING the posed spin on (Jamal: "snapped into rotation"). Ease it
-  // so Ω=√(GM/r³) ramps in continuously (~30-frame e-fold) instead of a hard switch. Eases
-  // back to 0 the same way when the hole dissolves.
-  impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
-  cam.bhDiskGM = impl_->bhDiskGMSmooth;
-  cam.horizonR = impl_->lastHorizonRSmooth; // eased honest r_h → hole pass/membrane/pose (0 = no hole; raw value stays in physics)
-  cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ; // hole centre (after PLAY it's off-origin) → render spins/culls about this
-  cam.tuneLens = config.lensBend;
-  cam.tuneArcWrap = config.arcWrap;
-  cam.tuneArcGain = config.arcGain;
-  cam.tuneTrailGain = config.trailGain;
-  cam.tuneStreakLen = config.streakLen;
-  cam.tuneColorK = config.colorTempK;
-  cam.tuneHeatK = config.heatGain;
-  // STAR LAW DIALS (2026-07-28) — identity defaults, see renderer.h.
-  cam.tuneStarLumExp = config.starLumExp;
-  cam.tuneStarLumGain = config.starLumGain;
-  cam.tuneStarLumCeil = config.starLumCeil;
-  cam.tuneStarKelvinA = config.starKelvinA;
-  cam.tuneStarKelvinP = config.starKelvinP;
-  cam.tuneStarSizeGain = config.starSizeGain;
-  cam.tuneStarSizeExp = config.starSizeExp;
-  cam.tuneStarSizeFloor = config.starSizeFloor;
-  cam.tuneStarSizeCeil = config.starSizeCeil;
-  cam.bhToggles = config.bhToggles;
-  impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
-  impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
-  memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
-
-  impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
-}
+// ── Renderer::render(config) — DELETED 2026-08-11 04:11:00 ──────────────────
+// A 240-line ORTHO-ONLY duplicate of the render entry point, dead since the
+// camera work moved every caller onto render(config, viewProj). Re-verified
+// before deletion: main.cpp:2548 is the only call site in the tree and it
+// passes a viewProj, so this overload had zero callers.
+//
+// It is worth knowing WHY this mattered beyond the line count: because it was
+// compiled and grep-able but never executed, it kept answering questions about
+// the live renderer with stale code. Two claims written into the board were
+// read out of this body and were wrong about the running app — a hardcoded
+// cameraPos, and a black-hole shadow radius still gated to ortho
+// (`config.orthoMode && ...`) after the live path at :1783 had dropped that
+// term in the A0 test. Deleting it removes the trap, not just the bytes.
 
 void Renderer::render(const RenderConfig &config, const float *viewProj) {
   impl_->renderPhaseSmooth +=
@@ -1700,11 +1543,38 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.cameraPos[0] = config.cameraPos[0];
   cam.cameraPos[1] = config.cameraPos[1];
   cam.cameraPos[2] = config.cameraPos[2];
+  // F5 2026-08-10: the shader's view axis, supplied instead of re-derived from
+  // cameraPos. See camera.h::getForward for why the inline derivation was a trap.
+  cam.viewForwardX = config.cameraForward[0];
+  cam.viewForwardY = config.cameraForward[1];
+  cam.viewForwardZ = config.cameraForward[2];
   cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
   cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
   cam.envelopePhase = impl_->renderPhaseSmooth; // smoothed (render-only)
+  // ── FIELD HALF-DEPTH for the scale-invariant depth cue (2026-08-11, §H10) ──
+  // Mirrors the PHYSICS cap law at particles.metal:3051 term for term, using
+  // the same smoothed phase the shader sees, so the render's idea of "how deep
+  // is the field" cannot drift from where the physics actually puts matter:
+  //   play (0.5 <= ph < 3.5) -> ORBIT_R_CHLADNI, blended in over attack
+  //   silence                -> STAR_MAP_CAP
+  // Z is bounded by EIGEN_L*0.5 = 6.0 during play, the same 6.0, so one scalar
+  // covers both axes and the camera may orbit freely.
+  // ⭐ CORRECTED 2026-08-11 15:2x after his verdict "exact same look, unchanged".
+  // The first version normalised by the CAP (STAR_MAP_CAP=100 in silence,
+  // ORBIT_R_CHLADNI=6 in play), mirroring the physics cap law. **Measured, that
+  // was wrong by ~15x.** The cap is what matter is ALLOWED to occupy; the field
+  // actually sits at meanR 6.4-9.3 sim with r50 3.2-4.8 (its own [GRAV]/[DISKZ]
+  // telemetry). Against R=100 the cue produced a 3.7% size spread — invisible,
+  // which is precisely the verdict.
+  // ⭐ It now uses the MEASURED mean radius, so the cue tracks the field as it
+  // collapses or disperses instead of a constant that was never true.
+  // ⭐ AND THIS REMOVES THE DUPLICATION I DECLARED AN HOUR AGO: no copy of
+  // STAR_MAP_CAP / ORBIT_R_CHLADNI on the CPU any more. The measurement is the
+  // single source of truth, which is what it should have been from the start.
+  // ⚠️ 1-frame lag (every readback here is), invisible for a size cue.
+  cam.fieldHalfDepth = std::max(impl_->measuredMeanR, 0.5f);
   cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   // Lens Einstein radius = the shadow's on-screen radius, so the lensed
@@ -1861,7 +1731,19 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
   cam.bhDiskGM = impl_->bhDiskGMSmooth;
   cam.horizonR = impl_->lastHorizonRSmooth; // eased honest r_h → hole pass/membrane/pose (0 = no hole; raw value stays in physics)
-  cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ; // hole centre (after PLAY it's off-origin) → render spins/culls about this
+  // The star-pass capture cull uses THIS one, not the eased value above: being
+  // behind the horizon is a physics fact, and the easing (×0.03/frame) leaves it
+  // 6× short for ~2 s after formation. Measured 2026-08-11 03:18: raw 0.0781 vs
+  // smooth 0.0130 on the forming frame. See renderer.h (horizonRRaw).
+  cam.horizonRRaw = impl_->lastHorizonR;
+  // ⚠ COMMENT CORRECTED 2026-08-11 12:31:44. This read "hole centre (after PLAY
+  // it's off-origin)". It is NEVER off-origin. bhPosX/Y/Z are hard-set to 0.0f
+  // at :3293-3295 (ORIGIN LOCK, his own call) and the enclosure-COM refinement
+  // that would move them is inside `if (false)` at :2935. These three uniforms
+  // are therefore ALWAYS (0,0,0), and every shader that "re-centres on the hole"
+  // via cam.bhX/Y/Z is re-centring on the origin. Consequence, logged: the P6
+  // fix in board §H1 is a no-op — see the note at `rDil` in render.metal.
+  cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ;
   cam.tuneLens = config.lensBend;
   cam.tuneArcWrap = config.arcWrap;
   cam.tuneArcGain = config.arcGain;
@@ -2611,15 +2493,23 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // cellCounts is StorageModeShared and was filled by THIS frame's hash
       // dispatch; we read it on the next probe tick, so no fence is needed
       // (same access pattern as [AMR] above).
-      // Cavity is EIGEN_R=3 / EIGEN_L=6 about the origin. Scan ±6 sim so we
-      // see the pattern AND its surroundings.
+      // ⚠ CORRECTED 2026-08-11 12:31:44 — this probe was measuring the wrong
+      // volume. The comment said "Cavity is EIGEN_R=3 / EIGEN_L=6 ... scan ±6
+      // sim so we see the pattern AND its surroundings", inherited from a stale
+      // comment on EIGEN_R (particles.metal:504, itself wrong by 2x). The real
+      // cavity is EIGEN_R = ORBIT_R_CHLADNI = 6.0 and EIGEN_L = 12.0, so ±6
+      // scanned EXACTLY the cavity and none of its surroundings — the probe
+      // could never have seen the void/edge behaviour it was built to check.
+      // Now ±9 = 1.5x the cavity radius, which restores the stated intent
+      // (pattern + a half-radius of surroundings) while staying inside the
+      // hash's ±64 extent. READ-ONLY: this changes logged numbers only.
       if (cellCountsBuffer && physicsUniforms.envelopePhase > 2.5f &&
           (physicsUniforms.frameCounter % 120u) == 7u) {
         const uint32_t *cc = (const uint32_t *)cellCountsBuffer.contents;
         const int N = Impl::kGridSize;
         const float cs = 2.0f * lastHashExtent / (float)N;   // sim per cell
         const int   c  = N / 2;                              // world origin cell
-        const int   rad = (int)std::ceil(6.0f / cs);         // ±6 sim in cells
+        const int   rad = (int)std::ceil(9.0f / cs);         // ±9 sim = 1.5x cavity r
         auto ix = [&](int i, int j, int k) { return (k * N + j) * N + i; };
 
         double sum = 0.0, sum2 = 0.0;
@@ -2667,6 +2557,170 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                 sum);
       }
 
+      // ── [DENSPROBE] — READ-ONLY. WHAT IS THE DENSITY WHEN MASS LANDS IN ONE
+      // PLACE? (2026-08-11 02:52:00, his pick.)
+      //
+      // His words, 2026-08-11 02:41: "at 64 speed why the balck hole always
+      // breaks cause we dont knwo what actually happens when the mass / density
+      // is that high", and for the buzzy clump "we dot have any science in
+      // place here". Both are literally true and BOTH ARE UNMEASURED — nothing
+      // in this engine has ever printed a physical density. This measures it.
+      // It changes nothing: no buffer is written, no uniform is touched.
+      //
+      // ⭐ Reports MASS density, not particle count. Every "dense" gate in the
+      // engine so far reads cellCounts — the extinction gate
+      // (render.metal:2233, smoothstep(150,1500,count)), the flare cap
+      // (MAX_PER_CELL=128). But `biggest body 5001 M` against `CORE 28 M` in
+      // the 02:33 log says the collapsed state may be a LOT of mass in a FEW
+      // particles, in which case every count-based gate reads it as empty
+      // space. Printing count and mass for the SAME cell settles that, and the
+      // gate value is printed explicitly so the answer needs no interpretation.
+      //
+      // ⭐ Density is converted to kg/m³ via the engine's OWN length anchor
+      // (units.h: kUnitMeters = 2·r_g(field)/... = 1.75504e9 m per sim length),
+      // not a scale I picked. M_sun in kg is derived from the file's own
+      // kGMsunSI divided by G, rather than pasted in as a second literal. The
+      // reference ladder below is what makes the number actionable: it names
+      // which physical regime the clump is in, and therefore which physics is
+      // missing (there is currently NO pressure of any kind opposing collapse).
+      //
+      // cellMass holds Σ M_sun × MASS_FP(64) (spatial_hash.metal:60,101) and is
+      // StorageModeShared. Same no-fence access pattern as [GRIDPROBE] above.
+      //
+      // ⚠️ UNGATED on envelopePhase ON PURPOSE. His note 2026-08-11 02:41:
+      // concentration happens mainly AFTER play ("theres no fake pull in after
+      // play"), so a probe gated to the note would miss the exact state we are
+      // trying to characterise. Phase is printed instead so the regime is
+      // visible in the line. Cost: one 128³ scan every 120 frames (~2 s).
+      if (cellCountsBuffer && cellMassBuffer &&
+          (physicsUniforms.frameCounter % 120u) == 43u) {
+        const uint32_t *cc = (const uint32_t *)cellCountsBuffer.contents;
+        const uint32_t *cm = (const uint32_t *)cellMassBuffer.contents;
+        const int  N  = Impl::kGridSize;
+        const float cs = 2.0f * lastHashExtent / (float)N;   // sim per cell
+        const double cellVolSim = (double)cs * cs * cs;      // sim³
+
+        // Single pass: totals + top-8 cells BY MASS (insertion into a tiny table).
+        double  totalMassFP = 0.0;
+        long    occupied = 0;
+        uint32_t topM[8] = {0,0,0,0,0,0,0,0};
+        long     topI[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
+        const long NC = (long)N * N * N;
+        for (long id = 0; id < NC; ++id) {
+          const uint32_t m = cm[id];
+          if (!m) continue;
+          ++occupied;
+          totalMassFP += (double)m;
+          if (m > topM[7]) {
+            int p = 7;
+            while (p > 0 && topM[p - 1] < m) {
+              topM[p] = topM[p - 1]; topI[p] = topI[p - 1]; --p;
+            }
+            topM[p] = m; topI[p] = id;
+          }
+        }
+
+        if (topI[0] >= 0) {
+          const double kMassFP  = 64.0;                       // spatial_hash.metal:60
+          const double totalMsun = totalMassFP / kMassFP;
+          // M_sun in kg from the engine's own GM_sun anchor: M = GM/G.
+          const double kGSI     = 6.67430e-11;                // CODATA 2018, m³/(kg s²)
+          const double kMsunKg  = space::spacetime::kGMsunSI / kGSI;
+          const double L        = space::spacetime::kUnitMeters;   // m per sim length
+          const double cellVolM3 = cellVolSim * L * L * L;
+
+          const double topMsun = (double)topM[0] / kMassFP;
+          const uint32_t topCnt = cc[topI[0]];
+          const double rhoSim  = topMsun / std::max(cellVolSim, 1e-30);
+          const double rhoSI   = topMsun * kMsunKg / std::max(cellVolM3, 1e-30);
+          const double nH      = rhoSI / space::spacetime::kProtonMassSI;
+
+          // Where is it? Decode the linear cell id back to (i,j,k) and sim coords.
+          const long ti = topI[0] % N, tj = (topI[0] / N) % N, tk = topI[0] / ((long)N * N);
+          const double px = ((double)ti + 0.5) * cs - lastHashExtent;
+          const double py = ((double)tj + 0.5) * cs - lastHashExtent;
+          const double pz = ((double)tk + 0.5) * cs - lastHashExtent;
+          const double rad = std::sqrt(px * px + py * py + pz * pz);
+
+          // The extinction gate, evaluated on the SAME cell, so no inference is
+          // needed about whether it can fire here. smoothstep(150,1500,count).
+          double g = ((double)topCnt - 150.0) / (1500.0 - 150.0);
+          g = std::min(1.0, std::max(0.0, g));
+          const double gate = g * g * (3.0 - 2.0 * g);
+
+          // Reference ladder — names the regime instead of leaving a bare number.
+          const char *regime =
+              rhoSI < 1e-15 ? "below interstellar medium" :
+              rhoSI < 1e-6  ? "interstellar gas" :
+              rhoSI < 1e2   ? "thin gas / protostellar cloud" :
+              rhoSI < 1e4   ? "STELLAR (Sun mean 1408)" :
+              rhoSI < 1e7   ? "stellar core (Sun centre 1.5e5)" :
+              rhoSI < 1e12  ? "WHITE DWARF — electron degeneracy" :
+              rhoSI < 1e16  ? "between WD and NS" :
+                              "NEUTRON STAR / nuclear (2.3e17)";
+
+          // ── HORIZON ↔ AMR-BOX CORRELATION (2026-08-11 03:14:00, his pick) ──
+          // THE QUESTION: does the hole stop existing exactly when the collapsed
+          // clump leaves the AMR fine grid?
+          //
+          // The fine grid is 128³ over ±kAmrFineExtent (4.0) ABOUT THE ORIGIN —
+          // SpatialHashUniforms (renderer.h:341) has no centre field, so it
+          // cannot be anywhere else. Measured 02:47: the top cell wanders
+          // r=0.87→5.89 sim, i.e. in and out of that box. If horizonR collapses
+          // on the frames it is OUT, then the origin-lock is the mechanism
+          // behind BOTH "the rotating BH is broken" and "particles still render
+          // inside the hole" — because the star-pass capture cull
+          // (render.metal:665) is gated on `cam.horizonR > 0`, and cam.horizonR
+          // is lastHorizonRSmooth (renderer.mm:1610). horizonR → 0 means the
+          // cull switches OFF and the swallowed pile pops back into view.
+          //
+          // All three horizon values are printed because they are NOT the same
+          // number and only one of them drives the cull:
+          //   lastHorizonR       — raw geometric r_h from the radial profile
+          //   lastHorizonRSmooth — eased (×0.03/frame, renderer.mm:1494); THE CULL
+          //   lastHorizonRatio   — sup r_s(M(<r))/r, the continuous approach
+          // r_s is derived from the top cell's own mass via units.h:85
+          // (kRsSimPerMsun), not a constant — so "is it a hole" is answered by
+          // its own contents, not by BH_HORIZON=0.57 or any other fixed literal.
+          const double rsTop   = topMsun * space::units::kRsSimPerMsun;
+          const double fineCS  = 2.0 * (double)Impl::kAmrFineExtent / (double)N;
+          const bool   inBox   = std::max(std::max(std::fabs(px), std::fabs(py)),
+                                          std::fabs(pz)) <= (double)Impl::kAmrFineExtent;
+          // Tracks the RAW value as of 2026-08-11 03:26:00 — the cull was moved
+          // off the eased value (render.metal, cam.horizonRRaw). Kept in step on
+          // purpose: a probe still reporting the old gate would quietly certify
+          // a fix it is no longer measuring.
+          const bool   cullOn  = lastHorizonR > 0.0f;
+
+          double topShare = totalMsun > 0.0 ? 100.0 * topMsun / totalMsun : 0.0;
+          double top8FP = 0.0;
+          for (int b = 0; b < 8; ++b) top8FP += (double)topM[b];
+          double top8Share = totalMassFP > 0.0 ? 100.0 * top8FP / totalMassFP : 0.0;
+
+          fprintf(stderr,
+              "[DENSPROBE] phase=%.2f cell=%.4f sim (%.3e m) occupied=%ld/%ld "
+              "totalMass=%.0f Msun\n"
+              "[DENSPROBE]   TOP CELL (%ld,%ld,%ld) r=%.2f sim | mass=%.1f Msun "
+              "count=%u | M/particle=%.3f Msun\n"
+              "[DENSPROBE]   rho = %.3e Msun/sim^3 = %.3e kg/m^3 = %.3e n_H/m^3 "
+              "-> %s\n"
+              "[DENSPROBE]   extinction gate smoothstep(150,1500,count=%u) = "
+              "%.3f %s | mass share: top1=%.1f%% top8=%.1f%%\n"
+              "[HORIZONBOX] inAmrBox(+/-%.1f)=%-5s | r_s(topcell)=%.4f sim "
+              "= %.1f fine cells = %.2f coarse | horizonR raw=%.4f smooth=%.4f "
+              "ratio=%.3f | star-pass capture cull = %s\n",
+              physicsUniforms.envelopePhase, cs, (double)cs * L, occupied, NC,
+              totalMsun, ti, tj, tk, rad, topMsun, topCnt,
+              topCnt ? topMsun / (double)topCnt : 0.0,
+              rhoSim, rhoSI, nH, regime,
+              topCnt, gate, gate <= 0.0 ? "(CANNOT FIRE)" : "", topShare,
+              top8Share,
+              (double)Impl::kAmrFineExtent, inBox ? "IN" : "OUT",
+              rsTop, rsTop / fineCS, rsTop / (double)cs,
+              lastHorizonR, lastHorizonRSmooth, lastHorizonRatio,
+              cullOn ? "ON" : "OFF (particles inside the hole are DRAWN)");
+        }
+      }
 
       // Phase 6: densest-cell reduce (the emergent-BH signal, Step 2)
       if (reduceCellMaxPipeline && cellMaxPartialsBuffer && !skipCellMax) {
@@ -2960,6 +3014,17 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           liveComY = totalPY / totalSM;
           liveComZ = totalPZ / totalSM;
           liveCount = totalCT;
+        }
+        // ── MEASURED field extent for the depth cue (2026-08-11, §H10 fix) ───
+        // The same mean radius the [GRAV] line prints as meanR, kept instead of
+        // discarded. This replaces the CAP (STAR_MAP_CAP=100 / ORBIT_R_CHLADNI
+        // =6) as the depth normaliser. Measured, that was wrong by ~15x: the
+        // caps are what matter is ALLOWED to occupy, while the field actually
+        // sits at meanR 6.4-9.3 with r50 3.2-4.8. Normalising by 100 gave a
+        // 3.7% size spread — his verdict, exactly: "exact same look, unchanged".
+        if (totalCT > 0.5) {
+          float mR = (float)(totalSR / totalCT);
+          if (std::isfinite(mR) && mR > 0.01f) measuredMeanR = mR;
         }
         // Emergent-BH enclosure (Step 2): stars within R_ENC of the BH
         // candidate, counted by the same reduce → enclosed mass + refined
@@ -3349,9 +3414,25 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // ahead of the particle pass, so the vertex shader reads a phase that is
   // already advanced for this frame. Runs every rendered frame regardless of
   // whether physics is stepping — the held-pause playback keeps spinning.
-  // The kernel self-gates on bit20 + a live hole, so this is a no-op dispatch
-  // when there is no time-lapse.
-  if (posePhasePipeline && posePhaseBuffer && particleCount > 0) {
+  // HOST-SIDE GATE (2026-08-11 04:11:00). The kernel self-gates, but a self-gate
+  // still launches every thread: this was a 2M-thread dispatch every rendered
+  // frame that returned on its first branch whenever no time-lapse was running —
+  // which is every frame before the first hole forms, and every frame of every
+  // note after it. The condition below MIRRORS the kernel's opening test
+  // (render.metal pose_phase_advance) TERM FOR TERM against the same values the
+  // camera was built from this frame: bit20, the eased bhDiskGM (renderer.mm:1882
+  // writes bhDiskGMSmooth into cam.bhDiskGM), and the smoothed envelope phase
+  // (:1727 writes renderPhaseSmooth into cam.envelopePhase). bhDiskAxisY is
+  // omitted deliberately — it is 0.0f at all seven assignment sites, so
+  // `< 0.5f` is a constant true; if that ever changes, this gate must gain the
+  // term. ⚠ IF THE KERNEL'S GATE CHANGES, CHANGE THIS ONE IN THE SAME COMMIT —
+  // a host gate that is stricter than the kernel's silently freezes the phase.
+  const bool poseTimeLapseActive =
+      (config.bhToggles & 0x100000u) != 0u &&
+      bhDiskGMSmooth > 0.0f &&
+      renderPhaseSmooth < 0.5f;
+  if (posePhasePipeline && posePhaseBuffer && particleCount > 0 &&
+      poseTimeLapseActive) {
     id<MTLComputeCommandEncoder> pp = [cmdBuf computeCommandEncoder];
     [pp setComputePipelineState:posePhasePipeline];
     [pp setBuffer:particleBuffer offset:0 atIndex:0];
@@ -3384,6 +3465,14 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   if (!kProbeBuf[frameIdx])
     kProbeBuf[frameIdx] = [device newBufferWithLength:128 * sizeof(uint32_t)
                                              options:MTLResourceStorageModeShared];
+  // Scratch [KPROBE] target for the depth pre-pass. particle_vertex atomically
+  // increments this histogram, so running the shader twice per frame against
+  // the REAL buffer would double every bin and silently corrupt the readback
+  // above. Never read; exists only to absorb those writes. Private storage —
+  // the CPU has no reason to see it.
+  if (!kProbeDummy)
+    kProbeDummy = [device newBufferWithLength:128 * sizeof(uint32_t)
+                                      options:MTLResourceStorageModePrivate];
   {
     // READ FIRST (this slot's last completed frame), THEN clear for this frame.
     const uint32_t *kp = (const uint32_t *)kProbeBuf[frameIdx].contents;
@@ -3434,6 +3523,86 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [zk endEncoding];
   }
 
+  // ══ DEPTH PRE-PASS (2026-08-11 — board §H1 P1, step 1) ═══════════════════
+  // Writes NEAREST depth for the particle cloud into depthPrepassTexture and
+  // stores it. Colour is not touched: this pass has NO colour attachment and
+  // NO fragment stage, and it targets its own depth texture, so the offscreen
+  // pass below is byte-for-byte what it was.
+  //
+  // 🚨 WHAT THIS IS FOR — it buys three separate board rows, not one:
+  //   P1  — occlusion becomes possible at all (nothing has ever written depth).
+  //   C4a — the camera motion blur unprojects every pixel at a hardcoded
+  //         z=0.99 "far-plane proxy" (postfx.metal) purely because no depth was
+  //         readable. With this stored, that fake can be retired.
+  //   C4b — per-particle motion vectors / TAA, currently blocked outright.
+  // Nothing consumes the texture YET — wiring it into post-FX CHANGES THE
+  // IMAGE and is therefore a separate, verdicted step. This step is the
+  // no-op half, on purpose.
+  //
+  // ⚠️ COST IS REAL AND UNMEASURED AT WRITE TIME: this re-runs particle_vertex
+  // for every particle (and every instance), and that shader is the most
+  // expensive in the app — §H4 measured the whole star pass at 2.4–3.3 ms.
+  // A depth-only pass has no fragment stage so it should cost less than that,
+  // but "should" is not a measurement. SS_NO_DEPTH_PREPASS=1 skips encoding it
+  // entirely, so [PROFILE/120f] A/B gives the number the same way
+  // SS_NO_STARPASS bounded §G6. If it proves too expensive, the cheap fix is a
+  // dedicated minimal vertex shader — position and point size only.
+  static const bool kNoDepthPrepass =
+      (getenv("SS_NO_DEPTH_PREPASS") != nullptr);
+  if (!kNoDepthPrepass && depthPrepassPipeline && depthPrepassTexture &&
+      particleCount > 0) {
+    MTLRenderPassDescriptor *depthPass =
+        [MTLRenderPassDescriptor renderPassDescriptor];
+    depthPass.depthAttachment.texture = depthPrepassTexture;
+    depthPass.depthAttachment.loadAction = MTLLoadActionClear;
+    depthPass.depthAttachment.clearDepth = 1.0;
+    // STORE, unlike the main pass's DontCare — being readable afterwards is
+    // the entire reason this pass exists.
+    depthPass.depthAttachment.storeAction = MTLStoreActionStore;
+
+    // One-shot proof that this pass actually ENCODES. A successful pipeline
+    // creation only proves the pipeline exists; the guard above could still
+    // skip every frame on a nil texture or zero count and the failure would be
+    // silent — the exact "change did nothing" trap the protocol says to suspect
+    // first. Prints once per process, never per frame.
+    static bool announcedPrepass = false;
+    if (!announcedPrepass) {
+      announcedPrepass = true;
+      printf("[DEPTHPREPASS] ENCODING — %u particles x %u instance(s), "
+             "target %lux%lu, storeAction=Store\n",
+             (unsigned)particleCount, (unsigned)((bhStrength > 0.5f) ? 2u : 1u),
+             (unsigned long)depthPrepassTexture.width,
+             (unsigned long)depthPrepassTexture.height);
+      fflush(stdout);
+    }
+    id<MTLRenderCommandEncoder> dpe =
+        [cmdBuf renderCommandEncoderWithDescriptor:depthPass];
+    [dpe setRenderPipelineState:depthPrepassPipeline];
+    [dpe setDepthStencilState:depthWriteState];
+    // Bindings mirror the star pass EXACTLY (same buffers, same indices) so the
+    // depth lands where the sprite lands — with ONE deliberate difference at
+    // index 9, the [KPROBE] histogram, which gets the scratch buffer so this
+    // second invocation cannot double-count the measurement.
+    [dpe setVertexBuffer:particleBuffer offset:0 atIndex:0];
+    [dpe setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    [dpe setVertexBuffer:particleBuffer offset:0 atIndex:2];
+    [dpe setVertexBuffer:lensAlphaLUT offset:0 atIndex:3];
+    [dpe setVertexBuffer:cellCountsBuffer offset:0 atIndex:4];
+    [dpe setVertexBuffer:spatialHashUniformBuffer offset:0 atIndex:5];
+    [dpe setVertexBuffer:spectralContinuumLUT offset:0 atIndex:6];
+    [dpe setVertexBuffer:spectralLinesLUT offset:0 atIndex:7];
+    [dpe setVertexBuffer:posePhaseBuffer offset:0 atIndex:8];
+    [dpe setVertexBuffer:kProbeDummy offset:0 atIndex:9];
+    // Same instancing rule as the star pass — the secondary lensed image is a
+    // real image and owns depth too, so it must be present or the two passes
+    // would disagree about what is on screen.
+    [dpe drawPrimitives:MTLPrimitiveTypePoint
+            vertexStart:0
+            vertexCount:particleCount
+          instanceCount:((bhStrength > 0.5f) ? 2u : 1u)];
+    [dpe endEncoding];
+  }
+
   id<MTLRenderCommandEncoder> enc =
       [cmdBuf renderCommandEncoderWithDescriptor:offscreenPass];
 
@@ -3472,10 +3641,23 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // pass in the app every frame for nothing. Only instance the secondary when a
   // hole is actually present → no-hole (play/rest) runs 1×, halving the pass.
   NSUInteger particleInstances = (bhStrength > 0.5f) ? 2u : 1u;
-  [enc drawPrimitives:MTLPrimitiveTypePoint
-          vertexStart:0
-          vertexCount:particleCount
-        instanceCount:particleInstances];
+  // [G6PROBE] 2026-08-11 — MEASUREMENT INSTRUMENT, NOT A FEATURE, NOT A FIX.
+  // §G6 is "2M vertex invocations run every frame no matter what". Before any
+  // culling/compaction scheme is designed, the prize has to be bounded: how many
+  // ms of the frame is this one draw actually worth? SS_NO_STARPASS=1 skips
+  // encoding it entirely, so the existing [PROFILE/120f] "Render+PostFX avg"
+  // reports the same frame WITHOUT the pass. A − B = the entire star pass
+  // (vertex + rasterisation together); no cull can ever win more than that.
+  // Everything the pass writes back ([KPROBE] buffer(9), the whiteout probe) is
+  // diagnostic-only, so dropping it perturbs no physics. Read once, never per
+  // frame. Default OFF — an unset env is byte-for-byte the shipping path.
+  static const bool kNoStarPass = (getenv("SS_NO_STARPASS") != nullptr);
+  if (!kNoStarPass) {
+    [enc drawPrimitives:MTLPrimitiveTypePoint
+            vertexStart:0
+            vertexCount:particleCount
+          instanceCount:particleInstances];
+  }
 
   // ── DUST EXTINCTION PASS (design §2b, 2026-07-23): cold+dense gas re-drawn
   // as absorbing splats OVER the additive image — dark silhouette bodies with
@@ -3861,7 +4043,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.debugBypass = config.debugBypassPostFX ? 1.0f
                      : (config.debugNoBleach ? 2.0f : 0.0f); // mode: B bypass / N no-bleach
   post.gradeAmount = config.gradeAmount; // display grade LUT blend (0 = exact bypass)
-  post.gradePad0 = 0.0f;
+  // ── COVERAGE RESOLVE (2026-08-11, board §H9) — his call, path A ──────────
+  // Default ON. SS_NO_COVERAGE=1 restores the pure-additive image byte for
+  // byte, so the A/B is one relaunch and needs no rebuild.
+  static const bool kNoCoverage = (getenv("SS_NO_COVERAGE") != nullptr);
+  post.coverageResolve = kNoCoverage ? 0.0f : 1.0f;
   post.gradePad1 = 0.0f;
   post.gradePad2 = 0.0f;
   // EDR headroom: how far above SDR white this display can currently go
@@ -4012,6 +4198,22 @@ void Renderer::resize(int width, int height) {
   depthDesc.storageMode = MTLStorageModePrivate;
   depthDesc.usage = MTLTextureUsageRenderTarget;
   impl_->depthTexture = [impl_->device newTextureWithDescriptor:depthDesc];
+
+  // ── DEPTH PRE-PASS target (2026-08-11, P1 step 1) ────────────────────────
+  // Same format/size, but usage adds ShaderRead: unlike depthTexture (which is
+  // RenderTarget-only and thrown away with storeAction=DontCare) this one is
+  // STORED so a later stage can sample it. That readability is the entire
+  // point — it is what C4a needs to stop faking depth at z=0.99, and what C4b
+  // needs to exist at all.
+  MTLTextureDescriptor *dpTexDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                   width:width
+                                  height:height
+                               mipmapped:NO];
+  dpTexDesc.storageMode = MTLStorageModePrivate;
+  dpTexDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  impl_->depthPrepassTexture =
+      [impl_->device newTextureWithDescriptor:dpTexDesc];
 
   // ── Offscreen texture: HDR (RGBA16Float) for physics-accurate lighting ──
   // MIPMAPPED (2026-07-16, auto-exposure): the top mip = the scene's average

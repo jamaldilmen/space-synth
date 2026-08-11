@@ -2162,6 +2162,12 @@ int main() {
     config.cameraPos[0] = camera.getX();
     config.cameraPos[1] = camera.getY();
     config.cameraPos[2] = camera.getZ();
+    // F5 2026-08-10: hand the shader the real view axis. Today the camera still
+    // looks at the origin, so this equals normalize(-cameraPos) — the exact
+    // expression render.metal used to compute inline — making this change a
+    // visual NO-OP by construction. That is the verification: if the picture
+    // moves, the plumbing is wrong.
+    camera.getForward(config.cameraForward);
     config.jitterFactor =
         app.uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
     config.orthoMode = app.uiOrthoMode;

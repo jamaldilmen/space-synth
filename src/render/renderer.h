@@ -46,6 +46,11 @@ struct RenderConfig {
   float cameraRho = 800.0f;
   float cameraPos[3] = {0.0f, 0.0f, 0.0f};  // World-space camera position
                                              // (set from main.cpp each frame)
+  // World-space UNIT forward (eye → target). F5 2026-08-10: the shader used to
+  // re-derive this as normalize(-cameraPos), which assumes the camera looks at
+  // the origin. Default points down -Z so a config built without main.cpp still
+  // has a unit axis rather than a zero vector.
+  float cameraForward[3] = {0.0f, 0.0f, -1.0f};
   bool orthoMode = true;
   bool phaseViz = false;
 
@@ -155,7 +160,12 @@ struct PostFXUniforms {
   // Scalars MUST stay a multiple of 4 so the matrices below keep 16-byte
   // alignment and match MSL. Was 24 (=96 B); now 28 (=112 B).
   float gradeAmount;   // 0-1 display grade LUT blend (0 = exact bypass)
-  float gradePad0;
+  // COVERAGE RESOLVE (2026-08-11, board §H9): 1 = on, 0 = off. Repurposed from
+  // gradePad0 ON PURPOSE — a pad float is the one place a new scalar can be
+  // added with NO size change and NO offset change, so the CPU/GPU mirror
+  // cannot drift. Appending instead is what produced G8's 276-vs-288 C++/Metal
+  // mismatch. Two pads remain if another scalar is ever needed.
+  float coverageResolve;
   float gradePad1;
   float gradePad2;
   float inverseViewProj[16];
@@ -219,7 +229,92 @@ struct CameraUniforms {
   float tuneStarSizeExp = 0.8f;   // Rstar = M^this      (was hardcoded 0.8)
   float tuneStarSizeFloor = 1.0f; // STAR_MIN_PX         (was hardcoded 1.0)
   float tuneStarSizeCeil = 48.0f; // tanh soft ceiling   (was hardcoded 48.0)
+  // ── VIEW AXIS (F5, 2026-08-10) — APPENDED, mirror order = render.metal ──
+  // World-space UNIT forward (eye → target). The shader used to re-derive this
+  // inline as normalize(-cameraPos), which is only the view axis while the
+  // camera looks at the ORIGIN. Three scalars, not a float3/float4, so there is
+  // no 16-byte alignment padding to keep in sync by hand — same house style as
+  // bhX/bhY/bhZ above. Defaults to -Z (unit) so an unset config is still valid.
+  float viewForwardX = 0.0f;
+  float viewForwardY = 0.0f;
+  float viewForwardZ = -1.0f;
+  // ── RAW HORIZON FOR THE CAPTURE CULL (2026-08-11 03:26:00) — APPENDED ──
+  // MEASURED 2026-08-11 03:18: on the frame a hole forms, lastHorizonR (raw)
+  // = 0.0781 while lastHorizonRSmooth = 0.0130 — the eased value is 6× SMALLER
+  // than the true horizon and needs ~2 s of frames (×0.03/frame, renderer.mm:1494)
+  // to converge. The star-pass capture cull (render.metal, "distance from the
+  // HOLE CENTRE") was gated on the eased value, so every shell between r=0.013
+  // and r=0.078 was INSIDE the real horizon and still being drawn. That is
+  // Jamal's "why are particles still rendered once they crossed the black hole
+  // tummy", and it fires every single time a hole forms.
+  //
+  // ⭐ WHY A SECOND FIELD instead of pointing cam.horizonR at the raw value:
+  // the easing is not a bug. It exists because the horizon probe steps every
+  // few seconds and the drawn hole "visibly JUMPED size" (renderer.h:211,
+  // 2026-07-19). horizonR still drives the hole pass / membrane / pose / lens
+  // RADIUS, which must stay smooth. Only the CULL — a yes/no question about
+  // whether a star is behind the horizon — must use truth. Physics already
+  // uses raw (renderer.mm:1980), so this makes the render cull agree with the
+  // physics instead of with the visual easing.
+  float horizonRRaw = 0.0f;
+  // ⚠️ 16-BYTE TAIL RULE — learned the hard way 2026-08-11 03:29:00, and the
+  // layout guard is what caught it. MSL rounds a struct's size UP to its
+  // largest member alignment (float4x4 ⇒ 16), while the C++ half here declares
+  // that matrix as float[16] (alignment 4) and does NOT round. Appending
+  // horizonRRaw alone gave sizeof 276 in C++ and 288 in Metal — the field
+  // offsets still agreed, but the sizeof assert could no longer be satisfied on
+  // both sides at once, which would have meant weakening the guard.
+  // Fix: keep the struct a MULTIPLE OF 16 by padding the tail. The next person
+  // to append should consume these pads first, then add a fresh 16-byte block.
+  // FIELD HALF-DEPTH along the view axis, sim units (2026-08-11, board §H10).
+  // Consumes horizonRPad0 exactly as that block's own comment instructs, so
+  // sizeof stays 288 and all four offset anchors are unchanged.
+  // ⭐ Fed from the MEASURED mean particle radius (the [GRAV] line's meanR),
+  // NOT from a cap constant. The first version mirrored STAR_MAP_CAP /
+  // ORBIT_R_CHLADNI and was wrong by ~15x, because a cap describes what matter
+  // may occupy, not where it is. Using the measurement also removed the
+  // cross-file constant duplication that version had to declare.
+  float fieldHalfDepth = 100.0f;
+  float horizonRPad1 = 0.0f;
+  float horizonRPad2 = 0.0f;
 };
+
+// ── LAYOUT GUARD (F5 / board A0h′, 2026-08-10) ──────────────────────────────
+// This struct is hand-mirrored in render.metal and the two are bound by NOTHING
+// but a comment. They deliberately differ in declared TYPE while agreeing on
+// LAYOUT (float[16] here vs float4x4 there; float[3]+cameraPad here vs float4
+// cameraPos there), so a size match is meaningful rather than trivially true.
+//
+// The SAME numbers appear at the bottom of render.metal's copy. Append a field
+// to one file and forget the other and that file's compile fails — the Metal
+// build runs as the MetalShaders target in package_macos.sh, so both halves
+// break the normal build loop.
+//
+// APPEND-ONLY RULE: new fields go at the END, never inserted mid-struct. An
+// append that goes wrong makes ONE new field read garbage; a mid-struct insert
+// silently shifts EVERY field after it, which presents as a physics bug.
+//
+// sizeof alone would NOT catch two transposed fields (same size, different
+// layout) — verified 2026-08-10 by compiling exactly that case. Hence the
+// offset anchors. HONEST LIMIT: three anchors across ~40 fields catch size
+// drift, a bad append, and any transposition ACROSS an anchor. A transposition
+// strictly BETWEEN two anchors still slips through. This is a guard, not a proof.
+//
+// Precedent: renderer.mm does the same for BHMarchUniforms (grep static_assert).
+static_assert(sizeof(CameraUniforms) == 288,
+              "CameraUniforms layout — update the mirrored struct at the top of "
+              "src/render/render.metal AND its matching static_asserts");
+// __builtin_offsetof, not offsetof: the macro needs <cstddef>, which this header
+// does not include, and the Metal half CANNOT use it at all (MSL has no cstddef).
+// Using the builtin on both sides keeps the two blocks literally identical.
+static_assert(__builtin_offsetof(CameraUniforms, bhShadowNdcRadius) == 108,
+              "CameraUniforms anchor bhShadowNdcRadius — layout drift vs render.metal");
+static_assert(__builtin_offsetof(CameraUniforms, bhX) == 200,
+              "CameraUniforms anchor bhX — layout drift vs render.metal");
+static_assert(__builtin_offsetof(CameraUniforms, viewForwardZ) == 268,
+              "CameraUniforms anchor viewForwardZ — layout drift vs render.metal");
+static_assert(__builtin_offsetof(CameraUniforms, horizonRRaw) == 272,
+              "CameraUniforms tail anchor — layout drift vs render.metal");
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)
 struct VoiceGPUData {
@@ -352,7 +447,9 @@ public:
                    float stringStiffness, float restLength,
                    uint32_t debugFlags);
 
-  void render(const RenderConfig &config);
+  // The single-argument overload was deleted 2026-08-11 04:11:00 — it had zero
+  // callers and its ortho-only body was being misread as the live renderer.
+  // Every caller supplies a viewProj.
   void render(const RenderConfig &config, const float *viewProj);
 
   void resize(int width, int height);

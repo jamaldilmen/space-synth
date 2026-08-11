@@ -501,7 +501,13 @@ constant float BESSEL_ZEROS[108] = {
 // Cavity wall = the play cap itself: the radius clamp at the bottom of this
 // kernel is cylindrical (rXY vs ORBIT_R_CHLADNI), which is what makes the play
 // world a TUBE about world Z. So the acoustic cavity IS that tube.
-constant float EIGEN_R        = ORBIT_R_CHLADNI; // 3.0 sim units
+// ⚠ COMMENT CORRECTED 2026-08-11 12:31:44. This read "// 3.0 sim units" and was
+// wrong by 2x: ORBIT_R_CHLADNI is 6.0f (:276), so EIGEN_R = 6.0 and
+// EIGEN_L = 2*EIGEN_R = 12.0, not 6.0. This stale comment is not harmless — it
+// mis-sized the [GRIDPROBE] scan radius in renderer.mm, which was written to
+// "see the pattern AND its surroundings" and instead scanned exactly the cavity
+// and none of its surroundings. Fixed there in the same pass.
+constant float EIGEN_R        = ORBIT_R_CHLADNI; // 6.0 sim units (= ORBIT_R_CHLADNI)
 
 // AXIAL STRUCTURE — this is the depth. Ψ ∝ cos(k_z·z); k_z=0 ⇒ the pattern is a
 // 2D cross-section extruded along the tube (flat), which is what "it's still

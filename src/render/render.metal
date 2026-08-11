@@ -71,7 +71,51 @@ struct CameraUniforms {
     float tuneStarSizeExp;   // Rstar = M^this      (was 0.8)
     float tuneStarSizeFloor; // STAR_MIN_PX         (was 1.0)
     float tuneStarSizeCeil;  // tanh soft ceiling   (was 48.0)
+    // ── VIEW AXIS (F5, 2026-08-10) — APPENDED, mirror order = renderer.h ──
+    // World-space UNIT forward (eye → target). Replaces the two inline
+    // normalize(-cam.cameraPos.xyz) derivations below, which silently assumed
+    // the camera looks at the origin. Three scalars (not float3) so there is no
+    // 16-byte alignment padding to hand-mirror.
+    float viewForwardX;
+    float viewForwardY;
+    float viewForwardZ;
+    // RAW horizon r_h for the capture cull ONLY (2026-08-11) — APPENDED.
+    // horizonR above is the EASED value and drives every drawn RADIUS; it lags
+    // 6× behind at formation (measured raw=0.0781 vs smooth=0.0130), which left
+    // stars inside the real horizon still drawn. Cull on truth, draw on eased.
+    // Derivation of both lives in src/render/renderer.h.
+    float horizonRRaw;
+    // 16-byte tail padding — MSL rounds struct size up to 16 while the C++ half
+    // (float[16] instead of float4x4) does not. Keep this struct a multiple of
+    // 16 so ONE sizeof number is true on both sides. See renderer.h.
+    float fieldHalfDepth;   // field half-extent along view, sim units (was horizonRPad0)
+    float horizonRPad1;
+    float horizonRPad2;
 };
+
+// ── LAYOUT GUARD (F5 / board A0h′, 2026-08-10) ──────────────────────────────
+// Mirror of the guard in src/render/renderer.h — SAME NUMBERS, on purpose. This
+// half is what makes the pair actually binding: a C++-only assert would catch
+// "appended and forgot to update the number" but NOT "updated the number and
+// forgot this file", which is the failure we care about.
+//
+// NOTE: plain `offsetof` DOES NOT EXIST IN MSL (no <cstddef>) — it fails with
+// "use of undeclared identifier". Use __builtin_offsetof, which works and does
+// fire. Both verified by compiling the passing AND failing cases, 2026-08-10.
+// The same builtin is used on the C++ side via offsetof so the two blocks stay
+// readable side by side. Do not "fix" this back to offsetof.
+//
+// APPEND-ONLY: new fields at the END of BOTH structs, never inserted.
+static_assert(sizeof(CameraUniforms) == 288,
+              "CameraUniforms layout — update src/render/renderer.h AND its static_asserts");
+static_assert(__builtin_offsetof(CameraUniforms, bhShadowNdcRadius) == 108,
+              "CameraUniforms anchor bhShadowNdcRadius — layout drift vs renderer.h");
+static_assert(__builtin_offsetof(CameraUniforms, bhX) == 200,
+              "CameraUniforms anchor bhX — layout drift vs renderer.h");
+static_assert(__builtin_offsetof(CameraUniforms, viewForwardZ) == 268,
+              "CameraUniforms anchor viewForwardZ — layout drift vs renderer.h");
+static_assert(__builtin_offsetof(CameraUniforms, horizonRRaw) == 272,
+              "CameraUniforms tail anchor — layout drift vs renderer.h");
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
 // (around Y then X). The whole shape rotates as one solid body in the render —
@@ -245,12 +289,10 @@ constant float KERR_A    = 0.5f;   // BH spin in the Ω(r)=1/(r^1.5+a) speed law
 // Doppler is split into COLOUR shift and BEAMING intensity so we can have a
 // strong colour swing (blue approaching / red receding) WITHOUT the beaming
 // blowing one side away (the "half black hole").
-constant float DOPPLER_K_COLOR = 5.0f;  // colour frequency shift — MODERATE: a
-                                        // warm lopsidedness (bright gold-white
-                                        // approaching → amber receding), toward the
-                                        // movie's mostly-symmetric warm disk rather
-                                        // than crashing the far side to the red
-                                        // floor. Beaming stays gentle (whole disk).
+// DOPPLER_K_COLOR DELETED 2026-08-11 12:31:44 (C7b) — its only consumer was
+// `dopplerColor`, which was assigned and never read. See the note at the
+// Doppler block in particle_vertex. Beaming (DOPPLER_K_BEAM) is the surviving
+// line-of-sight term and is unchanged.
 constant float DOPPLER_K_BEAM  = 0.8f; // beaming intensity — gentle (whole disk)
 constant float DOPPLER_EXP     = 1.4f; // beaming exponent
 constant float SPIN_VEL_SCALE  = 0.08f;// brings spin (rad/s) into orbital-velocity
@@ -529,16 +571,27 @@ vertex VertexOut particle_vertex(
     // bit20 gate (2026-07-25): the analytic playback is a RENDER FAKE — it spins
     // the sprites while the real physics barely moves, and the ray-march samples
     // the real (slow) field, so the two never agree (Jamal: "a low-res copy of
-    // something slower, sped up weirdly"). DEFAULT OFF → sprites follow the REAL
-    // physics motion (dt = 0.0165·timeWarp, fixed per frame = smooth), coherent
-    // with the emission. ON = the legacy analytic spin, for A/B / posed demo.
+    // something slower, sped up weirdly").
+    // ⚠ COMMENT CORRECTED 2026-08-11 12:31:44 (P5). This block read "DEFAULT OFF
+    // → sprites follow the REAL physics motion". That was true for ~4 hours on
+    // 2026-07-25 and has been FALSE ever since: `app_state.h:56` sets
+    // `uiTogAnalyticSpin = true` at 19:15 the same day ("build the clean
+    // time-lapse"), and main.cpp:2215 packs it into bit20. **THIS BLOCK IS THE
+    // LIVE PATH**, not an A/B path — anyone reading the old comment concluded
+    // they were looking at dead code. OFF = raw physics motion (~38 s/orbit).
     // + PLAY GATE (2026-08-03): must mirror pose_phase_advance EXACTLY. The
     // phase is frozen during a note there, and here it is not APPLIED, so a
     // played note renders at the true physics positions — pure cymatics. See
     // the full mechanism note on pose_phase_advance above.
     if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY < 0.5f &&
         cam.envelopePhase < 0.5f) {
-        float2 c2 = float2(cam.bhX, cam.bhY);   // hole centre (off-origin after PLAY)
+        // ⚠ COMMENT CORRECTED 2026-08-11 12:31:44. This read "hole centre
+        // (off-origin after PLAY)". It is NEVER off-origin: the ORIGIN LOCK
+        // hard-sets bhPosX/Y/Z = 0.0f (renderer.mm:3293-3295) and the only
+        // refinement that could move them is inside `if (false)`
+        // (renderer.mm:2935). So c2 is ALWAYS (0,0) — this is a rotation about
+        // the world origin, and re-centring it on cam.bhX/Y would be a NO-OP.
+        float2 c2 = float2(cam.bhX, cam.bhY);   // == (0,0) always, see above
         float rxy = length(in.posW.xy - c2);
         // REAL RELATIVISTIC TIME BENDING (2026-07-16, Jamal item 3: "finally
         // introduce the realistic relativistic time bending in proportion to
@@ -565,51 +618,17 @@ vertex VertexOut particle_vertex(
             in.prevW.xy = c2 + float2(q.x * cP - q.y * sP, q.x * sP + q.y * cP);
         }
     }
-    // ── EMERGENT-HOLE TIME-LAPSE (2026-07-15, Jamal's breakthrough: "rotation
-    // means time passes on a trajectory") — the SAME Keplerian playback, keyed
-    // to the HONEST hole: GM = real M(<r_h) (CPU: lastHorizonMass), rotation
-    // about the disk's true axis Y, r_s = the honest r_h in the dilation, LIVE
-    // physics untouched underneath (this compresses the render clock only —
-    // the declared time-lapse, cf. fRelax/F_LTRANS; the trails then draw the
-    // orbits as light = the BH's visual identity, his 20:24 screenshots).
-    // r > r_h ONLY (2026-07-16): the interior is causally dead (membrane) —
-    // playback-rotating it fought the frozen physics at the boundary
-    // (Jamal: "the spin in the center and outside don't add up").
-    // ⚠ DEAD CODE — VERIFIED 2026-07-26. This block needs bhDiskAxisY > 0.5, and
-    // renderer.mm assigns bhDiskAxisY = 0.0f at ALL SEVEN of its assignment sites
-    // (:1388, :1429, :1432, :1629, :1670, :1673 and the header default) — the
-    // posed branch AND the emergent branch both select the z-axis block above
-    // ("the y-axis branch sleeps", :1425-1429). It is therefore unreachable in
-    // every configuration, and it still carries the OLD absolute-angle form
-    // (wEff * bhPoseTime) that was just removed above. The 2026-07-26 handoff
-    // called this the "twin at :422" and expected it to need the same fix; it
-    // does not, because it never runs. If it is ever revived, port the integrated
-    // phase (posePhase[vid]) into it FIRST — as written it reintroduces the
-    // counter-rotation drift.
-    if ((cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f && cam.bhDiskAxisY > 0.5f) {
-        // PLANE FIX (2026-07-19): this block was written 07-15 when the disk
-        // orbited about Y (x–z). The 07-16 plate-plane alignment moved the
-        // physical disk to x–y about Z — posing about Y on a Z-orbiting disk
-        // superimposes two rotation axes near the centre (Jamal: "rotating in
-        // two directions at once"). Now: same plane (x–y about Z), same CCW
-        // sense as the spawn orbits (+z×r), about the hole centre like the
-        // dial pose above. Dilation floor/r_s semantics unchanged.
-        float2 c2 = float2(cam.bhX, cam.bhY);   // hole centre (off-origin after PLAY)
-        float rxy = length(in.posW.xy - c2);
-        if (rxy > max(1e-3f, cam.horizonR)) {
-            float rs = max(cam.horizonR, 1e-3f);
-            float omega = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
-            float tdil  = sqrt(max(0.4f, 1.0f - rs / max(rxy, rs + 1e-3f)));
-            float wEff  = omega * tdil;
-            float aNow  = wEff * cam.bhPoseTime;
-            float aPrev = wEff * (cam.bhPoseTime - cam.bhPoseDt);
-            float cN = cos(aNow),  sN = sin(aNow);
-            float cP = cos(aPrev), sP = sin(aPrev);
-            float2 p = in.posW.xy - c2,  q = in.prevW.xy - c2;
-            in.posW.xy  = c2 + float2(p.x * cN - p.y * sN, p.x * sN + p.y * cN);
-            in.prevW.xy = c2 + float2(q.x * cP - q.y * sP, q.x * sP + q.y * cP);
-        }
-    }
+    // ── THE Y-AXIS TIME-LAPSE TWIN — DELETED 2026-08-11 04:11:00 ─────────────
+    // A second copy of the Keplerian playback, gated on `cam.bhDiskAxisY > 0.5f`.
+    // Re-verified before deletion: bhDiskAxisY is assigned 0.0f at ALL SEVEN of
+    // its sites (renderer.h:205 default + renderer.mm:1561, :1599, :1602, :1833,
+    // :1871, :1874) and is never written anywhere else, so the branch was
+    // unreachable in every configuration and had been since 2026-07-26. It also
+    // still carried the OLD absolute-angle form (wEff * bhPoseTime) that the
+    // live block above replaced with the integrated posePhase[vid] — so reviving
+    // it as written would have reintroduced the counter-rotation drift.
+    // If a Y-axis (x–z) time-lapse is ever wanted, write it fresh off the live
+    // block above; do not resurrect this one from git.
     // SECONDARY LENSED IMAGE (2026-06-13, Jamal: "secondary lensing, stick to
     // the science"). The point-mass lens has TWO solutions: the primary image
     // θ₊ (outside the Einstein ring, the current bend) and the SECONDARY θ₋
@@ -632,9 +651,15 @@ vertex VertexOut particle_vertex(
     // of fuzziness" / "middle is just noise" (Jamal 00:24, 11:33). The hole
     // pass draws these same particles as the black body; the star pass now
     // draws them not at all. Light stays one-way.
-    if (cam.horizonR > 0.0f && mass > 0.001f) {
+    // ⭐ RAW horizon, not the eased one (2026-08-11 03:26:00). Whether a star is
+    // behind the horizon is a fact about the PHYSICS, so it must use the same
+    // r_h the physics uses (renderer.mm:1980), not the value that exists to keep
+    // the DRAWN radius from jumping. Measured at formation: raw 0.0781 vs eased
+    // 0.0130 — a 6× under-cull lasting ~2 s every time a hole forms, which is
+    // exactly the "particles still rendered after they crossed" report.
+    if (cam.horizonRRaw > 0.0f && mass > 0.001f) {
         // distance from the HOLE CENTRE (off-origin after PLAY), not the origin
-        if (length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ)) < cam.horizonR) {
+        if (length(in.posW.xyz - float3(cam.bhX, cam.bhY, cam.bhZ)) < cam.horizonRRaw) {
             out.position = float4(0, 0, -2, 1);
             out.pointSize = 0.0f;
             out.color = float3(0);
@@ -743,6 +768,17 @@ vertex VertexOut particle_vertex(
     // (rsDil = live horizonR, floor 0.02, vs 0.57/0.4 here) despite its comment
     // claiming they must match exactly. Not encoded while bit15 is ON (default),
     // so it is off the live path; reconcile before trusting the bit15-OFF A/B.
+    // ⚠ P6 CLAIM REFUTED HERE, 2026-08-11 12:31:44. The board (§H1 P6, §G5)
+    // says this measures dilation "from the ORIGIN while the hole sits at
+    // r=3.8-5.9 sim", implying a fix: re-centre on cam.bhX/Y/Z. **That fix is
+    // a NO-OP.** cam.bhX/Y/Z are hard-zeroed by the ORIGIN LOCK
+    // (renderer.mm:3293-3295; the refinement is inside `if (false)` at :2935),
+    // so the renderer's hole centre IS the origin and length(posW.xyz) already
+    // measures from it. The r=3.8-5.9 figure describes where the physical MASS
+    // is, which is a different quantity the render never sees. If this is ever
+    // to become honest, the work is to give the renderer a real hole position —
+    // i.e. A3② — not to swap the vector here. 4th no-op "fix" logged on this
+    // project (cf. A3①'s kREnc, A3③'s latch).
     float rDil  = length(in.posW.xyz);
     float tDilate = sqrt(max(0.4f, 1.0f - BH_R_IN_SIM / max(rDil, BH_R_IN_SIM + 1e-3f)));
     float3 spinPos = applySpin(in.posW.xyz, cam.spinAngleX * tDilate, cam.spinAngleY * tDilate, cam.spinAngleZ * tDilate);
@@ -901,7 +937,10 @@ vertex VertexOut particle_vertex(
                                    cam.spinAngleX, cam.spinAngleY,
                                    cam.spinAngleZ) * cam.plateRadius;
         float rsW   = cam.horizonR * cam.plateRadius;      // r_s in world units
-        float3 dHat = normalize(-cam.cameraPos.xyz);       // view axis (ortho: parallel rays)
+        // F5 2026-08-10: was `normalize(-cam.cameraPos.xyz)`, which is the
+        // direction camera→ORIGIN, not the view axis. Identical while the camera
+        // looks at the origin; wrong the moment a dolly/POV points elsewhere.
+        float3 dHat = float3(cam.viewForwardX, cam.viewForwardY, cam.viewForwardZ);
         float along = dot(worldPos - bhWorld, dHat);       // + = behind the hole
         if (isSecondary && along <= rsW) cullThis = true;  // front: no 2nd image
         // ── THE SEAM, REMOVED (2026-07-26 13:56:00) ──────────────────────────
@@ -1028,7 +1067,10 @@ vertex VertexOut particle_vertex(
             // its true 3D position and OCCLUDES the shadow. So the hole sits
             // inside the scene with matter correctly in front of / behind it,
             // instead of the lens always painting a flat disc over everything.
-            float3 viewDir = normalize(-cam.cameraPos.xyz);   // view axis
+            // F5 2026-08-10: see the dHat site above — same substitution, same
+            // reason. This one gates `behindBH`, i.e. the occlusion that puts
+            // the hole IN the scene rather than over it.
+            float3 viewDir = float3(cam.viewForwardX, cam.viewForwardY, cam.viewForwardZ);
             bool behindBH = dot(worldPos - bhWorldF, viewDir) > 0.0f; // farther than the HOLE
             if (isSecondary && !behindBH) cullThis = true;    // front matter casts no 2nd image
             if (beta > 1e-5f && behindBH) {
@@ -1198,6 +1240,53 @@ vertex VertexOut particle_vertex(
 
     // Dynamic Point Size Scaling
     float isOrtho = cam.orthoMode;
+    // ══ P2 — REAL PER-PARTICLE DEPTH IN ORTHO (2026-08-11, board §H1) ════════
+    // WAS: `mix(out.position.w, cam.cameraPos.w, isOrtho)`. In ortho — THE
+    // DEFAULT (renderer.h:54) — `out.position.w` is 1 (a parallel projection has
+    // no perspective divide), so this fell back to `cam.cameraPos.w`, which
+    // renderer.mm sets to `config.cameraRho`: the camera's distance from the
+    // ORIGIN. ONE SCALAR, HANDED TO ALL 2M PARTICLES. It then drives point size
+    // (distRatio below) and the fragment's fadeAmount. **A depth cue with zero
+    // variance across the field cannot produce depth**, and the fade was inert
+    // besides (fadeDistance = 6.0 vs a cameraRho clamped >= 50, so it saturated
+    // at 1 for every particle, always).
+    //
+    // NOW: the true depth along the VIEW AXIS.
+    // ⭐ It must be dot(delta, forward), NOT length(delta). Ortho rays are
+    // PARALLEL, so depth is the projection onto the view direction; Euclidean
+    // distance to the camera POINT would make off-axis particles read as
+    // farther and bend the size falloff into a fisheye toward the screen edges.
+    // ⭐ Second real consumer of F5's `viewForward` (A9 was the first) — using
+    // it instead of normalize(-cameraPos) means this stays correct the moment
+    // the camera stops looking at the origin, which is exactly what F6 does.
+    //
+    // ⚠️ HONEST FRAMING — this makes ortho a hybrid and that is deliberate.
+    // In a strict parallel projection apparent SIZE does not vary with depth.
+    // But our sprites are PSF-limited point sources, not geometry: a point
+    // source's flux falls as 1/d^2 and its drawn size follows its brightness.
+    // "Farther = dimmer = smaller PSF" is about flux, not projection, so it is
+    // physically defensible under ortho — while a geometric size falloff would
+    // not be. That distinction is the whole justification for this change.
+    float3 vFwd = normalize(float3(cam.viewForwardX, cam.viewForwardY,
+                                   cam.viewForwardZ));
+    float orthoDepth = max(dot(worldPos - cam.cameraPos.xyz, vFwd), 1e-3f);
+    // ⚠️ `dist` STAYS THE PRE-P2 VALUE ON PURPOSE — corrected 2026-08-11 14:56
+    // after his report: "stuff disappears out of frame weirdly when i zoom in".
+    // My regression, and the mechanism is exact. The ONLY consumer of out.dist
+    // is the fragment's `fadeAmount = smoothstep(0.1, fadeDistance=6.0, dist)`,
+    // which is a PERSPECTIVE NEAR-CLIP fade: it exists to kill sprites right on
+    // the lens. In ortho it was always INERT, because dist was cameraRho and
+    // rho is clamped >= 50, so smoothstep(0.1, 6, >=50) == 1 for every particle
+    // forever. Feeding it a true per-particle depth switched a dormant near-clip
+    // into a live one: any particle within 6 sim of the camera PLANE fades to
+    // zero, and zooming in drags more of the near field across that line — so
+    // matter vanished exactly as he described.
+    // ⭐ THE LESSON, worth more than the fix: P2 did not "add depth", it
+    // ACTIVATED EVERY DORMANT CONSUMER OF A CONSTANT. Two have now bitten
+    // (zoomCap/flux, and this fade). Before feeding a real value into any
+    // long-constant variable, enumerate its readers — a consumer written
+    // against a constant may be dead code that only LOOKS live.
+    // Depth now travels by exactly one route: `depthCue`, applied to size only.
     float dist = mix(out.position.w, cam.cameraPos.w, isOrtho);
     out.dist = dist;
     
@@ -1216,8 +1305,79 @@ vertex VertexOut particle_vertex(
     // (default zoom) sizeScale=2.0, identical to the old linear behavior.
     float temp = in.prevW.w;
     float heatSizeBoost = 1.0f + clamp(temp, 0.0f, 1.0f) * 1.5f; // 1x → 2.5x (crisp points, pre-impostor)
-    float distRatio = 800.0f / max(0.0001f, dist);
-    float sizeScale = pow(distRatio, 0.65f) * 1.275f;
+    // ══ ZOOM AND DEPTH ARE TWO DIFFERENT QUANTITIES (2026-08-11, P2 follow-up)
+    // BUG THIS FIXES — his report: "stars near camera are too buggy and big",
+    // "the rest of the chain is not properly adapted to it yet". Correct on both
+    // counts, and it was introduced by P2 an hour earlier.
+    //
+    // `distRatio` was a PER-FRAME ZOOM number: dist was `cameraRho`, identical
+    // for every particle, and everything downstream was written against that
+    // reading — `zoomCap` says so in its own comment ("Cap sprite size by
+    // ZOOM"), and the flux-conservation branch pours capped AREA into luminance
+    // on the same assumption. P2 made `dist` PER-PARTICLE, so those consumers
+    // silently started receiving a per-particle number and the near field
+    // diverged: at a depth approaching the camera plane the old
+    // `max(dist, 1e-3)` floor allows distRatio ~ 8e5, and pow(8e5, 0.65) is a
+    // sprite thousands of pixels across. That is the blowup he saw.
+    //
+    // THE SPLIT:
+    //   zoomRatio — per FRAME, from cameraRho. Restores every downstream
+    //               consumer (zoomCap, flux comp) to exactly its pre-P2 input.
+    //   depthCue  — per PARTICLE, bounded, and applied ONLY to sizeScale. It is
+    //               1.0 at the field centre, >1 nearer, <1 farther, so with a
+    //               flat field it is identically the old behaviour.
+    // The depth term uses the SAME 0.65 exponent as zoom because both describe
+    // "distance to this sprite" — using a second, different law would be an
+    // invented number.
+    //
+    // THE BOUND IS DERIVED, NOT PICKED: the floor is a quarter of the camera's
+    // own distance. At that depth the cue saturates at pow(4, 0.65) = 2.46x,
+    // and it scales WITH the camera instead of being a magic pixel constant.
+    // Anything nearer than a quarter of the view distance is effectively at the
+    // camera in a parallel projection and earns no further growth.
+    float zoomRatio = 800.0f / max(1e-3f, cam.cameraPos.w);
+    float depthCue = 1.0f;
+    if (isOrtho > 0.5f) {
+        // ══ SCALE-INVARIANT DEPTH CUE (2026-08-11, board §H10) ══════════════
+        // HIS QUESTION: "is our new understanding of depth part of the chladni
+        // modes?" MEASURED ANSWER: it was not, and the reason was this line.
+        // The cue normalised against the camera's ABSOLUTE distance, so the
+        // size spread it produced was (field half-depth / cameraRho):
+        //     Chladni cavity  R=6   at rho=800  ->  0.75%   invisible
+        //     star map        R=100 at rho=800  -> 12.5%    clearly visible
+        // The Chladni eigenmode is genuinely 3D (§H2: pAx never 0, k_z > 0, a
+        // real dPdz in the force) — it was the CUE that could not see it. A
+        // 12-sim-deep cavity and a 200-sim-deep star map cannot share a law
+        // written against absolute distance.
+        //
+        // FIX: normalise to the FIELD'S OWN half-depth, so every field reads
+        // with the same depth regardless of its physical size.
+        //
+        // THE EFFECTIVE DISTANCE IS DERIVED, NOT PICKED. Use the distance at
+        // which an object of half-extent R exactly fills the frame at this
+        // project's own perspective FOV (45 deg, main.cpp's perspectiveMatrix):
+        //     d_eff = R / tan(45/2) = R / 0.414214 = 2.41421 * R
+        // Then cue = d_eff / (d_eff + delta), delta = depth from field centre.
+        // At the near face (delta = -R): 2.41421/1.41421 = 1.7071 = 1 + 1/sqrt2
+        // At the far  face (delta = +R): 2.41421/3.41421 = 0.7071 =     1/sqrt2
+        // A 2.414x span, identical for the cavity and the star map. Through the
+        // existing pow(.,0.65) that is a 1.76x near-to-far size ratio.
+        // Zero free parameters: 45 deg is ours, R is the physics cap, 0.65 is
+        // the size law already in this file.
+        const float kTanHalfFov = 0.414214f;              // tan(22.5 deg)
+        float R = max(cam.fieldHalfDepth, 0.5f);
+        float dEff = R / kTanHalfFov;
+        float delta = orthoDepth - cam.cameraPos.w;       // signed, - = nearer
+        // Clamp delta to the field itself: matter outside the cap is either
+        // escaping or mid-transition, and must not drive the cue past the range
+        // the derivation covers.
+        delta = clamp(delta, -R, R);
+        depthCue = dEff / max(dEff + delta, 1e-3f);
+    }
+    // Perspective keeps its true per-fragment w; ortho now feeds the chain the
+    // ZOOM again, with depth carried separately by depthCue.
+    float distRatio = mix(800.0f / max(0.0001f, dist), zoomRatio, isOrtho);
+    float sizeScale = pow(distRatio, 0.65f) * 1.275f * pow(depthCue, 0.65f);
     // MASS drives size in EVERY phase (was rest-only): the render is the
     // readout of the physics — a star that has eaten stays visibly bigger
     // through play and release too. R ∝ M^0.8, screen size ∝ √R, normalized
@@ -1270,7 +1430,13 @@ vertex VertexOut particle_vertex(
     // approaching side goes bluer/hotter, the receding side redder). Computed
     // analytically so it works at rest where velW≈0. From the DNGR paper, per
     // particle, no raytracer. Maximal edge-on, ~0 face-on (correct physics).
-    float dopplerColor = 1.0f;
+    // ── C7b: `dopplerColor` DELETED 2026-08-11 12:31:44 ─────────────────────
+    // It was declared here, assigned once from DOPPLER_K_COLOR·v_los below, and
+    // NEVER READ — verified by grep (3 hits: the decl, the assign, and a comment
+    // that claimed it was applied). The surviving line-of-sight term is BEAMING
+    // on luminance (DOPPLER_K_BEAM), which is real and untouched. Doppler-as-hue
+    // was removed 2026-06-26 on Jamal's verdict — do NOT re-propose it.
+    // DOPPLER_K_COLOR (:292) is deleted with it; it had no other reader.
     {
         // PLANE FIX (2026-07-16, Jamal: stars FLIP white↔orange in cluster
         // pops, synced to the black circle's rotation): this block was built
@@ -1302,7 +1468,6 @@ vertex VertexOut particle_vertex(
             float vLos   = dot(vOrbit, toCam);                // + toward camera
             // Soft floors (0.25 / 0.35) so the receding side fades SMOOTHLY
             // instead of hard-clamping to black → no seam.
-            dopplerColor = max(0.25f, 1.0f + DOPPLER_K_COLOR * vLos);
             float beam   = max(0.35f, 1.0f + DOPPLER_K_BEAM * vLos);
             out.luminance *= pow(beam, DOPPLER_EXP);
         }
@@ -1436,9 +1601,13 @@ vertex VertexOut particle_vertex(
         // painted the whole PLAY field orange-white even with Colour Spectrum +
         // Plasma Heat all the way down (Jamal's "flat 2D filter"). It only ever
         // affected PLAY (at rest the star-map mix overwrites out.color; BH seeds
-        // override). It was also a fake Doppler hack — the REAL relativistic
-        // Doppler shift is already applied above via dopplerColor. Colour is now
-        // blackbody-of-temperature ONLY during play.
+        // override). It was also a fake Doppler hack.
+        // ⚠ COMMENT CORRECTED 2026-08-11 12:31:44 (C7b). This used to read "the
+        // REAL relativistic Doppler shift is already applied above via
+        // dopplerColor". That was FALSE — dopplerColor was computed and never
+        // read, so NO colour Doppler shift is applied anywhere. What IS applied
+        // is relativistic BEAMING on luminance (DOPPLER_K_BEAM). Colour during
+        // play is blackbody-of-temperature only.
     }
 
     // ── DEAD STARS (eaten by a merger): gone in EVERY phase ──────────────────
@@ -2013,38 +2182,15 @@ vertex VertexOut particle_vertex(
     }
     out.grainAlpha = cam.grainAlpha;
 
-    // Cull the horizon SPHERE and the polar CYLINDER: any particle whose XY
-    // radius is inside the horizon (drifted onto the spin axis) is unphysical
-    // disk material and projects as a bright vertical SPIKE through the shadow
-    // when zoomed in / edge-on. The disk lives at XY-radius ≥ 0.75, so this
-    // only removes on-axis strays.
-    float RS_CULL = 0.57f;
-    float rXYcull = length(in.posW.xy);
-    // STAR-MAP LIFECYCLE: the black hole exists ONLY on RELEASE (after the
-    // supernova collapses). So the horizon cull only applies on the release
-    // phase — at rest (star map) and during play there's no hole to cull.
-    // Cull stars inside the horizon only when the hole actually EXISTS
-    // (geometric criterion), not when a note is released.
-    // CULL DISABLED with the billboard gone: this sphere+cylinder delete
-    // punched the elliptical void that wobbled with the camera ("the weird
-    // shadow upon rotation"). The hole's darkness now comes from the LENS
-    // (light bends away from the centre) + the seed having eaten the
-    // plunge zone — physics, not deletion.
-    bool bhVisible = false;
-    if (bhVisible && (originR < RS_CULL || rXYcull < RS_CULL)) {
-        out.position = float4(0, 0, -2, 1);
-        out.pointSize = 0.0f;
-        out.color = float3(0.0f);
-        out.luminance = 0.0f;
-        out.originDist = 0.0f;
-        out.dist = 1.0f;
-        out.velDir2D = float2(0);
-        out.streakLen = 1.0f;
-        out.strDir2D = float2(0);
-        out.sharpness = 5.0f;
-        out.grainAlpha = 0.08f;
-        return out;
-    }
+    // ── SPHERE+CYLINDER HORIZON CULL — DELETED 2026-08-11 04:11:00 ───────────
+    // Deleted a `bool bhVisible = false;` block whose body could therefore never
+    // run. It punched an elliptical void that wobbled with the camera ("the weird
+    // shadow upon rotation") and was disabled — but not removed — when the
+    // billboard went; the darkness comes from the lens + the seed having eaten
+    // the plunge zone, which is physics rather than deletion. Its `rXYcull =
+    // length(in.posW.xy)` was still evaluated for every vertex of every frame
+    // ahead of a constant-false gate. Note if this is ever revived: the test was
+    // a 2D XY radius, so it culled a polar CYLINDER, not a sphere.
 
     // ── [KPROBE] KELVIN HISTOGRAM (2026-07-28) — MEASUREMENT ONLY ────────────
     // Question it answers, and ONLY this one: what Kelvin does the light on
@@ -2107,6 +2253,108 @@ vertex VertexOut particle_vertex(
         float mB = clamp((log10(max(in.posW.w, 1.0e-4f)) + 2.0f) * (16.0f / 5.0f),
                          0.0f, 15.0f);
         atomic_fetch_add_explicit(&kProbe[66u + uint(mB)], 1u, memory_order_relaxed);
+    }
+
+    // ── A9: EXTINCTION — DENSITY REMOVES LIGHT (2026-08-10 20:14:00) ─────────
+    // His question, and it is the right one: "why does matter at high
+    // concentrations look like ass. it's supposed to look amazing."
+    //
+    // Because until this block, density could only ever ADD light. The particle
+    // pass blends One+One (renderer.mm:658-663), so N particles in a pixel is N×
+    // the light without bound: every dense region climbs to saturation and
+    // flattens into a white lump with no interior structure and no depth cue.
+    // In real astronomy images essentially ALL the structure inside a dense
+    // region comes from what BLOCKS light — dust lanes, silhouettes, reddened
+    // cores, and the bright rims where an absorbing body cuts into a glow.
+    // Emission alone cannot produce any of those shapes.
+    //
+    // The dust pass (dust_vertex below) already implements absorption and is
+    // DISABLED at renderer.mm:3504. It was killed on his field verdict
+    // 2026-07-23 16:34 ("a low-res shadow thingy / yellow underbelly") because
+    // it COMPOSITES absorbing splats over the additive image while UN-DEPTH-
+    // SORTED — so instead of a silhouette it painted a flat bounded wash.
+    //
+    // ⭐ This does the same physics WITHOUT compositing, so the thing that killed
+    // v1 cannot recur: march the density grid from this particle TOWARD THE
+    // CAMERA, accumulate optical depth τ, and scale THIS PARTICLE'S OWN emission
+    // by exp(−τ). Multiplying a particle's own luminance is ORDER-INDEPENDENT by
+    // construction — there is no blend order to get wrong and no second pass.
+    // Lanes and rims appear on their own: the far side of a clump is attenuated
+    // by the near side, which is exactly what extinction is.
+    //
+    // COORDINATES: the march runs in PHYSICS space, where the hash grid is
+    // indexed (physPosW, per the note at the top of this function — sampling
+    // density at render-rotated coords made the hue a static decal). The camera
+    // direction is world-space, so applyInverseSpin maps it back — the exact
+    // inverse written for the metric ray on 2026-07-25, reused rather than
+    // re-derived.
+    // ⭐ Direction comes from cam.viewForward (F5) instead of
+    // normalize(-cameraPos), so this stays correct the moment the camera stops
+    // looking at the origin. First real consumer of F5 beyond the no-op.
+    //
+    // ⚖️ kAbsorb and the 6 steps are FIRST VALUES, not derived, and the per-cell
+    // count is clamped to 128 (the same MAX_PER_CELL ceiling the flare stress
+    // uses) so an uncapped 50k core cannot drive τ to infinity and punch an
+    // absolute black hole in the image. Ceiling: τ_max = 6·128·0.004 ≈ 3.07,
+    // i.e. at most ~95% absorbed. Turn kAbsorb up for heavier dust.
+    if (su.gridSize > 0 && out.pointSize > 0.0f && out.luminance > 0.0f) {
+        float3 dWorld = -float3(cam.viewForwardX, cam.viewForwardY, cam.viewForwardZ);
+        float3 dPhys = applyInverseSpin(dWorld, cam.spinAngleX, cam.spinAngleY,
+                                        cam.spinAngleZ);
+        float dLen = length(dPhys);
+        if (dLen > 1e-6f) {
+            dPhys /= dLen;
+            const int   kSteps  = 6;
+            const float kAbsorb = 0.45f;          // optical depth per FULLY DENSE step
+            float stepLen = 1.5f * su.cellSize;   // 1.5 cells per step
+            // ⚠️ v1 (20:47:36) used `tau += 0.004 * min(cnt,128)` — RAW COUNT, no
+            // threshold. MEASURED WRONG before he ever saw it: [LUMPROBE] avgRGB
+            // fell 0.443/0.637/0.755 → 0.210/0.304/0.364 on the SAME 2M field at
+            // rest, i.e. it dimmed the WHOLE SCENE by 53% including the sparse
+            // star map. That is a global dimmer, not structure.
+            // Fix: threshold each sample the way the dust shader already does —
+            // `smoothstep(6,30)`, whose own comment reads "only genuinely dense
+            // BODIES absorb; the ambient diffuse keeps glowing". Reusing the
+            // project's calibrated number instead of inventing a second one.
+            float tauN = 0.0f;                    // dimensionless column, 0..kSteps
+            for (int s = 1; s <= kSteps; ++s) {
+                float3 sp = physPosW + dPhys * (stepLen * float(s));
+                if (max(max(abs(sp.x), abs(sp.y)), abs(sp.z)) >= su.halfExtent)
+                    break;   // outside the hash extent the border cells are garbage
+                float3 g = (sp + su.halfExtent) * su.invCellSize;
+                int3 c = clamp(int3(g), int3(0), int3(su.gridSize - 1));
+                float cnt = float(cellCounts[
+                    uint((c.z * su.gridSize + c.y) * su.gridSize + c.x)]);
+                // ⚠️ THIRD VALUE, AND THE FIRST TWO WERE MEASURED WRONG — both
+                // before he saw either. `smoothstep(6,30)` (borrowed from the
+                // dust shader) still dimmed the whole scene: [LUMPROBE] gave
+                // transmission R .392 / G .315 / B .257 at rest, and inverting
+                // it says the mean column was tauN≈3.0 of a possible 6 — i.e.
+                // HALF of every sightline was reading "fully dense". That
+                // threshold works in the dust shader only because it ALSO gates
+                // on cold + gas-mass, which rejects most particles before the
+                // density ever matters; lifted on its own it catches everything.
+                // The grid's real dynamic range is wide — the flare code clamps
+                // to MAX_PER_CELL=128 and warns an uncapped cell hits ~50k — so
+                // "genuinely dense" for an UNGATED march has to sit far higher.
+                // His question was specifically about matter at HIGH
+                // CONCENTRATION; this now triggers only there and leaves the
+                // ordinary star map alone.
+                tauN += smoothstep(150.0f, 1500.0f, cnt);
+            }
+            // ⭐ PER-CHANNEL — this is what makes dust read as DUST. v1 scaled the
+            // scalar `luminance`, so it could only ever grey the image down:
+            // measured R/G/B transmission 0.474 / 0.477 / 0.482 — flat, no colour
+            // signature at all. Real extinction absorbs BLUE hardest, so whatever
+            // shines through REDDENS, and that reddening is most of why a dust
+            // lane looks like a dust lane. The disabled dust pass says the same
+            // thing in its own header (render.metal, DUST EXTINCTION PASS §2b).
+            // Applied to out.color because the fragment forms the final emission
+            // as `in.color * in.luminance` (grep `float3 emission = in.color`),
+            // so a per-channel factor here lands correctly and exactly once.
+            float3 kExt = float3(0.55f, 0.78f, 1.00f) * kAbsorb;
+            out.color *= exp(-tauN * kExt);
+        }
     }
 
     return out;

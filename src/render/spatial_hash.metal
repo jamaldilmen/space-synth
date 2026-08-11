@@ -258,7 +258,26 @@ kernel void prefix_sum_add(
 }
 
 // ── Density heatmap: write cell counts to a texture ─────────────────
-
+// 🚨 AUDITED 2026-08-11 12:31:44 (board §H1 P7). READ THIS BEFORE REVIVING IT.
+//  1. NOTHING SAMPLES THE OUTPUT. `densityTex` is written here and bound only
+//     as a compute write target (renderer.mm:2701). It is never bound as a
+//     fragment/vertex texture anywhere in the project — grep `densityTexture`
+//     returns the alloc, the pipeline, and that one setTexture. So this kernel
+//     produces an image no pass consumes.
+//  2. IT ONLY RUNS IF COLLISIONS ARE ON, and they ship OFF
+//     (renderer.mm:277, `collisionsEnabled = false`, his A/B call 2026-07-07).
+//     Zero cost today; a latent path, not a live one.
+//  3. IT IS A 2D ANSWER TO A 3D QUESTION. It collapses the 128^3 grid to a
+//     128x128 texture by averaging along Z — a projection locked to WORLD Z
+//     regardless of where the camera is. Rotate the view and the "heatmap" is
+//     still flattening the same axis.
+//  4. ITS NORMALISATION IS CALIBRATED FOR A CONFIGURATION THAT NO LONGER
+//     EXISTS: the /40 divisor below cites "800k in 256x256". The app runs 2M
+//     particles on a 128^3 grid, so the divisor is wrong on both counts and
+//     any image it produced would clip almost everywhere.
+// Left in place rather than deleted because it is gated off and free, and
+// because deleting a collisions-path kernel is a physics call, not a cleanup
+// one (cf. the 32-per-cell scatter cap, refused for the same reason).
 kernel void density_heatmap(
     device const uint* cellCounts [[buffer(0)]],
     texture2d<float, access::write> densityTex [[texture(0)]],

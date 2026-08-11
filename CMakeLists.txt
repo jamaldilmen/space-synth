@@ -13,7 +13,11 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
 set(SOURCES
     src/main.cpp
     src/core/bessel.cpp
-    src/core/lut.cpp
+    # src/core/lut.cpp — REMOVED 2026-08-11 04:11:00. The 128×128 Chladni
+    # gradient LUT (GradientLUT / makeLUT / sampleLUT / LUTCache) had zero
+    # callers anywhere in src/ and nothing included core/lut.h but lut.cpp
+    # itself. The gradient the app actually uses is computed on the GPU in
+    # particles.metal. Files deleted; recover from git if ever needed.
     src/core/modes.cpp
     src/core/midi_input.mm
     src/core/particles.cpp
@@ -30,7 +34,6 @@ set(SOURCES
 
 set(HEADERS
     src/core/bessel.h
-    src/core/lut.h
     src/core/modes.h
     src/core/particles.h
     src/core/app_state.h

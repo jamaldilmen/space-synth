@@ -30,7 +30,7 @@ struct PostFXUniforms {
     // Scalars MUST stay a multiple of 4 so the float4x4s below keep their
     // 16-byte alignment on both sides. Was 24 (=96 B); now 28 (=112 B).
     float gradeAmount;      // 0-1 blend of the display grade LUT (0 = exact bypass)
-    float gradePad0;
+    float coverageResolve;  // 1 = coverage resolve on, 0 = off (was gradePad0)
     float gradePad1;
     float gradePad2;
     float4x4 inverseViewProj;
@@ -174,6 +174,51 @@ fragment float4 postfx_fragment(
     float g = currentFrame.sample(s, guv).g;
     float b = currentFrame.sample(s, guv - offset).b;
     float4 color = float4(r, g, b, 1.0);
+
+    // ══ COVERAGE RESOLVE — density can finally REMOVE light ═══════════════════
+    // (2026-08-11, board §H9 / A9. His call: "fuck the old blending mode".)
+    //
+    // THE FINDING THIS RESTS ON: the star pass has been computing a correct
+    // per-pixel COVERAGE term for months and throwing it away. Its colour blend
+    // is One/One — pure additive, unbounded, which is exactly why "density can
+    // only ever make the image BRIGHTER" (A9's failed verdict). But its ALPHA
+    // blend is One/OneMinusSourceAlpha (renderer.mm), which evaluates to
+    //     C = 1 - PROD(1 - a_i)
+    // the standard over-blend coverage. Nothing downstream ever read it — the
+    // line above hardcodes alpha to 1.0 and discards it.
+    //
+    // THE DERIVATION — no free parameters, and that is the point.
+    // RGB holds  S = SUM(c_i * a_i)  (premultiplied, additive).
+    // The physically bounded result is the average colour times the coverage:
+    //     resolved = (S / SUM(a_i)) * C
+    // We do not have SUM(a_i)... but for many small alphas the over-blend gives
+    //     C = 1 - PROD(1-a_i) ~ 1 - exp(-SUM(a_i))   =>   SUM(a_i) = -ln(1 - C)
+    // which is exact in that limit and is the same Beer-Lambert relation the
+    // extinction work already uses. So:
+    //     resolved = S * C / (-ln(1 - C))
+    //
+    // WHY THIS IS SAFE FOR THE LOOK HE ALREADY LIKES: as C -> 0 (sparse field,
+    // most of the screen) -ln(1-C) -> C, the factor -> 1, and the image is
+    // UNCHANGED. The correction only engages where matter piles up, which is
+    // precisely where it currently clips to a white lump.
+    //
+    // ⚠️ HONEST CEILING, stated before he looks: the offscreen target is
+    // RGBA16Float, so once C saturates to 1.0 the channel can no longer tell
+    // SUM(a)=10 from SUM(a)=1000. Clamping at 1-2^-11 (the half-float
+    // resolution near 1.0) bounds the attenuation at ~7.6x. That is a real
+    // reduction, not a fix for arbitrary overdraw. If the densest cores still
+    // read flat, THAT is the measurement that justifies full weighted-blended
+    // OIT with its own weight target — and we would then be choosing it with a
+    // number in hand instead of a guess.
+    if (u.coverageResolve > 0.5) {
+        float C = currentFrame.sample(s, guv).a;
+        // 2^-11 = the smallest gap a half float still resolves next to 1.0.
+        // Not a taste knob — a precision limit.
+        C = clamp(C, 0.0, 1.0 - 0.00048828125);
+        float sumA = -log(max(1.0 - C, 1e-6));       // Beer-Lambert inverse
+        float factor = (sumA > 1e-6) ? (C / sumA) : 1.0;
+        color.rgb *= factor;
+    }
 
     // ── TANGENTIAL PIXEL STRETCH — the "5D look", BOUNDED ────────────────────
     // Smear the BRIGHTEST pixels ALONG CONCENTRIC CIRCLES (not radially out), so

@@ -331,6 +331,32 @@ bool Window::create(int width, int height, const std::string &title) {
     [impl_->window makeFirstResponder:impl_->metalView];
     [NSApp activateIgnoringOtherApps:YES];
 
+    // ── FULLSCREEN AT LAUNCH ─────────────────────────────────────────────────
+    // His standing order, 2026-08-10 17:12:00: "WHENEVER U LAUNCH THE APP LAUNCH
+    // IT IN FULL SCREEN. IT LOOKS DIFFERENT IN WINDOW V FULL SCREEN."
+    //
+    // He is right that it looks different, and the reason is not subtle: star
+    // size is written to out.pointSize, which is Metal's [[point_size]] — a size
+    // in DEVICE PIXELS. Nothing in render.metal normalises it to the drawable.
+    // So a star is the same number of pixels at any window size, and the drawable
+    // is what changes: fullscreen on a Retina panel is several times the pixel
+    // count of a window, so each star covers a SMALLER FRACTION of the screen —
+    // finer points, denser-looking field. Windowed, the same stars are fatter
+    // relative to the frame. The physics is identical; only the size unit is
+    // resolution-dependent. (Same reason [KPROBE-SCALE] meanPx ~1.0 means very
+    // different things at two window sizes.)
+    //
+    // Toggled AFTER makeKeyAndOrderFront — AppKit ignores toggleFullScreen: on a
+    // window that has not been shown. Requires NSWindowStyleMaskResizable, which
+    // is already set above.
+    //
+    // Env-gated so a plain double-click still opens windowed; the test harness
+    // sets SS_FULLSCREEN=1. Launch with:
+    //   open -n SpaceSynth.app --env SS_FULLSCREEN=1
+    if (getenv("SS_FULLSCREEN")) {
+      [impl_->window toggleFullScreen:nil];
+    }
+
     impl_->width = width;
     impl_->height = height;
   }

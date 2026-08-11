@@ -26,7 +26,7 @@ If a change "does nothing / same bug," SUSPECT A STALE BINARY FIRST — check th
 timestamps above before re-diagnosing. Requires macOS 13+, Xcode CLI tools.
 
 ## Project Structure
-- `src/core/` — Physics: Bessel functions, gradient LUT, mode table, particles, envelope
+- `src/core/` — Physics: Bessel functions, mode table, particles, envelope, units
 - `src/audio/` — CoreAudio input, FFT pitch detection, built-in synth
 - `src/render/` — Metal renderer, compute shaders, post-fx
 - `src/ui/` — NSWindow, ImGui mod menu
@@ -39,6 +39,9 @@ Ported from `SOUND ARCHITECT.html` (cymatics repo). The proven system:
 - Bessel J_n power series (25 terms)
 - 28 modes (7 orders x 4 zeros), sorted by alpha complexity
 - Gradient LUT: 128x128 grid, central differencing, normalized
+  ⚠️ HISTORICAL — this describes the ported HTML original. The CPU LUT
+  (`src/core/lut.cpp`) was deleted 2026-08-11 with zero callers; the live
+  gradient is evaluated on the GPU in `src/render/particles.metal`.
 - Polyphonic voice normalizer: `1/sqrt(voiceCount)`
 - Boundary repulsion: cubic ramp r>0.85, hard wall r>0.98
 - Node braking: friction scales with distance-to-nodal-line
@@ -62,6 +65,6 @@ Ported from `SOUND ARCHITECT.html` (cymatics repo). The proven system:
 
 ## Key Files to Understand First
 1. `src/core/bessel.cpp` — The math foundation
-2. `src/core/lut.cpp` — Gradient field computation
+2. `src/render/render.metal` — The star pass (`particle_vertex`) + the BH render
 3. `src/render/particles.metal` — GPU physics kernel
 4. `src/main.cpp` — App entry and run loop

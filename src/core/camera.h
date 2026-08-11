@@ -176,6 +176,42 @@ public:
   float getY() const { return posY; }
   float getZ() const { return posZ; }
 
+  // World-space UNIT FORWARD (eye → look-at target).
+  //
+  // F5 (2026-08-10). render.metal computes its view axis inline, TWICE, as
+  // `normalize(-cam.cameraPos.xyz)` — at the `dHat` site and at the `viewDir`
+  // site (grep: `// view axis`). Both feed the front/behind test that decides
+  // which matter is lensed and which OCCLUDES the hole, i.e. the thing that
+  // puts the hole in the room instead of painting it as a flat layer.
+  //
+  // That inline form is not a view axis, it is "the direction from the camera
+  // to the ORIGIN". It is correct today only because buildViewMatrix() below
+  // hardcodes the same assumption (forward = -pos). The moment a dolly or a POV
+  // follow points the camera anywhere else, both sites silently misclassify
+  // front matter as behind: the lens bends the wrong half of the field and the
+  // occlusion inverts. No error, no warning — it just looks wrong.
+  //
+  // So the shader must be TOLD the forward vector rather than re-deriving it
+  // from an assumption. While the target is still the origin this returns
+  // exactly normalize(-pos), so plumbing it through is a visual NO-OP — which
+  // is the point: it is verifiable BEFORE it is useful.
+  void getForward(float *out) const {
+    float fx = -posX, fy = -posY, fz = -posZ;
+    float len = std::sqrt(fx * fx + fy * fy + fz * fz);
+    if (len < 1e-12f) {
+      // Degenerate only if the camera sits exactly on the target. rho is
+      // clamped to >= 50 in update(), so this is unreachable today; it exists
+      // so a future free-fly/POV camera cannot produce a NaN axis.
+      out[0] = 0.0f;
+      out[1] = 0.0f;
+      out[2] = -1.0f;
+      return;
+    }
+    out[0] = fx / len;
+    out[1] = fy / len;
+    out[2] = fz / len;
+  }
+
 private:
   float rho, theta, phi;
   float velRho, velTheta, velPhi;

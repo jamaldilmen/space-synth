@@ -80,6 +80,32 @@ Before that: A0 test **DEPLOYED AND INCONCLUSIVE** (2026-08-10 10:20:00, his ver
 
 ---
 
+## 🎯🚨 PRIORITY — REALIGNED ON HIS ORDER 2026-08-11 15:47:12: **KILL THE TUBE**
+
+> *"align these to dos as priority HANDOFF KILL THE TUBE"*
+
+**Full ordering + the rewrite's constraints: `docs/HANDOFF_2026-08-11_kill_the_tube.md`.** Berlin is **22 days** out.
+
+🚨 **BUT THERE IS A FREE TEST THAT MAY ELIMINATE THE `L` BEFORE IT STARTS — DO IT FIRST.**
+**The default camera sits at `(0,0,rho)` — ON the +Z axis** (`camera.h:31-32`) — and the Chladni cavity's axial structure runs **along Z** (`pAx` = 2–4 nodal planes, `particles.metal:2272`). **So the camera looks straight down the axis of the structure whose depth we are trying to see, and with no occlusion those planes additively superimpose into one flat image — by geometry, however good the depth cue is.**
+⭐ **Hold a chord and orbit ~90°.** Layering appears side-on → the cause is viewing geometry + additive superposition, **not the tube**. Still flat from every angle → that candidate is eliminated and the tube hypothesis strengthens. **One minute, no code.**
+
+| # | Item | Cost |
+|---|---|---|
+| **1** | **C1 free test** — orbit 90° during a chord | **0** |
+| **2** | **B7-measure** — `[DISKZ]` `H/R` during PLAY (never read; silence reads 0.31–0.84). Collapsed ⟹ B7 confirmed; comparable ⟹ look elsewhere | **S** |
+| **3** | **B7 — KILL THE TUBE**, *only if 1+2 confirm it* | **L** |
+| **4** | **Consume the depth buffer for occlusion** — §H8 already paid for it, nothing reads it, independent of B7 | **M** |
+| **5** | **A3②-white** — gate the merger billboard on MASS not `horizonR`. His repeated ask (*"explosive feel, not white noise"*). One line, written, unbuilt | **S** |
+| **6** | **A4/W2** — release→silence snap. On screen every play | **M** |
+| **7** | **D6** — the only item that can take down a live show | **S** |
+| **8** | **A1′-endgame** — ~4 min of accretion eats the field; a set is 40–60 min | **M** |
+
+⚠️ **The cavity is r≤6 AND |z|≤6 — a can 12 wide by 12 tall, roughly ISOTROPIC.** "The tube makes it flat" is **not self-evident from the clamp dimensions**, which is exactly why step 2 gates step 3.
+**Deferred by this realignment:** C12 (Doppler, needs his call on the temperature-range limit), F6 (still gates A0), C3, C7.
+
+---
+
 ## 🖥️🚨 STANDING RULE — LAUNCH FULLSCREEN, ALWAYS (his order, 2026-08-10 17:12:00)
 > *"WHENEVER U LAUNCH THE APP LAUNCH IT IN FULL SCREEN. IT LOOKS DIFFERENT IN WINDOW V FULL SCREEN I DONT KNWO WHY AND WOULD LIKE TO KNOW"*
 

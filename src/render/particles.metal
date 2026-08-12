@@ -94,6 +94,9 @@ struct PhysicsUniforms {
                                  //  2 seed capture, 3 seed↔seed merge,
                                  //  4 origin-pin, 5 relaxation, 6 resurrection
     float uAmbient;              // 160: live substrate mean u → display ambient
+    float fieldMassMsun;         // 164: Σ stellar mass, UNSCALED M_sun. massTotal
+                                 //  above is the GRAVITY anchor (×massScale from
+                                 //  the Size slider) — never use it as the books.
 };
 
 struct SpatialHashUniforms {
@@ -225,6 +228,36 @@ constant float MDOT_MSUN_PER_SIMTIME =
 // At that rate 50 M☉ → the whole 594,276 M☉ field takes ≈ 3.9 minutes.
 constant float MDOT_MSUN_PER_WALLSEC =
     MDOT_MSUN_PER_SIMTIME * KTLAPSE_SIM_PER_WALLSEC;
+
+// ── THE OUTCOME BOUND (2026-08-11 17:53:12) ─────────────────────────────────
+// The rate limit above bounds dM/dt. It does NOT bound M. Board A1'-endgame,
+// measured on his screenshot 2026-08-10 15:52:00: a 41-minute idle run ended
+// with ONE body at 356,475 M☉ against a 594,276 M☉ field = 60.0% of everything,
+// ~4 objects left on screen. Linear growth is still unbounded in time, and a
+// Berlin set is 40-60 minutes. The board's own words: "A bound (feedback /
+// Eddington-like term / a cap tied to field mass) ... does not exist anywhere
+// in the code."
+//
+// THE NUMBER IS OBSERVED, NOT CHOSEN. In the real Galactic Centre the central
+// black hole is a fixed fraction of its host cluster:
+//     Sgr A*  = 4.297e6 M☉   (GRAVITY Collaboration 2022)
+//     Milky Way nuclear star cluster = (2.5 +- 0.4)e7 M☉  (Schodel et al. 2014,
+//     half-light radius 4.2-5 pc)
+//     M_BH / M_cluster = 0.1719
+// Scaled to our field that is 594,276 x 0.1719 = 102,144 M☉ — the mass at which
+// this hole should stop, against the 356,475 it actually reached (3.5x over).
+// This is the same anchor the rest of the file already uses; BH_SGRA lives in
+// physics_constants.h. Full derivation: docs/STATE_2026-08-11_units_scale_real_numbers.md
+//
+// WHY A TAPER AND NOT A CAP: a hard cutoff is a switch, and real growth is
+// self-regulating (feedback expels the fuel as the hole grows — the observed
+// M-sigma relation is the endpoint of that process, not a clamp). The taper is
+// FLAT below 70% of the bound, so every regime this project has actually
+// measured — including the 2,451 M☉/wall-s linear growth verified 2026-08-08 —
+// is UNCHANGED. It only bites in the range where nothing has ever been verified
+// and where the field gets eaten.
+constant float F_BH_CLUSTER  = 0.17188f;  // 4.297e6 / 2.5e7, observed
+constant float FB_TAPER_FROM = 0.70f;     // full rate below this fraction of the bound
 
 // ── Unified BH constants ────────────────────────────────────────────────────
 // All BH-related sizes derive from BH_M (the visual Schwarzschild radius in
@@ -1349,7 +1382,21 @@ kernel void compute_physics(
                     // free — the add only lands if the plate is still what we
                     // read. Residual overshoot is at most ONE victim (≤50 M☉),
                     // because the last meal that fits may cross the line.
-                    uint  budgetFx = uint(max(MDOT_MSUN_PER_WALLSEC * dt, 0.0f) * 64.0f);
+                    // ── OUTCOME BOUND (see F_BH_CLUSTER at the top) ─────────
+                    // Feedback factor from THIS hole's mass against the observed
+                    // M_BH/M_cluster ratio, measured against the LIVE field total
+                    // (u.massTotal) rather than a baked constant, so it tracks the
+                    // actual books instead of drifting away from them.
+                    // ⚠️ fieldMassMsun, NOT massTotal (fixed 2026-08-12 22:01:44).
+                    // massTotal carries the Size slider's massScale — it is the
+                    // gravity anchor, not the books. MEASURED with massTotal:
+                    // mBound = 0.17188 × 189,044 = 32,495, and an idle run
+                    // stalled dead at 32,384 = 99.66% of it, with 916,781 stars
+                    // inside the capture radius refused by this CAS every frame.
+                    float mBound = F_BH_CLUSTER * max(u.fieldMassMsun, 1.0f);
+                    float fFb    = 1.0f - smoothstep(FB_TAPER_FROM * mBound,
+                                                     mBound, mS);
+                    uint  budgetFx = uint(max(MDOT_MSUN_PER_WALLSEC * dt * fFb, 0.0f) * 64.0f);
                     uint  myFx     = uint(mass * 64.0f + 0.5f);
                     device atomic_uint *plate = &seedAccum[(slot - 1u) * 8u + 0u];
                     uint cur = atomic_load_explicit(plate, memory_order_relaxed);
@@ -3618,11 +3665,67 @@ kernel void seed_apply(
     if (tid >= nS) return;
     uint sid = seedIds[tid];
     if (sid >= uint(u.particleCount)) return;
+    float m = particles[sid].posW.w;
+    // ── ORPHANED DEPOSITS (2026-08-11 21:19:07) ──────────────────────────────
+    // This guard used to `return` and DESTROY the slot's gain. A seed that was
+    // itself eaten this frame parks with posW.w = 0 (the seed↔seed merge above),
+    // so `m` reads 0 here — and every meal deposited into its plate by OTHER
+    // threads in the same dispatch (stars it captured, smaller seeds that merged
+    // into it) vanished from the books. The merge comment's "one victim per pair,
+    // no mutual death" is true for a PAIR but says nothing about a CHAIN: A→B and
+    // B→C in one frame makes B exactly this case. MEASURED signature: Mlive fell
+    // 594,046 → 589,683 (−4,363) across the seeds 26→8 cascade at t=210–274s,
+    // 81% of a 13.8-min run's entire −5,385 drift, then stayed flat for 9 min.
+    // Nothing is dropped now: a dead slot's deposit is swept by ONE live slot.
+    // Momentum and KE ride along with the mass so the swallow stays
+    // momentum-conserving. One writer per particle is preserved: a slot only
+    // ever writes its OWN seed.
+    // ⚠️ THE SINK IS THE LOWEST-INDEX LIVE SLOT, NOT THE BIGGEST BODY (fixed
+    // 2026-08-12 20:57:30). The first version picked the biggest, copying the
+    // withdrawal block's "charge it to the most massive body" convention — but
+    // that block runs on thread 0 alone precisely BECAUSE a mass scan races
+    // concurrent writers, and its own comment says so. In the crediting phase
+    // every thread writes `posW.w = m + gain`, so a max-scan can be read
+    // differently by two threads, BOTH conclude they are the sink, and the
+    // orphan is credited TWICE — mass created, the exact opposite of the point.
+    // Aliveness is stable under those writes (crediting only ever GROWS a mass,
+    // and neither the 50 nor the 1e8 bound can be crossed by a meal), so an
+    // index comparison over live slots is race-free by construction.
+    // Attribution is arbitrary either way — the true owner is whoever ate the
+    // dead seed, a link the plate does not carry. The BOOKS ARE EXACT, which is
+    // the property that was broken.
+    bool alive = (m >= M_BH_SEED && m < 1e8f);
+    if (!alive) return;                       // swept below by the sink, not lost
+    // Single pass: am I the lowest-index live slot, and what did dead slots hold?
+    uint  firstLive = tid;
+    float oGain  = 0.0f;
+    float oKe    = 0.0f;
+    float3 oP    = float3(0.0f);
+    for (uint k = 0u; k < nS; ++k) {
+        uint  kid = seedIds[k];
+        bool  inRange = (kid < uint(u.particleCount));
+        float mk  = inRange ? particles[kid].posW.w : 0.0f;
+        if (inRange && mk >= M_BH_SEED && mk < 1e8f) {
+            // live: index only — never an ordering on the concurrently-written mass
+            if (k < firstLive) firstLive = k;
+            continue;
+        }
+        // dead or stale slot — its plate would otherwise be discarded
+        oGain += float(atomic_load_explicit(&seedAccum[k * 8u + 0u],
+                                            memory_order_relaxed)) * (1.0f / 64.0f);
+        oP += float3(
+            float(int(atomic_load_explicit(&seedAccum[k * 8u + 2u], memory_order_relaxed))),
+            float(int(atomic_load_explicit(&seedAccum[k * 8u + 3u], memory_order_relaxed))),
+            float(int(atomic_load_explicit(&seedAccum[k * 8u + 4u], memory_order_relaxed))))
+            * (1.0f / 65536.0f);
+        oKe += float(atomic_load_explicit(&seedAccum[k * 8u + 5u],
+                                          memory_order_relaxed)) * (1.0f / 65536.0f);
+    }
+    bool iAmSink = (firstLive == tid);
     float gain = float(atomic_load_explicit(&seedAccum[tid * 8u + 0u],
                                             memory_order_relaxed)) * (1.0f / 64.0f);
+    if (iAmSink) gain += oGain;
     if (gain <= 0.0f) return;
-    float m = particles[sid].posW.w;
-    if (m < M_BH_SEED || m >= 1e8f) return;   // seeds are immortal; safety only
     // MOMENTUM-CONSERVING SWALLOW (2026-07-07): the victims' summed m·v rides
     // in with their mass. New velocity = total momentum / total mass — same
     // inelastic-merge rule as merge_stars, so eating no longer manufactures
@@ -3633,6 +3736,7 @@ kernel void seed_apply(
         float(int(atomic_load_explicit(&seedAccum[tid * 8u + 3u], memory_order_relaxed))),
         float(int(atomic_load_explicit(&seedAccum[tid * 8u + 4u], memory_order_relaxed))))
         * (1.0f / 65536.0f);
+    if (iAmSink) pEat += oP;   // swept mass carries its momentum (see above)
     float3 vSeed = particles[sid].posW.xyz - particles[sid].prevW.xyz;
     float3 vNew = (vSeed * m + pEat) / (m + gain);
     if (notFinite3(vNew)) vNew = vSeed;        // poisoned deposit: keep mass books, skip kick
@@ -3648,6 +3752,7 @@ kernel void seed_apply(
     // T⁴ cooling fades it back to dark.
     float keDep = float(atomic_load_explicit(&seedAccum[tid * 8u + 5u],
                                              memory_order_relaxed)) * (1.0f / 65536.0f);
+    if (iAmSink) keDep += oKe;
     float dE = max(0.0f, (0.5f * m * dot(vSeed, vSeed) + keDep) -
                          0.5f * (m + gain) * dot(vNew, vNew));
     float uMeal = dE / gain;                   // specific energy of the meal

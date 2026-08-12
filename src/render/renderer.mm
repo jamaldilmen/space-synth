@@ -1834,6 +1834,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // the fixed anchor; only the cluster's own mass scales.
     float massScale = powf(fmaxf(lastParticleSize / 2.0f, 0.05f), 1.25f);
     physicsUniforms.massTotal = (float)(sMassTotal * massScale);
+    // THE BOOKS, unscaled (2026-08-12 22:01:44). massTotal above is the GRAVITY
+    // anchor and carries massScale, so at the default Size=2 it reads 189,044
+    // against a real field of 594,276 — a 3.14× under-read. The accretion bound
+    // used it and stalled the hole at 32,384 = 99.66% of 0.17188×189,044.
+    // Anything that is a MASS BUDGET must read this field, not massTotal.
+    physicsUniforms.fieldMassMsun = (float)sMassTotal;
     physicsUniforms.gravGM = (float)(space::units::gmSim(sMassTotal) * massScale);
     // Hard-coded CENTRAL mass at the origin — the dominant anchor the cluster
     // orbits. Sized so its ISCO (3·r_s = 3·M·kRsSimPerMsun) is SMALLER than the

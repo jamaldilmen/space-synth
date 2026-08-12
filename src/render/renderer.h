@@ -381,6 +381,7 @@ struct PhysicsUniforms {
   float centerGM = 0.0f;        // GM of the hard-coded central SMBH (Sgr A*) the cluster orbits
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI toggles); default all-on
   float uAmbient = 6e-3f;   // live mass-weighted mean u (SPH ledger, ~2 s lag) → display ambient
+  float fieldMassMsun = 0.0f; // Σ stellar mass, UNSCALED M_sun — the mass books
 };
 
 // Spatial hash uniforms for collision grid

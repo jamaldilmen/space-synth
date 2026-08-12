@@ -1054,10 +1054,22 @@ int main() {
         const auto &bh = BH_ANCHOR;
         const double PI = 3.14159265358979;
         double rg_AU      = bh.r_g_m / AU;
-        double scale_AU   = bh.m_per_sim / AU;       // 1 sim unit = 2 r_g
+        // ❌ WAS `bh.m_per_sim / AU` — Sgr A*'s 2·r_g = 1.27e10 m = 0.0849 AU.
+        // The PHYSICS length unit is 2·r_g of the FIELD (spacetime.h:43) =
+        // 1.75504e9 m = 0.011732 AU. So this line reported every distance on
+        // screen 7.236× too large — which is exactly the mass ratio
+        // 4.297e6/5.94276e5 = 7.231, because r_g ∝ M. Two anchors were live at
+        // once and the panel published the wrong one, under a [FIXED CAL] label
+        // that made it read as the trustworthy number.
+        // Audited 2026-08-11 16:46:49 → docs/STATE_2026-08-11_units_scale_real_numbers.md
+        double scale_AU   = space::units::kUnitMeters / AU;  // 1 sim = 2·r_g(FIELD)
         double a          = bh.spin_a;
         // (the anchor's own horizon/ISCO period are gone — both are LIVE now)
-        double fieldMass  = (double)app.uiParticleCount * (PARTICLE_MASS_UNIT / M_SUN); // M_sun
+        // ❌ WAS `N × PARTICLE_MASS_UNIT`, i.e. "every particle is exactly 1 M☉".
+        // The IMF mean is 0.297 M☉ (this file's own :95 says 0.30), so the field
+        // read 2.0e6 M☉ against the 5.94e5 M☉ the integrator actually uses —
+        // overstated 3.365×, and the NSC fraction with it (6.67% vs 1.98%).
+        double fieldMass  = (double)renderer.getPhysicsStats().fieldMassMsun; // LIVE
         double fieldPct   = 100.0 * fieldMass / NSC_MASS_MSUN;
         double isco_rg    = 6.0;                       // ~Schwarzschild ISCO (low spin)
         double v_c        = std::sqrt(1.0 / isco_rg);  // v/c at the inner stable orbit
@@ -1122,10 +1134,15 @@ int main() {
                       (double)hstat.horizonRatio);
         }
         ImGui::Separator();
-        ImGui::Text("Particle: 1.00 M_sun  (1 star)");
-        ImGui::Text("Field:    %.2e stars = %.2e M_sun (Kroupa IMF)",
-                    (double)app.uiParticleCount,
-                    (double)renderer.getPhysicsStats().fieldMassMsun);
+        // ❌ WAS the hardcoded string "Particle: 1.00 M_sun (1 star)". The mass
+        // is drawn per-id from a single α=2.3 power law over 0.08–50 M☉
+        // (particles.metal:131) — SALPETER, not Kroupa (Kroupa is a broken power
+        // law; the label was simply wrong). Live mean = M_field / N_live ≈ 0.297.
+        ImGui::Text("Particle: %.3f M_sun mean  (IMF-sampled, 0.08-50)",
+                    app.uiParticleCount > 0
+                        ? fieldMass / (double)app.uiParticleCount : 0.0);
+        ImGui::Text("Field:    %.2e stars = %.2e M_sun (Salpeter a=2.3)",
+                    (double)app.uiParticleCount, fieldMass);
         ImGui::Text("          %.1f%% of the nuclear star cluster", fieldPct);
         ImGui::Separator();
         // ISCO of the LIVE hole. v/c at 6 r_g is sqrt(1/6) for ANY Schwarzschild

@@ -111,7 +111,12 @@ struct BlackHoleAnchor {
 constexpr BlackHoleAnchor BH_M87   = { "M87*",   6.5e9,  0.90, 9.60e12, 1.92e13 }; // EHT 2019; supermassive (alt)
 constexpr BlackHoleAnchor BH_SGRA  = { "Sgr A*", 4.297e6,0.10, 6.35e9,  1.27e10 }; // GRAVITY 2022 — OUR galaxy's center
 constexpr BlackHoleAnchor BH_ANCHOR = BH_SGRA;   // ★ LOCKED: the Milky Way (ours)
-// Conservation check: Sgr A* (4.297e6 M☉) ÷ IMF_MEAN_MASS(0.5) ≈ 8.6e6 stars → renderable as real stars. ✓
+// ❌ The old conservation check here divided by 0.5 while this file's own
+// IMF_MEAN_MASS (:95) is 0.30 — self-inconsistent, and it described a field we
+// do not run. MEASURED 2026-08-11 16:46:49: the live set is 2.0e6 particles
+// summing to 5.94276e5 M☉ (mean 0.2971), which is 2.38% of NSC_MASS_MSUN and
+// 13.8% of Sgr A*. BH_ANCHOR is a REFERENCE ONLY — it must never set on-screen
+// scale (it did, and was 7.236× off). See docs/STATE_2026-08-11_units_scale_real_numbers.md
 //                     M87* (6.5e9 M☉) ÷ 5e6 particles ⇒ 1300 M☉/particle (NOT a star).
 
 // ── OUR GALAXY — the MILKY WAY (anchor LOCKED 2026-06-09) ────────────────────

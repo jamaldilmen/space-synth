@@ -138,6 +138,7 @@ struct Renderer::Impl {
   id<MTLBuffer> cellSeedMapBuffer = nil;     // per-cell seed slot (victim lookup)
   id<MTLBuffer> seedAccumBuffer = nil;       // per-seed meal accumulator (8 uints: mass, meals, momentum ×3, reserved)
   id<MTLBuffer> accDiagBuffer = nil;         // [0]=max accuracy ratio ×1000 (Step 2 measurement, diagnostic)
+  int lastOrtho = -1;                        // last config.orthoMode, for [PERF] (board item 12)
   id<MTLBuffer> sphClosureBuffer = nil;      // TEMP-CLOSURE ×1e6 int: [0]=W_sph, [1]=du dyn, [2]=du cool, [3]=du clamp (240f window)
   id<MTLBuffer> mergeClaimBuffer = nil;      // per-particle merge claim flags (cross-cell merging, zeroed each frame)
   id<MTLBuffer> cellStartsBuffer = nil;      // prefix sum offsets
@@ -221,6 +222,7 @@ struct Renderer::Impl {
   // integrated capture set of the honest metric (b_c = 2.598 r_s). See the
   // shader banner in render.metal for the derivation + offline validation.
   id<MTLRenderPipelineState> bhMarchPipeline = nil;
+  id<MTLRenderPipelineState> bhBodyPipeline = nil; // hole-as-body, depth only
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   // SPECTRAL STARMAP (increment 1, 2026-07-24): the one colour law's tables.
@@ -769,6 +771,36 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     }
   }
 
+  // ── THE HOLE AS A BODY (2026-08-14) — depth only, ZERO colour ────────────
+  // See the banner above bhbody_fragment in render.metal. This is the pass that
+  // makes the hole an OBJECT instead of an arranged gap: it writes the near
+  // surface of the photon-capture sphere (b_c = 2.598 r_s) into the depth
+  // attachment and writes NO colour at all. `writeMask = None` is the whole
+  // point — it cannot paint, so the withdrawn 2026-07-24 fullscreen multiply
+  // cannot recur; it removes light purely by occluding, which is exactly
+  // "SHADOW = ABSENCE, NEVER PAINT".
+  // The particle pass already depth-TESTS (MTLCompareFunctionLess, :1074) and
+  // has simply never had anything to test against — so this one pass turns the
+  // existing machinery on rather than adding a layer.
+  {
+    id<MTLFunction> bV = [impl_->library newFunctionWithName:@"bhmarch_vertex"];
+    id<MTLFunction> bF = [impl_->library newFunctionWithName:@"bhbody_fragment"];
+    if (bV && bF) {
+      MTLRenderPipelineDescriptor *bd = [[MTLRenderPipelineDescriptor alloc] init];
+      bd.vertexFunction = bV;
+      bd.fragmentFunction = bF;
+      bd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+      bd.colorAttachments[0].blendingEnabled = NO;
+      bd.colorAttachments[0].writeMask = MTLColorWriteMaskNone; // DEPTH ONLY
+      bd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->bhBodyPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:bd error:&error];
+      if (error) NSLog(@"BH body pipeline error: %@", error);
+    } else {
+      NSLog(@"Missing bhbody shader functions");
+    }
+  }
+
   // ── DUST pipeline (design §2b, 2026-07-23): cold+dense gas as ABSORBING
   // splats. Per-channel darkening blend dst × (1 − src_rgb) — unlike the
   // hole's scalar (1−α), the colour factor lets dust absorb blue harder than
@@ -1234,7 +1266,14 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   allocIfNeeded(impl_->seedIdsBuffer, 1024 * sizeof(uint32_t)); // registry 256→1024 (2026-07-07: 347 live seeds measured, cap saturated)
   allocIfNeeded(impl_->cellSeedMapBuffer, cellSize);
   allocIfNeeded(impl_->seedAccumBuffer, 1024 * 8 * sizeof(uint32_t));
-  allocIfNeeded(impl_->accDiagBuffer, 2 * sizeof(uint32_t)); // [0]=max accuracy ratio ×1e6, [1]=over-budget count
+  // [0]=max accuracy ratio ×1e6, [1]=over-budget count.
+  // TEMP A1″ MERGE-GATE COUNTERS (2026-08-13): [2]=merge attempts that reached
+  // the CAS, [3]=merges that landed, [4]=merges refused by budget. CUMULATIVE
+  // since launch — the per-frame clear below zeroes only [0..1] deliberately,
+  // so these cannot be misread the way `feed=` was (a one-frame sample of a
+  // per-frame-cleared buffer). Merge-side only: the capture-refusal counter
+  // this replaced wrapped uint32 in 8 minutes and cost ~1.3e9 atomic adds.
+  allocIfNeeded(impl_->accDiagBuffer, 8 * sizeof(uint32_t));
   allocIfNeeded(impl_->sphClosureBuffer, 8 * sizeof(int32_t)); // TEMP-CLOSURE window ledger (+poison count)
   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
@@ -1577,6 +1616,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.fieldHalfDepth = std::max(impl_->measuredMeanR, 0.5f);
   cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
+  impl_->lastOrtho = config.orthoMode ? 1 : 0;   // recorded so [PERF] says which mode it measured
   // Lens Einstein radius = the shadow's on-screen radius, so the lensed
   // particle ring lands exactly on the raytraced shadow edge (ring radius ==
   // hole radius). Ortho only: half-screen (world) = cameraRho*1.2, and a
@@ -1776,6 +1816,41 @@ void Renderer::setTimeWarp(float w) { impl_->timeWarpVal = std::max(w, 1.0e-3f);
 void Renderer::triggerReset() { impl_->resetPending = true; }
 
 void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
+  // ── PERF TELEMETRY (2026-08-13) — board item 12 ──────────────────────────
+  // There was NO timing telemetry in this build at all: no fps, no frame-time,
+  // and the log carries no wall-clock stamps, so frame rate could not even be
+  // reconstructed after the fact. That made his 2026-08-13 01:05 report —
+  // "disabling ortho mode gave me huge fps back" — impossible to corroborate
+  // or refute, and a claim we cannot measure is one we cannot regression-test.
+  // ⚠️ physicsUniforms.dt IS NOT FRAME TIME. It is a FIXED step
+  // (0.0165 * timeWarp, renderer.mm:1402) pinned deliberately to kill the
+  // variable-FPS energy pump. Anyone deriving fps from dt gets the time warp,
+  // not the frame rate. This reads the real clock instead.
+  // Reported on the existing 240-frame cadence next to [GRAV]: mean fps over
+  // the window, the WORST single frame in it (the spike is what he sees as a
+  // stutter, and a mean hides it), and the state the measurement was taken in
+  // — ortho, warp, particle count — so no future run has to guess.
+  static double perfLast = 0.0, perfSum = 0.0, perfWorst = 0.0;
+  static uint32_t perfN = 0;
+  {
+    double nowPf = CACurrentMediaTime();
+    if (perfLast > 0.0) {
+      double d = nowPf - perfLast;
+      perfSum += d;
+      perfN++;
+      if (d > perfWorst) perfWorst = d;
+    }
+    perfLast = nowPf;
+  }
+  if ((physicsUniforms.frameCounter % 240u) == 0u && perfN > 0u) {
+    fprintf(stderr,
+            "[PERF] fps=%.1f worst=%.1fms ortho=%d warp=%.2f particles=%d n=%u\n",
+            (double)perfN / perfSum, perfWorst * 1000.0, lastOrtho,
+            (double)timeWarpVal, particleCount, perfN);
+    perfSum = 0.0;
+    perfWorst = 0.0;
+    perfN = 0u;
+  }
   // TEMP-PERF: SS_SPH_SKIP="density,pressure,force,centroid,merge,cellmax,stats"
   // (any subset) skips individual passes so [PROFILE/120f] deltas give exact
   // per-kernel cost. Measurement only — skipped passes leave stale buffers.
@@ -2563,6 +2638,111 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                 sum);
       }
 
+      // ── [CELLPROBE] — READ-ONLY. IS THE FPS CLIFF THE NEIGHBOUR SCAN?
+      // (2026-08-13 14:31:00, his pick, after fps fell to 13-14 the moment the
+      // field went to clutter: "jumps into weird clutter after being stuck in
+      // rings after play. also then fps sharply drops".)
+      //
+      // WHY THIS AND NOT [GRIDPROBE]: that probe is gated to sustain
+      // (envelopePhase > 2.5) and scans only ±9 sim around the ORIGIN. The
+      // cliff arrives at REST, and the clumps are wherever the matter went —
+      // his own shot shows them off-centre. A probe that can only see the
+      // origin during a held note cannot measure this. This one scans the FULL
+      // 128³ and runs in every phase.
+      //
+      // THE COST MODEL IT TESTS: the collision scan (particles.metal:2685) and
+      // the SPH pressure scan (:2932) each walk the 3×3×3 cell neighbourhood.
+      // Work is therefore NOT O(N) — it is Σ_cells n_c × (neighbourhood
+      // population). The honest single number for that is
+      //     meanOwnCell = Σn² / Σn
+      // = the average number of particles sharing a particle's OWN cell,
+      // i.e. what each thread pays per neighbour cell. Uniform spread over the
+      // occupied cells would give Σn/occupied instead, so their RATIO is the
+      // clumping penalty in units of "×more work per particle than a spread
+      // field". A ratio near 1 exonerates the hash and sends me elsewhere; a
+      // large ratio arriving together with the fps drop indicts it.
+      // ⚠️ Σn² is a PROXY, not the true 27-cell cost — computing the real
+      // neighbourhood sum is 27× this loop and would itself cost frames. It is
+      // exact for the self-cell term, which dominates inside a clump.
+      //
+      // READ-ONLY: no buffer written, no uniform touched. Its own wall cost is
+      // printed so it can never be blamed for the thing it measures.
+      if (cellCountsBuffer && (physicsUniforms.frameCounter % 120u) == 11u) {
+        uint64_t t0 = mach_absolute_time();
+        const uint32_t *cc = (const uint32_t *)cellCountsBuffer.contents;
+        const long   cells = (long)Impl::kGridSize * Impl::kGridSize * Impl::kGridSize;
+        double   sumN = 0.0, sumN2 = 0.0;
+        uint32_t mx = 0;
+        long     occupied = 0, cellsOver1k = 0, cellsOverCap = 0, cellsOver32 = 0;
+        double   sumInOverCap = 0.0, sumVisible = 0.0, sumInOver32 = 0.0;
+        double   wReads = 0.0, wValid = 0.0;
+        for (long t = 0; t < cells; ++t) {
+          uint32_t v = cc[t];
+          if (!v) continue;
+          ++occupied;
+          sumN  += (double)v;
+          sumN2 += (double)v * (double)v;
+          if (v > mx) mx = v;
+          if (v > 1000u) ++cellsOver1k;
+          // ── THE CAP TRUTH (his hypothesis, 2026-08-13 14:44:00: the
+          // MAX_PER_CELL=128 truncation "would explain a lot of bs in this
+          // engine rn"). Every capped read site — the collision scan
+          // (particles.metal:2747, live: uiCollisions is engine-permanent),
+          // the eruption stress (:1206), the flare colour (:1236), the
+          // secondary scan (:2892) — sees min(n,128). So:
+          //   sumVisible/N     = the fraction of the field a capped scan can
+          //                      EVER see, however many particles are there.
+          //   sumInOverCap/N   = the fraction living in a cell that is being
+          //                      truncated at all.
+          // These are the two numbers that turn "the cap might matter" into a
+          // measurement. READ-ONLY, same loop, no extra pass.
+          sumVisible += (double)std::min(v, 128u);
+          if (v >= 128u) { ++cellsOverCap; sumInOverCap += (double)v; }
+          // ── THE GHOST READ (found 2026-08-13 14:52:00). The READ site clamps
+          // at MAX_PER_CELL=128 (particles.metal:2747) but the WRITE side caps
+          // at 32 (spatial_hash.metal:351-356), while cellStarts is the prefix
+          // sum of the UNCAPPED live counts. So a cell holding n particles
+          // reserves n slots, has 32 filled, and is READ min(n,128) deep —
+          // every read past 32 lands on a slot nothing wrote this frame, in a
+          // buffer that is never cleared (the clear blit covers cellCounts,
+          // cellMass, seedCount, cellSeedMap, seedAccum, accDiag — not
+          // sortedParticles). Those reads return an EARLIER frame's record at a
+          // stale position.
+          //   reads  = min(n,128)   what the scan consumes
+          //   valid  = min(n,32)    what the scatter actually wrote
+          // Weighted by cell population, because a cell is read once per
+          // particle in its 3x3x3 neighbourhood and the self-cell term
+          // dominates inside a clump (same approximation as meanOwnCell, and
+          // flagged the same way — a proxy, not the exact 27-cell count).
+          if (v > 32u) { ++cellsOver32; sumInOver32 += (double)v; }
+          wReads += (double)v * (double)std::min(v, 128u);
+          wValid += (double)v * (double)std::min(v,  32u);
+        }
+        double meanOwn  = (sumN > 0.0) ? sumN2 / sumN : 0.0;      // per-particle
+        double meanOcc  = occupied ? sumN / (double)occupied : 0.0; // if spread
+        double ratio    = (meanOcc > 1e-9) ? meanOwn / meanOcc : 0.0;
+        mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+        double probeMs = (double)(mach_absolute_time() - t0) * tb.numer /
+                         (double)tb.denom / 1e6;
+        fprintf(stderr,
+                "[CELLPROBE] N=%.0f occupied=%ld/%ld (%.3f%%) maxCell=%u "
+                "cells>1k=%ld meanOwnCell=%.1f meanOccCell=%.1f clump=%.1fx "
+                "topCellShare=%.2f%% | CAP128 cells=%ld matterInCapped=%.1f%% "
+                "scanCanSee=%.1f%% | WRITE32 cells=%ld matterOver32=%.1f%% "
+                "ghostReads=%.1f%% | phase=%.1f probe=%.2fms\n",
+                sumN, occupied, cells,
+                100.0 * (double)occupied / (double)cells, mx, cellsOver1k,
+                meanOwn, meanOcc, ratio,
+                (sumN > 0.0) ? 100.0 * (double)mx / sumN : 0.0,
+                cellsOverCap,
+                (sumN > 0.0) ? 100.0 * sumInOverCap / sumN : 0.0,
+                (sumN > 0.0) ? 100.0 * sumVisible / sumN : 0.0,
+                cellsOver32,
+                (sumN > 0.0) ? 100.0 * sumInOver32 / sumN : 0.0,
+                (wReads > 0.0) ? 100.0 * (1.0 - wValid / wReads) : 0.0,
+                physicsUniforms.envelopePhase, probeMs);
+      }
+
       // ── [DENSPROBE] — READ-ONLY. WHAT IS THE DENSITY WHEN MASS LANDS IN ONE
       // PLACE? (2026-08-11 02:52:00, his pick.)
       //
@@ -3214,7 +3394,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           fprintf(stderr,
                   "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f hole=%.2f%s seeds=%u feed=%u/%.1f scan=%u s0[cnt=%u e0m=%.3f e0id=%u exit=%u] com=(%.2f %.2f %.2f) "
                   "meanR=%.2f maxR=%.1f "
-                  "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u\n",
+                  "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u "
+                  "mrg=%u/%u/%u\n",   // TEMP A1″: reached-CAS / landed / refused
                   liveCount, totalSM, physicsUniforms.massTotal, gMaxMass,
                   bhStrength, bhFormedLatch ? "L" : "",
 
@@ -3245,7 +3426,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                   (totalCT > 0.5f) ? (totalSR / totalCT) : -1.0f, gMaxR,
                   physicsUniforms.envelopePhase,
                   physicsUniforms.totalAmplitude, physicsUniforms.gravGM,
-                  bhPosX, bhPosY, bhPosZ, bhMassEnc, bhPeakCount);
+                  bhPosX, bhPosY, bhPosZ, bhMassEnc, bhPeakCount,
+                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[2] : 0u,
+                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[3] : 0u,
+                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[4] : 0u);
         }
         // TEMP-SLICE3 [SPH] conservation watchdog (remove after slice-3 verdict):
         // sampled momentum / KE / internal energy from the live particle buffer
@@ -3616,6 +3800,26 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // a disk, NOT the particles. The black hole must be the actual particle cloud,
   // gravitationally lensed. Particles always render.
 
+  // ── THE HOLE AS A BODY — depth only, drawn BEFORE the particles ──────────
+  // This is the pass that makes the hole an OBJECT. It writes the near surface
+  // of the photon-capture sphere (b_c = 2.598 r_s) into the depth attachment
+  // and writes NO colour (writeMask None on the pipeline). Everything drawn
+  // after it depth-tests Less, so matter behind the hole is hidden BY GEOMETRY
+  // rather than by a hand-written cull, and matter in front draws over it.
+  // Must precede the particle draw — the depth has to exist before anything
+  // tests against it.
+  if (bhBodyPipeline && lastHorizonR > 0.0f) {
+    CameraUniforms *camB = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+    BHMarchUniforms bu = {};
+    invertMatrix4x4(camB->viewProj, bu.inverseViewProj);
+    memcpy(bhMarchUniformBuffer[frameIdx].contents, &bu, sizeof(bu));
+    [enc setRenderPipelineState:bhBodyPipeline];
+    [enc setDepthStencilState:depthWriteState];   // Less + WRITE ON
+    [enc setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
+    [enc setFragmentBuffer:bhMarchUniformBuffer[frameIdx] offset:0 atIndex:1];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
+
   // Draw Particles — ALWAYS (the particles ARE the black hole)
   [enc setRenderPipelineState:particlePipeline];
   [enc setDepthStencilState:depthState];
@@ -3738,12 +3942,26 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // shape painted over the field. Disabled so trails come ONLY from real motion
   // (the velWorld screen-space streak + the post-fx frame-feedback). Set the
   // gate back to (bhStrength>0.5f || oscAmount>0.01f) to restore. Pipeline kept.
-  if (false && trajectoryPipeline &&
+  // ── RE-ENABLED 2026-08-14 12:38:00 — "LETS SPAGHETTIFI THE LIGHT" ────────
+  // Stripped 2026-06-25 as "fake trails centered to a tube shape". That verdict
+  // was earned by PLANE FIX №3 (render.metal, trajectory_vertex): the arcs swept
+  // about +Y while the disk orbits +Z, so every ribbon ran 90° ACROSS the real
+  // motion — a tube painted over the field, exactly as he called it. With the
+  // plane corrected the arc IS the particle's own orbital path over the exposure
+  // window, inner-fast, so matter near the hole spaghettifies and the calm field
+  // stays points. Gate is the original: an emergent hole, or manual spin.
+  if (trajectoryPipeline &&
       (bhStrength > 0.5f || config.oscAmount > 0.01f)) {
     [enc setRenderPipelineState:trajectoryPipeline];
     [enc setDepthStencilState:depthState];
     [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
     [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
+    // THE TRAIL'S HEAD MUST SIT ON ITS STAR (2026-08-15). particle_vertex draws
+    // every sprite at the integrated playback phase (bound at index 8, :3843);
+    // this pass bound only the particle + camera buffers, so it drew each ribbon
+    // from the RAW physics position — sprite and trail in two frames, separated
+    // by a phase that wraps the full circle. Same buffer, same phase, index 2.
+    [enc setVertexBuffer:posePhaseBuffer offset:0 atIndex:2];
     // ARC LOD BUDGET: every particle drawing a 22-vertex ribbon makes this pass
     // cost 22×particleCount line-vertices — unbounded with count (the 5M-easy →
     // 2M-fighting regression). Cap the arc-drawing particles to a fixed budget;

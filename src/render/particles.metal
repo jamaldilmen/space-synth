@@ -161,6 +161,36 @@ constant int MAX_PER_CELL = 128; // Read-site SCAN clamp only: bounds the
                                   // itself is UNCAPPED (count_cells in
                                   // spatial_hash.metal) — it is the cell MASS
                                   // for self-gravity and must stay honest.
+                                  // ⚠️ NOT an index bound — see SCATTER_PER_CELL.
+                                  // Still correct for the COUNT-based uses
+                                  // (:1206 eruption stress, :1236 flare colour),
+                                  // which clamp a number, not a slot, and were
+                                  // tuned against a capped count.
+
+// ── HOW DEEP sortedParticles IS ACTUALLY FILLED ─────────────────────────────
+// MEASURED 2026-08-13 14:52:18, [CELLPROBE], at rest 30 s from launch:
+// **73.9% of the collision scan's reads were slots nothing wrote that frame.**
+// 87.4% of the field sat in cells holding more than 32, one cell held 408,198
+// particles (20.4% of the whole field), and the scan read 128 of them.
+//
+// THE MISMATCH: the scatter (spatial_hash.metal:351-356) refuses to write past
+// **32 per cell** — "Only scatter if we haven't hit the 32 particle limit" —
+// while cellStarts is the prefix sum of the UNCAPPED live counts (its own
+// comment explains why: capping it would overflow a cell's range into the next
+// cell's and let mergers eat a star twice). So a cell with n particles reserves
+// n slots, has 32 filled, and anything reading deeper lands on an EARLIER
+// FRAME's record at a position that particle has since left —
+// sortedParticlesBuffer is allocated once and never cleared (the clear blit
+// covers cellCounts, cellMass, seedCount, cellSeedMap, seedAccum, accDiag —
+// not this one).
+//
+// The engine already had the right number in one place: the tiled kernel uses
+// `min(cellCounts[...], 32u)` at spatial_hash.metal:669 and :714. This constant
+// gives that convention a name so the two halves cannot drift apart again.
+// ⚠️ IT IS NOT A TUNABLE. It must equal the scatter's limit. Raising the scan
+// without raising the scatter re-creates the ghosts; raising the scatter costs
+// real bandwidth and is a separate, measured decision.
+constant uint SCATTER_PER_CELL = 32u;
 
 // Phase 11.3: Planck-length softening (regularizes point-particle infinities)
 constant float PLANCK_LENGTH_SQ = 0.0001f; // Minimum interaction distance²
@@ -1153,6 +1183,42 @@ kernel void compute_physics(
     pvec = float3(px, py, pz);
     r_curr = length(pvec);
 
+    // ── DEAD-COMPUTE — A CORPSE STOPS HERE (his order 2026-08-13 01:02:00) ───
+    // Jamal: "PARTICLES THAT ARE DEAD MUST NOT BE COMPUTED. if a particle is in
+    // the bh its gone. no need to compute it and we still do."
+    // This is placed HERE, not at the top of the kernel, and the placement is
+    // the whole design — three things above this line must still run for a dead
+    // particle and every one of them is a live feature:
+    //   • SUSTAIN REBIRTH (:704) fires ONLY on mass<=0.001 — the abyss gives its
+    //     light back. An early-out above it kills the feature outright.
+    //   • RESET (:829, debugFlags bit8) re-draws position AND restores
+    //     mass = imfMassOfId(id) — that is what destroys the hole. Skipping it
+    //     would make "reset" a lie about the state again (2026-08-03).
+    //   • ESCAPER RECYCLE (:1131) is what actually empties the park site: a
+    //     corpse is parked at 4000+id%1024 (r~6928) and r_curr here is still the
+    //     ENTRY radius from :862, so the frame AFTER it dies it is teleported to
+    //     its star-map home at mass 0. Leaving corpses at 4000 would collapse
+    //     them all into one clamped corner cell of the spatial hash.
+    // BELOW this line a dead particle produces NOTHING, verified three ways:
+    //   • the write-back (:3427) is gated `if (mass > 0.0f)` — every px/py/pz it
+    //     computes from here down is already discarded;
+    //   • every atomic in :1156-3425 (seedAccum, accDiag, sphClosure) sits
+    //     inside a mass-gated block — capture :1299, seed-merge :1448,
+    //     self-gravity :1606, collisional relaxation :2211;
+    //   • it writes to no other particle's slot.
+    // So this return is OUTPUT-EQUIVALENT by construction and removes only work.
+    // What it removes is not scalar math: the three neighbour scans below are
+    // NOT mass-gated and a corpse runs all of them — particle-particle
+    // collisions (:2685, 27 cells), the bond network (:2842), and the SPH
+    // pressure scan (:2932, O(N*27)). Two of the three are gated on
+    // playGate<0.5, i.e. they run AT REST — which is exactly the regime where
+    // the kernel's own count says ~46% of the field is corpses (:678).
+    // ⚠️ CORRECTS THE BOARD: the DEAD-COMPUTE row says a corpse "walks the
+    // entire kernel". It does not — capture, seed-merge, self-gravity and
+    // collisional relaxation already refuse it on mass. The row's other claim,
+    // that the eaten pile sits at 4000+, is true for exactly one frame.
+    if (mass <= 0.001f && !(u.debugFlags & (1u << 28))) return; // TEMP-DIAG SS_NO_DEADSKIP = A/B control
+
     // ── ERUPTIONS in the hardened areas (magnetic-reconnection / solar-flare) ──
     // Where the Chladni pattern HARDENS (dense nodes), stress builds; past a
     // threshold the node ERUPTS — a sudden outward plasma burst + heat flash,
@@ -1486,10 +1552,76 @@ kernel void compute_physics(
                     if (notFinite3(sp)) continue;
                     float3 dS = float3(px, py, pz) - sp;
                     if (dot(dS, dS) >= mergeR2) continue;
-                    // I am the smaller seed → hand my mass to the larger, die.
-                    atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 0u],
-                                              uint(mass * 64.0f + 0.5f),
-                                              memory_order_relaxed);
+                    // ── THE MERGE MUST FIT UNDER THE CEILING (A1″, 2026-08-13) ──
+                    // History, because both earlier versions were wrong in ways
+                    // that are easy to re-introduce:
+                    //   v1 — a plain fetch_add: no budget, no CAS, no taper. Both
+                    //        the 2026-08-08 rate limit and the 2026-08-11 outcome
+                    //        bound were invisible to it. MEASURED: Mmax 32,383.6 →
+                    //        64,767.2, exactly 2×, in one frame.
+                    //   v2 — the capture path's CAS copied verbatim: budget
+                    //        MDOT·dt·fFb, ENTRY test `mcur < budgetMx`. MEASURED on
+                    //        his play run 2026-08-13 00:59: mrg=1902/10/1892 — 99.5%
+                    //        refused, and the 10 that landed still put Mmax at
+                    //        185,710.7 against a 135,113 bound = 137%.
+                    // ⭐ WHY v2 FAILED, and it is a property not an accident: an
+                    // ENTRY test asks "is the plate under budget?" and then adds
+                    // whatever it likes. The capture path can live with that — its
+                    // overshoot is one star, ≤50 M☉. Here the victim is a SEED, so
+                    // the overshoot is the whole bug: a merge starting at half the
+                    // ceiling lands at the ceiling, and the next one doubles past it.
+                    // A 99.5% refusal rate is not a bound, it is a lottery.
+                    // ⭐ THE FIT TEST. Two changes, both deliberate:
+                    //   1. BUDGET IS HEADROOM, NOT MDOT. A BH↔BH merger is
+                    //      DYNAMICAL — there is no disc to drain, so the viscous
+                    //      rate has no physical claim on it. What DOES bind is the
+                    //      outcome bound, so the budget is this seed's remaining
+                    //      room to it: mBound − mS. (MDOT·dt is ~21–73 M☉/frame
+                    //      depending on frame rate, below M_BH_SEED = 50, so keeping
+                    //      it here would ban merges outright and with them the
+                    //      runaway to one giant.)
+                    //   2. THE CLAIM MUST FIT WHOLE: `mcur + myMx <= budgetMx`.
+                    //      Overshoot is then exactly zero, by construction, and
+                    //      several victims converging on one seed in the same frame
+                    //      are bounded TOGETHER on the shared plate rather than each
+                    //      against a stale posW.w.
+                    // Merges stay completely FREE below the ceiling — the taper is
+                    // deliberately absent here, because a merge is a discrete event
+                    // and a smoothstep on a discrete event is just a slower lottery.
+                    // Refusing costs nothing and creates nothing: the victim stays
+                    // alive and orbiting, mass is conserved exactly, and if the field
+                    // grows the room reopens and it merges later.
+                    float mBoundM = F_BH_CLUSTER * max(u.fieldMassMsun, 1.0f);
+                    float headM   = mBoundM - mS;
+                    if (headM <= 0.0f) continue;      // survivor is already at the ceiling
+                    // min() keeps the ×64 fixed-point inside uint; mass < 1e8 above.
+                    uint  budgetMx = uint(min(headM, 6.0e7f) * 64.0f);
+                    uint  myMx     = uint(mass * 64.0f + 0.5f);
+                    atomic_fetch_add_explicit(&accDiag[2], 1u, memory_order_relaxed); // TEMP A1″: reached the CAS
+                    if (myMx > budgetMx) {            // never fits — also guards the
+                        atomic_fetch_add_explicit(&accDiag[4], 1u, memory_order_relaxed);
+                        continue;                     // unsigned subtraction below
+                    }
+                    device atomic_uint *mplate = &seedAccum[(slot - 1u) * 8u + 0u];
+                    uint mcur = atomic_load_explicit(mplate, memory_order_relaxed);
+                    bool mReserved = false;
+                    while (mcur <= budgetMx - myMx) {
+                        // On failure Metal writes the observed value back into
+                        // `mcur`, so the loop retries against fresh state.
+                        if (atomic_compare_exchange_weak_explicit(
+                                mplate, &mcur, mcur + myMx,
+                                memory_order_relaxed, memory_order_relaxed)) {
+                            mReserved = true;
+                            break;
+                        }
+                    }
+                    if (mReserved == false) {         // would cross the ceiling
+                        atomic_fetch_add_explicit(&accDiag[4], 1u, memory_order_relaxed); // TEMP A1″: refused
+                        continue;
+                    }
+                    atomic_fetch_add_explicit(&accDiag[3], 1u, memory_order_relaxed);     // TEMP A1″: landed
+                    // MERGED: mass already claimed on the plate by the CAS above
+                    // (do NOT fetch_add word 0 again — that would double-count).
                     atomic_fetch_add_explicit(&seedAccum[(slot - 1u) * 8u + 1u],
                                               1u, memory_order_relaxed);
                     // Momentum travels with the mass (same ledger as star capture).
@@ -1564,16 +1696,69 @@ kernel void compute_physics(
             if (hashFresh && su.gridSize > 0 &&
                 fabs(px) < su.halfExtent && fabs(py) < su.halfExtent &&
                 fabs(pz) < su.halfExtent) {
+                // ── TRILINEAR (CIC) FORCE INTERPOLATION — board item 13 ─────
+                // 🚨 THIS READ USED TO BE NEAREST-CELL, AND HE COULD SEE IT.
+                // His sighting 2026-08-13 01:21:36, at 64× holding a low C:
+                // "you see the grid, the boxes" — sharp axis-aligned blocks
+                // across the whole field. That was this line: the particle's
+                // cell came from a truncating int cast and ∇Φ was evaluated on
+                // THAT ONE CELL, so every particle inside a 128³ cell received
+                // the IDENTICAL acceleration vector and a cell's worth of matter
+                // translated as a rigid block. The grid, drawn in stars.
+                // ⭐ AND IT WAS A KERNEL MISMATCH, the classic particle-mesh
+                // blunder: mass is deposited CIC (the moments deposit) but the
+                // force was read back NGP. Deposit and interpolation kernels
+                // must MATCH in a PM code or you get exactly this — grid
+                // imprinting, self-forces, momentum error. The codebase already
+                // knew the pattern: the density and flare fields are read
+                // trilinear at :1175 and :1184 and the comment there calls
+                // trilinear "the alias-free pattern". Gravity was the one site
+                // that skipped it.
+                // ⚠️ WHY HIS TWO CONDITIONS REVEALED IT and normal play does not:
+                // the Poisson solve is gated REST-ONLY (renderer.mm:2349,
+                // totalAmplitude < 0.02) with Φ warm-started, so holding a note
+                // means gravity reads a FROZEN Φ; and at 64× the per-frame
+                // displacement is enormous, so an identical-per-cell force
+                // integrated over that step moves whole cells coherently instead
+                // of averaging out. Neither condition creates the flaw. They
+                // stop hiding it.
+                // ── The fix: sample ∇Φ at the 8 surrounding CELL CENTRES and
+                // trilinearly weight them with the same weights CIC uses to lay
+                // the mass down. Cell i's centre is at (i + 0.5) in grid units,
+                // hence the −0.5 shift before the floor.
+                // COST, stated honestly: 8 cells × 6 taps = 48 Φ reads per
+                // particle, against 6 before. [PERF] (board item 12, added
+                // minutes earlier for exactly this) is the instrument — baseline
+                // idle before this change was ~31–36 fps, worst frame 54–99 ms.
                 int Ng = su.gridSize;
-                int gi = clamp(int((px + su.halfExtent) * su.invCellSize), 1, Ng - 2);
-                int gj = clamp(int((py + su.halfExtent) * su.invCellSize), 1, Ng - 2);
-                int gk = clamp(int((pz + su.halfExtent) * su.invCellSize), 1, Ng - 2);
-                uint c = uint((gk * Ng + gj) * Ng + gi);
+                float gx = (px + su.halfExtent) * su.invCellSize - 0.5f;
+                float gy = (py + su.halfExtent) * su.invCellSize - 0.5f;
+                float gz = (pz + su.halfExtent) * su.invCellSize - 0.5f;
+                // i0+1 must still leave room for the ±1 stencil → clamp to Ng-3.
+                int i0 = clamp(int(floor(gx)), 1, Ng - 3);
+                int j0 = clamp(int(floor(gy)), 1, Ng - 3);
+                int k0 = clamp(int(floor(gz)), 1, Ng - 3);
+                float fx = clamp(gx - float(i0), 0.0f, 1.0f);
+                float fy = clamp(gy - float(j0), 0.0f, 1.0f);
+                float fz = clamp(gz - float(k0), 0.0f, 1.0f);
                 float inv2h = 0.5f * su.invCellSize;          // 1/(2h)
-                float ax = (phi[c + 1u]            - phi[c - 1u])            * inv2h;
-                float ay = (phi[c + uint(Ng)]      - phi[c - uint(Ng)])      * inv2h;
-                float az = (phi[c + uint(Ng * Ng)] - phi[c - uint(Ng * Ng)]) * inv2h;
-                gacc = -float3(ax, ay, az);                   // a = −∇Φ (attractive)
+                float3 gsum = float3(0.0f);
+                for (int dz = 0; dz < 2; dz++) {
+                    float wz = dz ? fz : (1.0f - fz);
+                    for (int dy = 0; dy < 2; dy++) {
+                        float wy = dy ? fy : (1.0f - fy);
+                        for (int dx = 0; dx < 2; dx++) {
+                            float w = wz * wy * (dx ? fx : (1.0f - fx));
+                            uint c = uint((((k0 + dz) * Ng) + (j0 + dy)) * Ng
+                                          + (i0 + dx));
+                            gsum += w * float3(
+                                phi[c + 1u]            - phi[c - 1u],
+                                phi[c + uint(Ng)]      - phi[c - uint(Ng)],
+                                phi[c + uint(Ng * Ng)] - phi[c - uint(Ng * Ng)]);
+                        }
+                    }
+                }
+                gacc = -gsum * inv2h;                         // a = −∇Φ (attractive)
             }
         } else {
 
@@ -1978,16 +2163,49 @@ kernel void compute_physics(
             if (rrF < fsu.halfExtent &&
                 fabs(px) < fsu.halfExtent && fabs(py) < fsu.halfExtent &&
                 fabs(pz) < fsu.halfExtent) {
+                // ── TRILINEAR (CIC) — THE SECOND HALF OF board item 13 ──────
+                // 🚨 THE COARSE FIX ALONE DID NOTHING, AND THIS IS WHY. His
+                // verdict 2026-08-13 02:40:56 after the coarse grid was made
+                // trilinear: "unchanged", boxes still there. This read is the
+                // same nearest-cell mistake, and the `mix()` eight lines below
+                // makes it AUTHORITATIVE in the core: w = 1 inside 75% of the
+                // fine box, so wherever the fine patch covers — which is exactly
+                // where the core is and where he sees the blocks — the coarse
+                // gradient is discarded entirely. Fixing the coarse grid while
+                // the fine grid overrode it fixed nothing he could see.
+                // ⭐ AMR IS ON BY DEFAULT (`amrOn = 1` unless SS_NO_AMR,
+                // renderer.mm:1896), so this is the live path, not an option.
+                // ⭐ RULE THIS PROVES: there were TWO nearest-cell reads of a
+                // potential, not one. Before declaring a class of bug fixed,
+                // grep for every read of the field — `phi[` AND `finePhi[`.
                 int Nf = fsu.gridSize;
-                int fi = clamp(int((px + fsu.halfExtent) * fsu.invCellSize), 1, Nf - 2);
-                int fj = clamp(int((py + fsu.halfExtent) * fsu.invCellSize), 1, Nf - 2);
-                int fk = clamp(int((pz + fsu.halfExtent) * fsu.invCellSize), 1, Nf - 2);
-                uint fc = uint((fk * Nf + fj) * Nf + fi);
+                float fgx = (px + fsu.halfExtent) * fsu.invCellSize - 0.5f;
+                float fgy = (py + fsu.halfExtent) * fsu.invCellSize - 0.5f;
+                float fgz = (pz + fsu.halfExtent) * fsu.invCellSize - 0.5f;
+                int fi0 = clamp(int(floor(fgx)), 1, Nf - 3);
+                int fj0 = clamp(int(floor(fgy)), 1, Nf - 3);
+                int fk0 = clamp(int(floor(fgz)), 1, Nf - 3);
+                float ffx = clamp(fgx - float(fi0), 0.0f, 1.0f);
+                float ffy = clamp(fgy - float(fj0), 0.0f, 1.0f);
+                float ffz = clamp(fgz - float(fk0), 0.0f, 1.0f);
                 float finv2h = 0.5f * fsu.invCellSize;      // 1/(2h_fine)
-                float fax = (finePhi[fc + 1u]            - finePhi[fc - 1u])            * finv2h;
-                float fay = (finePhi[fc + uint(Nf)]      - finePhi[fc - uint(Nf)])      * finv2h;
-                float faz = (finePhi[fc + uint(Nf * Nf)] - finePhi[fc - uint(Nf * Nf)]) * finv2h;
-                float3 gaccFine = -float3(fax, fay, faz);
+                float3 fsum = float3(0.0f);
+                for (int dz = 0; dz < 2; dz++) {
+                    float wz = dz ? ffz : (1.0f - ffz);
+                    for (int dy = 0; dy < 2; dy++) {
+                        float wy = dy ? ffy : (1.0f - ffy);
+                        for (int dx = 0; dx < 2; dx++) {
+                            float w8 = wz * wy * (dx ? ffx : (1.0f - ffx));
+                            uint fc = uint((((fk0 + dz) * Nf) + (fj0 + dy)) * Nf
+                                           + (fi0 + dx));
+                            fsum += w8 * float3(
+                                finePhi[fc + 1u]            - finePhi[fc - 1u],
+                                finePhi[fc + uint(Nf)]      - finePhi[fc - uint(Nf)],
+                                finePhi[fc + uint(Nf * Nf)] - finePhi[fc - uint(Nf * Nf)]);
+                        }
+                    }
+                }
+                float3 gaccFine = -fsum * finv2h;
                 float wInner = fsu.halfExtent * 0.75f;      // full fine inside 75% of the box
                 float w = clamp((fsu.halfExtent - rrF) /
                                 max(fsu.halfExtent - wInner, 1e-4f), 0.0f, 1.0f);
@@ -2556,7 +2774,10 @@ kernel void compute_physics(
             for (int y = startCellY; y <= endCellY; y++) {
                 for (int x = startCellX; x <= endCellX; x++) {
                     uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
-                    uint count = min(cellCounts[cID], uint(MAX_PER_CELL));
+                    // GHOST FIX 2026-08-13: was MAX_PER_CELL (128) — 73.9% of
+                    // this loop's reads were unwritten slots. The scatter fills
+                    // 32. See SCATTER_PER_CELL.
+                    uint count = min(cellCounts[cID], SCATTER_PER_CELL);
                     if (count == 0) continue;
                     uint startIdx = cellStarts[cID];
 
@@ -2701,7 +2922,10 @@ kernel void compute_physics(
             for (int y = max(0, bcy - 1); y <= min(su.gridSize - 1, bcy + 1); y++) {
                 for (int x = max(0, bcx - 1); x <= min(su.gridSize - 1, bcx + 1); x++) {
                     uint cID = uint((z * su.gridSize + y) * su.gridSize + x);
-                    uint count = min(cellCounts[cID], uint(MAX_PER_CELL));
+                    // GHOST FIX 2026-08-13 — same mismatch as the collision
+                    // scan: indexes sortedParticles, so it must use the WRITE
+                    // depth. See SCATTER_PER_CELL.
+                    uint count = min(cellCounts[cID], SCATTER_PER_CELL);
                     uint startIdx = cellStarts[cID];
                     for (uint i = 0; i < count; i++) {
                         // SELECTIVE LOADS (2026-07-07): this loop runs every

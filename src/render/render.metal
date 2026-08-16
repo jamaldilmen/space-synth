@@ -2897,9 +2897,32 @@ vertex TrajOut trajectory_vertex(
     float mass  = in.posW.w;
     float originR = length(in.posW.xyz);   // rotation-invariant, so unchanged
 
+    // ── LIGHT CULL, NOT A RADIUS CULL (2026-08-16, his "FPS DUMPING AHARD") ──
+    // 1.5M particles × 22 line-verts = 33M line-vertices per frame, and the
+    // standing order at the rXY>8 removal is explicit: cap the count, do NOT
+    // reinstate a radius cull and do NOT shorten the ribbons. This obeys that —
+    // it culls by LIGHT, which S7 just made meaningful: a ribbon now carries its
+    // star's luminosity, so most of them emit nothing measurable.
+    // The threshold is DERIVED, not picked. Peak intensity of this ribbon is
+    // Ltrail·tuneTrailGain (every other factor — the k fade, innerFade, expNorm
+    // — is ≤ 1), and trajectory_fragment emits `intensity · 0.18` (:3154). So it
+    // cannot reach even one 8-bit display level when
+    //     Ltrail · tuneTrailGain · 0.18 < 1/255
+    // Nothing here is taste: 0.18 is this pass's own fragment gain and 1/255 is
+    // the display quantum. It also self-adjusts — raising Trail Brightness
+    // brings ribbons back, because it genuinely makes them visible.
+    // ⚠️ HONEST CAVEAT: additive blending means many INDIVIDUALLY sub-quantum
+    // ribbons can still sum to something visible. That sum is exactly the orange
+    // curtain S7 removed — light the field never earned — so dropping its cost
+    // here is consistent with S7, not a second regression. If a diffuse haze
+    // disappears that he wants back, this cull is the first suspect.
+    float Mtrail = min(mass, 500.0f);                       // same cap as :1905
+    float Ltrail = min(pow(Mtrail, cam.tuneStarLumExp),
+                       cam.tuneStarLumCeil / max(cam.tuneStarLumGain, 1e-6f));
+    bool  dark   = (Ltrail * cam.tuneTrailGain * 0.18f) < (1.0f / 255.0f);
     // Same masks as the points — never trail out of a wall particle (mass 0)
     // or anything culled inside the event horizon.
-    if (mass < 0.001f || originR < 0.57f) {
+    if (mass < 0.001f || originR < 0.57f || dark) {
         out.position  = float4(0, 0, -2, 1);
         out.color     = float3(0);
         out.intensity = 0.0f;
@@ -3136,9 +3159,8 @@ vertex TrajOut trajectory_vertex(
     // ⚠️ THE WHOLE FIELD GETS ~70× DIMMER IN TRAIL LIGHT, because ~70× of it was
     // never earned. Trail Brightness (tuneTrailGain) is now a real exposure
     // control and will need raising — that dial is the right place for it.
-    float Mtrail = min(mass, 500.0f);                       // same cap as :1905
-    float Ltrail = min(pow(Mtrail, cam.tuneStarLumExp),
-                       cam.tuneStarLumCeil / max(cam.tuneStarLumGain, 1e-6f));
+    // Ltrail is computed once at the top of this shader (it also drives the
+    // light cull there) — one definition, not two.
     out.intensity = (1.0f - (float)k / float(TRAIL_SEG - 1)) *
                     mix(0.25f, 1.0f, innerFade) * expNorm * Ltrail *
                     cam.tuneTrailGain;

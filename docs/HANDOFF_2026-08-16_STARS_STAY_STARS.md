@@ -67,8 +67,66 @@ minutes, this limit is what is showing.**
 
 ---
 
+## 1b. ⭐ STEP 1 FOR THE BH BOARD — THE COLOUR OF THE GAS (his order, 2026-08-16)
+
+**His question, and he was right to forbid assuming:** *"around a bh is super hot
+gas correct. what color does it have. dont assume, look at the nasa ref."*
+
+**THE REFERENCE, read directly:** `~/Downloads/BH_labeled.jpg` — NASA/Goddard
+(Schnittman), the labelled one. Also on disk: `BH_optics_explained.jpg`,
+`Black_Hole_Desktop_&_Phone_Wallpapers_(SVS14146_-_BH_accretion_disk_viz_desktop).png`,
+`Black_hole's_accretion_disk.jpg`. **Look at the file, do not recall this from
+memory.**
+
+**What it actually shows:**
+- Disk is **deep red at the outer edge → orange through the body → yellow-white
+  at the inner edge**, brightest on the Doppler-boosted approaching side.
+- **Black hole shadow: "roughly TWICE the size of the event horizon."**
+- **Photon ring**: a thin bright ring at the shadow's edge, made of light that
+  orbited 2–3+ times; *"thinner and fainter closer to the black hole."*
+- Named features it labels, i.e. the acceptance list: accretion disk, Doppler
+  beaming, photon ring, shadow, **image of the disk's far side**, **image of the
+  disk's underside**.
+
+**WHY OURS IS BLUE-GREY, AND IT IS NOT A PALETTE BUG.** Our field is **STARS**.
+S7 correctly weighted trails by `L = M^3.5`, which selects hot massive stars, and
+hot stars are blue-white. A real black hole is wrapped in hot **GAS**, and the gas
+is what carries the orange. So *"only white giants create trails → blue-grey
+ring, not colourful"* is not a bug in S7 — **it is the render telling us the
+scene is made of the wrong material.** Do not fix this with a palette; that is
+the banned second layer, and it is what the "orange hair" private ramp already
+was (deleted 2026-08-14 18:02:17).
+
+⚠️ **The honest tension to resolve, not paper over:** our own HUD reads
+`Plasma T (mean) 5.37e+10 K`, `inner 2.04e+12 K`. A blackbody at 5e10 K does not
+emit visible orange — it is deep X-ray. So the NASA image's colour is a *transfer*
+of the disk's thermal structure into the visible, not a literal blackbody at the
+gas temperature. **Any colour we adopt must therefore carry a STATED derivation
+and a stated mapping** — his standing rule that every number on screen has a
+derivation — and it ties straight to open item **S1 (Temperature)**, where three
+different temperature scales already disagree.
+
+**So step 1 is not "make it orange". It is: decide what emits.** Either the gas
+becomes a real emitting component with its own derived transfer, or the stars stay
+the only emitters and the scene keeps telling the truth that it is a star field.
+
+---
+
 ## 2. 🚨 HIS OPEN LIST — verbatim, 2026-08-16 16:39
 
+0. **🆕 SMEAR WHEN THE CAMERA MOVES (2026-08-16 17:13:47).** His words: *"theres
+   a weird smear when i move cam, can even see it in picture, like uhrzeiger
+   straight lines that create blurr."* Visible as clockwise/tangential straight
+   streaks over the whole field **in a PAUSED frame**, which is the clue: the
+   physics is frozen, so whatever draws them is on the RENDER clock, not the sim.
+   **Undiagnosed. Do not guess between these — measure.** Candidates, in order:
+   (a) the post-fx frame-feedback / `trailDecay` accumulation buffer, which is
+   screen-space and will smear anything when the camera moves; (b) the arcs
+   themselves, drawn from a world-space `posePhase` that keeps advancing while
+   paused (`emergentPoseDt` has a `pauseHoldTimelapse` argument — check whether
+   the pose clock is still running); (c) the `spinAngle*tDilate` shear in
+   `particle_vertex`. **⚠️ 95 fps was read off this PAUSED frame — it is NOT a
+   measurement of the light cull's benefit. Re-measure while running.**
 1. **FPS DUMPING HARD.** 14 fps in the screenshot. Known and documented at the
    `rXY > 8` cull removal: 1.5M particles × 22 line-vertices = **33M line-verts**
    per frame. The standing instruction there is *cap `arcParticles`, do NOT

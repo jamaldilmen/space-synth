@@ -201,6 +201,10 @@ struct Renderer::Impl {
   // rather than where it is permitted to be. See §H10. Seeded at the silence
   // cap so frame 0 is sane before the first reduce lands.
   float measuredMeanR = 100.0f;
+  // Outermost live particle radius (the [GRAV] line's maxR), retained for the
+  // same reason: the ray-march has to be back-extended to a radius OUTSIDE all
+  // the matter, and that radius is a measured property of the field, not 60.
+  float measuredMaxR = 100.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
   float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
@@ -3212,6 +3216,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           float mR = (float)(totalSR / totalCT);
           if (std::isfinite(mR) && mR > 0.01f) measuredMeanR = mR;
         }
+        if (std::isfinite(gMaxR) && gMaxR > 0.01f) measuredMaxR = gMaxR;
         // Emergent-BH enclosure (Step 2): stars within R_ENC of the BH
         // candidate, counted by the same reduce → enclosed mass + refined
         // core position (its COM). Saturation-free, like cellCounts now is
@@ -3990,9 +3995,38 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
     BHMarchUniforms mu = {};
     invertMatrix4x4(camStruct->viewProj, mu.inverseViewProj);
-    mu.rMarchStart = 60.0f;   // start radius in r_s
+    // ── EXTENT IS NOW MEASURED, NOT A CONSTANT (2026-08-17) ─────────────────
+    // Both of these were constants expressed in r_s while BOTH r_s and the field
+    // move independently — so the marched region tracked the hole and lost the
+    // disc. Measured this session: meanR 43.91 sim, maxR 100.0 sim, r_s 0.2344
+    // sim ⟹ the field's mean radius is 187 r_s and bCull sat at 7. The march was
+    // covering 3.7% of the disc's radius, and the slider's own maximum (40)
+    // could only reach 21% — so no dial setting could ever show the disc. That
+    // is why three correct emission changes (g, T(r), the transfer) all read as
+    // "still the same".
+    // app_state.h:65 predicted exactly this and named the fix: "⚠ THIS DEFAULT
+    // TRACKS THE COLLAPSED BALL … 7 will CLIP the whole disk and this must be
+    // raised again (or, better, DERIVED FROM THE MEASURED maxR instead of being
+    // a constant)."
+    // Each of the two gets the measured quantity that matches its ROLE:
+    //   bCull       = meanR / r_s — which pixels can see light. The BULK, not
+    //                 maxR: marching to the outermost straggler is marching
+    //                 vacuum, the error the 2026-07-26 note caught at bCull 40.
+    //   rMarchStart = maxR  / r_s — where light stops existing, i.e. the radius
+    //                 the backward ray must be extended to so it starts outside
+    //                 all the matter.
+    // The dial is KEPT and becomes a multiplier: its old default 7.0 now means
+    // 1.0x the derived extent, so it still sweeps 0.37x..5.7x over its range.
+    float rsSim    = std::max(lastHorizonR, 1e-4f);
+    float bDerived = (measuredMeanR / rsSim)
+                     * (config.bhRayBcull / 7.0f);
+    float rStartD  = measuredMaxR / rsSim;
+    // Guard, not a tuning: a ray whose impact parameter exceeds the start radius
+    // never enters the marched sphere (disc <= 0) and returns black, so the
+    // start must clear the cull. maxR > meanR makes this inactive in practice.
+    mu.rMarchStart = std::max(rStartD, bDerived * 1.05f);
     mu.stepScale   = 0.05f;   // coarser for FPS (0.03 validated, 0.10 breaks); dl = stepScale·r^1.5
-    mu.bCull       = config.bhRayBcull;     // disk-covering extent (live dial)
+    mu.bCull       = bDerived;              // DERIVED above; dial is the x-factor
     mu.maxSteps    = 256;     // halved for FPS (coarser stepScale needs fewer)
     mu.emitScale   = config.bhRayEmitScale; // ∫ρ ds → light gain; live dial
     mu.emitInnerR  = config.bhRayInnerR;    // inner no-emit radius → shadow (live)
@@ -4014,10 +4048,13 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       if (nowM - lastMarchPrint >= 1.0) {
         lastMarchPrint = nowM;
         printf("[MARCH] encoded=1 camHorizonR=%.4f lastHorizonR=%.4f "
-               "emitScale=%.3g innerR=%.3f bCull=%.2f fineBox=%.1f "
+               "emitScale=%.3g innerR=%.3f bCull=%.2f rStart=%.1f "
+               "meanR=%.2f maxR=%.1f fineBox=%.1f "
                "fineBufs=%d -> %s\n",
                camStruct->horizonR, lastHorizonR, mu.emitScale, mu.emitInnerR,
-               mu.bCull, (double)Impl::kAmrFineExtent,
+               mu.bCull, mu.rMarchStart,
+               measuredMeanR, measuredMaxR,
+               (double)Impl::kAmrFineExtent,
                (fineCellMassBuffer && fineHashUniformBuffer) ? 1 : 0,
                (camStruct->horizonR > 0.0f) ? "DRAWING" : "returns black (no r_h)");
         fflush(stdout);

@@ -3543,6 +3543,11 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
     float  rEsc = mu.rMarchStart * 1.02f;
 
     float3 emit = float3(0.0f);               // gathered emission (additive out)
+    // TRANSMITTANCE — the missing half of the transfer (2026-08-17). Without it
+    // `emit +=` sums an unbounded ∫ρ ds over a 60 r_s path, so the biggest volume
+    // (thin, cool outer gas) dominates and paints the brown fill. DNGR §7.3 runs
+    // emission AND extinction; we only ran emission.
+    float trans = 1.0f;
 
     for (int i = 0; i < mu.maxSteps; ++i) {
         float r = length(x);
@@ -3555,7 +3560,7 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
         // world (spun × R) = hole centre + x·r_s  →  physics coords for the grid.
         // Skip the inner region (r < emitInnerR): matter there is captured /
         // inside ISCO and must not fill the shadow with light (the "yolk" fix).
-        if (su.gridSize > 0 && r > mu.emitInnerR && emit.r < 60.0f) {
+        if (su.gridSize > 0 && r > mu.emitInnerR && trans > 0.003f) {
             // ── MATCH THE SPRITES' DILATION SHEAR (2026-07-26 21:07:41) ──────
             // particle_vertex draws every body at applySpin(posW, spinAngle *
             // tDilate(|posW|)) — a radius-dependent SHEAR, not a rigid turn
@@ -3670,10 +3675,184 @@ fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
                 dens = float(cellCounts[
                     uint((c.z * su.gridSize + c.y) * su.gridSize + c.x)]);
             }
+            // ── g — THE ONE SHIFT FACTOR (2026-08-17, his order: "add g to the
+            // march") ────────────────────────────────────────────────────────
+            // DNGR §3: what sets the observed colour AND brightness of disk gas is
+            // g = f_obs/f_emit, the Doppler and gravitational shift COMBINED. In
+            // the Interstellar render it is the whole story — their disk is
+            // isothermal at 4500 K and the entire red→white sweep across it comes
+            // from g alone (approaching g≈1.5, receding g≈0.4). So g is the part
+            // that stays true whatever we later decide our gas IS; the RIAF-vs-
+            // thin-disc question is still open and this does not presume it.
+            //
+            // The march can use the EXACT expression where the sprite pass could
+            // only linearise (1 + K·β_los), because it integrates the geodesic and
+            // therefore HOLDS the photon's conserved angular momentum. For an
+            // emitter on a circular geodesic at radius r, seen from infinity:
+            //     g = 1 / [ u^t (1 − Ω·b) ],  u^t = 1/√(1 − 3M/r),  Ω = √(M/r³)
+            // b = photon angular momentum about the ORBIT AXIS, per unit energy.
+            // u^t carries gravitational redshift + emitter time dilation, (1−Ω·b)
+            // carries the Doppler. ONE factor, not two multiplied together — so
+            // this cannot repeat the double-count the DNGR doc corrected on
+            // 2026-07-24 (g³·B(ν/g,T) ≡ B(ν,g·T); never apply both).
+            //
+            // UNITS: this loop already marches in r_s = 1, hence M = 0.5 exactly.
+            // Independent check that the normalisation is right — Ω·r at the ISCO
+            // (r = 6M = 3) is √(0.5/27)·3 = 0.4082, and particles.metal:246
+            // MEASURES our own disc's orbV max at 0.4092c. Agree to 0.25%.
+            //
+            // SIGN: the march runs BACKWARD (v points camera → scene), so the
+            // physical photon's angular momentum is −(x × v). Verified on a case
+            // rather than assumed: gas at +x̂ orbiting about +ẑ moves +ŷ; for a
+            // camera at +ŷ the backward v is −ŷ, giving −dot(x×v, ẑ) = +R > 0, so
+            // (1 − Ω·b) < 1 and the APPROACHING limb comes out blueshifted.
+            //
+            // AXIS: poseAxis — the same position-derived orbit normal U7 gave the
+            // sprites and the trails. It degenerates to +Z in the disk (which is
+            // where the gas is) and stays right for inclined matter. Five
+            // sightings of the 90°-off-plane fault say do not hardcode +Z here.
+            float gShift = 1.0f;
+            if (r > 1.5f) {          // no circular geodesic inside the photon sphere
+                float3 axisP = poseAxis(pp - poseCentre(cam));
+                float3 axisW = applySpin(axisP, cam.spinAngleX * tDl,
+                                                cam.spinAngleY * tDl,
+                                                cam.spinAngleZ * tDl);
+                float Mg   = 0.5f;                        // r_s = 1 ⟹ M = 0.5
+                float om   = sqrt(Mg / (r * r * r));      // circular-geodesic Ω(r)
+                float beta = min(om * r, 0.99f);          // orbital speed, c = 1
+                float bAx  = -dot(hv, axisW);             // backward ray ⟹ minus
+                float ut   = rsqrt(max(1.0f - 3.0f * Mg / r, 1e-4f));   // u^t
+                gShift = 1.0f / max(ut * (1.0f - om * bAx), 1e-3f);
+                // BOUND IT WITH PHYSICS, NOT A CHOSEN CEILING. For an emitter at
+                // speed β the head-on / tail-on Doppler factors are √((1±β)/(1∓β));
+                // g cannot fall outside that window at ANY viewing angle. Rays
+                // grazing the photon sphere can drive (1 − Ω·b) through zero, and
+                // this bounds that coordinate singularity using the same β the
+                // term is built from — no free number. Window is 0.65..1.55 at the
+                // ISCO, 0.52..1.93 at the photon sphere.
+                float gMax = sqrt((1.0f + beta) / (1.0f - beta));
+                gShift = clamp(gShift, 1.0f / gMax, gMax);
+            }
             if (dens > 0.0f) {
-                // emission ∝ density × path length (∫ρ ds). Warm accretion hue;
-                // colour/Doppler/redshift refine in a later increment.
-                emit += float3(1.0f, 0.55f, 0.25f) * (dens * dl * mu.emitScale);
+                // emission ∝ density × path length (∫ρ ds), beamed by g³.
+                // LIOUVILLE: specific intensity transforms as I_ν ∝ ν³ (DNGR §3,
+                // their Fig 15c caption), so the observed emission carries g³. The
+                // exponent is 3, NOT the sprite pass's 1.4 — that block's own note
+                // (:1654) calls 1.4 out as less than half the real power law.
+                // WHY g³ HERE AND NOT blackbody(g·T): they are the same operation
+                // and applying both double-counts. blackbody(g·T) is the better
+                // half because it fixes the hue too, but it needs a T for the gas
+                // and that is the open RIAF-vs-thin-disc decision. This form is
+                // correct with the fixed chromaticity we have today, and when the
+                // hue is derived later the g³ moves into the transfer — it does
+                // not have to be unpicked from a colour LUT.
+                // ⚠ g³ raises the peak. Exposure stays HIS, through the existing
+                // live Emission dial (mu.emitScale / config.bhRayEmitScale) — no
+                // gain, no floor, no normalisation added here. The 2026-08-14
+                // revert (:1638) failed on a sparse ADDITIVE point cloud with no
+                // opacity; this pass is a path integral, the "lit surface" that
+                // same note says the reference has and the sprites lack.
+                float beam = gShift * gShift * gShift;
+
+                // ── THE HUE — HARDCODED ORANGE DELETED (2026-08-17) ───────────
+                // Was float3(1.0, 0.55, 0.25): a private constant with no
+                // temperature input, the pass's only colour, and the reason he
+                // banned bit19 on 2026-07-28 ("this orange shadow of the
+                // blackhole is super old and must leave asap", app_state.h:57).
+                // It is the same second layer as the deleted "orange hair" ramp.
+                //
+                // HIS CALL ON THE FORK (2026-08-17): "a mix between the nasa and
+                // interstellar vibe". Physically those two differ in exactly ONE
+                // thing, so the mix is a real object rather than a blend:
+                //   · Interstellar/DNGR: T = 4500 K ISOTHERMAL by choice, the
+                //     whole red→white sweep coming from g alone (doc §3, :166).
+                //   · NASA/Goddard: a genuinely accreting disc, so T FALLS with
+                //     radius — deep red outer edge → yellow-white inner edge —
+                //     with g on top. That radial term is the only difference.
+                // Take NASA's radial structure, anchored at Interstellar's own
+                // colour temperature. Both halves cited, neither picked to feel
+                // right.
+                //
+                // SHAPE — Shakura–Sunyaev thin disc, no freedom in it:
+                //     T_eff(r) ∝ (r/r_in)^(−3/4) · [1 − √(r_in/r)]^(1/4)
+                // The −3/4 is viscous dissipation D(r) ∝ ṀM/r³ against σT⁴; the
+                // bracket is the zero-torque inner boundary at the ISCO, and it
+                // is what makes the bright inner RING of the NASA reference
+                // instead of a bright point — T → 0 at the ISCO, peaking just
+                // outside at r = (49/36)·r_in. r_in = ISCO = 6M = 3 r_s, and this
+                // loop already marches in r_s = 1 (M = 0.5), so r_in = 3 exactly.
+                //
+                // ANCHOR — 6500 K at the profile's peak. NOT a chosen number:
+                // it is DNGR's own white-balance point (doc §3, :172 — "White
+                // balance set so 6500 K → equal RGB"), and it is where
+                // blackbodyRGB is neutral. The r^(−3/4) falloff then carries the
+                // disc down through Interstellar's 4500 K in the body (≈8 r_s)
+                // to deep red at the marched edge — the NASA sweep, end to end.
+                //
+                // 🚨 THIS IS A DECLARED TRANSFER, NOT A CLAIM ABOUT OUR GAS.
+                // Our disc measures h/r = 0.746 (particles.metal:245) — a thick
+                // RIAF at ~4e10 K, which emits in X-ray and has NO true RGB.
+                // Every visible image of such a flow (Chandra, EHT) is a stated
+                // mapping, and this is ours: physical SHAPE, cited ANCHOR,
+                // labelled as a transfer. The open question the fork actually
+                // asked — whether to COOL the gas so h/r drops and the thin disc
+                // becomes true rather than represented — is untouched by this
+                // and still his.
+                //
+                // g enters the HUE as T_obs = g·T (observer-frame bands) and the
+                // BRIGHTNESS as the g³ above. That is not the double-count the
+                // doc corrected on 2026-07-24: blackbodyRGB is max-channel
+                // NORMALISED (:201, and the convention note at :1938), so it
+                // carries chromaticity only and the amplitude has to be supplied
+                // explicitly — the doc's own exception, "only if the colour
+                // lookup is normalised chromaticity with brightness applied
+                // separately".
+                // INSIDE THE TEMPERATURE PEAK, HOLD THE PEAK. The bracket sends
+                // T → 0 AT the ISCO, so evaluating the profile below r_peak would
+                // paint the innermost gas COLD — blackbodyRGB clamps at 1000 K, so
+                // a deep-red fill right where the reference is at its whitest, and
+                // at full brightness because the brightness comes from ∫ρ ds, not
+                // from the profile. Physically that region is plunging matter off
+                // the inner edge: the hottest material there is, not the coolest.
+                // Evaluating at max(r, r_peak) holds it at the peak and makes the
+                // mapping monotone, so tDisk is bounded by T_ANCHOR_K by
+                // construction.
+                const float T_ANCHOR_K = 6500.0f;   // DNGR white balance, §3
+                const float R_ISCO_RS  = 3.0f;      // ISCO = 6M, M = 0.5, r_s = 1
+                const float R_TPEAK_RS = 4.083333f; // (49/36)·r_in, profile max
+                const float F_PEAK     = 0.487871f; // f(R_TPEAK_RS), computed
+                float rT = max(r, R_TPEAK_RS);
+                float fr = pow(rT / R_ISCO_RS, -0.75f)
+                         * pow(max(1.0f - sqrt(R_ISCO_RS / rT), 0.0f), 0.25f);
+                float tDisk = T_ANCHOR_K * (fr / F_PEAK);
+
+                // ── RADIATIVE TRANSFER, NOT A SUM (2026-08-17) ────────────────
+                // Was: emit += colour · (dens·dl·emitScale·beam) — pure emission,
+                // no absorption, so the integral had no ceiling. That is why the
+                // outer volume browned the screen: it is the biggest volume, and
+                // ∫ρ ds over 60 r_s of thin cool gas outweighs the bright inner
+                // disc no matter what the gain is. Turning the gain down hid it;
+                // it did not fix it.
+                //
+                // NO NEW CONSTANT. In LTE the source function IS the Planck
+                // function, so the SAME κρ ds serves as emissivity and as optical
+                // depth (Kirchhoff). Emergent intensity then saturates at B(T)
+                // where the flow is thick and stays ∝ ρ where it is thin — which
+                // is the correct physics AND makes an unbounded fill impossible.
+                // His Emission dial stops being an open-ended gain and becomes
+                // the optical depth, which is a quantity with a meaning.
+                //
+                // GRACEFUL: at the −7.5 default dTau ≈ 3e-8, so 1−exp(−dTau) ≈
+                // dTau and this is numerically the old behaviour. It only bites
+                // as the dial comes up — and then it bites as a SURFACE instead
+                // of a haze. That surface is the thing the 2026-08-14 beaming
+                // revert (:1638) said the reference has and we lack, and it is
+                // what lets the disc occlude itself so the far-side and underside
+                // images can read as separate.
+                float dTau = dens * dl * mu.emitScale;
+                float aSeg = 1.0f - exp(-dTau);
+                emit  += trans * aSeg * blackbodyRGB(gShift * tDisk) * beam;
+                trans *= (1.0f - aSeg);
             }
         }
 

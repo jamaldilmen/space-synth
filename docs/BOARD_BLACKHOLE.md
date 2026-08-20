@@ -6,7 +6,7 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
 
-**Commit at last verification:** `e853e18` (2026-08-18 18:26:03. ⚠️ **Five uncommitted paths in the tree at this timestamp** — `render.metal`, `renderer.mm`, `app_state.h` carry the 2026-08-17/18 march session below and are NOT in `e853e18`. Anything in §M is verified against the *built bundle*, not against the sha.)
+**Commit at last verification:** `5bd9133` (2026-08-20 14:29:31 — the tree is now COMMITTED: `7c304b2` the march work, `5bd9133` this board split. **Scope: no rows were re-read at this sha.** The last code check was the `docs/TODO.md` sweep against `e853e18`, whose content these two commits do not change.)
 
 ---
 

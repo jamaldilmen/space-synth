@@ -40,7 +40,8 @@ Ported from `SOUND ARCHITECT.html` (cymatics repo). The proven system:
 - 28 modes (7 orders x 4 zeros), sorted by alpha complexity
 - Gradient LUT: 128x128 grid, central differencing, normalized
   ⚠️ HISTORICAL — this describes the ported HTML original. The CPU LUT
-  (`src/core/lut.cpp`) was deleted 2026-08-11 with zero callers; the live
+  (src/core/lut.cpp — DELETED, path intentionally unlinked) was deleted
+  2026-08-11 with zero callers; the live
   gradient is evaluated on the GPU in `src/render/particles.metal`.
 - Polyphonic voice normalizer: `1/sqrt(voiceCount)`
 - Boundary repulsion: cubic ramp r>0.85, hard wall r>0.98

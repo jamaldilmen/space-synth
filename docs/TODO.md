@@ -4,7 +4,7 @@
 `BOARD.md` (94 KB) and `BOARD_BLACKHOLE.md` (84 KB) are the DETAIL — open one only for the row you are working.
 `BOARD_CLOSED.md` is history and is never read at cold start.
 
-**Written:** 2026-08-20 14:08:59 · **Commit:** `5bd9133`  *(rows verified against `e853e18`; the two commits since are the march work and this board split — neither changes what a row says)* · **Bundle:** killtube `2026-08-17 17:45:51` (newer than every `src/` file — not stale)
+**Written:** 2026-08-20 14:08:59 · **Commit:** `6b923fe` (2026-08-21 22:38:30 — S1/S2 + the whole 08-20 body landed here; previously verified at `5bd9133`)  *(rows verified against `e853e18`; the two commits since are the march work and this board split — neither changes what a row says)* · **Bundle:** killtube `2026-08-17 17:45:51` (newer than every `src/` file — not stale)
 
 ⭐ **Every `file:line` below was re-read in the source on 2026-08-20.** Line numbers are stamped, not permanent.
 Rows that could NOT be checked without a run or a rebuild are listed at the bottom under **NOT VERIFIED TODAY** — do not treat those as facts.

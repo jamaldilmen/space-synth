@@ -37,8 +37,12 @@ struct Window::Impl {
   ResizeCallback resizeCallback;
   FrameCallback frameCallback;
 
-  int width = 0;
+  int width = 0;      // POINTS (ImGui lays out in these)
   int height = 0;
+  int pinnedW = 0;    // S1: exact render pixels, 0 = follow the window
+  int pinnedH = 0;
+  int drawW = 0;      // PIXELS actually allocated for the drawable
+  int drawH = 0;
   bool shouldClose = false;
 
   uint64_t lastFrameTime = 0;
@@ -97,6 +101,16 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
   self.impl->width = logicalW;
   self.impl->height = logicalH;
   self.impl->layer.contentsScale = scale;
+
+  // S1: a PINNED buffer is not a function of the window. Resizing, zooming or
+  // entering fullscreen must not change the number of pixels we render, or a
+  // recording changes resolution mid-take.
+  if (self.impl->pinnedW > 0 && self.impl->pinnedH > 0) {
+    physicalW = self.impl->pinnedW;
+    physicalH = self.impl->pinnedH;
+  }
+  self.impl->drawW = physicalW;
+  self.impl->drawH = physicalH;
   self.impl->layer.drawableSize = CGSizeMake(physicalW, physicalH);
 
   if (self.impl->resizeCallback) {
@@ -251,6 +265,27 @@ bool Window::create(int width, int height, const std::string &title) {
     [appMenuItem setSubmenu:appMenu];
     [NSApp setMainMenu:menubar];
 
+    // S1: when the buffer is pinned, the window exists only to LOOK at it.
+    // Fit it inside the visible screen area preserving the pinned aspect, so
+    // macOS never clamps it into a different shape. The drawable stays exact.
+    if (impl_->pinnedW > 0 && impl_->pinnedH > 0) {
+      CGFloat sc = [[NSScreen mainScreen] backingScaleFactor];
+      if (sc < 1.0) sc = 1.0;
+      double wantW = impl_->pinnedW / sc;      // points needed to show 1:1
+      double wantH = impl_->pinnedH / sc;
+      NSRect vis = [[NSScreen mainScreen] visibleFrame];
+      double maxW = vis.size.width * 0.92, maxH = vis.size.height * 0.92;
+      double k = 1.0;
+      if (wantW > maxW) k = maxW / wantW;
+      if (wantH * k > maxH) k = maxH / wantH;
+      width  = (int)(wantW * k);
+      height = (int)(wantH * k);
+      printf("[S1] render buffer PINNED %dx%d px (%.4f:1); preview window "
+             "%dx%d pt (%.0f%% scale)\n",
+             impl_->pinnedW, impl_->pinnedH,
+             (double)impl_->pinnedW / (double)impl_->pinnedH,
+             width, height, k * 100.0);
+    }
     NSRect frame = NSMakeRect(100, 100, width, height);
     NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                        NSWindowStyleMaskResizable |
@@ -293,7 +328,15 @@ bool Window::create(int width, int height, const std::string &title) {
     CGColorSpaceRelease(edrSpace);
     layer.framebufferOnly = NO; // drawable is blit-copied for the trail buffer
     layer.contentsScale = scale;
-    layer.drawableSize = CGSizeMake(width * scale, height * scale);
+    if (impl_->pinnedW > 0 && impl_->pinnedH > 0) {
+      layer.drawableSize = CGSizeMake(impl_->pinnedW, impl_->pinnedH);
+      impl_->drawW = impl_->pinnedW;
+      impl_->drawH = impl_->pinnedH;
+    } else {
+      layer.drawableSize = CGSizeMake(width * scale, height * scale);
+      impl_->drawW = (int)(width * scale);
+      impl_->drawH = (int)(height * scale);
+    }
     layer.maximumDrawableCount = 3;
     layer.displaySyncEnabled = YES;
 
@@ -368,6 +411,17 @@ void *Window::metalLayer() const { return (__bridge void *)impl_->layer; }
 void *Window::metalDevice() const { return (__bridge void *)impl_->device; }
 int Window::width() const { return impl_->width; }
 int Window::height() const { return impl_->height; }
+void Window::pinDrawableSize(int pixelW, int pixelH) {
+  impl_->pinnedW = pixelW;
+  impl_->pinnedH = pixelH;
+}
+int Window::drawableWidth() const {
+  return impl_->drawW > 0 ? impl_->drawW : impl_->width;
+}
+int Window::drawableHeight() const {
+  return impl_->drawH > 0 ? impl_->drawH : impl_->height;
+}
+
 float Window::getContentScale() const {
   if (impl_->window)
     return [impl_->window backingScaleFactor];

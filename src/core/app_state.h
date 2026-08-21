@@ -136,6 +136,8 @@ struct AppState {
   float uiArcWrap = 2.2f;      // max trail arc sweep (rad)
   float uiArcGain = 5.0f;      // horizon exposure gain
   float uiTrailGain = 1.0f;    // trail brightness x
+  float uiSmearShutter = 24.0f; // motion-smear length (2026-08-20)
+  float uiSmearHold = 1.0f;     // 1 = solid bands, 0 = fading blur
   float uiStreakLen = 1.0f;    // motion streak length x
   // KINETIC KELVIN PEDESTAL → 0 (2026-08-02 19:0x). Jamal: "only at release
   // does color actually come, its just white grey ish at play. so the scale is

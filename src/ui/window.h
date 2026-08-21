@@ -40,6 +40,24 @@ public:
   int height() const;
   float getContentScale() const;
 
+  // ── S1 (2026-08-21): PIN THE RENDER BUFFER TO EXACT PIXELS ───────────────
+  // Call BEFORE create(). The whole pipeline, the Syphon feed and any
+  // recording are sized from the drawable, so the drawable must be exactly
+  // the output resolution — NOT whatever the screen happens to allow.
+  // MEASURED failure without this: SS_WIDTH=2560 SS_HEIGHT=1024 produced a
+  // 3600x2048 drawable (1.758:1, not 2.5:1) because macOS clamped the window
+  // to the 1800x1130-point screen and the height picked up the x2 backing
+  // scale. A recording made that way is the wrong shape permanently.
+  // When pinned, the WINDOW is only a scaled preview; the buffer is exact.
+  // 0,0 = follow the window, the historical behaviour.
+  void pinDrawableSize(int pixelW, int pixelH);
+
+  // Drawable size in PIXELS. width()/height() stay in POINTS because ImGui
+  // lays out in points (main.cpp:857, :934) — two different quantities, and
+  // the projection aspect must come from THESE.
+  int drawableWidth() const;
+  int drawableHeight() const;
+
   void setKeyCallback(KeyCallback cb);
   void setMouseCallback(MouseCallback cb);
   void setScrollCallback(ScrollCallback cb);

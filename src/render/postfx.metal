@@ -31,8 +31,8 @@ struct PostFXUniforms {
     // 16-byte alignment on both sides. Was 24 (=96 B); now 28 (=112 B).
     float gradeAmount;      // 0-1 blend of the display grade LUT (0 = exact bypass)
     float coverageResolve;  // 1 = coverage resolve on, 0 = off (was gradePad0)
-    float gradePad1;
-    float gradePad2;
+    float smearShutter;     // smear length multiplier (2026-08-20, was gradePad1)
+    float smearHold;        // band colour retention (2026-08-20, was gradePad2)
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
@@ -98,6 +98,7 @@ fragment float4 postfx_fragment(
     texture2d<float> bloomTex [[texture(2)]],
     texture2d<float> sceneAvgTex [[texture(3)]], // mipped HDR scene → top mip = frame average (auto-exposure)
     texture3d<float> gradeLut [[texture(4)]],    // display grade LUT (grade_lut.h bake), 33^3 RGBA16F
+    texture2d<float> motionTex [[texture(5)]],   // MOTION VECTORS: the matter's own screen travel
     constant PostFXUniforms& u [[buffer(0)]])
 {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
@@ -220,37 +221,46 @@ fragment float4 postfx_fragment(
         color.rgb *= factor;
     }
 
-    // ── TANGENTIAL PIXEL STRETCH — the "5D look", BOUNDED ────────────────────
-    // Smear the BRIGHTEST pixels ALONG CONCENTRIC CIRCLES (not radially out), so
-    // every sample stays on its own radius → bounded to the BH/SN, never globby.
-    // The spinning bright side fuses into fine concentric trails. Both arc
-    // directions, threshold-gated (dark background untouched), cumulative max
-    // with falloff. Driven by u.pixelStretch (spin). Real knobs: THRESHOLD,
-    // ARC span (radians), FALLOFF.
-    if (u.pixelStretch > 0.001) {
-        const int   STRETCH_SAMPLES   = 16;     // per side
-        const float STRETCH_THRESHOLD = 0.45;   // luminance gate (HDR scene)
-        const float STRETCH_FALLOFF   = 0.93;   // decay per step
-        float arcSpan = 2.4 * u.pixelStretch;   // radians of arc each side (fuses)
-        float aspectR = u.resolution.x / u.resolution.y;
-        float2 c2 = uv - 0.5; c2.x *= aspectR;
-        float radius = length(c2);
-        if (radius > 1e-4) {
-            float baseA = atan2(c2.y, c2.x);
+    // ── THE SMEAR — DRIVEN BY THE MATTER, NOT THE CAMERA (2026-08-20) ───────
+    // His order: "the smear needs to come from the actual rotation orbit not
+    // from my cam rotating u get me", and then, on the first attempt: "u used
+    // the mechanic for time warp for this."
+    //
+    // Both of those are fixed HERE by not deciding anything here. This pass no
+    // longer invents a direction. It reads the motion the star pass measured:
+    // the REAL physics velocity, projected through the CURRENT camera at both
+    // ends (render.metal, particle_vertex), written to attachment 1.
+    //   - camera rotation cancels, because one matrix moved both ends
+    //   - no playback / time-lapse rate is involved anywhere
+    //   - direction and length are per pixel, so inner matter smears long and
+    //     outer barely, each along its own orbit
+    //
+    // WHAT WAS HERE BEFORE, and why it is gone: samples rotated around the
+    // SCREEN CENTRE by an angle taken from the SPIN DIAL. That is the
+    // camera-driven version of this effect — the exact thing he rejected.
+    if (u.pixelStretch > 0.001 && u.smearShutter > 0.001) {
+        // ── WHY THIS WAS "just a bit blurry" (his verdict, 2026-08-20) ───────
+        // 16 taps with a 0.93 decay is a BLUR: by the far end each tap carries
+        // 0.93^16 = 0.31 of its colour, so the band dissolves before it travels
+        // anywhere and the eye reads a smudge. A pixel stretch is the opposite —
+        // the dragged pixel KEEPS its colour for the whole length and then stops
+        // dead. That hard-edged, full-strength band is the entire look.
+        // So: 48 taps, and the decay is a DIAL that defaults to none.
+        const int SMEAR_TAPS = 48;
+        float decay = mix(0.90, 1.0, saturate(u.smearHold));
+        float2 mv = motionTex.sample(s, uv).rg * u.smearShutter * u.pixelStretch;
+        if (length(mv) > 1e-6) {
             float3 streak = color.rgb;
-            for (int i = 1; i <= STRETCH_SAMPLES; i++) {
-                float da = arcSpan * float(i) / float(STRETCH_SAMPLES);
-                float w  = pow(STRETCH_FALLOFF, float(i));
-                // + arc and − arc: rotate the sample point around centre (stays
-                // on the same radius → bounded).
-                float2 sp = float2(cos(baseA + da), sin(baseA + da)) * radius; sp.x /= aspectR;
-                float2 sm = float2(cos(baseA - da), sin(baseA - da)) * radius; sm.x /= aspectR;
-                float3 cp = currentFrame.sample(s, 0.5 + sp).rgb;
-                float3 cm = currentFrame.sample(s, 0.5 + sm).rgb;
-                if (dot(cp, float3(0.299, 0.587, 0.114)) > STRETCH_THRESHOLD) streak = max(streak, cp * w);
-                if (dot(cm, float3(0.299, 0.587, 0.114)) > STRETCH_THRESHOLD) streak = max(streak, cm * w);
+            for (int i = 1; i <= SMEAR_TAPS; i++) {
+                float t = float(i) / float(SMEAR_TAPS);
+                float w = pow(decay, float(i));
+                // MAX, not average: averaging 48 taps of mostly-black sky is
+                // what turns a bright band into a grey wash. Max keeps the
+                // brightest thing that passed through here at full strength,
+                // which is what a long exposure of a moving light actually does.
+                streak = max(streak, currentFrame.sample(s, uv - mv * t).rgb * w);
             }
-            color.rgb = mix(color.rgb, streak, u.pixelStretch);
+            color.rgb = mix(color.rgb, streak, saturate(u.pixelStretch));
         }
     }
 

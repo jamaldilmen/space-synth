@@ -27,6 +27,16 @@
 
 ### M2. 🚨 OPEN
 
+0. 🚨 **BH2 — TWO Ω LAWS FOR ONE DISC, STILL LIVE.** Sprite Doppler uses `Ω = 1/(r^1.5 + KERR_A)` on the
+   CYLINDRICAL radius about a hardcoded global **+Z** (`render.metal:1610`, `:1611` — both still flagged by
+   preflight §5 on 2026-08-20 18:27:12); the march uses `√(M/r³)` about `poseAxis` (`:3716`, `:3721`).
+   ⚠️ **A fix was written and REVERTED on 2026-08-20 14:22:25 — and it was never rejected on its merits.** I
+   read *"it looks so fucking bad"* as a verdict on the change; his next message was *"no apart from what u just
+   did it just looks really bad as per picture"*, i.e. the picture was already bad and the change was not the
+   subject. **Re-applying is cheap; nothing about it was disproven.**
+   `MEASURE:` the one prediction it carries — β at the disc goes from ≈ r/(r^1.5+0.5) to √(r_s/2r), about a
+   **3× drop** at meanR ≈ 44 sim with r_s ≈ 0.23, so the approaching-limb glow gets weaker before it gets right.
+
 1. **[HIS WORDS] 2026-08-18** *"dtill the same in every way lol"* — **the emission law (M1c/M1d/M1e) is still UNTESTED.** It has never run in the regime where it can be seen. Every state in the 210-line probe run was a **collapsed ball** (meanR 4.6–11.6 sim, r_s up to 0.84), where the derived extent reproduces ~7 — the old constant — so the picture was necessarily identical.
    `MEASURE:` get the field to the **expanded disc** state (meanR ≈ 44 sim, r_s ≈ 0.23 — his 2026-08-17 17:39 screenshot), then read `[MARCH] bCull` ≥ ~150 and look at the marched region.
 2. **[MEASURED n=776] fps median 39.9** (min 14.1, max 108.5) with the derived extent live — **unchanged** from the 40 fps he reported before it. The predicted cost blowup did not occur; see §M3.
@@ -127,7 +137,7 @@ Secondary placement (`render.metal:1055`): `target = bhWorld + along·dHat − p
 
 | # | Limit | Evidence |
 |---|---|---|
-| **L1** | **The lens is gated and sized by a SCREEN-SPACE number, and it is documented-wrong.** Everything keys on `cam.bhShadowNdcRadius > 1e-4f`. Computed `renderer.mm:1642`. **The code's own comment says it is ~1.2/0.414214 = 2.897× TOO SMALL** in perspective, and uses camera→**origin** instead of camera→**hole**, so the error **grows as the seed wanders**. Marked *"the next change"* — **never made.** | `renderer.mm:1626-1636` |
+| ~~**L1**~~ | ✅ **FIXED 2026-08-20 15:36:28, UNVERIFIED — he has not looked.** The divisor is now the screen half-height **at the hole**: `frustum` in ortho (unchanged, byte for byte), `dHole * 0.414214` in perspective, where 0.414214 = tan(45°/2) and 45° is the fov `main.cpp:776` actually passes. The perspective shadow was **2.897× too small**, exactly the factor the code's own comment predicted before measurement. `dHole` is computed from the real camera and hole vectors, NOT from `cameraRho` — under the origin lock (L5) they are the same number today, and writing `cameraRho` would have baked that lock into the lens. | `renderer.mm:1661-1690` |
 | **L2** | **The lens is OFF during play.** `bhLensActive = (totalAmplitude < 0.02f)`. The hole only lenses at silence. Deliberate (star-map regime) but it means **the mindfuck look is a REST-STATE look** and cannot appear while he plays. | `renderer.mm:1618` |
 | **L3** | **A two-instance sprite scheme cannot produce S3.** n ≥ 2 windings need a per-pixel integrator. This is a representation ceiling, not a bug. | `renderer.mm:3643` |
 | **L4** | **The march can only be orange, and can only be 128³.** Both structural — no temperature input exists, and a box-averaged grid cannot resolve sub-pixel sprites. | `render.metal:3129`; `app_state.h:57` |
@@ -282,7 +292,7 @@ Three ways out, honestly stated:
 |---|---|---|---|
 | **0** | ⏳ **His verdict on the §4 capture test.** Everything below stacks on it. | S1 | **0** |
 | ~~**1**~~ | ✅ **DONE 2026-08-14, VERIFIED IN SOURCE 2026-08-20 14:08:59** — `render.metal:1164` + `:1184`. This row sat open on the board for six days after the code closed it. | — | **0** |
-| **2** | **Fix the documented `bhShadowNdcRadius` divisor** (L1). The code already states the correct form and the 2.897× factor. | Lens correct in perspective — **gates A0** | **S** |
+| ~~**2**~~ | ✅ **SHIPPED 2026-08-20 15:36:28 — see L1. UNVERIFIED.** ⏳ **What to look at: in PERSPECTIVE the shadow should be ~2.9× bigger; in ORTHO it must be identical.** If perspective looks unchanged, this is not the path drawing it — that is a finding, not a tweak. | S1 / gates A0 | **0** |
 | **3** | ✅ **T1 — HONEST BEAMING LAW. SHIPPED 2026-08-14 12:01:52, verdict pending.** See §4b. Was 1/18 of the true asymmetry. 🚨 If the g³ ceiling is ever revisited, the fix is the tonemap — never the fudge exponent. | **The effect Nolan turned off. Nobody has seen it in a movie.** | **done** |
 | **3b** | **Gravitational redshift** — the √(1−2M/r) factor of A.16, the other half of g. Deliberately not batched with 3. ⚠️ Reference form is a SINGLE g combining both; do not apply two independent multipliers without checking against A.16. | T1 complete | **S** |
 | **4** | **Re-derive L9** — a 40-line offline integrator measuring b_c against 3√3·M = 2.598076. | Makes the march trustworthy again; gates (C) | **S** |

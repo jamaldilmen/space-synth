@@ -89,7 +89,7 @@ struct CameraUniforms {
     // (float[16] instead of float4x4) does not. Keep this struct a multiple of
     // 16 so ONE sizeof number is true on both sides. See renderer.h.
     float fieldHalfDepth;   // field half-extent along view, sim units (was horizonRPad0)
-    float horizonRPad1;
+    float sizeResScale;      // drawableHeight/2260 — S2, resolution-normalised star size (was tuneTrailWidth)
     float horizonRPad2;
 };
 
@@ -2592,10 +2592,42 @@ vertex VertexOut particle_vertex(
         }
     }
 
+    // ── S2: REFERENCE PIXELS → DEVICE PIXELS. THE ONLY CONVERSION. ─────────
+    // (2026-08-21, his order: "normalize it too we dont want two values for a
+    // single thing ever".) The first version multiplied a resScale into
+    // rawSize and zoomCap and left FIVE other pixel laws unscaled: the nova
+    // pulse (+4px, cap 150), the seed sprite (clamp 3..220), the gas spread
+    // cap (150), and the tuneStarSizeCeil/Floor dials. Six values for one
+    // quantity — exactly the split this project exists to kill.
+    //
+    // THE LAW: every pixel quantity above is in REFERENCE pixels — pixels as
+    // seen on a 2260-tall drawable, the height he tunes at. Caps, floors,
+    // pulses and dials all live in that one space, so they compare against
+    // each other honestly. THIS multiply is where they become device pixels.
+    // New size code goes ABOVE this line, in reference pixels, and is
+    // normalised for free.
+    //
+    // Every early return above is a cull that already wrote pointSize = 0
+    // (:749 :785 :803 :910 :944 :1852) and 0 * resScale = 0, so those paths
+    // need no conversion of their own.
+    // == 1.0 at his fullscreen height ⇒ fullscreen unchanged by construction.
+    out.pointSize *= max(cam.sizeResScale, 1e-3f);
     return out;
 }
 
-fragment float4 particle_fragment(
+// ── THE MOTION-VECTOR OUTPUT (2026-08-20, his order: "we need to touch the
+// main star pass") ─────────────────────────────────────────────────────────
+// Second render target: how far this star REALLY moved on screen. Not the
+// playback rate — that is the time-lapse, and driving a smear with it produced
+// the spirograph he rejected at 14:48. This is `velReal + spin`, the physics
+// velocity, projected through the CURRENT viewProjection at BOTH ends (:1320),
+// so camera motion cancels identically and rotating the camera cannot move it.
+struct ParticleFragOut {
+    float4 color    [[color(0)]];
+    float2 velocity [[color(1)]];   // screen motion in UV, per streak exposure
+};
+
+fragment ParticleFragOut particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
 {
@@ -2799,7 +2831,16 @@ fragment float4 particle_fragment(
     float fadeDistance = 6.0f;
     float fadeAmount = smoothstep(0.1f, fadeDistance, max(0.0001f, in.dist));
 
-    return float4(emission * alpha * fadeAmount, alpha * fadeAmount);
+    ParticleFragOut fo;
+    fo.color = float4(emission * alpha * fadeAmount, alpha * fadeAmount);
+    // velDir2D is (v2 − v1) in NDC times STREAK_GAIN, the streak's own art
+    // amplification. Undo it so the smear reads TRUE motion and is not silently
+    // 3x long. NDC delta → UV delta: halve, and y flips (no offset — a delta has
+    // no origin). Weighted by alpha so a nearly-transparent fragment cannot
+    // stamp its velocity over a solid one.
+    float2 dNDC = in.velDir2D / STREAK_GAIN;
+    fo.velocity = float2(dNDC.x * 0.5f, -dNDC.y * 0.5f) * saturate(alpha * fadeAmount);
+    return fo;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2849,333 +2890,26 @@ constant float SS_ALPHA_R      = 0.1f;      // = particles.metal SS_ALPHA
 constant float DISK_H_OVER_R_R = 0.746f;    // = particles.metal DISK_H_OVER_R
 constant float SPIRAL_PITCH    = SS_ALPHA_R * DISK_H_OVER_R_R * DISK_H_OVER_R_R;
 
-struct TrajOut {
-    float4 position [[position]];
-    float3 color;
-    float intensity;   // bright at the head (particle) → fades along the trail
-};
-
-vertex TrajOut trajectory_vertex(
-    uint vid [[vertex_id]],
-    device const Particle* particlesIn [[buffer(0)]],
-    constant CameraUniforms& cam [[buffer(1)]],
-    device const float* posePhase [[buffer(2)]])   // SAME buffer particle_vertex reads at 8
-{
-    TrajOut out;
-    // Line list: 2*(SEG-1) verts per particle. Decode particle + arc point.
-    uint vpp   = (uint)(2 * (TRAIL_SEG - 1));
-    uint pid   = vid / vpp;
-    uint local = vid - pid * vpp;
-    uint k     = (local >> 1) + (local & 1u);   // point index 0..SEG-1
-    Particle in = particlesIn[pid];
-    // ── THE TRAIL WAS NOT ATTACHED TO ITS STAR (2026-08-15) ──────────────────
-    // S3, and it is worse than "no clock". `particle_vertex` DRAWS EVERY STAR AT
-    // A ROTATED POSITION: when the time-lapse is live it overwrites `in.posW.xy`
-    // with the integrated playback phase `posePhase[vid]` (:612-618). This pass
-    // is a SEPARATE draw call that bound only the particle buffer and the camera,
-    // so it read the RAW PHYSICS position — the sprite and its own trail were
-    // drawn in two different frames, separated by posePhase, which wraps over the
-    // FULL [0, 2π). The ribbon's head could sit anywhere on the star's orbit
-    // relative to the star. That is his "its just straight lines disattached
-    // flowing around" — literally true, and no arc tuning could ever have fixed
-    // it, because the arc was never on the star.
-    // Gate mirrors particle_vertex EXACTLY (bit20 + posed/emergent hole + legacy
-    // z branch + the PLAY gate). When it is off the sprite is NOT posed either,
-    // so head positions already agree and this is a no-op.
-    bool posed = (cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f &&
-                 cam.bhDiskAxisY < 0.5f && cam.envelopePhase < 0.5f;
-    float3 poseC = poseCentre(cam);
-    float  poseR = length(in.posW.xyz - poseC);   // ORBITAL radius, as the sprite uses
-    if (posed && poseR > max(1e-3f, cam.horizonR)) {
-        float a = posePhase[pid];              // the SAME integrated phase, not a copy
-        // The SAME axis the sprite is moved about, so the head lands exactly on
-        // the sprite in all three components.
-        in.posW.xyz = poseC + rotAboutAxis(in.posW.xyz - poseC,
-                                           poseAxis(in.posW.xyz - poseC), a);
-    }
-    float R     = cam.plateRadius;
-    float mass  = in.posW.w;
-    float originR = length(in.posW.xyz);   // rotation-invariant, so unchanged
-
-    // ── LIGHT CULL, NOT A RADIUS CULL (2026-08-16, his "FPS DUMPING AHARD") ──
-    // 1.5M particles × 22 line-verts = 33M line-vertices per frame, and the
-    // standing order at the rXY>8 removal is explicit: cap the count, do NOT
-    // reinstate a radius cull and do NOT shorten the ribbons. This obeys that —
-    // it culls by LIGHT, which S7 just made meaningful: a ribbon now carries its
-    // star's luminosity, so most of them emit nothing measurable.
-    // The threshold is DERIVED, not picked. Peak intensity of this ribbon is
-    // Ltrail·tuneTrailGain (every other factor — the k fade, innerFade, expNorm
-    // — is ≤ 1), and trajectory_fragment emits `intensity · 0.18` (:3154). So it
-    // cannot reach even one 8-bit display level when
-    //     Ltrail · tuneTrailGain · 0.18 < 1/255
-    // Nothing here is taste: 0.18 is this pass's own fragment gain and 1/255 is
-    // the display quantum. It also self-adjusts — raising Trail Brightness
-    // brings ribbons back, because it genuinely makes them visible.
-    // ⚠️ HONEST CAVEAT: additive blending means many INDIVIDUALLY sub-quantum
-    // ribbons can still sum to something visible. That sum is exactly the orange
-    // curtain S7 removed — light the field never earned — so dropping its cost
-    // here is consistent with S7, not a second regression. If a diffuse haze
-    // disappears that he wants back, this cull is the first suspect.
-    float Mtrail = min(mass, 500.0f);                       // same cap as :1905
-    float Ltrail = min(pow(Mtrail, cam.tuneStarLumExp),
-                       cam.tuneStarLumCeil / max(cam.tuneStarLumGain, 1e-6f));
-    bool  dark   = (Ltrail * cam.tuneTrailGain * 0.18f) < (1.0f / 255.0f);
-    // Same masks as the points — never trail out of a wall particle (mass 0)
-    // or anything culled inside the event horizon.
-    if (mass < 0.001f || originR < 0.57f || dark) {
-        out.position  = float4(0, 0, -2, 1);
-        out.color     = float3(0);
-        out.intensity = 0.0f;
-        return out;
-    }
-
-    // Backward orbital rotation: total arc = Ω(r)·exposure (inner-fast/outer-
-    // slow → differential streaks). Prograde orbit is +Z; the trail goes back
-    // (−Z). Spin lengthens the exposure so spinning draws longer ribbons.
-    // Orbit plane is about +Y (the star-map/disk convention) — this pass
-    // predates it and swept XY/Z-axis arcs: trails cut ACROSS the real
-    // motion and swirled off-centre ("distorted like wrongly").
-    // ── PLANE FIX №3 (2026-08-14) — THE REASON THIS PASS WAS THROWN OUT ─────
-    // His order: "no time stretched lines of light bro LETS SPAGHETTIFI THE
-    // LIGHT". This pass already draws exactly that — each particle's real
-    // orbital arc over an exposure window, inner-fast so matter near the hole
-    // stretches into ribbons while the calm field stays points. It was stripped
-    // 2026-06-25 as "fake trails centered to a tube shape… NOT the particles'
-    // real paths", and THAT VERDICT WAS EARNED BY A BUG, not by the concept:
-    // it swept about +Y (posW.xz) while the disk orbits +Z. Same class of fault
-    // as PLANE FIX №2 in the Doppler block (:1477) — "the 90°-off tangent made
-    // vLos noise → azimuthally UNIFORM ring… fake overlay". Arcs 90° across the
-    // real motion ARE a tube painted over the field, exactly as he said.
-    // Both disks orbit Z now (one plane, one prograde sense, +z×r = the spawn
-    // sense), so the cylindrical radius is |xy| and the sweep is about +Z.
-    // ORBITAL RADIUS, NOT CYLINDRICAL RADIUS (2026-08-14 21:35:40, same change
-    // as the axis below). The sweep is about L̂ and preserves |pos|, so the
-    // radius the orbit actually runs at is |pos| — for the disk (z ≈ 0) that is
-    // the same number as before, but for an inclined halo star |xy| UNDERSTATES
-    // the radius, which fed Ω ∝ r^-1.5 a radius that was too small and drew an
-    // arc far too long. Wrong plane and wrong radius were one fault.
-    float rXY   = max(originR, 1e-3f);
-    // ── SCIENCE DICTATES THE LOOK (2026-08-14, his order) ───────────────────
-    // Was pow(rXY, 0.9f) — the differential hand-compressed from 1.5 in June so
-    // the inner/outer ratio "no longer tears the disk into two populations".
-    // 🚨 THAT PUT TWO ORBITAL LAWS IN ONE RENDERER FOR THE SAME MATTER: the
-    // Doppler block (:1487) measures β from Ω = 1/(r^1.5 + a) — real Kepler —
-    // while these arcs traced r^0.9. The ribbon is supposed to BE the path the
-    // Doppler shift is measured along. They now agree, exactly.
-    // The 1.5 exponent is √(GM/r³) in geometric units; KERR_A is the same spin
-    // softening the Doppler block uses. Nothing here is tuned any more.
-    // ── ONE CLOCK, ONE Ω (2026-08-15, his order: "one clock") ───────────────
-    // `poseOmegaEff` (:465) carries the comment "ONE definition… duplicating the
-    // expression in two places is how the integrator and the renderer would
-    // silently drift apart." THIS PASS WAS THAT DUPLICATE. Three laws existed for
-    // one quantity — how fast matter goes round:
-    //   sprites + ray-march : √(GM/r³)·√(1−r_s/r)   [poseOmegaEff, physical GM]
-    //   Doppler + these arcs: 1/(r^1.5 + KERR_A)     [geometric, spin-softened]
-    // U1 unified the arcs with the Doppler block; it did not reach the playback,
-    // which is the law the star is actually MOVED by. The ribbon must be the path
-    // of the motion we draw, so when the playback drives, the arc uses ITS Ω.
-    // The geometric law is kept ONLY for the no-hole osc-gesture branch
-    // (renderer.mm:3953 draws on `oscAmount > 0.01` with no hole, where
-    // bhDiskGM = 0 and the playback does not exist).
-    // ONE RADIUS. Both branches sweep about L̂ and preserve |r − c|, so both
-    // evaluate Ω at that radius — `poseR` here, `rXY` (about the origin, which
-    // poseCentre also is today) in the no-hole branch. U4 holds everywhere.
-    float omega = posed ? poseOmegaEff(max(poseR, 1e-3f), cam.bhDiskGM, cam.horizonR)
-                        : (1.0f / (pow(rXY, 1.5f) + KERR_A));
-    float spinMag = length(float3(cam.spinX, cam.spinY, cam.spinZ));
-    // HORIZON EXPOSURE — spacetime made visible by the hole itself. The arc
-    // is the particle's real orbital path over the exposure window; near the
-    // horizon Ω explodes (inner-fast differential law above), so matter
-    // there stretches into the light-trail ribbons Jamal gets from fast
-    // manual spin — but earned by the physics, on whenever the hole exists.
-    // Far from the hole the exposure dies off: the calm field stays points.
-    // ── ONE EXPOSURE FOR THE WHOLE ENTITY (2026-08-14, his order: "the entire
-    // black hole should read as one entity so we need to make everything pull
-    // these arcs") ──────────────────────────────────────────────────────────
-    // Was: horizonExp = bhStrength * exp(-rXY * 0.8f), multiplying the exposure.
-    // 🚨 THAT IS WHY IT WAS NOT ONE ENTITY. exp(-0.8r) is 0.0017 at r=8 and
-    // 6e-7 at r=18, so the exposure was EXPONENTIALLY EXTINGUISHED with radius
-    // and only the inner ~5 sim units ever grew a ribbon. Everything outside
-    // stayed dots — his "Streuselkuchen, viele kleine dotties".
-    // A long exposure has ONE shutter time. It does not decay with radius. The
-    // inner-fast gradient is already carried by Ω(r) ∝ r^-1.5 and needs no
-    // envelope on top: arc = Ω(r)·Δt gives 2.2 rad (capped) at the ISCO,
-    // 0.18 rad at r=6 and 0.035 rad at r=18 — a real Keplerian falloff across
-    // the WHOLE field instead of a cliff at r≈5.
-    // bhStrength stays as the gate (no hole ⇒ no exposure), not as a profile.
-    // ── THE SHUTTER NOW HAS A CLOCK, AND A UNIT (2026-08-15) ────────────────
-    // Was: TRAIL_EXPOSURE * (1 + 4·osc + gain·bhStrength) — a bare constant with
-    // NO TIME TERM AT ALL, in no unit. His proof it was fake: "it appears seconds
-    // after launch, before anything has orbited… NOT a result of rotation and
-    // orbit but sum fake shit." Correct — the ribbon was full length on the first
-    // frame the pass was gated on, because nothing in that expression was time.
-    // A long exposure is ∫ over elapsed time and has exactly two properties:
-    //   1. a shutter window Δt, stated in real seconds;
-    //   2. it cannot have collected more than the time that has actually passed.
-    // Δt is stated as a fraction of the ISCO orbital period — the one physical
-    // time this hole defines — so it re-derives as the hole eats instead of being
-    // a tuned number. r_isco = 3·r_s (Schwarzschild), T = 2π/Ω(r_isco), and
-    // TRAIL_SHUTTER_ORBITS = 0.35 reproduces the 2.2 rad wrap cap at the ISCO
-    // (0.35·2π = 2.2), so the look starts where it is today and is now DERIVED.
-    // cam.bhPoseTime is the SAME accumulator the sprite playback integrates
-    // (renderer.mm:1719/:1753) — one clock for the whole entity, so the time-lapse
-    // dial lengthens the ribbons because more time genuinely passes per frame.
-    float exposure;
-    if (posed) {
-        float rs     = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
-        float rIsco  = 3.0f * rs;
-        float omIsco = sqrt(cam.bhDiskGM / (rIsco * rIsco * rIsco));
-        float tIsco  = 6.28318530718f / max(omIsco, 1e-6f);   // physical seconds
-        exposure = TRAIL_SHUTTER_ORBITS * tIsco *
-                   (1.0f + 4.0f * cam.oscAmount +
-                    cam.tuneArcGain * cam.bhStrength);
-        // THE CLOCK. The shutter cannot be open longer than the hole has existed,
-        // so the ribbon GROWS IN from zero over the first shutter-window of pose
-        // time instead of being born whole.
-        exposure = min(exposure, cam.bhPoseTime);
-    } else {
-        // No hole (osc gesture): no playback clock exists — cam.bhPoseTime is
-        // hard-zeroed at renderer.mm:1763 — so this branch keeps the old scale.
-        exposure = TRAIL_EXPOSURE *
-                   (1.0f + 4.0f * cam.oscAmount +
-                    cam.tuneArcGain * cam.bhStrength);
-    }
-    // Wrap clamp: differential rotation is the physics (inner MUST be
-    // faster), but unbounded wrap made the inner arcs lap into a closed
-    // ring while the outer barely dashed — two objects instead of one
-    // fused disk. Cap the sweep; speed still reads via arc length below.
-    // Wrap ≤ 2.2 rad: longer arcs closed into per-particle CIRCLES — the
-    // hole read as concentric rings instead of flowing matter.
-    float totalPhi = min(omega * exposure + spinMag * 0.05f, cam.tuneArcWrap);
-    // ⛔ THE rXY > 8 CULL IS GONE (2026-08-14, same order as the exposure above).
-    // It emitted NOTHING outside r=8 at rest — the second half of "it is not one
-    // entity", and the direct cause of the outer rings staying dots while the
-    // core flowed. The hole's reach is not a radius we pick; it is Ω(r), which
-    // is now the only thing setting arc length. Outer matter draws a SHORT arc
-    // because it genuinely moves slowly, not because we deleted it.
-    // ⚠️ THIS IS THE FPS RISK: outer arcs now rasterise instead of returning
-    // degenerate. If frames drop, cap `arcParticles` (renderer.mm) — do NOT
-    // reinstate a radius cull, and do NOT shorten the ribbons.
-    float ang = -totalPhi * ((float)k / float(TRAIL_SEG - 1)); // 0 at head
-
-    float c = cos(ang), s = sin(ang);
-    float3 pos = in.posW.xyz;
-    // ── EVERY STAR ON ITS OWN ORBITAL PLANE (2026-08-14 21:35:40) ───────────
-    // His read: "the streaks create a unified body. we don't have one. so
-    // something is wrong." The streaks were right and the axis was wrong.
-    // Plane fix №3 swept EVERY particle about a global +Z. That is correct for
-    // the 75% that spawns as the thin disk in x–y (particles.cpp: p.x=rr·cosφ,
-    // p.y=rr·sinφ, p.z=h·gauss) — but the spawn also lays down a **15%
-    // ISOTROPIC HALO** out to r=60 (p.y = rr·cosθ, θ uniform in cosθ) and gives
-    // every star v ⊥ r with |v| = √(GM_enc(r)/r) — a real circular orbit whose
-    // plane normal is
-    //     r × v ∝ (−z·x, −z·y, x²+y²)   ⟹  inclination = atan(|z| / |xy|).
-    // So a halo star at 45° latitude orbits at 45° INCLINATION, and we were
-    // drawing it a flat horizontal arc. ~300k of 2M stars, spread over the
-    // whole screen out to r=60, each streaked along a path it does not travel.
-    // That is the "weird random shapes": not noise, a systematically wrong axis
-    // for one star in six, laid over the one component that IS a unified body.
-    // 🚨 FOURTH SIGHTING OF THE PLANE FAULT, and the first where no single
-    // global plane can be right — the field genuinely has many. So the axis
-    // stops being a constant and becomes the particle's own specific angular
-    // momentum. Disk stars have L̂ ≈ +Z and are UNCHANGED; the halo gets its
-    // true plane. Nothing is tuned: L̂ = normalize(r × v) is the orbit.
-    // ⚠️ WAS cross(pos, in.velW.xyz) — U3's velocity-derived L̂, the version he
-    // called "doctor strange had a seizure". Same root cause as the playback
-    // rejection: r × v is contaminated at spawn (particles.cpp:268-273) so
-    // neighbouring stars got wildly different planes. ONE axis law now, from
-    // position, shared with the sprite — see poseAxis.
-    float3 axis = poseAxis(pos - poseC);
-    // Rodrigues about that axis. pos ⊥ axis by construction (axis ∝ r × v), so
-    // the parallel term drops and this is exact: cross(axis,pos) ∝ +v, i.e. the
-    // PROGRADE tangent, and `ang` is negative, so the ribbon trails BEHIND the
-    // particle along its real path — which is what a long exposure is.
-    // Rodrigues, reduced form — exact here because pos ⊥ axis by construction
-    // (poseAxis ∝ ẑ|r|² − r·z, so axis·r = z|r|² − |r|²z = 0).
-    float3 rot = pos * c + cross(axis, pos) * s;
-    // THE INSPIRAL. `ang` is ≤ 0 (backward in time), so −ang is how far back
-    // this point is, and exp(pitch·(−ang)) > 1 puts the tail outside the head:
-    // the star was farther out before it gave up angular momentum. Head = ×1.
-    rot *= exp(SPIRAL_PITCH * (-ang));
-    // ── ONE MOTION, ONE LAW ─────────────────────────────────────────────────
-    // No posed special case here any more. For one round this pass swept about
-    // +Z whenever the playback was live, to match a sprite being spun about +Z —
-    // the right head on the wrong path, conforming the trail to the fault
-    // instead of removing it. The fault was in the playback and is fixed there:
-    // sprite and trail now share one centre, one radius, one axis, one phase.
-    out.position = cam.viewProjection * float4(rot * R, 1.0);
-
-    // ── THE ORANGE HAIR — ITS OWN COLOUR LAW, DELETED (2026-08-14 18:02:17) ──
-    // His words: "the trails are supposed to be a reason of stars spinning so
-    // fast that they dissolve and turn into straight light, not orange hair."
-    // This pass had a PRIVATE 4-stop palette keyed on temp/5 — nothing to do
-    // with the colour the same particle is drawn in one pass over. The whole
-    // field sits at low temp at rest, so every arc landed in the first stop,
-    // mix(float3(0.6,0.15,0.02), float3(1.0,0.4,0.05), …) = dark orange, for
-    // EVERY star regardless of what that star actually is. Thousands of them
-    // summing additively is the orange haze. The stars are white/blue because
-    // the sprite pass colours them by unifiedKelvin (:1691); the trails were
-    // orange because of these eight lines. Two colour laws for one object —
-    // the second layer, exactly what he has banned.
-    // A trail is not a thing next to the star. It is the star, smeared over the
-    // exposure. So it takes THE star's colour: same unifiedKelvin, same
-    // blackbodyRGB, same thT lift as :1691-1695, from the same mass/temp/|v|².
-    // Every dial that moves the stars (Colour Spectrum, Plasma Heat, the star
-    // Kelvin tunables) now moves the trails with them, because it is one law.
-    float temp   = in.prevW.w;
-    float ke     = dot(in.velW.xyz, in.velW.xyz);
-    float kelvin = unifiedKelvin(mass, temp, ke,
-                                 cam.tuneStarKelvinA, cam.tuneStarKelvinP,
-                                 cam.tuneHeatK, cam.tuneColorK);
-    float thT    = clamp((kelvin - 1000.0f) / (40000.0f - 1000.0f), 0.0f, 1.0f);
-    out.color    = blackbodyRGB(kelvin) * (0.7f + 0.9f * thT);
-    // Fade along the trail: bright at the particle, fading down the arc.
-    // Inner fade keeps the additive sum from blowing the centre to white.
-    float innerFade = smoothstep(0.57f, 1.2f, rXY);
-    // EXPOSURE-NORMALIZED brightness: a longer exposure spreads the SAME
-    // light over a longer arc — per-segment intensity falls as the arc
-    // grows. Fast spin lengthens trails, it must not blow them to white.
-    float expNorm = 1.5f / (1.5f + totalPhi);
-    // ── THE TRAIL IS THE STAR'S OWN LIGHT, NOT A NEW SOURCE ─────────────────
-    // (2026-08-16, his verdict: "stars remain stars throughout the entire
-    // process… NOT STARS EXCHANGED FOR ORANGE TRAILS.")
-    // THE MECHANISM ERROR: this line had NO luminosity term at all. The arc
-    // took the star's COLOUR (:3104) but not its BRIGHTNESS, so every one of
-    // 1.5M particles drew an EQUALLY BRIGHT ribbon. The field's mean particle is
-    // 0.297 M☉ — a red dwarf that is invisible as a point — and it was drawing
-    // the same strength streak as a giant. Millions of them summed additively
-    // into the orange curtain. The curtain IS the dim field made bright, which
-    // is exactly the exchange he is describing: the stars we can see stayed
-    // sparse points while the stars we cannot see became the picture.
-    // A long exposure does not create light. It redistributes the light a body
-    // already emits, so the ribbon must carry that body's luminosity — the SAME
-    // law the sprite is drawn with (:1906, :2197), not a second one.
-    // Reference is 1 L☉ (a solar-mass star scores exactly 1.0), which is a
-    // principled unit rather than a tuned one: L is already in solar units, so
-    // dividing by Gain is the whole normalisation. Consequences, both intended:
-    //   0.297 M☉ mean star → 0.297^3.5 = 0.0142  → its trail all but vanishes
-    //   1.00  M☉           → 1.0                 → unchanged from today
-    //   giants             → capped by Ceil/Gain → they are what streaks
-    // ⚠️ THE WHOLE FIELD GETS ~70× DIMMER IN TRAIL LIGHT, because ~70× of it was
-    // never earned. Trail Brightness (tuneTrailGain) is now a real exposure
-    // control and will need raising — that dial is the right place for it.
-    // Ltrail is computed once at the top of this shader (it also drives the
-    // light cull there) — one definition, not two.
-    out.intensity = (1.0f - (float)k / float(TRAIL_SEG - 1)) *
-                    mix(0.25f, 1.0f, innerFade) * expNorm * Ltrail *
-                    cam.tuneTrailGain;
-    return out;
-}
-
-fragment float4 trajectory_fragment(TrajOut in [[stage_in]])
-{
-    // Additive light-streak. LOW per-line gain so many overlapping arcs SUM
-    // into a smooth gradient curtain instead of blowing to white (the max-
-    // channel tonemap then preserves the hue).
-    float a = in.intensity;
-    float3 emission = in.color * a * 0.18f;
-    return float4(emission, a * 0.12f);
-}
+// ── THE ARC / RIBBON PASS — DELETED 2026-08-20 ──────────────────────────────
+// His order, after the thickness slider made the ribbons wide enough to judge:
+// "this provers the trail theory dead ... its the wrong approach" and "delete
+// the fucking code and put it 6 feet under".
+//
+// WHAT DIED: struct TrajOut, trajectory_vertex, trajectory_fragment — a
+// per-particle ribbon drawn as its own geometry, ~370 lines. At 1 px it read
+// as hair; widened, it read as slabs. The fault was never the width, the
+// falloff, the luminosity or the plane — all four were fixed in turn and the
+// look did not survive any of them. Drawing one stroke per star cannot make
+// a continuous body, because a million separate strokes with gaps between
+// them is what hair IS.
+//
+// WHAT REPLACES IT: the motion smear in postfx.metal, which stretches the
+// PICTURE along the matter's own screen velocity (attachment 1, written by
+// particle_fragment). One image being stretched has no gaps by construction.
+//
+// ⛔ DO NOT REBUILD THIS. If a future session wants trails, the answer is the
+// smear's length and hold, not a stroke per particle. Full history is in git
+// at 5ee213d and in docs/BOARD_CLOSED.md.
 
 // ── THE HOLE PASS (2026-07-15) — the honest event horizon made VISIBLE ───────
 // The particles INSIDE the honest geometric r_h ARE the black hole (bh core

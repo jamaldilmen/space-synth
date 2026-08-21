@@ -10,7 +10,7 @@ Update it in place. Never fork it into a second board.
 🕳️ **ALL BLACK-HOLE WORK LIVES IN `docs/BOARD_BLACKHOLE.md`** (his order 2026-08-14 01:41:51). ✅ **EXECUTED 2026-08-19 00:14:12 on his order *"move bh stuff to bh board"*:** §A0, the accretion/horizon rows out of §A (A1, A1‴, A2, A3①, A3②, A3②-white, A3③, A5, A6, A8, MERGER-FACE), B1, B9 and §C12 Doppler all moved there verbatim as **§N**. ⚠️ **Three judgement calls left HERE, not moved — say if you want them over too:** **§A9** (dense matter can only add light — field/gas render, not hole-specific), **C7/C7b** (✅ closed Doppler-colour rows), **C9** (`bit18` flux-conserving arc).
 
 **Last verified against the code:** 2026-08-13 13:29:29 (bundle carries A1″ fit test + both trilinear ∇Φ reads + [PERF] + the DEAD-COMPUTE skip + the `SS_NO_DEADSKIP` A/B gate; merge-gate counters still LIVE — strip before shipping)
-**Commit at last verification:** `5bd9133` (2026-08-20 14:29:31 — the tree is now COMMITTED: `7c304b2` the march work, `5bd9133` this board split. **Scope: no rows were re-read at this sha.** The last code check was the `docs/TODO.md` sweep against `e853e18`, whose content these two commits do not change.)
+**Commit at last verification:** `5bd9133` (2026-08-20 18:27:12). 🚨 **The 2026-08-20 body — ribbon-pass deletion, motion-vector target, smear + its two dials, L1 lens divisor — plus the 2026-08-21 S1/S2 show work were COMMITTED TOGETHER on 2026-08-21 on his order.** They could not be split: `main.cpp`, `render.metal`, `renderer.h` and `renderer.mm` each carry both days. That bundling is a KNOWN violation of ONE-CHANGE-AT-A-TIME, stated rather than hidden — if a regression appears in this range, attribution needs the diff, not the log. 🎪 **The show moved to COLOGNE 2026-09-05** (`docs/SHOW_2026-09-05_COLOGNE.md`); this board still says Berlin below. Scope: no row was re-read at this sha; the last code sweep is `docs/TODO.md`.
 **Bundle these rows were verified against:** `SPACE-SYNTH-TUBE-killtube/SpaceSynth.app` @ **2026-08-13 13:29:29** — log-verified only, **he has not looked at it.** ⚠️ **That binary no longer exists**: the live killtube bundle is now **2026-08-17 17:45:51** (stat'd 2026-08-18 21:07:00), newer than every file under `src/` (newest `renderer.mm` 2026-08-17 17:45:49), so it is NOT stale — but the rows below lose their artifact-level proof and carry their claim from the log alone.
 **Last correction:** ⭐ **TWO MORE RETRACTED 2026-08-13 — see A1″:** the merge "starves capture through the shared plate word" (never happened, `mrg=0/0/0`) and "the CAS route stalls the hole at 1,772" (real run, but that code path never executed in it — it was a late bootstrap into a diffuse field). **Cause both times: a mechanism inferred from a curve instead of counted at the gate.** Before that: ⭐ **THREE OF MY OWN CLAIMS RETRACTED IN ONE EVENING, 2026-08-12 — see the A1′-endgame row.** "The bound never engages" (it was the binding constraint), "capture delivers ~0.1 M☉/frame" (20–88 stars/frame), "the hole is out of fuel" (916,781 stars sat inside its capture radius, all refused by my own budget). **All three came from reading `feed=` in the log — a ONE-FRAME sample of a buffer that is cleared every frame.** Before that: "SOR is not the monster" was written off 9 samples and is WRONG — with 25 it is ~6 ms and real, 2026-08-11, §H5.
 **Berlin New Media Week:** 2026-09-02 — **15 days out** (counted 2026-08-18)
@@ -348,6 +348,41 @@ worse than first reported:** ~767,000 threads `atomic_load` **one address** and 
 3. **SOR sweep count** — ~6 ms, one existing knob (`SS_SOR_SWEEPS`). Needs an **accuracy** verdict, not just a perf one.
 4. **The fill-cost lead from run D** — unquantified, possibly larger than everything above.
 5. **P4** — Ω from a 3D radius. Changes disk motion → verdict item. Note it is gated OFF while he plays (§H1).
+
+## 🎞️ THE TRAIL/SMEAR SESSION — 2026-08-20. THE RIBBON PASS IS DELETED.
+
+**His verdict, 2026-08-20 15:02:51, on the thickness test:** *"this provers the trail theory dead ... its the
+wrong approach."* Then, 15:06: *"pls turn trails off default delete the fucking code and put it 6 feet under lol."*
+
+⛔ **DELETED, NOT DISABLED:** `TrajOut`, `trajectory_vertex`, `trajectory_fragment` (~370 lines), the
+`trajectoryPipeline` and its creation block, the draw call, and the two UI controls that had just been added for
+it. A headstone comment sits at the old site in `render.metal`. Code survives in git at `5ee213d`.
+**Four fixes were tried on that pass in one session and the look survived none:** width conservation, the S7
+luminosity term, the orbital plane, and finally a real pixel thickness. At 1 px it read as hair; widened, as
+slabs. **A million separate strokes with gaps between them is what hair IS** — that is the mechanism, and it is
+why no per-stroke fix could ever land.
+
+🔨 **WHAT REPLACED IT, UNVERDICTED:** a screen-space motion smear.
+- The star pass now writes a **second render target** — screen motion of the matter — from `velReal + spin`
+  projected through the **current** `viewProjection` at both ends, so camera motion cancels by construction and
+  rotating the camera cannot move the smear. `render.metal` `particle_fragment` → `ParticleFragOut`.
+  The other five draws in that pass declare attachment 1 and are masked off. Blending is OFF on it: a velocity
+  is a value, not light, and summing two stars' velocities points somewhere neither travels.
+- `postfx.metal` smears the PICTURE along that buffer. Two dials: **Smear length** (default 24), **Smear hold**
+  (default 1.0 = band keeps its colour, which is what makes a stretch read as a band and not a blur).
+- 🚨 **KNOWN BUG, DIAGNOSED FROM HIS 15:32:18 SCREENSHOT, NOT FIXED:** 48 taps spread over a several-hundred-pixel
+  band land **5–8 px apart**, so each star repeats as separate beads and *more* length makes it *worse*. The fix
+  is a **multi-pass doubling smear** (≈6 passes), not more taps. His verdict: *"soemwhat thius is even worse than
+  the other approach."*
+- ⚠️ With the ribbons gone the field is much darker. Whether the smear can ever look like the reference may
+  depend on the sub-pixel dot brightness first (`render.metal:1552` floors sprite size at 1 px and compensates
+  only when a sprite is too BIG, never when it is too small).
+
+**His reference for the target look:** the Photoshop *circular pixel stretch* (adobe.com/de/learn/photoshop/web/
+circular-pixel-stretch-effect) and the three light-band reels sent 2026-08-20. Every pixel becomes a contiguous
+band; there are no gaps because the IMAGE is stretched, not the objects.
+
+---
 
 ## 🚨 A. BLOCKERS — nothing downstream is trustworthy until these settle
 

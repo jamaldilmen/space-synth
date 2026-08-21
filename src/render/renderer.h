@@ -73,6 +73,8 @@ struct RenderConfig {
   float arcWrap = 2.2f;
   float arcGain = 5.0f;
   float trailGain = 1.0f;
+  float smearShutter = 24.0f; // motion-smear length multiplier
+  float smearHold = 1.0f;     // 1 = solid bands, 0 = fading blur
   float streakLen = 1.0f;
   float colorTempK = 27000.0f; // colour spectrum: |v|²→Kelvin gain (live tune)
   float heatGain = 3000.0f;    // thermal heat→Kelvin gain (live tune; was HEAT_K_PER_T)
@@ -166,8 +168,9 @@ struct PostFXUniforms {
   // cannot drift. Appending instead is what produced G8's 276-vs-288 C++/Metal
   // mismatch. Two pads remain if another scalar is ever needed.
   float coverageResolve;
-  float gradePad1;
-  float gradePad2;
+  float smearShutter;  // SMEAR LENGTH (2026-08-20) — multiplies the star pass's
+                       // measured 0.05 s of travel. Was a hardcoded 8. (gradePad1)
+  float smearHold;     // 0 = band fades (blur), 1 = holds colour (bands). (gradePad2)
   float inverseViewProj[16];
   float prevViewProj[16];
 };
@@ -275,7 +278,27 @@ struct CameraUniforms {
   // may occupy, not where it is. Using the measurement also removed the
   // cross-file constant duplication that version had to declare.
   float fieldHalfDepth = 100.0f;
-  float horizonRPad1 = 0.0f;
+  // S2 / RESOLUTION-NORMALISED STAR SIZE (2026-08-21).
+  // drawableHeight / 2260.0. The star size law is in DEVICE PIXELS and knew
+  // nothing about the drawable, so the same scene drew the same pixel sizes at
+  // 1.0 MP and at 8.1 MP (MEASURED: meanPx 1.02 vs 1.26 for an 8x pixel
+  // increase, 2026-08-21 21:28:59). That makes any RECORDING resolution-
+  // dependent, which is permanent once it is in a file.
+  // The reference 2260 is his fullscreen drawable height, measured the same
+  // run — so at fullscreen this is exactly 1.0 and the look is UNCHANGED by
+  // construction. That is the whole safety argument for this change.
+  //
+  // ⭐ ONE VALUE, ONE LAW (his order 2026-08-21: "we dont want two values for
+  // a single thing ever"). Every pixel size in particle_vertex — rawSize, the
+  // zoom cap, the nova pulse and its 150 cap, the seed sprite's 3..220 clamp,
+  // the gas spread's 150 cap, tuneStarSizeCeil/Floor — is expressed in
+  // REFERENCE pixels (pixels on a 2260-tall drawable). They are converted to
+  // device pixels by a SINGLE multiply at the tail of particle_vertex. Do not
+  // apply this factor anywhere else; a second application is a second law.
+  // Reuses the dead tuneTrailWidth slot (ribbon pass deleted 2026-08-20, zero
+  // readers) rather than appending — appending is what produced the 276-vs-288
+  // mismatch. sizeof stays 288; horizonRPad2 is still spare.
+  float sizeResScale = 1.0f;
   float horizonRPad2 = 0.0f;
 };
 

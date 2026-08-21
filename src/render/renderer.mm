@@ -52,7 +52,6 @@ struct Renderer::Impl {
   id<MTLComputePipelineState> physicsPipeline = nil;
   id<MTLComputePipelineState> orbitSubstepPipeline = nil; // light central-gravity substep
   id<MTLRenderPipelineState> particlePipeline = nil;
-  id<MTLRenderPipelineState> trajectoryPipeline = nil; // scope-line beams
   id<MTLRenderPipelineState> postPipeline = nil;
   // Ping-pong HDR pool for multi-pass effects (blur/echo/feedback)
   id<MTLRenderPipelineState> blurPipeline = nil;
@@ -336,6 +335,7 @@ struct Renderer::Impl {
   // the pre-pass binds this scratch buffer instead and the probe stays honest.
   id<MTLBuffer> kProbeDummy = nil;
   id<MTLTexture> offscreenTexture = nil;
+  id<MTLTexture> velocityTexture = nil;   // screen motion of the MATTER (2026-08-20)
   id<MTLTexture> prevFrameTexture = nil;
   // Whiteout probe (2026-07-23): 1×1 top-mip HDR frame average, read back
   // to CPU and printed ~1/s. Diagnostic only.
@@ -688,6 +688,12 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     desc.vertexFunction = vertexFunc;
     desc.fragmentFunction = fragmentFunc;
     desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+    // ── MOTION VECTORS: attachment 1 (2026-08-20). The STAR pass is the only
+    // thing that writes it — it is the only thing that is matter in motion.
+    // Blending OFF: a velocity is a value, not light. Summing two stars'
+    // velocities would give a direction neither of them travels.
+    desc.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
+    desc.colorAttachments[1].blendingEnabled = NO;
     desc.colorAttachments[0].blendingEnabled = YES;
     desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
     desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
@@ -734,6 +740,10 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       hd.vertexFunction = holeV;
       hd.fragmentFunction = holeF;
       hd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
+      // not moving matter, so it is masked off and writes nothing.
+      hd.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
+      hd.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       hd.colorAttachments[0].blendingEnabled = YES;
       hd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorZero;
       hd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -761,6 +771,10 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       md.vertexFunction = mV;
       md.fragmentFunction = mF;
       md.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
+      // not moving matter, so it is masked off and writes nothing.
+      md.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
+      md.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       md.colorAttachments[0].blendingEnabled = YES;
       md.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
       md.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
@@ -794,6 +808,10 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       bd.vertexFunction = bV;
       bd.fragmentFunction = bF;
       bd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
+      // not moving matter, so it is masked off and writes nothing.
+      bd.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
+      bd.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       bd.colorAttachments[0].blendingEnabled = NO;
       bd.colorAttachments[0].writeMask = MTLColorWriteMaskNone; // DEPTH ONLY
       bd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
@@ -817,6 +835,10 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       dd.vertexFunction = dustV;
       dd.fragmentFunction = dustF;
       dd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
+      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
+      // not moving matter, so it is masked off and writes nothing.
+      dd.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
+      dd.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       dd.colorAttachments[0].blendingEnabled = YES;
       dd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorZero;
       dd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
@@ -982,38 +1004,7 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
           w1[0], w1[1], w1[2], w06[0], w06[1], w06[2]);
   }
 
-  // ── Trajectory (oscilloscope scope-line) pipeline ───────────────────
-  // ISOLATED additive LINE pipeline, drawn AFTER the points so it can never
-  // break the particle render. Crisp 1px beams (Metal line primitive), same
-  // HDR format + additive blend as the particles.
-  {
-    id<MTLFunction> trajVertexFunc =
-        [impl_->library newFunctionWithName:@"trajectory_vertex"];
-    id<MTLFunction> trajFragmentFunc =
-        [impl_->library newFunctionWithName:@"trajectory_fragment"];
-    if (trajVertexFunc && trajFragmentFunc) {
-      MTLRenderPipelineDescriptor *desc =
-          [[MTLRenderPipelineDescriptor alloc] init];
-      desc.vertexFunction = trajVertexFunc;
-      desc.fragmentFunction = trajFragmentFunc;
-      desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-      desc.colorAttachments[0].blendingEnabled = YES;
-      desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
-      desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
-      desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-      desc.colorAttachments[0].destinationAlphaBlendFactor =
-          MTLBlendFactorOneMinusSourceAlpha;
-      desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-      impl_->trajectoryPipeline =
-          [impl_->device newRenderPipelineStateWithDescriptor:desc
-                                                        error:&error];
-      if (error)
-        NSLog(@"Trajectory pipeline error: %@", error);
-    } else {
-      NSLog(@"Missing trajectory shader functions: vertex=%@, fragment=%@",
-            trajVertexFunc, trajFragmentFunc);
-    }
-  }
+  // (Trajectory/ribbon pipeline DELETED 2026-08-20 — see render.metal.)
 
   // ── Post-FX pipeline ────────────────────────────────────────────────
   id<MTLFunction> postVertexFunc =
@@ -1674,11 +1665,37 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // camera→HOLE, not cameraRho (camera→ORIGIN) — the seed wanders, so the
     // error should grow as it drifts off-origin. Fixing the divisor is the NEXT
     // change, deliberately not batched into this one.
+    // ── L1 FIXED 2026-08-20 — the divisor is the screen half-height AT THE
+    // HOLE, and it is not the same number in both projections ────────────────
+    // `frustum` (= cameraRho*1.2) is the ORTHO world→NDC map and was being used
+    // in BOTH modes. Under perspective the world half-height at distance d is
+    // d*tan(fovY/2), and the fov main.cpp:776 actually passes is 45°, so
+    // tan(22.5°) = 0.414214. Using the ortho map there made the shadow
+    // 1.2/0.414214 = 2.897x TOO SMALL — exactly the factor the note above
+    // predicted before anyone measured it.
+    //
+    // d is camera→HOLE, not camera→origin. Computed from the real vectors here
+    // rather than assumed: under the origin lock (L5, bhPosX/Y/Z hard-zeroed)
+    // they are the same number today, but writing cameraRho would bake that
+    // lock into the lens and it would go wrong silently the day it lifts.
+    const float kTanHalfFov = 0.414214f;      // tan(45°/2), the fov at main.cpp:776
+    float hx = impl_->bhPosX * config.plateRadius;
+    float hy = impl_->bhPosY * config.plateRadius;
+    float hz = impl_->bhPosZ * config.plateRadius;
+    float dx = config.cameraPos[0] - hx;
+    float dy = config.cameraPos[1] - hy;
+    float dz = config.cameraPos[2] - hz;
+    float dHole = std::sqrt(dx * dx + dy * dy + dz * dz);
+    float halfH = config.orthoMode ? frustum : (dHole * kTanHalfFov);
     cam.bhShadowNdcRadius =
-        (frustum > 1e-4f && bhLensActive)
-            ? bSim * config.plateRadius / frustum
+        (halfH > 1e-4f && bhLensActive)
+            ? bSim * config.plateRadius / halfH
             : 0.0f;
     cam.aspect = (float)impl_->width / (float)impl_->height;
+  // S2: 2260 = his fullscreen drawable height, MEASURED 2026-08-21 21:28:59
+  // ([DEPTHPREPASS] target 3600x2260). Fullscreen therefore lands on exactly
+  // 1.0 and is unchanged; every other resolution is normalised to it.
+  cam.sizeResScale = (float)impl_->height / 2260.0f;
   }
   cam.sharpness = config.sharpness;
   cam.grainAlpha = config.grainAlpha;
@@ -3644,6 +3661,12 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   MTLRenderPassDescriptor *offscreenPass =
       [MTLRenderPassDescriptor renderPassDescriptor];
   offscreenPass.colorAttachments[0].texture = offscreenTexture;
+  // Attachment 1 = motion vectors, cleared to zero so any pixel no star wrote
+  // reads as "not moving" and the smear leaves it alone.
+  offscreenPass.colorAttachments[1].texture = velocityTexture;
+  offscreenPass.colorAttachments[1].loadAction = MTLLoadActionClear;
+  offscreenPass.colorAttachments[1].clearColor = MTLClearColorMake(0, 0, 0, 0);
+  offscreenPass.colorAttachments[1].storeAction = MTLStoreActionStore;
   offscreenPass.colorAttachments[0].loadAction = MTLLoadActionClear;
   offscreenPass.colorAttachments[0].storeAction = MTLStoreActionStore;
   offscreenPass.colorAttachments[0].clearColor =
@@ -3955,28 +3978,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // plane corrected the arc IS the particle's own orbital path over the exposure
   // window, inner-fast, so matter near the hole spaghettifies and the calm field
   // stays points. Gate is the original: an emergent hole, or manual spin.
-  if (trajectoryPipeline &&
-      (bhStrength > 0.5f || config.oscAmount > 0.01f)) {
-    [enc setRenderPipelineState:trajectoryPipeline];
-    [enc setDepthStencilState:depthState];
-    [enc setVertexBuffer:particleBuffer offset:0 atIndex:0];
-    [enc setVertexBuffer:cameraBuffer[frameIdx] offset:0 atIndex:1];
-    // THE TRAIL'S HEAD MUST SIT ON ITS STAR (2026-08-15). particle_vertex draws
-    // every sprite at the integrated playback phase (bound at index 8, :3843);
-    // this pass bound only the particle + camera buffers, so it drew each ribbon
-    // from the RAW physics position — sprite and trail in two frames, separated
-    // by a phase that wraps the full circle. Same buffer, same phase, index 2.
-    [enc setVertexBuffer:posePhaseBuffer offset:0 atIndex:2];
-    // ARC LOD BUDGET: every particle drawing a 22-vertex ribbon makes this pass
-    // cost 22×particleCount line-vertices — unbounded with count (the 5M-easy →
-    // 2M-fighting regression). Cap the arc-drawing particles to a fixed budget;
-    // the field is dense enough that this many arcs still read as continuous
-    // spacetime flow, but the cost stops scaling. (2026-06-18)
-    int arcParticles = std::min(particleCount, 1500000);
-    [enc drawPrimitives:MTLPrimitiveTypeLine
-            vertexStart:0
-            vertexCount:(NSUInteger)arcParticles * 22];
-  }
+  // (The arc/ribbon draw DELETED 2026-08-20 — the motion smear replaces it.)
 
   // Black-hole raytracer shadow pass DELETED (2026-06-28). It was a screen-space
   // 2D circle that sampled no useful disk. Real gravitational lensing is applied
@@ -4299,7 +4301,14 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.strobe = config.strobe;
   post.invert = config.invert;
   post.posterize = config.posterize;
-  post.pixelStretch = config.pixelStretch; // "5D look" radial pixel-stretch (spin)
+  // ── 2026-08-20: this dial is now the SHUTTER on a real motion smear ───────
+  // It used to be a spin effect. postfx.metal now smears along the motion the
+  // star pass measured, so what should open the shutter is matter being in
+  // orbit — bhStrength, the renderer's own smoothed collapse signal (:241),
+  // the same one the hole pass gates on. Spin still drives it too, so the
+  // no-hole case is unchanged. max() so neither can silently disable the other.
+  post.pixelStretch =
+      std::min(1.0f, std::max(config.pixelStretch, bhStrength));
   post.exposure = config.exposure; // global iris — scales the HDR scene pre-tonemap
   post.debugBypass = config.debugBypassPostFX ? 1.0f
                      : (config.debugNoBleach ? 2.0f : 0.0f); // mode: B bypass / N no-bleach
@@ -4309,8 +4318,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // byte, so the A/B is one relaunch and needs no rebuild.
   static const bool kNoCoverage = (getenv("SS_NO_COVERAGE") != nullptr);
   post.coverageResolve = kNoCoverage ? 0.0f : 1.0f;
-  post.gradePad1 = 0.0f;
-  post.gradePad2 = 0.0f;
+  post.smearShutter = config.smearShutter;
+  post.smearHold = config.smearHold;
   // EDR headroom: how far above SDR white this display can currently go
   // (1.0 on SDR panels, up to ~16 on XDR depending on brightness/state).
   // Drives how hard the HDR glow punches past white. Queried live because it
@@ -4349,6 +4358,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [postEnc setFragmentTexture:bloomTexture atIndex:2]; // HDR glow
     [postEnc setFragmentTexture:offscreenTexture atIndex:3]; // auto-exposure avg (top mip)
     [postEnc setFragmentTexture:gradeLutTexture atIndex:4];  // display grade LUT (33^3)
+    [postEnc setFragmentTexture:velocityTexture atIndex:5];  // motion vectors → the smear
     [postEnc setFragmentBuffer:postUniformBuffer[frameIdx] offset:0 atIndex:0];
     [postEnc drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0
@@ -4383,6 +4393,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [syEnc setFragmentTexture:postSource atIndex:0];
     [syEnc setFragmentTexture:prevFrameTexture atIndex:1];
     [syEnc setFragmentTexture:bloomTexture atIndex:2];
+    [syEnc setFragmentTexture:velocityTexture atIndex:5];  // motion vectors → the smear
     [syEnc setFragmentTexture:gradeLutTexture atIndex:4]; // same grade on the feed as on screen
     [syEnc setFragmentBuffer:postUniformSyphonBuffer[frameIdx] offset:0 atIndex:0];
     [syEnc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -4489,6 +4500,18 @@ void Renderer::resize(int width, int height) {
   hdrDesc.storageMode = MTLStorageModePrivate;
   hdrDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   impl_->offscreenTexture = [impl_->device newTextureWithDescriptor:hdrDesc];
+
+  // ── MOTION VECTORS (2026-08-20) — attachment 1 of the scene pass ──────────
+  // RG16Float: a SIGNED UV delta per pixel, so it needs the sign bit and
+  // sub-pixel precision. Two channels is all a screen direction has.
+  MTLTextureDescriptor *velDesc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
+                                   width:width
+                                  height:height
+                               mipmapped:NO];
+  velDesc.storageMode = MTLStorageModePrivate;
+  velDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  impl_->velocityTexture = [impl_->device newTextureWithDescriptor:velDesc];
   // (pool/bloom/feedback textures below stay non-mipmapped — hdrDesc is
   // re-declared for them.)
   hdrDesc = [MTLTextureDescriptor

@@ -113,7 +113,29 @@ int main() {
   ensureSingleInstance();
   // ── Window ──────────────────────────────────────────────────────────
   Window window;
-  if (!window.create(1280, 800, "SPACE Synth v1.0 [STABLE]")) {
+  // S1 (2026-08-21): the render pipeline, the postfx chain and the SYPHON FEED
+  // are all sized from the drawable (renderer.mm:1151, :4515), so the window's
+  // aspect ratio IS the output's aspect ratio. The Cologne wall is 10x4 m =
+  // 2.5:1, and anything RECORDED at the wrong shape is wrong permanently.
+  // Same env-var idiom as SS_FULLSCREEN / SS_SOR_SWEEPS. Example:
+  //   open -n SpaceSynth.app --env SS_WIDTH=2560 --env SS_HEIGHT=1024
+  int winW = 1280, winH = 800;
+  if (const char *ew = getenv("SS_WIDTH")) {
+    int v = atoi(ew);
+    if (v >= 320 && v <= 16384) winW = v;
+    else fprintf(stderr, "[S1] SS_WIDTH=%s out of range 320..16384, ignored\n", ew);
+  }
+  if (const char *eh = getenv("SS_HEIGHT")) {
+    int v = atoi(eh);
+    if (v >= 240 && v <= 16384) winH = v;
+    else fprintf(stderr, "[S1] SS_HEIGHT=%s out of range 240..16384, ignored\n", eh);
+  }
+  // PIN the render buffer to exactly this many pixels. Without the pin macOS
+  // clamps the WINDOW to the screen and the drawable follows it — measured
+  // 2026-08-21: 2560x1024 requested, 3600x2048 rendered, the wrong aspect.
+  // window.mm prints the buffer size and the preview scale together.
+  if (getenv("SS_WIDTH") || getenv("SS_HEIGHT")) window.pinDrawableSize(winW, winH);
+  if (!window.create(winW, winH, "SPACE Synth v1.0 [STABLE]")) {
     fprintf(stderr, "Failed to create window\n");
     return 1;
   }
@@ -768,13 +790,17 @@ int main() {
     camera.buildViewMatrix(view);
 
     if (app.uiOrthoMode) {
-      float aspect = (float)window.width() / (float)window.height();
+      // S1: aspect comes from the DRAWABLE (pixels), not the window (points).
+      // When the buffer is pinned these differ, and the buffer is the truth.
+      float aspect =
+          (float)window.drawableWidth() / (float)window.drawableHeight();
       float frustum = camera.getRho() * 1.2f; // Dynamic orthographic zoom
       Renderer::orthoMatrix(proj, -frustum * aspect, frustum * aspect, -frustum,
                             frustum, -5000.0f, 5000.0f);
     } else {
       Renderer::perspectiveMatrix(proj, 45.0f * (M_PI_F / 180.0f),
-                                  (float)window.width() / window.height(),
+                                  (float)window.drawableWidth() /
+                                      (float)window.drawableHeight(),
                                   0.001f, 5000.0f);
     }
 
@@ -1447,6 +1473,19 @@ int main() {
                               "orbits close into per-particle CIRCLES and the hole\n"
                               "reads as concentric rings, not flowing matter.");
           UiSliderFloat("Trail brightness", &app.uiTrailGain, 0.0f, 4.0f, "%.2f");
+          UiSliderFloat("Smear length", &app.uiSmearShutter, 0.0f, 60.0f, "%.1f");
+          UiSliderFloat("Smear hold", &app.uiSmearHold, 0.0f, 1.0f, "%.2f");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How much colour the band KEEPS along its length.\n"
+                              "0 = fades out fast, which reads as blur. 1 = holds\n"
+                              "full strength the whole way, which is what makes a\n"
+                              "pixel stretch read as solid bands instead of a\n"
+                              "smudge.");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How long the shutter is open on the motion smear.\n"
+                              "The star pass measures 0.05 s of REAL travel; this\n"
+                              "multiplies it. 0 = no smear. Works on the picture,\n"
+                              "not per star, so it cannot make hair.");
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("cam.tuneTrailGain. Per-segment gain on the arcs only —\n"
                               "the star sprites are untouched. Raise it to pull the\n"
@@ -2232,6 +2271,8 @@ int main() {
     config.arcWrap = app.uiArcWrap;
     config.arcGain = app.uiArcGain;
     config.trailGain = app.uiTrailGain;
+    config.smearShutter = app.uiSmearShutter;
+    config.smearHold = app.uiSmearHold;
     config.streakLen = app.uiStreakLen;
     config.colorTempK = app.uiColorTempK;
     // STAR LAW DIALS (2026-07-28) — identity defaults.

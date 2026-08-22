@@ -1946,7 +1946,20 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     physicsUniforms.uAmbient = liveUAmbient;   // display ambient follows the live gas
     static int amrOn = -1;
     if (amrOn < 0) amrOn = getenv("SS_NO_AMR") ? 0 : 1;   // AMR nested-mesh gravity DEFAULT ON (2026-07-18 01:12:40, honest toggle stack); SS_NO_AMR disables
-    physicsUniforms.bhToggles = bhToggles | (amrOn ? 0x8000u : 0u); // bit15 = AMR fine force (Slice 2)
+    // ── BH6 FIX 2026-08-22: AMR MOVED OFF bit15 ONTO bit21 ────────────────
+    // bit15 was DOUBLE-BOOKED: uiTogMetricShadow packs it at main.cpp:2306 and
+    // it ships DEFAULT ON (app_state.h:53), while this line OR'd AMR into the
+    // same bit for the physics uniform. Because the shadow had already set it,
+    // the OR was a NO-OP and **SS_NO_AMR NEVER DISABLED ANYTHING** — every A/B
+    // run with that flag compared two identical configurations, which is
+    // exactly how it produced a null result. AMR only ever switched off if you
+    // ALSO unchecked Metric Shadow, which nobody would think to do.
+    // bit21 is genuinely free: bhToggles is packed 0..20 (main.cpp:2290-2310)
+    // and bits 21+ that appear elsewhere in the tree belong to `debugFlags`, a
+    // DIFFERENT word. No preset serializes bhToggles, so there is no migration.
+    // The render side is untouched — render.metal:906 reads cam.bhToggles,
+    // which never received the OR, so the metric-shadow A/B was always clean.
+    physicsUniforms.bhToggles = bhToggles | (amrOn ? 0x200000u : 0u); // bit21 = AMR fine force (Slice 2)
     physicsUniforms.horizonR = lastHorizonR;  // honest r_h (1-frame lag) → pressure-yield in the kernel
     physicsUniforms.bhX = bhPosX;
     physicsUniforms.bhY = bhPosY;

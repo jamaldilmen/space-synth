@@ -2150,7 +2150,10 @@ kernel void compute_physics(
             }
         }
 
-        // ── AMR FINE FORCE (bit15) — the resolution unlock ───────────────────
+        // ── AMR FINE FORCE (bit21) — the resolution unlock ───────────────────
+        // 🚨 WAS bit15 until 2026-08-22, SHARED with uiTogMetricShadow. The
+        // shadow ships default-ON, so this gate was effectively hardwired open
+        // and SS_NO_AMR was a lie. See the BH6 note at renderer.mm:1949.
         // Inside the fine box, REPLACE coarse gravity with −∇Φ from the fine
         // 128³ grid (cellSize ~0.031 sim → softening ~0.031, not the coarse
         // 1.0). Blended back to coarse near the boundary so there's no force
@@ -2158,7 +2161,7 @@ kernel void compute_physics(
         // cell — the whole point of the nested mesh. Fine Φ is solved (renderer,
         // Slice 1) before this kernel runs. comShift pins the core to the origin
         // where the fine patch sits.
-        if (u.bhToggles & 0x8000u) {
+        if (u.bhToggles & 0x200000u) {
             float rrF = length(gpos);
             if (rrF < fsu.halfExtent &&
                 fabs(px) < fsu.halfExtent && fabs(py) < fsu.halfExtent &&

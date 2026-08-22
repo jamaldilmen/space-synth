@@ -6,7 +6,7 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
 
-**Commit at last verification:** `5bd9133` (2026-08-20 14:29:31 — the tree is now COMMITTED: `7c304b2` the march work, `5bd9133` this board split. **Scope: no rows were re-read at this sha.** The last code check was the `docs/TODO.md` sweep against `e853e18`, whose content these two commits do not change.)
+**Commit at last verification:** `d28a394` (2026-08-22 08:45:00). §2's two lens blend sites were re-verified in source this session; the BH rows below were NOT all re-read at this sha — `docs/TODO.md` carries what was. 🚨 **UNCOMMITTED on top of this sha:** BH6 (AMR moved off the double-booked bit15 to bit21 — `SS_NO_AMR` had never worked), the metric-shadow default flipped OFF by his order, the deflection LUT re-parameterised to log(b−b_c), and the playback axis unified to one field normal. 🆕 **READ THIS BEFORE ANY SHADOW WORK:** the perfect black disc is NOT bit15 and NOT the lens. It is a depth-only analytic sphere at `b_c = 2.598 r_s` (`render.metal:3164`, drawn `renderer.mm:3852`) gated only on `lastHorizonR > 0`. Turning the metric shadow off does not touch it. It is also what makes the hole OCCLUDE.
 
 ---
 
@@ -125,11 +125,15 @@ Secondary placement (`render.metal:1055`): `target = bhWorld + along·dHat − p
 
 **det J < 0 ⟹ negative parity ⟹ mirror-reversed.** Nobody painted it; it falls out of solving the opposite root. The Newton damping `min(da·D − 1.0f, −0.25f)` (`:1049`) clamps that denominator negative, so even the damped solve cannot lose the sign.
 
-**⟹ The lens needs a FIX, not a replacement.** Bend, parity and second image are all physical. Two blend sites are what's wrong:
+**⟹ The lens needed a FIX, not a replacement — and it got one. Both blend sites are CLOSED.** Bend, parity and second image were all physical; the two blend sites that were wrong were fixed on 2026-08-14 and are kept here for provenance:
 
-- ✅ **FIXED 2026-08-14 17:30:54 — re-verified in source 2026-08-20 14:08:59.** *(Was: "the flip is incomplete below full strength" — the secondary was lerped from its UNLENSED position, giving a zero-parity ring that swept outward as the hole strengthened.)* The `mix` is gone: the second image is now placed where the lens equation puts it (`render.metal:1164`) and fades in by being FAINT, carried by `imageWeight`. The old text is preserved in the comment block at `:1141-1163`.
-- ✅ **FIXED 2026-08-14 17:53:52 — re-verified in source 2026-08-20 14:08:59.** *(Was: the secondary ignored `tuneLens`, so only the bit8 toggle could kill it.)* `imageWeight = cam.tuneLens * lensRamp * clamp((A−1)/(A+1))` at `render.metal:1184`; at `tuneLens = 0` the weight goes to 0 and `:1621` drops `pointSize` to 0. `depthMix` is deliberately excluded — it is identically 1 there. 🚨 **The warning still stands for HISTORY: any lens A/B run with the SLIDER before 2026-08-14 17:53:52 is void.**
-  🚨 **An A/B done with the TOGGLE is trustworthy; one done with the SLIDER is not.** Any past lens A/B needs to be re-read in that light.
+- ✅ **FIXED 2026-08-14 17:30:54 — re-verified in source 2026-08-20 14:08:59, and again 2026-08-22 01:34:32.** *(Was: "the flip is incomplete below full strength" — the secondary was lerped from its UNLENSED position, giving a zero-parity ring that swept outward as the hole strengthened.)* The `mix` is gone: the second image is now placed where the lens equation puts it (`render.metal:1164`) and fades in by being FAINT, carried by `imageWeight`. The old text is preserved in the comment block at `:1141-1163`.
+- ✅ **FIXED 2026-08-14 17:53:52 — re-verified in source 2026-08-20 14:08:59, and again 2026-08-22 01:34:32.** *(Was: the secondary ignored `tuneLens`, so only the bit8 toggle could kill it — the Lens Bend dial could not turn the second image off, and the fold-over arc survived at full strength wherever the dial sat.)* `imageWeight = cam.tuneLens * lensRamp * clamp((A−1)/(A+1))` at `render.metal:1184`; at `tuneLens = 0` the weight goes to 0 and `:1722` drops `pointSize` to 0 — the same outcome bit8 produces. **Multiply, not `mix`:** the second image has no unlensed brightness to fall back to, so with no lens it simply does not exist. `depthMix` is deliberately excluded — it is identically 1 there. The old text is preserved in the comment block at `:1169-1183`.
+  ⚠️ `:1621` in the pre-2026-08-22 wording of this row was line drift; the live site is `:1722` (`render.metal`). This is **A0i** landing on this board's own §2 — see §N1.
+
+> 🚨⭐ **THE CONSEQUENCE THAT OUTLIVES THE FIX — EVERY PRE-2026-08-14 SLIDER A/B IS VOID.**
+> **Any lens A/B run with the Lens Bend SLIDER before 2026-08-14 17:53:52 proves nothing and must not be cited.** The dial had no effect on the second image, so "lens down" and "lens up" were photographs of the *same* fold-over arc at full strength. A null result from such a run is not evidence that the lens does nothing — it is evidence that the slider did nothing.
+> **An A/B done with the bit8 TOGGLE is trustworthy; one done with the SLIDER is not.** Every lens comparison, verdict or screenshot pair on this board or in any handoff dated before that timestamp needs re-reading in that light, and re-running before it is believed.
 
 ---
 
@@ -278,7 +282,7 @@ Dividing by it holds the ring's **average** brightness exactly where it was; the
 
 Three ways out, honestly stated:
 
-- **(A) Stay sprite-native, accept no photon ring.** Fix the lens's two blend sites (§2), fix L1's divisor, add T1 beaming. **Gets: S1 ✅, S2 ✅, T1 ✅, T2 ✅, S3 ❌.** Cheapest by far, and four of five features is already a different-looking hole.
+- **(A) Stay sprite-native, accept no photon ring.** ~~Fix the lens's two blend sites (§2)~~ ✅ **DONE 2026-08-14, re-verified in source 2026-08-22 01:34:32** — `render.metal:1164` + `:1184`; fix L1's divisor, add T1 beaming. **Gets: S1 ✅, S2 ✅, T1 ✅, T2 ✅, S3 ❌.** Cheapest by far, and four of five features is already a different-looking hole.
 - **(B) A third instance for n = 2.** Extends the sprite scheme by one winding. Cheap to try, gives a *hint* of S3, still not the infinite stack. Cost: +50% on the heaviest pass (L7).
 - **(C) Hybrid — march ONLY the thin annulus at the shadow edge** where S3 lives (b ∈ [2.598, ~2.7] r_s), composited under the sprites. Sidesteps L4's resolution mismatch because that annulus has **no Chladni structure to lose** — it is pure lensed light. Needs L9 resolved first and a temperature input to escape the orange.
 
@@ -291,7 +295,7 @@ Three ways out, honestly stated:
 | # | Item | Unlocks | Cost |
 |---|---|---|---|
 | **0** | ⏳ **His verdict on the §4 capture test.** Everything below stacks on it. | S1 | **0** |
-| ~~**1**~~ | ✅ **DONE 2026-08-14, VERIFIED IN SOURCE 2026-08-20 14:08:59** — `render.metal:1164` + `:1184`. This row sat open on the board for six days after the code closed it. | — | **0** |
+| ~~**1**~~ | ✅ **DONE 2026-08-14, VERIFIED IN SOURCE 2026-08-20 14:08:59, RE-VERIFIED 2026-08-22 01:34:32** — `render.metal:1164` (secondary placed by the lens equation, no `mix`) + `:1184` (`imageWeight = cam.tuneLens * lensRamp * …`). This row sat open on the board for six days after the code closed it. 🚨 **Its consequence is permanent: every pre-2026-08-14 SLIDER lens A/B is void — see the callout in §2.** | — | **0** |
 | ~~**2**~~ | ✅ **SHIPPED 2026-08-20 15:36:28 — see L1. UNVERIFIED.** ⏳ **What to look at: in PERSPECTIVE the shadow should be ~2.9× bigger; in ORTHO it must be identical.** If perspective looks unchanged, this is not the path drawing it — that is a finding, not a tweak. | S1 / gates A0 | **0** |
 | **3** | ✅ **T1 — HONEST BEAMING LAW. SHIPPED 2026-08-14 12:01:52, verdict pending.** See §4b. Was 1/18 of the true asymmetry. 🚨 If the g³ ceiling is ever revisited, the fix is the tonemap — never the fudge exponent. | **The effect Nolan turned off. Nobody has seen it in a movie.** | **done** |
 | **3b** | **Gravitational redshift** — the √(1−2M/r) factor of A.16, the other half of g. Deliberately not batched with 3. ⚠️ Reference form is a SINGLE g combining both; do not apply two independent multipliers without checking against A.16. | T1 complete | **S** |
@@ -465,6 +469,6 @@ The block reconstructs an **analytic** `vOrbit` from a Kerr `Ω(r) = 1/(r^1.5 + 
 
 ---
 
-**Last Updated:** 2026-08-19 00:14:12 (§N added — the BH rows moved in from `BOARD.md`; §0 still carries the verification stamp)
+**Last Updated:** 2026-08-22 01:34:32 (BH4 — §2's two lens blend sites re-verified in source and their closure carried through to §5(A); the void-slider-A/B consequence promoted to a standing callout. §N added 2026-08-19 00:14:12; §0 still carries the verification stamp)
 **Live tree:** `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`
 **Build:** `bash package_macos.sh` — never bare `make`. Launch `--env SS_FULLSCREEN=1`, always.

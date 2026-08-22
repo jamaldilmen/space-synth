@@ -697,15 +697,40 @@ vertex VertexOut particle_vertex(
             // aPrev is one frame BACK along the same phase, so the per-frame
             // velocity the Doppler/streak path measures stays the true orbital
             // motion, exactly as before.
-            // ── EVERY STAR ON ITS OWN ORBITAL PLANE (2026-08-15, his order) ──
-            // Was a rotation of `.xy` only — the whole field about a global +Z,
-            // z untouched. That was the mismatch: the arcs sweep each star about
-            // its own plane, so a halo star got its head placed by a Z-turn and
-            // its ribbon drawn in the plane it really orbits in. The fault was
-            // here, in the MOTION, not there in the trail.
-            // The axis is poseAxis(rel) — from position, NOT from r × v. See the
-            // rejection note there: the velocity version threw the disk apart.
-            float3 axis = poseAxis(rel);
+            // ── ONE AXIS FOR THE FIELD AGAIN (2026-08-22, his order) ────────
+            // His words: "the axis is lose its turnign wihtin itself and that
+            // looks like ass why is it a gyroscope" — and, correctly recalling
+            // the cause a week later: "i think the thing with the rings came
+            // when we unified the orbits ... we had two systems at work made it
+            // 1 since then its fucked."
+            //
+            // HE WAS RIGHT, AND THIS IS THE LINE. From 2026-08-15 this read
+            // `float3 axis = poseAxis(rel)` — a DIFFERENT rotation axis for
+            // every star, tilted from +Z by exactly that star's own elevation
+            // atan(|z|/rho). Stars at different heights therefore turned about
+            // different axes and the field SHEARED ITSELF into nested tilted
+            // rings. That is the gyroscope. It is not the spawn (which only
+            // supplies the z spread) and not the lens; it is this rotation.
+            //
+            // WHY +Z IS THE DERIVED ANSWER, NOT A MAGIC CONSTANT: the launch law
+            // at particles.cpp:256-262 gives EVERY particle v = z_hat x r, so
+            // the field's total angular momentum points along +Z by
+            // construction. One field, one orbit normal. (poseAxis is in fact
+            // algebraically identical to r x v FOR THAT LAUNCH LAW — expand it:
+            // r x (z_hat x r) = (-zx, -zy, x^2+y^2), term for term. So the
+            // "position-only, not r x v" claim in its rejection note is not the
+            // distinction it says it is.)
+            //
+            // WHY THE 08-15 ORDER NO LONGER BINDS: it existed because the ARC
+            // RIBBONS swept each star about its own plane, so a global Z-turn
+            // placed a halo star's head and its ribbon inconsistently. THE
+            // RIBBON PASS WAS DELETED 2026-08-20 (~370 lines, his order). The
+            // mismatch that motivated per-star axes no longer has a second half.
+            //
+            // ⚠ STILL SPLIT, STATED NOT HIDDEN: the ray-march at :3463 keeps
+            // poseAxis(). Playback and the sprite path now agree on +Z; the
+            // march does not. That is board row BH2 and it is NOT fixed here.
+            float3 axis = float3(0.0f, 0.0f, 1.0f);
             float wEff  = poseOmegaEff(rxy, cam.bhDiskGM, cam.horizonR);
             float aNow  = posePhase[vid];
             float aPrev = aNow - wEff * cam.bhPoseDt;

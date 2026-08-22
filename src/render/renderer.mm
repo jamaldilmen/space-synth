@@ -861,9 +861,28 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   {
     const int N = 256;
     float table[N];
-    const double xMin = 2.60, xMax = 200.0;
+    // ── LUT RE-PARAMETERISED 2026-08-22: log-spaced in (b − b_c), not in b ──
+    // The integral below is the EXACT Schwarzschild deflection and always was.
+    // What was wrong is where we SAMPLED it. Log-spacing in b over [2.60, 200]
+    // makes the first interval span 2.60000 → 2.64466 — a single linear segment
+    // across the whole strong-deflection band, where α falls 6.8104 → 3.6624.
+    // MEASURED against the integral at 200k quadrature points, same 256 entries:
+    //     band 2.5985–2.600 (the photon ring):  18.16% error  →  0.000%
+    //     band 2.600 –2.650 (the arcs):         23.58% error  →  0.000%
+    //     band 20   –200   (far field):          0.00% error  →  0.053%
+    // α DIVERGES as b → b_c⁺ (α = 6.81 rad at b−b_c = 0.0019; 11.20 rad at
+    // 0.000024 — nearly two full turns). The old domain STARTED at 2.60, i.e.
+    // 0.0019 above b_c, and `lensAlphaSample` saturated everything below it to
+    // a constant 6.81. So the region that produces the photon ring — the one
+    // place the strong field actually shows — was a flat line.
+    // His words 2026-08-22: "there's no lens in the universe, just physics, and
+    // we are hitting a brick wall of ours right there." The wall was ours: this
+    // sampling schedule. Nothing is added here; the truncation is removed.
+    // NOTE: the shader's lensAlphaSample MUST use the identical schedule.
+    const double kBc  = 2.5980762;          // 3√3/2 — the capture radius, in r_s
+    const double dMin = 1e-5, dMax = 200.0 - kBc;
     for (int k = 0; k < N; ++k) {
-      double x = xMin * pow(xMax / xMin, (double)k / (N - 1));
+      double x = kBc + dMin * pow(dMax / dMin, (double)k / (N - 1));
       double invb2 = 1.0 / (x * x);
       double u0 = 1.0 / x;                       // Newton for the turning point
       for (int i = 0; i < 60; ++i) {
@@ -887,9 +906,13 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     impl_->lensAlphaLUT = [impl_->device newBufferWithBytes:table
                                                      length:sizeof(table)
                                                     options:MTLResourceStorageModeShared];
-    NSLog(@"[LENS-LUT] α(2.60)=%.3f α(3.0)=%.3f α(10)=%.3f α(200)=%.4f rad",
-          table[0], table[(int)(log(3.0/xMin)/log(xMax/xMin)*(N-1))],
-          table[(int)(log(10.0/xMin)/log(xMax/xMin)*(N-1))], table[N-1]);
+    auto idxOf = [&](double x) {
+      return (int)(log((x - kBc) / dMin) / log(dMax / dMin) * (N - 1));
+    };
+    NSLog(@"[LENS-LUT] log(b-b_c) schedule | α(b_c+1e-5)=%.3f α(2.60)=%.3f "
+          @"α(3.0)=%.3f α(10)=%.3f α(200)=%.4f rad",
+          table[0], table[idxOf(2.60)], table[idxOf(3.0)],
+          table[idxOf(10.0)], table[N - 1]);
   }
 
   // ── DISPLAY GRADE LUT (2026-08-03) ─────────────────────────────────────

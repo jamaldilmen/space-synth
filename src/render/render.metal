@@ -308,8 +308,21 @@ constant float STREAK_GAIN     = 3.0f;  // screen-space streak amplification (lo
 // This is the DNGR-doc verdict (docs/blackhole_render_research_notes.md §0/§5):
 // the light of the particles bends through the metric in WORLD space — the
 // particles stay the only source, the map only bends their light.
+// ⚠ THIS SCHEDULE IS MIRRORED IN renderer.mm's TABLE BUILD. Change both or
+// neither — they are one encoding, and a mismatch is silent (wrong angles, no
+// error). Log-spaced in (b − b_c) since 2026-08-22 so the DIVERGENCE at the
+// photon ring is resolved; the old log-in-b schedule put the entire band
+// 2.600–2.645 in ONE interval (23.6% error) and saturated everything below
+// 2.60 to a constant. See the measurement table in renderer.mm.
+constant float kLensBc   = 2.5980762f;      // 3√3/2, capture radius in r_s
+constant float kLensDMin = 1e-5f;
+constant float kLensDMax = 197.4019238f;    // 200 − b_c
 static float lensAlphaSample(device const float* lut, float x) {
-    float t = clamp(log(x / 2.60f) / log(200.0f / 2.60f), 0.0f, 1.0f) * 255.0f;
+    // x < b_c is captured light — it does not arrive. Clamping to dMin hands
+    // back the max tabulated deflection; the capture tests are what remove it.
+    float d = max(x - kLensBc, kLensDMin);
+    float t = clamp(log(d / kLensDMin) / log(kLensDMax / kLensDMin),
+                    0.0f, 1.0f) * 255.0f;
     uint  i = (uint)t;
     return mix(lut[i], lut[min(i + 1u, 255u)], t - (float)i);
 }

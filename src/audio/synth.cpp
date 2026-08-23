@@ -116,14 +116,16 @@ void Synth::processBlock(float sampleRate, float *outL, float *outR,
     }
 
     float mixed = 0.0f;
-    for (auto it = voices_.begin(); it != voices_.end();) {
-      mixed += it->second.tick(sampleRate, jitter_);
-      it->second.envelope.update(1.0f / sampleRate, envParams_);
-      if (voiceLock.owns_lock() && !it->second.envelope.isActive()) {
-        it = voices_.erase(it);
-      } else {
-        ++it;
-      }
+    for (int v = 0; v < MAX_VOICES; v++) {
+      if (!voiceOn_[v])
+        continue;
+      Voice &voice = voices_[v];
+      mixed += voice.tick(sampleRate, jitter_);
+      voice.envelope.update(1.0f / sampleRate, envParams_);
+      // Retiring a voice is now a flag flip. It used to be voices_.erase(it),
+      // i.e. a free() reachable ONCE PER SAMPLE on the realtime thread.
+      if (voiceLock.owns_lock() && !voice.envelope.isActive())
+        releaseVoiceSlot(v);
     }
 
     float limited = std::tanh(mixed * 0.45f) * 0.9f;
@@ -187,17 +189,39 @@ void Synth::handleNoteOn(int midi, float velocity) {
   handleNoteOnInternal(midi, velocity);
 }
 
-void Synth::handleNoteOnInternal(int midi, float velocity) {
-  auto it = voices_.find(midi);
-  if (it != voices_.end()) {
-    voices_.erase(it);
-  }
+int Synth::findVoiceSlot(int midi) const {
+  for (int v = 0; v < MAX_VOICES; v++)
+    if (voiceOn_[v] && voices_[v].midiNote == midi)
+      return v;
+  return -1;
+}
 
-  if (voices_.size() >= MAX_VOICES) {
+int Synth::allocVoiceSlot() const {
+  for (int v = 0; v < MAX_VOICES; v++)
+    if (!voiceOn_[v])
+      return v;
+  return -1;
+}
+
+void Synth::releaseVoiceSlot(int slot) {
+  if (slot < 0 || slot >= MAX_VOICES || !voiceOn_[slot])
+    return;
+  voiceOn_[slot] = false;
+  voiceCount_--;
+}
+
+void Synth::handleNoteOnInternal(int midi, float velocity) {
+  // Retrigger: drop any live voice already holding this note.
+  releaseVoiceSlot(findVoiceSlot(midi));
+
+  if (voiceCount_ >= MAX_VOICES) {
     // Prefer stealing voices in Release > Sustain > Decay. Never steal Attack.
-    int stealMidi = -1;
+    int stealSlot = -1;
     float bestScore = -1.0f;
-    for (const auto &[m, voice] : voices_) {
+    for (int v = 0; v < MAX_VOICES; v++) {
+      if (!voiceOn_[v])
+        continue;
+      const Voice &voice = voices_[v];
       float score = -1.0f;
       switch (voice.envelope.phase) {
       case EnvPhase::Release:
@@ -218,15 +242,23 @@ void Synth::handleNoteOnInternal(int midi, float velocity) {
       }
       if (score > bestScore) {
         bestScore = score;
-        stealMidi = m;
+        stealSlot = v;
       }
     }
-    if (stealMidi != -1) {
-      voices_.erase(stealMidi);
-    }
+    if (stealSlot != -1)
+      releaseVoiceSlot(stealSlot);
   }
 
-  Voice v;
+  const int slot = allocVoiceSlot();
+  // ⚠️ BEHAVIOUR CHANGE, deliberate: if every slot is full AND every voice is
+  // in Attack (unstealable), the note is DROPPED. The map version instead grew
+  // past MAX_VOICES — the "safety limit" was not actually a limit. Dropping is
+  // the honest reading of a polyphony cap, and it cannot allocate.
+  if (slot < 0)
+    return;
+
+  Voice &v = voices_[slot];
+  v = Voice{}; // reset stale state from the slot's previous occupant
   v.midiNote = midi;
   v.frequency = midiToFreq(midi);
   v.waveform = waveform_;
@@ -234,7 +266,8 @@ void Synth::handleNoteOnInternal(int midi, float velocity) {
   v.mode = &modeTable_.modeForMidi(midi, keyboardMode_, keyboardStart());
   v.init(48000.0f);
 
-  voices_[midi] = v;
+  voiceOn_[slot] = true;
+  voiceCount_++;
 }
 
 void Synth::handleNoteOff(int midi) {
@@ -243,10 +276,9 @@ void Synth::handleNoteOff(int midi) {
 }
 
 void Synth::handleNoteOffInternal(int midi) {
-  auto it = voices_.find(midi);
-  if (it != voices_.end()) {
-    it->second.envelope.noteOff();
-  }
+  const int slot = findVoiceSlot(midi);
+  if (slot >= 0)
+    voices_[slot].envelope.noteOff();
 }
 
 void Synth::updateEnvelopes(float /*dt*/) {
@@ -256,9 +288,9 @@ void Synth::updateEnvelopes(float /*dt*/) {
 float Synth::totalAmplitude() const {
   std::lock_guard<std::mutex> lock(mutex_);
   float total = 0.0f;
-  for (const auto &[midi, voice] : voices_) {
-    total += voice.envelope.amplitude;
-  }
+  for (int v = 0; v < MAX_VOICES; v++)
+    if (voiceOn_[v])
+      total += voices_[v].envelope.amplitude;
   return total;
 }
 
@@ -266,13 +298,17 @@ int Synth::activeVoiceCount() const {
   // Process any pending commands so the count is immediate
   const_cast<Synth *>(this)->processCommands();
   std::lock_guard<std::mutex> lock(mutex_);
-  return (int)voices_.size();
+  return voiceCount_;
 }
 
 std::vector<Synth::ActiveVoice> Synth::getActiveVoices() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<ActiveVoice> active;
-  for (const auto &[midi, voice] : voices_) {
+  active.reserve(voiceCount_);
+  for (int v = 0; v < MAX_VOICES; v++) {
+    if (!voiceOn_[v])
+      continue;
+    const Voice &voice = voices_[v];
     active.push_back(
         {voice.envelope.amplitude, voice.frequency, voice.phase, voice.mode});
   }
@@ -286,7 +322,7 @@ void Synth::cycleWaveform() {
 Synth::EnvelopeState Synth::getDominantEnvelope() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  if (voices_.empty()) {
+  if (voiceCount_ == 0) {
     return {0.0f, 0.0f, 0.0f}; // Silence -> Black hole
   }
 
@@ -297,7 +333,10 @@ Synth::EnvelopeState Synth::getDominantEnvelope() const {
   float maxAmp = 0.0f;
   int bestPriority = -1; // Higher = wins
 
-  for (const auto &[note, voice] : voices_) {
+  for (int v = 0; v < MAX_VOICES; v++) {
+    if (!voiceOn_[v])
+      continue;
+    const Voice &voice = voices_[v];
     if (voice.envelope.amplitude < 0.001f)
       continue;
 
@@ -336,9 +375,9 @@ Synth::EnvelopeState Synth::getDominantEnvelope() const {
   EnvelopeState state;
   // Compute total amplitude without re-locking (we already hold mutex_)
   float total = 0.0f;
-  for (const auto &[midi, voice] : voices_) {
-    total += voice.envelope.amplitude;
-  }
+  for (int v = 0; v < MAX_VOICES; v++)
+    if (voiceOn_[v])
+      total += voices_[v].envelope.amplitude;
   state.intensity = total;
 
   // Map EnvPhase enum to float codes

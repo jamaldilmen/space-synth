@@ -10,7 +10,10 @@ struct FFTAnalyzer::Impl {
     DSPSplitComplex splitComplex;
     std::vector<float> realp;
     std::vector<float> imagp;
-    std::vector<float> window;  // Hann window
+    std::vector<float> window;    // Hann window
+    std::vector<float> windowed;  // windowed scratch — PREALLOCATED (2026-08-22):
+                                  // analyze() runs on the CoreAudio realtime
+                                  // thread and must not allocate.
 };
 
 FFTAnalyzer::FFTAnalyzer(int fftSize, int sampleRate)
@@ -28,6 +31,7 @@ FFTAnalyzer::FFTAnalyzer(int fftSize, int sampleRate)
     // Hann window
     impl_->window.resize(fftSize);
     vDSP_hann_window(impl_->window.data(), fftSize, vDSP_HANN_NORM);
+    impl_->windowed.resize(fftSize, 0.0f);
 
     magnitudes_.resize(halfN + 1, 0.0f);
     inputBuffer_.resize(fftSize, 0.0f);
@@ -56,11 +60,11 @@ void FFTAnalyzer::analyze() {
     int log2n = static_cast<int>(std::log2(fftSize_));
 
     // Apply Hann window
-    std::vector<float> windowed(fftSize_);
-    vDSP_vmul(inputBuffer_.data(), 1, impl_->window.data(), 1, windowed.data(), 1, fftSize_);
+    float *windowed = impl_->windowed.data();  // preallocated, see Impl
+    vDSP_vmul(inputBuffer_.data(), 1, impl_->window.data(), 1, windowed, 1, fftSize_);
 
     // Pack for FFT
-    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(windowed.data()), 2,
+    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(windowed), 2,
               &impl_->splitComplex, 1, halfN);
 
     // Forward FFT

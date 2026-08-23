@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <array>
 #include <vector>
 
 namespace space {
@@ -119,8 +119,27 @@ public:
   void handleNoteOnInternal(int midi, float velocity);
   void handleNoteOffInternal(int midi);
 
+  static constexpr int MAX_VOICES = 64; // Polyphonic safety limit
+
   mutable std::mutex mutex_;
-  std::unordered_map<int, Voice> voices_;
+
+  // ── FIXED VOICE POOL (2026-08-23) ─────────────────────────────────────────
+  // Was std::unordered_map<int, Voice>. Every mutation of that map ran on the
+  // CoreAudio realtime thread: erase() -> free(), operator[] -> malloc + a
+  // possible rehash, and the erase at the top of the per-sample loop meant a
+  // free() could happen PER SAMPLE. A realtime thread must never touch the
+  // allocator. Voice is plain data (no heap members), so a fixed pool costs
+  // one 64-slot array and removes the allocator from the audio path entirely.
+  // Lookup is a linear scan of 64 contiguous slots — cheaper in practice than
+  // the map's hashing and pointer chasing, and branch-predictable.
+  std::array<Voice, MAX_VOICES> voices_{};
+  std::array<bool, MAX_VOICES> voiceOn_{}; // slot occupied
+  int voiceCount_ = 0;                     // == count of true in voiceOn_
+
+  // -1 if no live voice holds that note / no slot is free.
+  int findVoiceSlot(int midi) const;
+  int allocVoiceSlot() const;
+  void releaseVoiceSlot(int slot);
   ModeTable modeTable_;
   EnvelopeParams envParams_;
   Chorus chorus_;
@@ -130,7 +149,6 @@ public:
   float drive_ = 1.6f;  // Default analog drive (Moog overdriven)
   float jitter_ = 1.0f; // Heisenberg physics jitter
 
-  static constexpr int MAX_VOICES = 64; // Polyphonic safety limit
   static constexpr int BASE_OCTAVE = 3;
   int keyboardStart() const { return (BASE_OCTAVE + octaveShift_) * 12 + 12; }
 

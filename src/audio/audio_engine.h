@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -72,8 +73,15 @@ public:
     bool isTransient = false;
   };
 
-  // Get the current VJ frequency analysis bands (lock-free read)
-  std::vector<VJBand> getVJBands() const;
+  static constexpr int kVJBands = 16;
+
+  // Get the current VJ frequency analysis bands. GENUINELY lock-free now
+  // (2026-08-22) — the old comment said "lock-free read" while the body took a
+  // mutex AND heap-allocated the returned vector INSIDE it, on the main thread,
+  // twice a frame, against a realtime thread that blocked on the same mutex.
+  // Returns by value: std::array is a stack aggregate, so no allocation, and
+  // .size() / range-for / indexing all behave as the old vector did.
+  std::array<VJBand, kVJBands> getVJBands() const;
 
   // Called by render thread to process available ring buffer audio into VJ
   // bands
@@ -97,8 +105,17 @@ public:
   int sampleRate_ = 48000;
 
   // VJ State
+  // RT-THREAD-PRIVATE working state. The envelope followers (fastEnv/slowEnv/
+  // cooldown) live here across callbacks; ONLY audioInputCallback mutates it
+  // after construction, so it needs no synchronisation of its own.
   std::vector<VJBand> vjBands_;
-  mutable std::mutex vjMutex_;
+
+  // ── PUBLICATION: seqlock, not a mutex (2026-08-22) ────────────────────────
+  // The realtime thread must never block. It publishes a snapshot by bumping
+  // vjSeq_ odd, copying, then bumping it even — both stores are wait-free.
+  // A reader retries if it observes an odd count or a changed count.
+  VJBand vjPublished_[kVJBands] = {};
+  mutable std::atomic<uint32_t> vjSeq_{0};
   std::atomic<float> vjInputGain_{2.0f}; // Default boost to 2.0x
   std::atomic<uint32_t> transientMask_{0};
 

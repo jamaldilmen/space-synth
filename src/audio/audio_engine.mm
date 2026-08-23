@@ -62,11 +62,12 @@ static OSStatus audioOutputCallback(void *inRefCon,
                                     const AudioTimeStamp *inTimeStamp,
                                     UInt32 inBusNumber, UInt32 inNumberFrames,
                                     AudioBufferList *ioData) {
-  static int callbackCount = 0;
-  if (++callbackCount % 100 == 1) {
-    fprintf(stderr, "[AUDIO] Output Callback pulse (%d) | frames=%u\n",
-            callbackCount, (unsigned int)inNumberFrames);
-  }
+  // ⛔ NO stdio HERE — 2026-08-22. A pulse `fprintf(stderr, ...)` every 100th
+  // callback lived on this line. stderr is unbuffered: it is a write(2) plus a
+  // FILE lock, on the thread that must never block. Nothing else read
+  // `callbackCount`, so it went with it. Do not add printf/NSLog/os_log to any
+  // function reachable from this callback — use a lock-free counter the render
+  // thread reads instead.
 
   auto *impl = static_cast<AudioEngine::Impl *>(inRefCon);
   float *outL = static_cast<float *>(ioData->mBuffers[0].mData);
@@ -146,7 +147,10 @@ static OSStatus audioInputCallback(void *inRefCon,
         // FFT frame is ready. Extract logarithmic bins.
         const auto &magnitudes = impl->fft->magnitudes();
 
-        std::lock_guard<std::mutex> lock(engine->vjMutex_);
+        // ⛔ NO LOCK HERE — 2026-08-22. This took lock_guard(vjMutex_) while
+        // the main thread held the same mutex in getVJBands() *and allocated
+        // under it*, 2x/frame. vjBands_ is RT-private; the snapshot is
+        // published wait-free below.
         for (int i = 0; i < 16; i++) {
           float centerFreq = engine->vjBands_[i].frequency;
           int binStart = (int)(centerFreq * 0.8f * 2048 / engine->sampleRate_);
@@ -193,6 +197,16 @@ static OSStatus audioInputCallback(void *inRefCon,
           }
         }
         engine->transientMask_.store(mask, std::memory_order_release);
+
+        // ── PUBLISH (seqlock write half). Wait-free: two relaxed/release
+        // stores around a 16-element copy. Odd count = write in progress.
+        const uint32_t seq = engine->vjSeq_.load(std::memory_order_relaxed);
+        engine->vjSeq_.store(seq + 1, std::memory_order_release);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (int i = 0; i < AudioEngine::kVJBands; i++) {
+          engine->vjPublished_[i] = engine->vjBands_[i];
+        }
+        engine->vjSeq_.store(seq + 2, std::memory_order_release);
       }
     }
   }
@@ -201,10 +215,14 @@ static OSStatus audioInputCallback(void *inRefCon,
 
 AudioEngine::AudioEngine() : impl_(new Impl()) {
   // Initialize VJ bands: 16 logarithmic bands
-  vjBands_.resize(16);
-  for (int i = 0; i < 16; i++) {
+  vjBands_.resize(kVJBands);
+  for (int i = 0; i < kVJBands; i++) {
     vjBands_[i].frequency = 40.0f * std::pow(2.0f, i * 0.5f); // 40Hz to ~7.5kHz
     vjBands_[i].amplitude = 0.0f;
+    // Seed the PUBLISHED copy too. Without this, getVJBands() returns
+    // frequency = 0 until the first FFT frame lands and the live-spectrum UI
+    // (main.cpp:1831, "%4.0fHz") labels all 16 bands "0Hz" before any audio.
+    vjPublished_[i] = vjBands_[i];
   }
 }
 
@@ -331,9 +349,19 @@ int AudioEngine::readSamples(float *buffer, int maxFrames) {
   return ringBuffer_.read(buffer, maxFrames);
 }
 
-std::vector<AudioEngine::VJBand> AudioEngine::getVJBands() const {
-  std::lock_guard<std::mutex> lock(vjMutex_);
-  return vjBands_;
+std::array<AudioEngine::VJBand, AudioEngine::kVJBands>
+AudioEngine::getVJBands() const {
+  // Seqlock read half. No mutex, no allocation — so the realtime thread is
+  // never blocked by this call. Retries only if it catches a write in flight.
+  std::array<VJBand, kVJBands> out{};
+  for (;;) {
+    const uint32_t s1 = vjSeq_.load(std::memory_order_acquire);
+    if (s1 & 1u) continue;  // writer mid-publish
+    for (int i = 0; i < kVJBands; i++) out[i] = vjPublished_[i];
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (vjSeq_.load(std::memory_order_relaxed) == s1) break;
+  }
+  return out;
 }
 
 } // namespace space

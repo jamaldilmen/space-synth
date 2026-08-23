@@ -24,9 +24,13 @@ struct Envelope {
     EnvPhase phase = EnvPhase::Off;
     float amplitude = 0.0f;
     float targetAmp = 0.0f;
-    float envTime = 0.0f;
+    float envTime = 0.0f;   // time within the CURRENT phase — reset on transitions
     float envStart = 0.0f;
-    float sustainHeld = 0.0f; // elapsed when noteOff fired → scales release collapse
+    // Time since noteOn, NOT reset by phase transitions (2026-08-23). envTime
+    // could not serve this: it is zeroed on Attack->Decay, so the old
+    // "hold time" was measured from a moving origin.
+    float noteAge = 0.0f;
+    float sustainHeld = 0.0f; // note length at noteOff → sets the release tail
 
     // Trigger attack phase
     void noteOn(float velocity = 1.0f);

@@ -10,7 +10,7 @@ struct PostFXUniforms {
     float chromaticAmount;  // 0-0.02 typical
     float time;             // seconds (animated glitch)
     float glitchAmount;     // 0-1 cyberpunk RGB block displacement
-    float scanlineAmount;   // 0-1 CRT scanlines
+    float postPad0;         // FREE (was scanlineAmount, deleted 2026-08-22)
     float neonGrade;        // 0-1 cyberpunk color grade
     float vignette;         // 0-1 edge darkening
     float audioLevel;       // 0-1 total amplitude (beat-reactive)
@@ -27,15 +27,38 @@ struct PostFXUniforms {
     float pixelStretch;     // 0-1 "5D look" radial pixel-stretch (driven by spin)
     float exposure;         // global HDR exposure multiplier (1.0 = neutral)
     float debugBypass;      // >0.5 = raw scene + plain Reinhard, whole chain skipped (whiteout bisect)
-    // Scalars MUST stay a multiple of 4 so the float4x4s below keep their
-    // 16-byte alignment on both sides. Was 24 (=96 B); now 28 (=112 B).
+    // ⚠️ MEASURED 2026-08-22 — THIS COMMENT WAS WRONG AND THE INVARIANT IS
+    // ALREADY VIOLATED. It claimed "now 28 (=112 B)". The real count is 27
+    // scalars = 108 B. Compiler-verified both sides: MSL sizeof 240 with the
+    // matrices at 112 (float4x4 forces 16-byte alignment), C++ sizeof 236 with
+    // them at 108 (float[16] needs only 4). THE TWO SIDES ARE 4 BYTES APART
+    // RIGHT NOW. Dormant only because the sole reader of inverseViewProj /
+    // prevViewProj is the `if (false && ...)` block at :476. It goes LIVE the
+    // moment camera motion blur is re-enabled (board G6 / C4a).
+    // Until it is fixed: do NOT add or remove a scalar here. `postPad0` is free.
     float gradeAmount;      // 0-1 blend of the display grade LUT (0 = exact bypass)
     float coverageResolve;  // 1 = coverage resolve on, 0 = off (was gradePad0)
     float smearShutter;     // smear length multiplier (2026-08-20, was gradePad1)
     float smearHold;        // band colour retention (2026-08-20, was gradePad2)
+    // ⭐ ALIGNMENT PAD — added 2026-08-22. 28 scalars = 112 B so this side and
+    // the C++ side land the matrices at the SAME offset without depending on
+    // either compiler's implicit padding. Free to repurpose as a real scalar,
+    // but the COUNT must stay a multiple of 4.
+    float postPad1;
     float4x4 inverseViewProj;
     float4x4 prevViewProj;
 };
+
+// ── PostFXUniforms layout guard (2026-08-22) — identical to the block in
+// src/render/renderer.h. __builtin_offsetof, not offsetof: MSL has no cstddef.
+static_assert(sizeof(PostFXUniforms) == 240,
+              "PostFXUniforms layout — update src/render/renderer.h AND its static_asserts");
+static_assert(__builtin_offsetof(PostFXUniforms, chromaticAmount) == 16,
+              "PostFXUniforms head anchor — layout drift vs renderer.h");
+static_assert(__builtin_offsetof(PostFXUniforms, smearHold) == 104,
+              "PostFXUniforms scalar-tail anchor — layout drift vs renderer.h");
+static_assert(__builtin_offsetof(PostFXUniforms, inverseViewProj) == 112,
+              "PostFXUniforms matrix anchor — THE bug this guard exists for");
 
 // ── HSV helpers (Sam Hocevar / IQ) for hue-shift VJ effect ──────────────────
 static float3 rgb2hsv(float3 c) {
@@ -497,11 +520,17 @@ fragment float4 postfx_fragment(
         color = max(color, prev * u.trailDecay);
     }
 
-    // ── Scanlines (CRT / techno) — applied last so it doesn't feed back ──
-    if (u.scanlineAmount > 0.0) {
-        float line = 0.5 + 0.5 * sin(in.uv.y * u.resolution.y * 3.14159265);
-        color.rgb *= 1.0 - u.scanlineAmount * 0.6 * (1.0 - line);
-    }
+    // ── Scanlines: DELETED 2026-08-22 (his order: "forget scanlines delete it").
+    // MEASURED first, so this is not a taste call. `resolution` is BACKING
+    // PIXELS, so at a fragment centre the argument was exactly pi*(row+0.5) and
+    // sin returned (-1)^row: `line` was exactly 0 or exactly 1 and NEVER between
+    // (0 of H rows in (0.01,0.99), H = 1080/1440/2160/2234/1537). Period 2.000
+    // px, 0.5000 cyc/px, f/f_N = 1.0000 — ON Nyquist. A prefilter cannot fix
+    // that: the exact per-pixel area-average still keeps 0.6366 amplitude. So no
+    // softness dial was ever possible — only two values existed. It also cost
+    // 30% of the light at full dial and moired on any resample.
+    // If it ever comes back: fixed LINE COUNT, period held >= 4 px, amplitude
+    // carrying the sinc. Board rows G10 / C6.
 
     // ── Vignette (cinematic framing) ─────────────────────────────────────
     if (u.vignette > 0.0) {

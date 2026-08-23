@@ -36,6 +36,22 @@ public:
   void *metalLayer() const;
   void *metalDevice() const;
 
+  // ── TWO-WINDOW MODE (2026-08-23, his order) ───────────────────────────────
+  // "i cant have the settings in the same window im sending out."
+  // Creates a SECOND, freely resizable window that owns the whole ImGui UI.
+  // The main window then renders nothing but the visuals — it is the thing you
+  // send out. ImGui's input is re-pointed at the settings view, so the main
+  // window's mouse/keys go to the CAMERA instead of being eaten by the panels.
+  // Returns false if it could not be created; the app then stays single-window.
+  bool createSettingsWindow(int width, int height, const std::string &title);
+  bool hasSettingsWindow() const;
+  bool settingsWindowVisible() const;
+  // Toggle two-window mode. Builds the window on first use. Returns true if the
+  // controls are now in their own window, false if they went back to the main
+  // one. Bound to I in main.cpp.
+  bool toggleSettingsWindow();
+  void *settingsMetalLayer() const; // CAMetalLayer*, nil when single-window
+
   int width() const;
   int height() const;
   float getContentScale() const;

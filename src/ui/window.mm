@@ -18,6 +18,17 @@ struct WindowImpl;
 @property(nonatomic, assign) space::Window::Impl *impl;
 @end
 
+// ── TWO-WINDOW MODE: the settings window's view ───────────────────────────
+// Deliberately dumb. It owns a CAMetalLayer so ImGui can be drawn into it, and
+// it accepts first responder so keyboard reaches ImGui. It does NOT forward to
+// the app's key/mouse callbacks: camera control belongs to the OUTPUT window.
+@interface SpaceSynthSettingsView : NSView
+@end
+
+@interface SpaceSynthSettingsDelegate : NSObject <NSWindowDelegate>
+@property(nonatomic, assign) space::Window::Impl *impl;
+@end
+
 @interface SpaceSynthWindowDelegate : NSObject <NSWindowDelegate>
 @property(nonatomic, assign) space::Window::Impl *impl;
 @end
@@ -30,6 +41,13 @@ struct Window::Impl {
   SpaceSynthWindowDelegate *delegate = nil;
   CAMetalLayer *layer = nil;
   id<MTLDevice> device = nil;
+
+  // TWO-WINDOW MODE (2026-08-23) — nil unless createSettingsWindow() ran.
+  NSWindow *settingsWindow = nil;
+  SpaceSynthSettingsView *settingsView = nil;
+  SpaceSynthSettingsDelegate *settingsDelegate = nil;
+  CAMetalLayer *settingsLayer = nil;
+  bool settingsVisible = false;
 
   KeyCallback keyCallback;
   MouseCallback mouseCallback;
@@ -67,6 +85,38 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 } // namespace space
+
+@implementation SpaceSynthSettingsView
+- (BOOL)wantsLayer { return YES; }
+- (BOOL)wantsUpdateLayer { return YES; }
+- (CALayer *)makeBackingLayer { return [CAMetalLayer layer]; }
+- (BOOL)acceptsFirstResponder { return YES; }
+@end
+
+@implementation SpaceSynthSettingsDelegate
+- (void)windowDidResize:(NSNotification *)notification {
+  if (!self.impl || !self.impl->settingsLayer)
+    return;
+  NSRect b = [self.impl->settingsView bounds];
+  CGFloat scale = [self.impl->settingsWindow backingScaleFactor];
+  self.impl->settingsLayer.contentsScale = scale;
+  // Free-floating: this window is NOT subject to the pinned render size. It is
+  // a control surface, not a render target, so it may be any size he likes.
+  self.impl->settingsLayer.drawableSize =
+      CGSizeMake(b.size.width * scale, b.size.height * scale);
+}
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+  // Closing the settings window must NOT kill the show. Hide it, and hand the
+  // UI back to the main window so he is never left with no controls at all.
+  if (self.impl) {
+    self.impl->settingsVisible = false;
+    ImGui_ImplOSX_Shutdown();
+    ImGui_ImplOSX_Init(self.impl->metalView);
+  }
+  [sender orderOut:nil];
+  return NO;
+}
+@end
 
 @implementation SpaceSynthWindowDelegate
 
@@ -443,6 +493,114 @@ void Window::setResizeCallback(ResizeCallback cb) {
 }
 void Window::setFrameCallback(FrameCallback cb) { impl_->frameCallback = cb; }
 
+bool Window::createSettingsWindow(int width, int height,
+                                  const std::string &title) {
+  @autoreleasepool {
+    if (impl_->settingsWindow)
+      return true; // already up
+    if (!impl_->device)
+      return false;
+
+    NSRect frame = NSMakeRect(0, 0, width, height);
+    NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                       NSWindowStyleMaskResizable |
+                       NSWindowStyleMaskMiniaturizable;
+    impl_->settingsWindow =
+        [[NSWindow alloc] initWithContentRect:frame
+                                    styleMask:style
+                                      backing:NSBackingStoreBuffered
+                                        defer:NO];
+    if (!impl_->settingsWindow)
+      return false;
+
+    [impl_->settingsWindow
+        setTitle:[NSString stringWithUTF8String:title.c_str()]];
+    // A control surface should never be the thing that goes fullscreen onto the
+    // wall by accident.
+    [impl_->settingsWindow
+        setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary];
+
+    impl_->settingsView =
+        [[SpaceSynthSettingsView alloc] initWithFrame:frame];
+
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = impl_->device;
+    // ⭐ IDENTICAL to the main window's layer, on purpose (2026-08-23).
+    // The first attempt used BGRA8Unorm with the default colorspace and he
+    // said it "looked like shit" — correctly. The theme's colours are authored
+    // for the main window's RGBA16Float + extended-sRGB layer, where [0,1]
+    // maps exactly like sRGB. Writing those same values into a plain UNORM
+    // target skips that mapping, so every colour lands at the wrong gamma.
+    // Same format + same colorspace = the panels look exactly as they do in
+    // the synth window, which is what he asked for.
+    layer.pixelFormat = MTLPixelFormatRGBA16Float;
+    layer.wantsExtendedDynamicRangeContent = YES;
+    CGColorSpaceRef uiSpace =
+        CGColorSpaceCreateWithName(kCGColorSpaceExtendedSRGB);
+    layer.colorspace = uiSpace;
+    CGColorSpaceRelease(uiSpace);
+    layer.framebufferOnly = YES;
+    CGFloat scale = [impl_->settingsWindow backingScaleFactor];
+    layer.contentsScale = scale;
+    layer.drawableSize = CGSizeMake(width * scale, height * scale);
+
+    [impl_->settingsView setLayer:layer];
+    [impl_->settingsView setWantsLayer:YES];
+    impl_->settingsLayer = layer;
+
+    impl_->settingsDelegate = [[SpaceSynthSettingsDelegate alloc] init];
+    impl_->settingsDelegate.impl = impl_;
+    [impl_->settingsWindow setDelegate:impl_->settingsDelegate];
+    [impl_->settingsWindow setContentView:impl_->settingsView];
+
+    // ⭐ RE-POINT IMGUI'S INPUT AT THE SETTINGS VIEW. Without this the panels
+    // draw in the new window but only respond to clicks in the old one.
+    ImGui_ImplOSX_Shutdown();
+    ImGui_ImplOSX_Init(impl_->settingsView);
+
+    // Put it beside the output window rather than on top of it.
+    [impl_->settingsWindow cascadeTopLeftFromPoint:NSMakePoint(40, 40)];
+    [impl_->settingsWindow makeKeyAndOrderFront:nil];
+    [impl_->settingsWindow makeFirstResponder:impl_->settingsView];
+    impl_->settingsVisible = true;
+    return true;
+  }
+}
+
+bool Window::hasSettingsWindow() const {
+  return impl_->settingsWindow != nil;
+}
+
+bool Window::settingsWindowVisible() const { return impl_->settingsVisible; }
+
+bool Window::toggleSettingsWindow() {
+  @autoreleasepool {
+    if (!impl_->settingsWindow) {
+      // First press builds it. Nothing is allocated until he asks for it.
+      if (!createSettingsWindow(560, 900, "SPACE Synth — Controls"))
+        return false;
+      return impl_->settingsVisible;
+    }
+    if (impl_->settingsVisible) {
+      impl_->settingsVisible = false;
+      ImGui_ImplOSX_Shutdown();
+      ImGui_ImplOSX_Init(impl_->metalView); // controls return to the main window
+      [impl_->settingsWindow orderOut:nil];
+    } else {
+      impl_->settingsVisible = true;
+      ImGui_ImplOSX_Shutdown();
+      ImGui_ImplOSX_Init(impl_->settingsView);
+      [impl_->settingsWindow makeKeyAndOrderFront:nil];
+      [impl_->settingsWindow makeFirstResponder:impl_->settingsView];
+    }
+    return impl_->settingsVisible;
+  }
+}
+
+void *Window::settingsMetalLayer() const {
+  return (__bridge void *)impl_->settingsLayer;
+}
+
 void Window::run() {
   impl_->lastFrameTime = mach_absolute_time();
 
@@ -466,7 +624,10 @@ void Window::run() {
       dt = 0.033f;
 
     ImGui_ImplMetal_NewFrame(nil);
-    ImGui_ImplOSX_NewFrame(impl_->metalView);
+    // DisplaySize comes from whichever view actually hosts the UI.
+    ImGui_ImplOSX_NewFrame(impl_->settingsVisible
+                               ? (NSView *)impl_->settingsView
+                               : (NSView *)impl_->metalView);
     ImGui::NewFrame();
 
     impl_->frameCallback(dt);

@@ -43,6 +43,7 @@ struct Renderer::Impl {
 #if HAS_SYPHON
   SyphonMetalServer *syphonServer = nil;   // live video out (Resolume/Arena etc.)
   id<MTLTexture> syphonTexture = nil;      // dedicated SDR-tonemapped feed (vibrant in SDR)
+  CAMetalLayer *uiLayer = nil;             // TWO-WINDOW MODE: settings window, nil = single
 #endif
   id<MTLEvent> frameEvent;                 // Synchronization fence
   uint64_t frameEventValue;                // Fence ticket
@@ -3762,6 +3763,26 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
         printf("  %.2f:%.1f%%", pow(2.0, -2.0 + b * 10.0 / 16.0),
                100.0 * kp[50 + b] / (szN > 0 ? szN : 1));
       }
+      // ── G2 PRE-CLAMP (2026-08-22) ────────────────────────────────────────
+      // The bins above are POST-clamp, so every floored star reads as 1.0 px
+      // and the histogram cannot say what drove it. These are rawSize BEFORE
+      // `drawn = clamp(rawSize, 1.0f, zoomCap)`, same gate, same log2 ladder.
+      {
+        double rN = 0;
+        for (int b = 0; b < 16; b++) rN += kp[84 + b];
+        if (rN > 0) {
+          printf("\n[KPROBE-RAW] n=%.0f  meanRaw=%.3f px  FLOORED=%.1f%%  "
+                 "capped=%.1f%%",
+                 rN, (kp[102] / 100.0) / rN,
+                 100.0 * kp[100] / rN, 100.0 * kp[101] / rN);
+          printf("\n[KPROBE-RAW] rawSize px:");
+          for (int b = 0; b < 16; b++) {
+            if (!kp[84 + b]) continue;
+            printf("  %.2f:%.1f%%", pow(2.0, -2.0 + b * 10.0 / 16.0),
+                   100.0 * kp[84 + b] / rN);
+          }
+        }
+      }
       printf("\n[KPROBE-SCALE] mass Msun:");
       for (int b = 0; b < 16; b++) {
         if (!kp[66 + b]) continue;
@@ -4325,7 +4346,6 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   post.chromaticAmount = config.chromaticAmount;
   post.time = config.fxTime;
   post.glitchAmount = config.glitchAmount;
-  post.scanlineAmount = config.scanlineAmount;
   post.neonGrade = config.neonGrade;
   post.vignette = config.vignette;
   post.audioLevel = config.audioLevel;
@@ -4452,21 +4472,54 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   }
 #endif
 
-  // ── UI pass: draw the ImGui menu OVER the clean render (on-screen only) ──
-  MTLRenderPassDescriptor *uiPass = [MTLRenderPassDescriptor renderPassDescriptor];
-  uiPass.colorAttachments[0].texture = drawable.texture;
-  uiPass.colorAttachments[0].loadAction = MTLLoadActionLoad;   // keep the render
-  uiPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-  id<MTLRenderCommandEncoder> uiEnc =
-      [cmdBuf renderCommandEncoderWithDescriptor:uiPass];
+  // ── UI pass ───────────────────────────────────────────────────────────────
+  // ImGui::Render() must run EXACTLY ONCE per frame whatever happens below,
+  // or ImGui's frame state desyncs and the next NewFrame asserts.
   ImGui::Render();
-  ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, uiEnc);
-  [uiEnc endEncoding];
 
+  id<CAMetalDrawable> uiDrawable = nil;
+  if (uiLayer) {
+    // TWO-WINDOW MODE: the panels go to the settings window and the output
+    // drawable is left completely clean.
+    uiDrawable = [uiLayer nextDrawable];
+    if (uiDrawable) {
+      MTLRenderPassDescriptor *uiPass =
+          [MTLRenderPassDescriptor renderPassDescriptor];
+      uiPass.colorAttachments[0].texture = uiDrawable.texture;
+      uiPass.colorAttachments[0].loadAction = MTLLoadActionClear; // own window
+      uiPass.colorAttachments[0].clearColor =
+          MTLClearColorMake(0.045, 0.05, 0.065, 1.0);
+      uiPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> uiEnc =
+          [cmdBuf renderCommandEncoderWithDescriptor:uiPass];
+      ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, uiEnc);
+      [uiEnc endEncoding];
+    }
+    // If nextDrawable returned nil (window hidden/minimised) we simply skip the
+    // encode. The frame is still valid — the draw data is just dropped.
+  } else {
+    // SINGLE WINDOW: unchanged — draw the menu over the clean render.
+    MTLRenderPassDescriptor *uiPass =
+        [MTLRenderPassDescriptor renderPassDescriptor];
+    uiPass.colorAttachments[0].texture = drawable.texture;
+    uiPass.colorAttachments[0].loadAction = MTLLoadActionLoad; // keep the render
+    uiPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> uiEnc =
+        [cmdBuf renderCommandEncoderWithDescriptor:uiPass];
+    ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, uiEnc);
+    [uiEnc endEncoding];
+  }
+
+  if (uiDrawable)
+    [cmdBuf presentDrawable:uiDrawable];
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
 
   currentFrame = (currentFrame + 1) % kMaxInFlightFrames;
+}
+
+void Renderer::setUILayer(void *metalLayer) {
+  impl_->uiLayer = (__bridge CAMetalLayer *)metalLayer;
 }
 
 void Renderer::renderImGui(void *renderEncoder) {

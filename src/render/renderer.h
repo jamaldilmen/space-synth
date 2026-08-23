@@ -98,7 +98,6 @@ struct RenderConfig {
 
   // Creative post-FX (cyberpunk / techno / cinematic)
   float glitchAmount = 0.0f;   // RGB block displacement, beat-reactive
-  float scanlineAmount = 0.0f; // CRT scanlines
   float neonGrade = 0.0f;      // cyberpunk color grade
   float gradeAmount = 0.0f;    // display grade LUT blend (grade_lut.h); 0 = bypass
   float vignette = 0.0f;       // edge darkening
@@ -142,7 +141,9 @@ struct PostFXUniforms {
   float chromaticAmount;
   float time;          // seconds, drives animated glitch
   float glitchAmount;  // 0-1 cyberpunk RGB block displacement
-  float scanlineAmount;// 0-1 CRT scanlines
+  float postPad0;      // FREE (was scanlineAmount, deleted 2026-08-22). KEPT as
+                       // a pad on purpose — removing it would move the matrices
+                       // on this side only. See the mismatch note below.
   float neonGrade;     // 0-1 cyberpunk color grade
   float vignette;      // 0-1 edge darkening
   float audioLevel;    // 0-1 total amplitude → beat-reactive FX
@@ -159,8 +160,13 @@ struct PostFXUniforms {
   float pixelStretch;  // 0-1 "5D look" radial pixel-stretch (driven by spin)
   float exposure;      // global HDR exposure multiplier (1.0 = neutral)
   float debugBypass;   // >0.5 = raw scene + Reinhard (whiteout bisect)
-  // Scalars MUST stay a multiple of 4 so the matrices below keep 16-byte
-  // alignment and match MSL. Was 24 (=96 B); now 28 (=112 B).
+  // ⚠️ MEASURED 2026-08-22 — THIS COMMENT WAS WRONG AND THE INVARIANT IS
+  // ALREADY VIOLATED. It claimed "now 28 (=112 B)". The real count is 27
+  // scalars = 108 B. Compiler-verified: MSL sizeof 240, matrices at 112;
+  // C++ sizeof 236, matrices at 108. THE TWO SIDES ARE 4 BYTES APART RIGHT NOW.
+  // Dormant only because the sole reader of both matrices is the
+  // `if (false && ...)` block at postfx.metal:476. Do NOT add or remove a
+  // scalar here until it is fixed. `postPad0` above is free.
   float gradeAmount;   // 0-1 display grade LUT blend (0 = exact bypass)
   // COVERAGE RESOLVE (2026-08-11, board §H9): 1 = on, 0 = off. Repurposed from
   // gradePad0 ON PURPOSE — a pad float is the one place a new scalar can be
@@ -171,9 +177,33 @@ struct PostFXUniforms {
   float smearShutter;  // SMEAR LENGTH (2026-08-20) — multiplies the star pass's
                        // measured 0.05 s of travel. Was a hardcoded 8. (gradePad1)
   float smearHold;     // 0 = band fades (blur), 1 = holds colour (bands). (gradePad2)
+  // ⭐ ALIGNMENT PAD — added 2026-08-22, this is the actual fix for the 4-byte
+  // CPU/GPU split. 27 scalars = 108 B; MSL's `float4x4` forces 16-byte
+  // alignment and pads 108 -> 112, while `float[16]` here needs only 4 and does
+  // not. That put every matrix read in postfx.metal one float out of place.
+  // 28 scalars = 112 B makes both sides land identically WITHOUT relying on
+  // either compiler's implicit padding. Free to repurpose as a real scalar
+  // later — but the COUNT must stay a multiple of 4.
+  float postPad1;
   float inverseViewProj[16];
   float prevViewProj[16];
 };
+
+// ── PostFXUniforms layout guard (2026-08-22) ────────────────────────────────
+// Same pattern as CameraUniforms below: the mirror is bound by the compiler,
+// not by a comment. It was a COMMENT that guarded this struct before, it said
+// "28 (=112 B)" while the truth was 27 (=108 B), and the mirror had been broken
+// for an unknown length of time. Written identically into the top of
+// src/render/postfx.metal.
+static_assert(sizeof(PostFXUniforms) == 240,
+              "PostFXUniforms layout — update the mirrored struct at the top of "
+              "src/render/postfx.metal AND its matching static_asserts");
+static_assert(__builtin_offsetof(PostFXUniforms, chromaticAmount) == 16,
+              "PostFXUniforms head anchor — layout drift vs postfx.metal");
+static_assert(__builtin_offsetof(PostFXUniforms, smearHold) == 104,
+              "PostFXUniforms scalar-tail anchor — layout drift vs postfx.metal");
+static_assert(__builtin_offsetof(PostFXUniforms, inverseViewProj) == 112,
+              "PostFXUniforms matrix anchor — THE bug this guard exists for");
 
 // Camera uniforms — matches the struct in render.metal
 struct CameraUniforms {
@@ -479,6 +509,13 @@ public:
   void resize(int width, int height);
 
   void renderImGui(void *renderEncoder);
+
+  // ── TWO-WINDOW MODE (2026-08-23) ──────────────────────────────────────────
+  // Hand this the settings window's CAMetalLayer and the ImGui UI is drawn
+  // THERE instead of on top of the show. Pass nullptr to go back to a single
+  // window. The output drawable is then never touched by the UI pass at all —
+  // this is not a hide, the panels are simply not composited into the feed.
+  void setUILayer(void *metalLayer);
 
   int particleCount() const;
   void setActiveParticleCount(int count);

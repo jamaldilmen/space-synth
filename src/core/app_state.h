@@ -91,7 +91,6 @@ struct AppState {
   float uiTrailDecay = 0.05f; // "Fluidity" (screen persistence — NOT the trails)
   float uiChromatic = 0.0f;
   float uiGlitch = 0.0f;
-  float uiScanlines = 0.0f;
   float uiNeonGrade = 0.0f;
   // Display grade LUT blend. DEFAULT 0 = exact bypass: the stage ships proving
   // it changes nothing until HE dials it. The look is his verdict, not mine.

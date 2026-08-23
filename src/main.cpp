@@ -152,6 +152,20 @@ int main() {
     return 1;
   }
 
+  // ── TWO-WINDOW MODE (2026-08-23, his order) ───────────────────────────────
+  // "i cant have the settings in the same window im sending out. just gimme two
+  //  windows mode and if its two windows all the settings are in the same
+  //  sizable window and the synth is just synth."
+  // SS_TWO_WINDOWS=1 puts the whole ImGui UI in its own freely resizable
+  // window; the main window then renders nothing but the show. Same env-var
+  // idiom as SS_FULLSCREEN. Off = the old single-window behaviour, untouched.
+  // Press I at any time to toggle. SS_TWO_WINDOWS=1 just starts in that mode.
+  if (getenv("SS_TWO_WINDOWS")) {
+    if (!window.toggleSettingsWindow())
+      fprintf(stderr, "[UI] SS_TWO_WINDOWS set but the settings window could "
+                      "not be created — staying single-window.\n");
+  }
+
   // ImGui global configuration
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigDragClickToInputText =
@@ -476,6 +490,17 @@ int main() {
     // N = bleach isolation: disable the sensor bleach only. If the traveling
     // cream "yellow zone" turns into structured white/colour, the bleach's
     // partial-wash band is confirmed as the yellow-maker.
+    // ── I = TWO-WINDOW MODE (2026-08-23, his order: "i press a key and it
+    // goes two windows"). 34 is free: not in keyMap[] (the piano keys) and
+    // not bound elsewhere. WantCaptureKeyboard is checked upstream in
+    // window.mm, so typing an "i" into a text field does not trigger it.
+    if (e.keyCode == 34 && e.isDown && !e.isRepeat) {
+      const bool split = window.toggleSettingsWindow();
+      printf("[UI] two-window mode %s\n",
+             split ? "ON — main window is now clean output"
+                   : "OFF — controls back in the main window");
+    }
+
     if (e.keyCode == 45 && e.isDown) {
       debugNoBleach = !debugNoBleach;
       printf("[POSTFX] bleach %s\n", debugNoBleach ? "OFF (isolation)" : "ON");
@@ -2003,11 +2028,6 @@ int main() {
           app.uiGlitch = 0.0f;
         ImGui::SetItemTooltip("Datamosh RGB block tear (beat-reactive)");
 
-        UiSliderFloat("Scanlines", &app.uiScanlines, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          app.uiScanlines = 0.0f;
-        ImGui::SetItemTooltip("CRT scanlines");
-
         UiSliderFloat("Neon Grade", &app.uiNeonGrade, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
           app.uiNeonGrade = 0.0f;
@@ -2376,7 +2396,6 @@ int main() {
     // Creative FX + beat reactivity
     app.uiFxTime += dt;
     config.glitchAmount = app.uiGlitch;
-    config.scanlineAmount = app.uiScanlines;
     config.neonGrade = app.uiNeonGrade;
     config.gradeAmount = app.uiGradeAmount;
     config.vignette = app.uiVignette;
@@ -2663,6 +2682,13 @@ int main() {
                            app.uiRestLength, debugFlags);
     }
 
+    // Two-window mode is a per-frame fact, not a one-time setup: he can also
+    // close the controls window with its red button, which window.mm handles
+    // by hiding it. Reading visibility here keeps the UI target correct in
+    // every one of those paths.
+    renderer.setUILayer(window.settingsWindowVisible()
+                            ? window.settingsMetalLayer()
+                            : nullptr);
     renderer.render(config, viewProj);
 
     // FPS

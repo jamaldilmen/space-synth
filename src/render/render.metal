@@ -2523,6 +2523,30 @@ vertex VertexOut particle_vertex(
             atomic_fetch_max_explicit(&kProbe[82u], qsz, memory_order_relaxed);
             atomic_fetch_add_explicit(&kProbe[83u], qsz, memory_order_relaxed);
         }
+        // ── G2 PRE-CLAMP SIZE (2026-08-22) — MEASUREMENT ONLY ───────────────
+        // The [50..65] histogram bins `out.pointSize`, which is POST-clamp
+        // (`drawn = clamp(rawSize, 1.0f, zoomCap)`). Every floored star lands
+        // at exactly 1.0 px, i.e. in bin 3, so that histogram CANNOT tell
+        // "rawSize 0.46, floored" from "rawSize 1.2, natural" — which is why
+        // the 96%-in-one-bin reading has never settled what actually drives it.
+        // These slots bin rawSize BEFORE the clamp, on the same log2 ladder and
+        // inside the same every-64th gate, so the two are directly comparable.
+        //   [84..99] rawSize, 16 log2 bins over 0.25 px .. 256 px
+        //   [100] count floored (rawSize < 1)   [101] count capped (rawSize > zoomCap)
+        //   [102] sum rawSize x100 (-> mean). No atomic_min: the buffer is
+        //   zero-cleared each frame, so a min would always report 0.
+        // Nothing here is read back into the picture.
+        if (rawSize > 0.0f) {
+            float ru = clamp((log2(rawSize) + 2.0f) * (16.0f / 10.0f), 0.0f, 15.0f);
+            atomic_fetch_add_explicit(&kProbe[84u + uint(ru)], 1u,
+                                      memory_order_relaxed);
+            if (rawSize < 1.0f)
+                atomic_fetch_add_explicit(&kProbe[100u], 1u, memory_order_relaxed);
+            if (rawSize > zoomCap)
+                atomic_fetch_add_explicit(&kProbe[101u], 1u, memory_order_relaxed);
+            uint qraw = uint(min(rawSize * 100.0f, 1.0e7f));
+            atomic_fetch_add_explicit(&kProbe[102u], qraw, memory_order_relaxed);
+        }
         float mB = clamp((log10(max(in.posW.w, 1.0e-4f)) + 2.0f) * (16.0f / 5.0f),
                          0.0f, 15.0f);
         atomic_fetch_add_explicit(&kProbe[66u + uint(mB)], 1u, memory_order_relaxed);

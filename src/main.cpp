@@ -141,8 +141,10 @@ int main() {
   }
   Logger::log("Application Started: SPACE Synth v1.0 [STABLE]");
 
-  float scale = window.getContentScale();
-  space::UITheme::ApplyPremiumTheme(scale);
+  // Style metrics follow the UI scale (physical DPI), NOT the backing scale.
+  // At 3024x1964 in a 1x mode backingScaleFactor is 1.0, which told the theme
+  // nothing about the panel being 253 ppi — hence a microscopic UI.
+  space::UITheme::ApplyPremiumTheme(window.getUIScale());
 
   // ── Renderer ────────────────────────────────────────────────────────
   Renderer renderer;

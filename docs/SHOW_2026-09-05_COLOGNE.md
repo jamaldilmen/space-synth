@@ -1,17 +1,19 @@
 # 🎪 SHOW — 2026-09-05, COLOGNE, OPENING EVENT
 
-**Written:** 2026-08-21 · **Days out: 15** (2026-08-21 → 2026-09-05)
+**Written:** 2026-08-21 · **Days out: 13** (2026-08-23 → 2026-09-05)
+
+🚨 **SUPERSEDED ON GEOMETRY — 2026-08-23 12:26:22.** The venue is a **three-wall room**, not one wall: two sides **15 × 4 m** plus the front **10 × 4 m**, i.e. **40 × 4 m unwrapped, 160 m²**, wrapping ~270° around a viewer inside. The 10 × 4 m / 2.5:1 figures below are the **FRONT WALL ONLY** and are kept for provenance. ⛔ One camera cannot render 270° — the correct construction is **one camera POSITION, three off-axis frustums**. Read **row S00 in `docs/TODO.md`** and the working in **`docs/DESIGN_2026-08-23_THREE_WALL_ROOM.md`** before using any number on this page. Everything here that is NOT geometry — the output path, S1–S6, and what an agent may and may not do — still stands.
 
 | Fact | Value | Source |
 |---|---|---|
 | Date | 2026-09-05 | his message 2026-08-21 |
 | City / slot | Cologne, opening event | his message |
-| Screen | ~40 m², **10 × 4 m** | his message |
+| Screen | ⚠️ **SUPERSEDED** — was “~40 m², **10 × 4 m**”. Actual: **three walls, 15 × 4 + 15 × 4 + 10 × 4 = 40 × 4 m unwrapped, 160 m²** | his message 2026-08-21, corrected by his brief 2026-08-23 12:26:22 |
 | Projection | **6 beamers** | his message |
-| **Aspect** | **2.5 : 1** | derived from 10 × 4 |
+| **Aspect** | ⚠️ **FRONT WALL ONLY: 2.5 : 1.** Sides are **3.75 : 1** each; the full unwrap is **10 : 1** — but it must never be rendered as one 10:1 image and sliced | derived from the three-wall brief 2026-08-23 12:26:22 |
 | Output path | SpaceSynth → Syphon "Main" → media server → 6 outputs | `renderer.mm:418`, `:4406` |
 
-⚠️ **This replaces Berlin New Media Week as the target.** The board still names Berlin.
+⚠️ **This replaces Berlin New Media Week as the target.** ✅ `docs/BOARD.md:16` and `docs/TODO.md` were corrected 2026-08-23 14:12:09 — they had carried the Berlin date for two days after the move. The older dated handoffs still say Berlin and are left alone: a handoff is a snapshot of what was true when it was written.
 
 🚩 **SCOPE — his words 2026-08-21:** *"the duration of the set is not you concern. i will have live moments in my ret and moment where ill laly pre rendererd stuff ill mix it. arrangement and all associated to that is my cocnern"*
 **He mixes LIVE and PRE-RENDERED material.** Set length, arrangement, and what plays when are **HIS**.
@@ -47,4 +49,5 @@ screenshot and clicks. That is the direct answer to "STARS ARE UNDIALABLE" — b
 
 ---
 
-**Last Updated:** 2026-08-21
+**Last Updated:** 2026-08-23 14:12:09  *(geometry superseded by the three-wall room; the Screen and Aspect rows corrected in place with the original values kept. No other row touched.)*
+**Previously:** 2026-08-21

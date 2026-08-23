@@ -56,6 +56,15 @@ public:
   int height() const;
   float getContentScale() const;
 
+  // ── UI SCALE (2026-08-23) ─────────────────────────────────────────────────
+  // NOT the backing scale. backingScaleFactor is 1.0 in every 1x display mode,
+  // so it says the same thing at 110 ppi and at 253 ppi — which is why running
+  // the panel at its native 3024x1964 made the whole UI microscopic. This is
+  // derived from the display's PHYSICAL dots-per-inch instead, so the controls
+  // keep a constant physical size whatever mode the screen is in.
+  // Override with SS_UI_SCALE=<float> (0.5 .. 4.0).
+  float getUIScale() const;
+
   // ── S1 (2026-08-21): PIN THE RENDER BUFFER TO EXACT PIXELS ───────────────
   // Call BEFORE create(). The whole pipeline, the Syphon feed and any
   // recording are sized from the drawable, so the drawable must be exactly

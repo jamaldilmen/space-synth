@@ -377,6 +377,18 @@ bool Window::create(int width, int height, const std::string &title) {
     layer.colorspace = edrSpace;
     CGColorSpaceRelease(edrSpace);
     layer.framebufferOnly = NO; // drawable is blit-copied for the trail buffer
+    // ── LETTERBOX, NEVER STRETCH (2026-08-23) ────────────────────────────────
+    // CALayer's default contentsGravity is kCAGravityResize, which scales the
+    // drawable to the layer's box on EACH AXIS INDEPENDENTLY. With a pinned
+    // drawable that is not the window's shape, that is a non-uniform scale:
+    // pinned 3840x1536 (2.5:1) shown fullscreen on a 3024x1964 (1.539:1) screen
+    // scaled x by 0.788 and y by 1.279 — a 1.62x vertical stretch, and every
+    // circular orbit rendered as a vertical egg. His screenshot, 12:14.
+    // ResizeAspect preserves the ratio and letterboxes instead, so a pinned
+    // 2.5:1 render previews as a true 2.5:1 image with bars. The RENDER is
+    // unaffected either way — this is purely how the finished drawable is
+    // fitted into the window.
+    layer.contentsGravity = kCAGravityResizeAspect;
     layer.contentsScale = scale;
     if (impl_->pinnedW > 0 && impl_->pinnedH > 0) {
       layer.drawableSize = CGSizeMake(impl_->pinnedW, impl_->pinnedH);
@@ -411,8 +423,13 @@ bool Window::create(int width, int height, const std::string &title) {
       fontPath = [execPath stringByAppendingPathComponent:@"../third_party/imgui/misc/fonts/Roboto-Medium.ttf"];
     }
 
-    float baseFontSize = 20.0f; // Increased from 16.0 for better readability
-    float fontSize = baseFontSize * scale;
+    // `scale` is the BACKING scale and is only about crispness: render the
+    // glyphs at device resolution, then divide back down so they occupy the
+    // right number of POINTS. uiScale is a separate axis — how big the UI
+    // should be to the eye — and comes from physical DPI, not from backing.
+    const float uiScale = getUIScale();
+    float baseFontSize = 20.0f; // chosen at ~110 ppi
+    float fontSize = baseFontSize * uiScale * scale;
     if ([[NSFileManager defaultManager] fileExistsAtPath:fontPath]) {
       io.Fonts->AddFontFromFileTTF([fontPath UTF8String], fontSize);
     }
@@ -470,6 +487,30 @@ int Window::drawableWidth() const {
 }
 int Window::drawableHeight() const {
   return impl_->drawH > 0 ? impl_->drawH : impl_->height;
+}
+
+float Window::getUIScale() const {
+  // Explicit override always wins.
+  if (const char *e = getenv("SS_UI_SCALE")) {
+    float v = (float)atof(e);
+    if (v >= 0.5f && v <= 4.0f)
+      return v;
+    fprintf(stderr, "[UI] SS_UI_SCALE=%s out of range 0.5..4.0, ignored\n", e);
+  }
+  CGDirectDisplayID d = CGMainDisplayID();
+  CGSize mm = CGDisplayScreenSize(d); // physical, in millimetres
+  size_t px = CGDisplayPixelsWide(d);
+  if (mm.width <= 1.0 || px == 0)
+    return 1.0f; // projectors and some externals report no physical size
+  const double dpi = (double)px / (mm.width / 25.4);
+  // 110 ppi is the density the 20 px base font was chosen for. A 253 ppi
+  // panel at 1x therefore wants ~2.3x to look the same size to the eye.
+  double s = dpi / 110.0;
+  if (s < 1.0) s = 1.0;
+  if (s > 3.0) s = 3.0;
+  printf("[UI] display %.0f ppi -> UI scale %.2fx (SS_UI_SCALE overrides)\n",
+         dpi, s);
+  return (float)s;
 }
 
 float Window::getContentScale() const {

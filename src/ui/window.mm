@@ -502,14 +502,24 @@ float Window::getUIScale() const {
   size_t px = CGDisplayPixelsWide(d);
   if (mm.width <= 1.0 || px == 0)
     return 1.0f; // projectors and some externals report no physical size
-  const double dpi = (double)px / (mm.width / 25.4);
-  // 110 ppi is the density the 20 px base font was chosen for. A 253 ppi
-  // panel at 1x therefore wants ~2.3x to look the same size to the eye.
-  double s = dpi / 110.0;
+  // ⚠️ CGDisplayPixelsWide returns the CURRENT MODE's width in POINTS, not the
+  // panel's physical pixels. So this quantity is POINTS per inch, and it is
+  // only equal to the panel's physical density in a 1x mode. That is exactly
+  // what we want: ImGui multiplies by the backing scale afterwards, so
+  // pointsPerInch * backing == physical density in EVERY mode, and the UI
+  // keeps one physical size. Measured on his panel 2026-08-23 14:47:
+  //   1x  3024x1964 -> 255.0 ppi -> 2.32x, backing 1.0 -> 2.32x total
+  //   2x  1512x982  -> 127.5 ppi -> 1.16x, backing 2.0 -> 2.32x total
+  // Physical panel density is 255 ppi (3024 px / 11.859 in). Do not "fix" the
+  // 127.5 case; it is the same answer expressed in the other mode.
+  const double pointsPerInch = (double)px / (mm.width / 25.4);
+  // 110 ppi is the density the 20 px base font was chosen for.
+  double s = pointsPerInch / 110.0;
   if (s < 1.0) s = 1.0;
   if (s > 3.0) s = 3.0;
-  printf("[UI] display %.0f ppi -> UI scale %.2fx (SS_UI_SCALE overrides)\n",
-         dpi, s);
+  printf("[UI] display %.1f points/inch (x backing = physical) -> UI scale "
+         "%.2fx (SS_UI_SCALE overrides)\n",
+         pointsPerInch, s);
   return (float)s;
 }
 

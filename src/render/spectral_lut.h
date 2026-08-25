@@ -68,6 +68,68 @@ inline constexpr BandSet kBandHubble = {
 inline constexpr BandSet kBandNircam = {
     "nircam", {0.80, 1.75, 3.10}, {1.65, 3.10, 5.00}};
 
+// ── STELLAR B/V/R — the line-straddling set, 2026-08-24 ─────────────────────
+// Neither shipped set could do both jobs at once:
+//   visible  lines land one per band, but the CONTINUUM collapses hot
+//            (10000 K spread 0.173 — a blue giant renders nearly grey)
+//   hubble   continuum separates well (30000 K spread 0.765), but its edges
+//            put Hbeta 0.4861 AND [OIII] 0.5007 both in B and Halpha 0.6563
+//            in G, so R gets NO line at all and the gas loses its red.
+// The line positions FIX two edges: B|G must fall between [OIII] 0.5007 and
+// Hbeta 0.4861 (-> 0.495) and G|R between [OIII] and Halpha 0.6563 (-> 0.600).
+// That leaves only the outer edges free. Swept 2026-08-24 against: Sun near
+// white, hot end separated, cool end deep red. Best was B_lo 0.360, R_hi 0.720:
+//
+//              2000 K   5772 K  10000 K  30000 K   lines
+//   visible     0.955    0.332    0.173    0.447   one per band
+//   hubble      0.980    0.126    0.548    0.765   COLLAPSED (R empty)
+//   stellar     0.962    0.175    0.636    0.810   one per band
+//
+// It beats hubble at BOTH hot temperatures and keeps the emission lines
+// separated. The edges land close to the Johnson B / V / R photometric bands,
+// which is the standard system for stellar photometry — so this is a defensible
+// choice, not a tuned one. (Real Johnson filters OVERLAP and are not top-hat;
+// these are non-overlapping top-hats, same as every other set here.)
+inline constexpr BandSet kBandStellar = {
+    "stellar-bvr", {0.360, 0.495, 0.600}, {0.495, 0.600, 0.720}};
+
+// ── WHICH BAND SET IS LIVE — SS_BANDS, added 2026-08-23 20:12:26 ────────────
+// Until today renderer.mm held `const BandSet &bs = kBandVisible;` with the
+// comment "switching rebakes". Nothing switched it: no UI, no env var, no
+// caller. kBandHubble and kBandNircam had never been selected by anything
+// since they were written on 2026-07-24. A comment is not a mechanism.
+//
+// MEASURED 2026-08-23 20:12:26 with this header's own math, normalised to the
+// brightest channel, spread = max-min across B/G/R (higher = more colour):
+//
+//              2000 K        5772 K        10000 K       30000 K
+//   visible    0.955         0.332         0.173         0.447
+//   hubble     0.980         0.126         0.548         0.765
+//   nircam     0.569         0.956         0.973         0.982
+//
+// Read those numbers before choosing:
+//  • visible (the old default) COLLAPSES THE HOT END. At 10000 K the three
+//    channels are within 0.17 of each other — a blue giant renders nearly
+//    grey. That is the "hot stars go white" defect, and it is the band set,
+//    not the tonemap.
+//  • hubble separates both ends: deep red at 2000 K, strong blue at 30000 K
+//    (0.765, 1.7x the visible set), and a near-white Sun at 5772 K — which is
+//    correct, the Sun IS white above the atmosphere.
+//  • nircam is NOT a drop-in. In 0.8-5 um everything hotter than ~3000 K sits
+//    on the Rayleigh-Jeans tail, so the shortest band always wins: B=1.000,
+//    G=0.10-0.20, R=0.02-0.04 for EVERY star from 5772 K up. A pure NIRCam
+//    continuum makes the whole starfield one shade of blue. Real JWST images
+//    are colourful because of EMISSION LINES and dust, not stellar continuum,
+//    which is what the lines LUT below carries. Use nircam for the gas story,
+//    not to colour stars.
+inline const BandSet &bandSetByName(const char *name) {
+  if (!name) return kBandStellar;          // default since 2026-08-24
+  if (name[0] == 'v') return kBandVisible;
+  if (name[0] == 'n') return kBandNircam;
+  if (name[0] == 'h') return kBandHubble;
+  return kBandStellar;
+}
+
 // ── Continuum LUT axis: T_eff = g·T, log-spaced ─────────────────────────────
 // Range covers the spec's T 1000–40000 K crossed with g 0.3–2.0.
 inline constexpr int    kContinuumN    = 256;
@@ -148,6 +210,17 @@ inline void lineBands(const BandSet &bs, double g, double out[3]) {
     for (int b = 0; b < 3; ++b)
       if (lobs >= bs.lo[b] && lobs < bs.hi[b]) out[b] += weight[L];
   }
+}
+
+// The three strong lines, so a caller can state the CORRECT expectation for
+// whichever set is live instead of hardcoding one set's answer.
+inline void expectedLineBands(const BandSet &bs, double out[3]) {
+  const double lam[3] = {kLineHbeta, kLineOIII, kLineHalpha};
+  const double amp[3] = {1.00, 3.00, 2.86};   // Case B, normalised to Hbeta
+  out[0] = out[1] = out[2] = 0.0;
+  for (int i = 0; i < 3; ++i)
+    for (int b = 0; b < 3; ++b)
+      if (lam[i] >= bs.lo[b] && lam[i] < bs.hi[b]) out[b] += amp[i];
 }
 
 } // namespace spectral

@@ -195,6 +195,25 @@ static float3 hsv2rgb(float h, float s, float v) {
     return rgb + float3(m, m, m);
 }
 
+// Inverse of hsv2rgb, added 2026-08-24 for the phase tint: to shift a HUE we
+// first have to know the base colour's hue, saturation and value. Mixing in RGB
+// instead — which is what the first version of the tint did — DESATURATES
+// whenever the two hues are opposed: measured 24.8% of lit pixels washed to
+// white/grey at amount 0.35. A rotation on the hue circle has no such failure.
+static float3 rgb2hsv(float3 c) {
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float d  = mx - mn;
+    float h  = 0.0f;
+    if (d > 1e-6f) {
+        if (mx == c.r)      h = (c.g - c.b) / d + (c.g < c.b ? 6.0f : 0.0f);
+        else if (mx == c.g) h = (c.b - c.r) / d + 2.0f;
+        else                h = (c.r - c.g) / d + 4.0f;
+        h *= (1.0f / 6.0f);
+    }
+    return float3(h, mx <= 1e-6f ? 0.0f : d / mx, mx);
+}
+
 // ── Real blackbody colour: Tanner Helland K→RGB (T in Kelvin) ──────────────
 // Physically-grounded Planckian-locus approximation (no hand-tuned ramp).
 // 1000K deep red → 3000K orange → ~4500K yellow → 6500K white → >8000K blue.
@@ -1772,14 +1791,16 @@ vertex VertexOut particle_vertex(
     decodePhaseAndBand(in.velW.w, phase, bandId);
     int bClamped = clamp(bandId, 0, 5);
 
-    if (cam.phaseViz > 0.5f) {
-        // Feynman phase arrow coloring: phase → hue
-        float hue = (phase + M_PI_F) / (2.0f * M_PI_F);
-        float speed = length(in.velW.xyz);
-        float saturation = 0.85f;
-        float value = 0.5f + clamp(speed * 3.0f, 0.0f, 0.5f);
-        out.color = hsv2rgb(hue, saturation, value);
-    } else {
+    // ── PHASE VIZ NO LONGER REPLACES THE COLOUR (2026-08-24 22:2x) ──────────
+    // This was `if (cam.phaseViz > 0.5f) { out.color = hsv2rgb(...); } else {`
+    // — an if/else, so switching it on made the ENTIRE blackbody + spectral
+    // band path below dead code and the field became a flat HSV rainbow. That
+    // also contradicted the standing directive a few lines down ("ONE
+    // universal law ... no ramps, no per-phase palettes", 2026-06-14).
+    // His call 2026-08-24: **blend, do not replace.** The physical path now
+    // ALWAYS runs; the phase tint is applied once, late, at the bottom of this
+    // function where both regimes have finished writing out.color.
+    {
         // ── REAL blackbody temperature colour (M87* scale, Shakura–Sunyaev) ──
         // Display temperature in KELVIN = a real radial disk profile (orange
         // outer → white inner) PLUS shock/play heat (→ blue-white when hot).
@@ -2486,6 +2507,33 @@ vertex VertexOut particle_vertex(
     // Cost: every 64th particle, primary instance only (the secondary is the
     // same matter counted twice) ≈ 15k atomics/frame at 1M, not 1M. Nothing here
     // is read back into the picture — `out` is already final above this point.
+    // ── PHASE TINT — his order 2026-08-24: "the phase thingy needs to be
+    // standard on" ─────────────────────────────────────────────────────────
+    // Applied HERE, after BOTH regimes have written out.color: the play path
+    // (:1866) and the star-map mix (:2322). One site, so Chladni and the
+    // starfield get the SAME treatment — that is the unification, not two
+    // copies of one effect.
+    // 🚨 HUE ONLY. The tint takes its VALUE from the base colour's max
+    // channel, so brightness is carried through untouched. Lupton holds:
+    // brightness never recolours and colour never rebrightens. Replacing the
+    // colour outright (the old behaviour) broke that in both directions.
+    // cam.phaseViz is now an AMOUNT in 0..1, not a 0/1 switch.
+    if (cam.phaseViz > 0.001f) {
+        // TRUE HUE ROTATION, not an RGB mix. S and V are carried through
+        // UNCHANGED, so the tint can only move hue — it cannot desaturate a
+        // star, cannot brighten one, and cannot wash the field toward grey.
+        // (The first version mixed in RGB and did all three: measured 24.8%
+        // of lit pixels pushed to white/grey at amount 0.35, 2026-08-24.)
+        float3 hsvB = rgb2hsv(out.color);
+        float  hueP = (phase + M_PI_F) * (1.0f / (2.0f * M_PI_F));
+        // shortest way round the circle, so a hue near 0.99 rotates toward
+        // 0.01 forwards rather than sweeping the whole wheel backwards
+        float dh = hueP - hsvB.x;
+        dh -= floor(dh + 0.5f);
+        float h = fract(hsvB.x + dh * clamp(cam.phaseViz, 0.0f, 1.0f) + 1.0f);
+        out.color = hsv2rgb(h, hsvB.y, hsvB.z);
+    }
+
     if ((vid & 63u) == 0u && !isSecondary && probeKelvin > 0.0f) {
         // log2(40000/1000) = log2(40) = 5.321928
         float u   = log2(probeKelvin / 1000.0f) * (1.0f / 5.321928f);

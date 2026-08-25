@@ -143,7 +143,7 @@ int main() {
 
   // Style metrics follow the UI scale (physical DPI), NOT the backing scale.
   // At 3024x1964 in a 1x mode backingScaleFactor is 1.0, which told the theme
-  // nothing about the panel being 253 ppi — hence a microscopic UI.
+  // nothing about the panel being 255 ppi — hence a microscopic UI.
   space::UITheme::ApplyPremiumTheme(window.getUIScale());
 
   // ── Renderer ────────────────────────────────────────────────────────
@@ -1371,7 +1371,14 @@ int main() {
 
         ImGui::Checkbox("Phase Viz", &app.uiPhaseViz);
         ImGui::SetItemTooltip(
-            "Color particles by Feynman phase (action integral)");
+            "Tint particles by Feynman phase (action integral).\n"
+            "BLENDS over the physical blackbody/spectral colour — it does not\n"
+            "replace it (changed 2026-08-24). Hue only; brightness untouched.");
+        UiSliderFloat("Phase Amount", &app.uiPhaseVizAmount, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) app.uiPhaseVizAmount = 0.35f;
+        ImGui::SetItemTooltip(
+            "0.00 = pure physical colour · 1.00 = full phase rainbow.\n"
+            "Right-click to reset to 0.35.");
 
         // ── BLACK-HOLE MECHANISM TOGGLES (audit / follow-the-science) ─────────
         // Each one on/off so we can isolate every piece of the BH and rebuild
@@ -2288,6 +2295,7 @@ int main() {
         app.uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
     config.orthoMode = app.uiOrthoMode;
     config.phaseViz = app.uiPhaseViz;
+    config.phaseVizAmount = app.uiPhaseVizAmount;
     config.shadowRadius = app.uiShadowRadius;
     config.lensBend = app.uiLensBend;
     config.arcWrap = app.uiArcWrap;

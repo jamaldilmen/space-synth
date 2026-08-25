@@ -58,10 +58,12 @@ public:
 
   // ── UI SCALE (2026-08-23) ─────────────────────────────────────────────────
   // NOT the backing scale. backingScaleFactor is 1.0 in every 1x display mode,
-  // so it says the same thing at 110 ppi and at 253 ppi — which is why running
+  // so it says the same thing at 110 ppi and at 255 ppi — which is why running
   // the panel at its native 3024x1964 made the whole UI microscopic. This is
-  // derived from the display's PHYSICAL dots-per-inch instead, so the controls
-  // keep a constant physical size whatever mode the screen is in.
+  // derived from the display's POINTS per inch instead (physical density in a
+  // 1x mode, half of it at 2x — and ImGui multiplies the backing scale back in
+  // afterwards), so the controls keep a constant physical size in every mode.
+  // His panel measures 255 ppi physical: 3024 px across 301.21 mm.
   // Override with SS_UI_SCALE=<float> (0.5 .. 4.0).
   float getUIScale() const;
 

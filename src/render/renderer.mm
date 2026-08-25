@@ -971,7 +971,17 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   // full g⁴ amplitude is already inside it. Nothing multiplies by g after.
   {
     using namespace space::spectral;
-    const BandSet &bs = kBandVisible;   // §4.2 default; switching rebakes
+    // SS_BANDS=stellar|visible|hubble|nircam — default STELLAR as of 2026-08-24
+    // 20:12:26, his order: "james webb and hubble as basis ... true to the
+    // science and the gold standards: nasa". SS_BANDS=visible restores the
+    // exact look shipped before that date. See the measured table in
+    // spectral_lut.h before changing the default; nircam makes every star
+    // above ~3000 K the same blue and is for the gas, not the stars.
+    const char *bandEnv = getenv("SS_BANDS");
+    const BandSet &bs = bandSetByName(bandEnv);
+    printf("[SPECTRAL] band set '%s' (B %.3f-%.3f, G %.3f-%.3f, R %.3f-%.3f um)"
+           " — SS_BANDS=stellar|visible|hubble|nircam\n",
+           bs.name, bs.lo[0], bs.hi[0], bs.lo[1], bs.hi[1], bs.lo[2], bs.hi[2]);
 
     float cont[kContinuumN][4];
     for (int i = 0; i < kContinuumN; ++i) {
@@ -1022,10 +1032,19 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     // (Hα→R, [OIII]→G, Hβ→B) but the WEIGHTS are now Hβ=1.00, [OIII]=3.00,
     // Hα=2.86 → B/G/R = (1.00, 3.00, 2.86). Membership behaviour at g=0.60 is
     // untouched. Printed at 2dp so the ratios are actually checkable.
+    // EXPECTATION IS NOW COMPUTED FROM THE LIVE BAND SET (2026-08-24). It used
+    // to hardcode (1.00,3.00,2.86), which is only correct for band edges that
+    // straddle all three lines; under `hubble` the real answer is (4.00,2.86,
+    // 0.00) and the line read as a FAILURE when nothing was wrong.
+    double we[3]; expectedLineBands(bs, we);
     NSLog(@"[SPEC-LUT] lines g=1.00 B/G/R weight (%.2f,%.2f,%.2f) — expect "
-          @"(1.00,3.00,2.86) Case B; g=0.60 (%.2f,%.2f,%.2f) — expect "
-          @"(0,0,0), all three redshifted out",
-          w1[0], w1[1], w1[2], w06[0], w06[1], w06[2]);
+          @"(%.2f,%.2f,%.2f) for band set '%s'%s; g=0.60 (%.2f,%.2f,%.2f) — "
+          @"expect (0,0,0), all three redshifted out",
+          w1[0], w1[1], w1[2], we[0], we[1], we[2], bs.name,
+          (we[0] > 0.0 && we[1] > 0.0 && we[2] > 0.0)
+              ? " [one line per band]"
+              : " [COLLAPSED — a channel has no line]",
+          w06[0], w06[1], w06[2]);
   }
 
   // (Trajectory/ribbon pipeline DELETED 2026-08-20 — see render.metal.)
@@ -1609,7 +1628,9 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.cameraPad = config.cameraRho;
   cam.particleSize = config.particleSize;
   cam.plateRadius = config.plateRadius;
-  cam.phaseViz = config.phaseViz ? 1.0f : 0.0f;
+  // Was `? 1.0f : 0.0f` — a switch. Now an AMOUNT: the shader blends rather
+  // than replaces, so this carries how far to go (2026-08-24).
+  cam.phaseViz = config.phaseViz ? config.phaseVizAmount : 0.0f;
   cam.envelopePhase = impl_->renderPhaseSmooth; // smoothed (render-only)
   // ── FIELD HALF-DEPTH for the scale-invariant depth cue (2026-08-11, §H10) ──
   // Mirrors the PHYSICS cap law at particles.metal:3051 term for term, using

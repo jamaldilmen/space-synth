@@ -52,7 +52,8 @@ struct RenderConfig {
   // has a unit axis rather than a zero vector.
   float cameraForward[3] = {0.0f, 0.0f, -1.0f};
   bool orthoMode = true;
-  bool phaseViz = false;
+  bool  phaseViz = true;            // default ON 2026-08-24 (blend, not replace)
+  float phaseVizAmount = 0.35f;     // 0..1 blend toward the phase hue
 
   // Debugging Suite (Phase 7)
   bool fixedTimestep = false;
@@ -212,7 +213,7 @@ struct CameraUniforms {
   float cameraPad; // Explicit padding for 16-byte alignment (Metal float3)
   float particleSize;
   float plateRadius;
-  float phaseViz; // 1.0 = phase coloring, 0.0 = default
+  float phaseViz; // BLEND AMOUNT 0..1 toward phase hue (was a 0/1 switch)
   float waveDepth;
   float envelopePhase; // 0=silence(black hole), 1-4=ADSR
   float envelopeProgress; // 0→1 within phase (ramps the lens in over release)

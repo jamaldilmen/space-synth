@@ -46,7 +46,7 @@ Below cutoff → **trapped**, discrete standing modes, structure that holds. Abo
 | **T-5** | **THE REST-STATE SPHERE (R=100).** Deliberately untouched so the first A/B stays judgeable. | 🟢 **RESOLVED — it IS the domain.** One space, R=100, never shrinks |
 | **T-6** | **FIX THE MISLABEL, KEEP THE VALUE.** `modes.h:11` calls the field a Bessel zero; `modes.cpp:24` assigns `440·2^((midi−69)/12)` — Hz. Under the cutoff model that Hz value becomes the **actual drive frequency**, so the long-standing defect becomes the input. Relabel, do not delete. | ⬜ ready, low risk, no blocker |
 | **T-7** | **DORMANT Hz GAIN BUG.** `particles.metal:2479` `sculptStrength = visualAmp * voices[vi].alpha * 25.0f * …` multiplies a force gain by a frequency in Hz — C5 pushes ~8× harder than C2. **DEFAULT OFF** (bit16 skip; `SS_SCULPT=1` re-enables). | ⬜ not urgent, record it |
-| **T-8** | ⭐ **G9 DISSOLVES IF THE BASIS GOES SPHERICAL.** Crystallization (`ridgePull`) is built from the **spherical-harmonic** gradient (`:2470`) while shapes are drawn by the **cylindrical** eigenmode — so holding a note drags matter OFF the pattern. One basis ⇒ one field ⇒ the bug stops existing rather than needing a fix. | ⬜ falls out of Q3 |
+| **T-8** | ⚠️ **G9 DOES NOT DISSOLVE "FOR FREE" — CORRECTED 2026-08-26 14:30.** It dissolves only once BOTH the sculpt path (`:2466`) and the eigenmode path (`:2519`) sit on the SAME real `Y_lm`; until then the two fields still disagree. Original (over-optimistic) framing follows: **G9 dissolves if the basis goes spherical.** Crystallization (`ridgePull`) is built from the **spherical-harmonic** gradient (`:2470`) while shapes are drawn by the **cylindrical** eigenmode — so holding a note drags matter OFF the pattern. One basis ⇒ one field ⇒ the bug stops existing rather than needing a fix. | ⬜ falls out of Q3 — **but only after BOTH paths are rebuilt, not automatically** |
 
 ---
 
@@ -54,6 +54,7 @@ Below cutoff → **trapped**, discrete standing modes, structure that holds. Abo
 
 - **THE GOR'KOV FORCE IS ALREADY CORRECT. DO NOT TOUCH IT.** `:2584` `F = −contrast·Ψ·∇Ψ`; `:2575` already has dense matter seeking pressure NODES. His *"they inject force into the field. into nodes"* is built.
 - ⚠️ **`contrast` IS BIPOLAR** — `:2583` spans **[−1,+1]**. Dense seeks nodes, light seeks ANTINODES. Any "where matter goes" claim must say WHICH HALF. *(The brain got this wrong once; TUBE caught it.)*
+- 🚨 **TWO SPECIAL FUNCTIONS ARE MISSING, NOT ONE — `j_l` AND `P_l^m`.** There is NO associated Legendre anywhere in this codebase (grep-verified 2026-08-26), and `particles.metal:2466`'s `Y_here = cos(m_f*th)*sin(n_f*phi)` is a separable sine/cosine product, **not** a spherical harmonic. The brain claimed otherwise and was wrong.
 - ⚠️ **`j_l` (spherical Bessel) DOES NOT EXIST HERE.** Only cylindrical `besselJm` (`:487`). 🚨 **This project has been burned TWICE by Bessel evaluators** — an asymptotic form gave 8.9e-1 garbage at m≤11 and needed Miller downward recurrence to reach 2.6e-7; a data-dependent loop break once HUNG PSO creation. **Measure any new evaluator against known values before it ships.**
 - **Chords:** his ruling — *"a unified face of each harmonic weighted equally."* True superposition, no special-casing.
 - **Camera stays as it is.** *"so the scale of collapses and explosions etc remains."*

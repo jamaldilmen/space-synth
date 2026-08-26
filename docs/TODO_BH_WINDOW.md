@@ -42,19 +42,21 @@
 | **R1** | **Shadow ≈2× the horizon** | ✅ **PASSES — MEASURED.** Shadow edge **2.612 r_s**, three settled frames at 430.04 / 430.44 / 430.71 px, repeatable to **0.7 px**. Interior **2.1× darker** than the 470–700 px annulus. Scale independently checked: the ISCO ring reads 3.06 r_s against a true 3.00, so ~2%. **R1 is not the gap.** |
 | **R2** | **Photon ring, thinning and fading inward** | 🔴 **FAILS. Cause identified in one line.** ONE narrow spike — 424px:0.87 → 428:1.56 → **432:6.12** → 436:3.55 → 440:0.98, **FWHM ~6–7 px on a 433 px ring = 1.5% of radius.** A delta function. **Inward of it, NOTHING:** r=300..426 px (2.06→2.60 r_s) flat at the background floor, 0.201–0.228, no trend. The bible's exact failure text — *"One flat bright circle is not a photon ring"*. **Cause:** `th = max(th, 2.62f*rsW)` clamped INSIDE the Newton loop, every iteration. A photon ring is a gradient; a clamp is a spike. |
 | **R3** | Thin disk | ⛔ **NOT THIS WINDOW'S** — substrate (h/r = 0.746, a thick RIAF). |
-| **R4** | **Doppler beaming, visibly asymmetric** | 🚫 **UNMEASURABLE FACE-ON — see B-3.** Measured 1.14× coherent asymmetry, but face-on **predicts ~1×**, so this is a verdict on the GEOMETRY, not on the law. ⚠️ **The law IS still the old fudge** (`render.metal:1763-1764`, `beam = max(0.35, 1+0.8·vLos)`, `pow(beam,1.4)`) giving ~7.3× where the true law gives 41×. Both g³ attempts were reverted 2026-08-14. **Board §4c says this block is HIS via presets — DO NOT TOUCH UNASKED.** |
-| **R5** | **Far-side image arching OVER the shadow** | 🚫 **UNMEASURABLE FACE-ON.** Mechanism is LIVE and physical (primary at `+pHat·thEff`, `render.metal ~1155`). |
-| **R6** | **Underside image, a distinct arc BELOW** | 🚫 **UNMEASURABLE FACE-ON.** Mechanism LIVE (secondary at `−pHat·th`, `~1222`); §2's parity proof holds; second instance only exists at `bhStrength > 0.5` (`renderer.mm:3916`). |
+| **R4** | **Doppler beaming, visibly asymmetric** | 🟢 **OPEN — see B-4, he approved retrying the real law.** ⚠️ The 1.14× measured asymmetry was taken FACE-ON, where ~1× is expected, so **that number tests nothing** — it is not evidence the law is too weak. Re-measure off-axis alongside the new law. ⚠️ **The law IS still the old fudge** (`render.metal:1763-1764`, `beam = max(0.35, 1+0.8·vLos)`, `pow(beam,1.4)`) giving ~7.3× where the true law gives 41×. Both g³ attempts were reverted 2026-08-14. Board §4c called this block HIS via presets; **he has now opened it: *"i dont know why it was reverted try it again."*** |
+| **R5** | **Far-side image arching OVER the shadow** | 🔴 **OPEN — B-0 governs.** Mechanism is LIVE and physical (primary at `+pHat·thEff`, `render.metal ~1155`). |
+| **R6** | **Underside image, a distinct arc BELOW** | 🔴 **OPEN — B-0 governs.** Mechanism LIVE (secondary at `−pHat·th`, `~1222`); §2's parity proof holds; second instance only exists at `bhStrength > 0.5` (`renderer.mm:3916`). |
 
 ---
 
-## 🚨 B-3 — THE BLOCKER, AND IT IS STRUCTURAL
+## ⛔ B-3 — RETRACTED 2026-08-26. KEPT ONLY AS PROVENANCE. **NOT THE BLOCKER.**
+
+> 🚨 **Everything in this section is a TRUE MEASUREMENT with a WRONG CONCLUSION.** The camera really does open face-on — that is verified. But he rotates it routinely and reports the lensing is still fake, so face-on is NOT why it fails. **Read B-0. Do not act on this section.**
 
 **THE CAMERA OPENS DEAD FACE-ON TO THE DISC.** Verified: `camera.h:31-32` sets `theta = π/2, phi = 0`; the eye formula (`:74-76`) then gives **eye = (0, 0, ρ)** — sitting on **+Z**, which is the disc's own angular-momentum axis (the disc is in X-Y; `render.metal:1668` confirms "prograde about Z").
 
 **Line-of-sight velocity is ~0 everywhere by construction**, so beaming cannot appear; and the far-side arch and underside arc only exist off-axis. Every frame shows a perfect circle — the same fact stated visually.
 
-⚠️ **Per the bible, R5+R6 together are "what makes it read as Gargantua rather than a ring." So FOUR of the six features cannot appear in the view the app opens in.** This is a strong candidate for a large part of *"very close but not there yet."*
+⛔ **THE CLAIM THAT FOLLOWED — "four of six cannot appear in the opening view, this is why it is not there yet" — IS THE RETRACTED PART.** It is evasive: it blames the framing for a defect he sees from every angle.
 
 **Synthetic input cannot fix it:** arrow taps are `TAP_STEP = 0.06 rad` against `SOFT_LOCK_RAD = 0.12 rad`, so a tap lands inside the soft-lock and is pulled back to π/2. Held arrows and posted mouse drags did not tilt theta either.
 

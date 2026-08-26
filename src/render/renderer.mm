@@ -741,8 +741,13 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       hd.vertexFunction = holeV;
       hd.fragmentFunction = holeF;
       hd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
-      // not moving matter, so it is masked off and writes nothing.
+      // Attachment 1 must be DECLARED here (the pass has it). Masked off — but
+      // ⛔ NOT for the reason this comment used to give. It said "this draw is not
+      // moving matter", which is FALSE: the hole centre wanders (cam.bhX/Y/Z).
+      // The REAL reason is that `hole_fragment` (render.metal:3080) returns a plain
+      // float4 and declares no [[color(1)]], so unmasking would admit UNDEFINED data
+      // into the velocity target, not motion. Give the shader a ParticleFragOut-style
+      // velocity FIRST, then unmask. Corrected 2026-08-26, board row G6.
       hd.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
       hd.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       hd.colorAttachments[0].blendingEnabled = YES;
@@ -772,8 +777,13 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       md.vertexFunction = mV;
       md.fragmentFunction = mF;
       md.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
-      // not moving matter, so it is masked off and writes nothing.
+      // Attachment 1 must be DECLARED here (the pass has it). Masked off — but
+      // ⛔ NOT for the reason this comment used to give. It said "this draw is not
+      // moving matter", which is FALSE: the march is FLOWING GAS.
+      // The REAL reason is that `bhmarch_fragment` (render.metal:3342) returns a plain
+      // float4 and declares no [[color(1)]]. And this one is a DESIGN PROBLEM, not a
+      // port: a volumetric ray-march has no per-particle identity, so its velocity has
+      // to come from the gas flow field. Corrected 2026-08-26, board row G6.
       md.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
       md.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       md.colorAttachments[0].blendingEnabled = YES;
@@ -809,8 +819,11 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       bd.vertexFunction = bV;
       bd.fragmentFunction = bF;
       bd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
-      // not moving matter, so it is masked off and writes nothing.
+      // Attachment 1 must be DECLARED here (the pass has it) and is masked off —
+      // ⭐ THIS ONE IS CORRECT AND MUST STAY. bhBody is the DEPTH-ONLY capture sphere:
+      // it writes no colour at all (see the attachment[0] mask just below). Invisible
+      // geometry must never write motion vectors, or the smear drags colour along a
+      // sphere nobody can see. Do NOT "fix" this one with the other three. (2026-08-26)
       bd.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
       bd.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       bd.colorAttachments[0].blendingEnabled = NO;
@@ -836,8 +849,13 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       dd.vertexFunction = dustV;
       dd.fragmentFunction = dustF;
       dd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-      // Attachment 1 must be DECLARED here (the pass has it) but this draw is
-      // not moving matter, so it is masked off and writes nothing.
+      // Attachment 1 must be DECLARED here (the pass has it). Masked off — but
+      // ⛔ NOT for the reason this comment used to give. It said "this draw is not
+      // moving matter", which is FALSE: the disk ROTATES.
+      // The REAL reason is that `dust_fragment` (render.metal:3166) returns a plain
+      // float4 and declares no [[color(1)]], so unmasking would admit UNDEFINED data.
+      // Point sprite, so the star pass's method ports directly — project through the
+      // CURRENT viewProjection at both ends. Corrected 2026-08-26, board row G6.
       dd.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
       dd.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
       dd.colorAttachments[0].blendingEnabled = YES;

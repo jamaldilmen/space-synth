@@ -105,6 +105,45 @@ Low-`l` modes turn deeper in the interior; the turning point depends on `l` and 
 
 ---
 
+## 6. 🔔 THE BLACK HOLE RINGS TOO — and the light ring IS the bell
+
+**His question 2026-08-26:** *"how does that relate to the black hole. will we be able to get the ringing of the black hole too? so that we will hear not a sonification but what the math says it sounds like if scaled to our hearable range?"*
+
+**YES, and it is the same physics family as §2d.** A perturbed black hole rings down in **quasi-normal modes (QNMs)**. They are *quasi*-normal precisely because the ringing LEAKS — energy escapes to infinity and through the horizon — which is the same trapped-vs-escaping duality the acoustic cutoff describes. A BH is a leaky resonator.
+
+🎯 **THE UNIFICATION, AND IT IS EXACT:** in the eikonal limit the QNM frequency is set by the **unstable circular null geodesic — the photon sphere**:
+- the **real part** (the PITCH) = the orbital frequency of that photon orbit, `Ω_c = 1/(3√3 M)` for Schwarzschild
+- the **imaginary part** (the DECAY) = the **Lyapunov exponent** of that orbit's instability, `Λ_c = 1/(3√3 M)`
+
+**So the same light ring that produces the photon ring in `BH_REFERENCE_labeled.jpg` (row R2) also sets the pitch and the decay rate of the ringdown.** The thing we are trying to draw and the thing he wants to hear are ONE structure. R2 is not just a visual row any more.
+
+### It is NOT sonification for stellar-mass holes — it is the actual frequency
+Both parts scale as **1/M**. Working the numbers (`GM☉/c³ = 4.925e-6 s`, `f ≈ Ω_c/π` for the dominant ℓ=2):
+
+| Hole mass | Ringdown frequency | Audible? |
+|---|---|---|
+| 1 M☉ | ≈ **12.4 kHz** | yes, top end |
+| 10 M☉ | ≈ **1.24 kHz** | yes, mid |
+| ~62 M☉ (a GW150914-like remnant) | ≈ **200 Hz** | yes, bass |
+| **our current hole, 2.963e+04 M☉** *(read off the live HUD)* | ≈ **0.42 Hz** | no — needs ~×1000 |
+| Sgr A*, 4.3e6 M☉ | ≈ 0.003 Hz | no — needs ~×10⁵ |
+
+⭐ **Stellar-mass black holes ring NATURALLY inside human hearing.** That is why LIGO's detections can be played as audio with no pitch-shifting at all. For a hole heavier than that, the honest move is ONE stated ratio — a single number, published next to the sound — not a re-mapping. **That satisfies his "what the math says it sounds like", not a sonification.**
+
+⚠️ **Not yet checked in our code:** whether anything computes a QNM frequency today (almost certainly not), and whether our hole's mass is stable enough to hold a pitch. Both must be measured before any of this is claimed as working.
+
+---
+
+## 7. 🚩 OPEN QUESTIONS — SAVED ON HIS ORDER 2026-08-26. Do not answer these by assumption.
+
+1. **What plays the role of the CUTOFF in our system?** In the Sun it falls out of the density scale height and sound speed. Ours must be **derived and named**, never a magic number — it is the single most important dial, because it decides which notes stand and which escape.
+2. **What sets the TRAP profile?** Helioseismology traps by a sound-speed gradient. Do we derive ours from the existing gravity/density field — his *"physical link to orbits and gravity"* — or state a profile explicitly?
+3. **BASIS: spherical `Y_lm × j_l`, or the cube?** Spherical unifies with the existing Y_lm code and dissolves G9. The cube is his standing preference. ⛔ **§2b establishes the NASA mesh argument does NOT decide this for us** — we have no mesh. His call, on other grounds.
+4. **The rest-state sphere (R=100)** — untouched so far, deliberately, so the first A/B stays judgeable. What happens to it?
+5. 🆕 **Do we build the QNM ringdown?** §6 says the physics is there and the light ring already carries it. Scope, and which window owns it, is his call — it straddles both.
+
+---
+
 ## SOURCES
 - ENLIL / PSP heliospheric modeling — https://iopscience.iop.org/article/10.3847/1538-4365/ab77cb
 - WSA-ENLIL operational model, NOAA SWPC — https://www.swpc.noaa.gov/products/wsa-enlil-solar-wind-prediction
@@ -114,5 +153,7 @@ Low-`l` modes turn deeper in the interior; the turning point depends on `l` and 
 - General-relativistic 3D core-collapse supernova simulations — https://arxiv.org/pdf/1210.6674
 - Hydrodynamics of core-collapse supernovae (Living Reviews) — https://link.springer.com/article/10.1007/s41115-020-0008-5
 - Non-reflecting boundary conditions (MHD characteristics) — https://iopscience.iop.org/article/10.3847/1538-4357/adb132
+- Shadow ringing of black holes from photon-sphere quasinormal modes — https://arxiv.org/pdf/2509.24479
+- Quasinormal modes of black holes embedded in halos of matter — https://arxiv.org/pdf/2412.18651
 
-**Last Updated:** 2026-08-26 13:33:20
+**Last Updated:** 2026-08-26 13:40:10  *(§6 BH ringdown + §7 his five saved questions added on his order)*

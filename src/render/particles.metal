@@ -3296,81 +3296,61 @@ kernel void compute_physics(
         }
     }
 
-    // ── BREATHING OUTER RADIUS CAP ──────────────────────────────────────
-    // Tight (ORBIT_R_BH) during silence so the disk reads as a tight
-    // Saturn-ring around the BH. Expands to ORBIT_R_CHLADNI when notes
-    // play — gives Bessel voice forces room to push particles into the
-    // godlike Chladni pattern. envelopePhase-driven so it tracks the
-    // synth ADSR, not ambient amplitude. Phase: 0=silence, 0.5–1.5=
-    // attack, 1.5–2.5=decay, 2.5–3.5=sustain, 3.5–4.5=release.
+    // ── OUTER RADIUS CAP — ONE SPHERE, ALL PHASES ───────────────────────
+    // ⚠️ THIS HEADER USED TO DESCRIBE A BREATHING CAP that tightened during
+    // silence and expanded on play, "envelopePhase-driven so it tracks the
+    // synth ADSR". THAT IS NO LONGER WHAT THIS BLOCK DOES — it was left stale
+    // by the 2026-08-27 one-domain change below and is rewritten here rather
+    // than left to be quoted as evidence later. The cap no longer reads
+    // envelopePhase at all; there is one radius and it never breathes.
     {
-        float ph = u.envelopePhase;
-        // ── THE TUBE, FIXED (2026-07-12, Jamal: "we want the tube when we PLAY,
-        // not when we don't"). The XY-only clamp below bounds x,y and leaves z
-        // FREE — that is a CYLINDER by construction, and it was applied AT REST
-        // too. So the silent star map was trapped in a tube: a flat wall at
-        // rXY=100 (stars piled on it, since the clamp also kills their outward
-        // radial velocity — hence the STRAIGHT LINES; nothing in nature is
-        // straight), unbounded along z (hence the elongated tube zoomed out),
-        // and therefore NO proper centre for a hole to form at — density smears
-        // along the free axis instead of collapsing to a point. The growing
-        // wall pile-up is also a few grid cells with enormous counts, which is
-        // why fps decayed over time and RECOVERED after playing (play switches
-        // the cap and redistributes them). The constant's own comment said
-        // "silence: NO cap (the star map has no tube limit)" — the tube was
-        // never intended here; only the PLAY state wants a cylindrical cavity.
-        bool playCap = (ph >= 0.5f && ph < 3.5f);   // attack/decay/sustain = the Chladni tube
-        if (playCap) {
-            // PLAY: cylindrical (XY) cavity — the tube is the instrument's shape.
-            float dynamic_cap = (ph < 1.5f) ? mix(STAR_MAP_CAP, ORBIT_R_CHLADNI, ph - 0.5f)
-                                            : ORBIT_R_CHLADNI;
-            // Yield the cap while spinning — otherwise the tumbling body periodically
-            // hits the XY cap and gets yanked, flickering between two states.
-            dynamic_cap += (1.0f - spinSuppress) * 8.0f;
-            float rXY2 = nextPos.x * nextPos.x + nextPos.y * nextPos.y;
-            if (rXY2 > dynamic_cap * dynamic_cap) {
-                float rXY = sqrt(rXY2);
-                float scale = dynamic_cap / rXY;
-                nextPos.x *= scale;
-                nextPos.y *= scale;
-                float2 radialDir = float2(nextPos.x, nextPos.y) * (1.0f / dynamic_cap);
-                float vRad = finalV.x * radialDir.x + finalV.y * radialDir.y;
-                if (vRad > 0.0f) {
-                    finalV.x -= vRad * radialDir.x;
-                    finalV.y -= vRad * radialDir.y;
-                }
-            }
-            // ── AXIAL BOUND (2026-07-22 01:5x, Jamal: "launches as two rings and
-            // MORPHS into the eye"). The XY clamp above bounds the radius but the
-            // z axis is FREE — an INFINITE tube (the comment above admits it:
-            // "unbounded along z... density smears along the free axis"). The
-            // correct launch pattern is right, then eruptions/thermal/mode leakage
-            // past the cavity ends drift particles along the free z with NOTHING to
-            // pull them back → the shape stretches into the needle/eye. This hits
-            // the sculpt AND the eigenmode identically (it's the shared cavity, not
-            // the play force) — exactly why both morph. Bound |z| to the cavity
-            // half-length (EIGEN_L/2) so the cavity is a CLOSED can, not an open
-            // tube. Same spin-yield as the radial cap.
-            float zCap = EIGEN_L * 0.5f + (1.0f - spinSuppress) * 8.0f;
-            if (fabs(nextPos.z) > zCap) {
-                float zs = sign(nextPos.z);
-                nextPos.z = zs * zCap;
-                if (finalV.z * zs > 0.0f) finalV.z = 0.0f;   // no escape past the end cap
-            }
-        } else {
-            // REST / RELEASE: a star map is a 3D CLUSTER, not a tube. Bound the
-            // TRUE radius |r| in all three axes (a sphere — no flat wall, no free
-            // axis), so the field has a real centre and gravity can collapse to
-            // a point. Same outward-velocity kill, now radial in 3D.
-            float capR = STAR_MAP_CAP + (1.0f - spinSuppress) * 8.0f;
-            float r2 = dot(nextPos, nextPos);
-            if (r2 > capR * capR) {
-                float r = sqrt(r2);
-                float3 rdir = nextPos / r;
-                nextPos = rdir * capR;
-                float vRad = dot(finalV, rdir);
-                if (vRad > 0.0f) finalV -= vRad * rdir;   // no escape past the sphere
-            }
+        // ── ONE DOMAIN (2026-08-27 14:1x, his order: "kill the tube. the field
+        // becomes the resonator not a fake tube" / "its space synth not rooms
+        // synth"). THE REGIME SPLIT IS GONE. There is no play branch and no rest
+        // branch any more: the R=100 sphere IS the space in every envelope
+        // phase, and playing a note no longer shrinks it.
+        //
+        // WHAT WAS HERE, in words, because the SHAPE mattered and not just the
+        // radius: `bool playCap = (ph >= 0.5f && ph < 3.5f)` chose between
+        //   PLAY — a CYLINDER. XY clamped to ORBIT_R_CHLADNI = 6, plus a
+        //          SEPARATE axial clamp |z| <= EIGEN_L*0.5 = 6. A closed can.
+        //   REST — a SPHERE. True 3D |r| clamped to STAR_MAP_CAP = 100.
+        // Two different SHAPES, not two radii. The can is what drew the tube
+        // silhouette; its wall is what the straight lines were made of.
+        //
+        // ⚠️ THIS DOES NOT TOUCH THE MODES, and that is why it ships alone. The
+        // Gor'kov force self-gates at :2516 `if (rho < EIGEN_R)`, independently
+        // of any clamp — so kRho and kZ still quantize on rho < 6 and the
+        // pattern INSIDE the cavity is unchanged by this edit. What changes is
+        // only what happens to matter OUTSIDE rho = 6: it is no longer snapped
+        // back onto a cylinder wall.
+        //
+        // THE HONEST CONSEQUENCE, stated so nobody has to rediscover it: outside
+        // the cavity the sculpt force is TANGENTIAL-ONLY (:2482 — theta-hat and
+        // phi-hat components, no r-hat term at all), and this shader has no
+        // boundary-repulsion force (CLAUDE.md's "cubic ramp r>0.85" describes
+        // the ported HTML original, not this code). So SELF-GRAVITY is now the
+        // only radial force beyond rho = 6. Whether that holds the escapers or
+        // they disperse is a magnitude question, and it is the thing to judge.
+        //
+        // ⚠️ KNOWN, NOT FIXED HERE: the hash covers +/-64 (renderer.mm:2089)
+        // while this cap is 100 (+8 spin yield). spatial_hash.metal:49-51 CLAMPS
+        // anything outside into the outermost cells, so matter past r=64 gets no
+        // cell of its own and the density there is fiction — on the faces of a
+        // CUBE, not a sphere. Straight edges after this change are that box, not
+        // the physics. Separate change; his call.
+        //
+        // ⚠️ ALSO KNOWN, ALSO NEXT: EIGEN_R/EIGEN_L still key the mode
+        // quantizer to a wall that is no longer a boundary. Real, deliberate,
+        // and NOT bundled in here.
+        float capR = STAR_MAP_CAP + (1.0f - spinSuppress) * 8.0f;
+        float r2 = dot(nextPos, nextPos);
+        if (r2 > capR * capR) {
+            float r = sqrt(r2);
+            float3 rdir = nextPos / r;
+            nextPos = rdir * capR;
+            float vRad = dot(finalV, rdir);
+            if (vRad > 0.0f) finalV -= vRad * rdir;   // no escape past the sphere
         }
     }
 

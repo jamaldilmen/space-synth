@@ -230,6 +230,7 @@ static float3 blackbodyRGB(float kelvin) {
     return float3(r, g, b) / 255.0f;
 }
 
+
 // ── Artistic temperature ramp — WHITE IS RARE ──────────────────────────────
 // Rich red→orange→yellow→white→blue, with white & blue compressed into the top
 // ~15% (white only near peak temperature), so the field stays COLOURFUL instead
@@ -943,11 +944,6 @@ vertex VertexOut particle_vertex(
     // shadow (max magnification). Straight-line-culling those same rays here
     // deleted exactly that arch light (the empty top, "resolving wrong").
     // The straight-line cull now only handles what the lens can't: the thin
-    // slab at the hole's own depth (along ≤ r_s), or everything when the
-    // lens is off.
-    bool lensWillImage = (cam.bhToggles & 0x100u) &&
-                         (cam.bhShadowNdcRadius > 1e-4f) &&
-                         (smoothstep(0.2f, 0.9f, cam.bhStrength) > 0.001f);
 
     // ── HORIZON-INTERIOR CULL (bit15, 2026-07-24) ───────────────────────
     // Matter inside r_h emits nothing that can reach the camera — that IS the
@@ -996,7 +992,7 @@ vertex VertexOut particle_vertex(
             // exception carved a straight-edged band across the shadow region
             // (Jamal: "it looks like a pokeball"). With the lens on, the lens
             // + membrane are the ONLY transport — no straight-line culls.
-            if (along > 0.0f && length(perp) < bCapt && !lensWillImage) {
+            if (along > 0.0f && length(perp) < bCapt) {
                 out.position = float4(0, 0, -2, 1);     // captured: no light arrives
                 out.pointSize = 0.0f;
                 out.color = float3(0);
@@ -1016,304 +1012,47 @@ vertex VertexOut particle_vertex(
     }
 
     out.position = cam.viewProjection * float4(worldPos, 1.0);
+    // ═══════════════════════════════════════════════════════════════════
+    // 🔪 THE LENS IS DEAD — 2026-08-27 21:02:15, HIS ORDER
+    // ═══════════════════════════════════════════════════════════════════
+    // "a black hole is not a lense. i want u to kill the lense like u killed
+    //  the tube. FUCK THE LENSE. this enitre approach is ass."   [HIS WORDS]
+    //
+    // ~320 lines removed: the bit8 gate, the angle-space thin-lens solve
+    // beta = theta - alpha(theta)*D with its Newton iteration on the exact
+    // deflection LUT, the second instance and its magnification weight, the
+    // hole-centred screen fallback, and every lensRamp/imageWeight/preLensNDC
+    // consumer in this function.
+    //
+    // WHY HE IS RIGHT, and it is not a matter of taste. A lens is a SURFACE
+    // that refracts: you place it, and it maps one image to another image.
+    // A black hole has no surface. Light follows null geodesics of a curved
+    // metric, and what you see is decided by where each RAY came from — which
+    // is a per-pixel question, not a per-particle one. NASA/Goddard's own
+    // answer (Schnittman & Powell, May 2024, the "falling into a black hole"
+    // visualisation) is RAY TRACING ALONG GEODESICS, 10 TB over 5 days on
+    // 129,000 processors. There is no lens anywhere in it. Ours was a forward
+    // per-sprite screen displacement, so it could produce exactly as many
+    // images as we coded roots for — TWO — while the photon ring is the
+    // n -> infinity stack. It was never going to arrive by tuning.
+    //
+    // WHAT THIS RESTORES ON ITS OWN: the straight-line photon-capture cull at
+    // :1029 was gated OFF whenever the lens was imaging (!lensWillImage). With
+    // the lens gone it applies to every ray again, so the shadow is still
+    // carved by ABSENCE at the exact b_c = 2.5980762 r_s. The shadow does not
+    // depend on the lens and never did.
+    //
+    // WHAT IS NOW MISSING AND MUST COME FROM THE MARCH: R5 (far-side arch),
+    // R6 (underside arc) and R2 (photon ring). That is bhmarch_fragment's job
+    // and it is now the only honest path. P1 (the step-rule ceiling, :3425)
+    // is what makes it wind: measured rmin 16.05 -> 1.512 r_s, turn 0.997*pi
+    // -> 3.82*pi.
+    //
+    // ⛔ DO NOT REBUILD THIS. The deflection LUT in renderer.mm is real physics
+    // and stays — the march can use it. The forward sprite displacement does
+    // not come back.
+    if (isSecondary) cullThis = true;   // no second image without a lens
 
-    // ── Gravitational lensing — per-particle 3D bend, no 2D coherent pattern ──
-    // The previous (ba85dcc) lens computed deflection from NDC distance —
-    // every particle got pushed radially from the projected BH center with
-    // magnitude ~1/NDC-distance. That creates a perfect coherent circle of
-    // distortion on screen (the "2D locked shape" — always centered on
-    // projected origin regardless of disk geometry).
-    //
-    // Now: the deflection magnitude is driven by each particle's actual
-    // 3D impact parameter (perpendicular distance of the camera→particle
-    // ray to the BH origin in world space). Direction stays NDC-radial
-    // (so the bend is visible in screen). Particles in different 3D
-    // positions bend by different amounts → no coherent circular ring
-    // pattern emerges, just per-particle deflection of varying strengths.
-    // ── Gravitational lensing — point-mass lens equation ────────────────
-    // The old version pushed particles radially by an arbitrary 0.30/impact.
-    // That bend had NO relation to the shadow radius, so the bright ring and
-    // the dark hole were two different circles → it never read as a real BH.
-    //
-    // Real fix: the point-mass lens maps an unlensed angular offset β to an
-    // image radius θ via  β = θ − θ_E²/θ , i.e.
-    //     θ = ½(β + √(β² + 4·θ_E²)).
-    // As β→0 the image piles up AT θ_E (the Einstein / photon ring); far out
-    // (β≫θ_E) θ→β (no bend). We set θ_E = the shadow's on-screen radius
-    // (cam.bhShadowNdcRadius), so the lensed ring sits exactly on the shadow
-    // edge — ring radius == hole radius, which is what makes it a black hole.
-    //
-    // STAR-MAP FLIP: at silence the rest state is a STAR MAP, not a black hole,
-    // so there is NO lensing at rest (lensing was what bent every particle onto
-    // the photon ring → the donut/hole). The bend now ONLY appears as matter
-    // collapses on RELEASE — the hole forms with the BH, not before.
-    // 0 during play (no distortion of the Chladni shape).
-    // EMERGENT lensing (Step 3): light bending scales with how close the
-    // central mass is to forming a hole — weak lensing as mass gathers,
-    // full deflection as r_s(M_enc) approaches the enclosure radius. The
-    // envelope phase no longer gates this: mass does.
-    float lensRamp = smoothstep(0.2f, 0.9f, cam.bhStrength);
-    bool lensActive = (cam.bhToggles & 0x100u) &&  // bit8: lens/shadow toggle
-                      (cam.bhShadowNdcRadius > 1e-4f && lensRamp > 0.001f);
-    // Pre-lens screen position — the streak block below needs it to keep
-    // streaks = MOTION through the lens (see LENS-COHERENT STREAK).
-    float2 preLensNDC = out.position.xy / max(out.position.w, 1e-4f);
-    // No hole (no lens, or perspective) → the secondary image doesn't exist.
-    if (isSecondary && !lensActive) cullThis = true;
-    if (lensActive && cam.horizonR > 0.0f) {
-        // ── WORLD-SPACE DEFLECTION MAP (2026-07-17) — the honest hole bends
-        // for real. Thin-lens geometry with each particle's TRUE depth D
-        // behind the hole and the exact α(b) LUT (log-divergent at the photon
-        // sphere): back-of-disk light wraps OVER and UNDER the shadow, arcs
-        // hug the photon ring — the Gargantua horseshoe the flat-NDC lens
-        // could never produce. Ortho camera: transverse world lengths ≡
-        // angles, lens plane through the origin.
-        // SKELETON FIX — HOLE-CENTERED LENS (2026-07-23 18:05, his lens-off
-        // A/B: the physical ring is CORRECT and coherent; the bending is
-        // what scrambles it). Axis, depth and every reconstructed image were
-        // measured from the ORIGIN while the hole sits OFF-ORIGIN after
-        // collapse — every arc assembled around a displaced pivot = the
-        // broken skeleton. All geometry is now relative to the hole's true
-        // world position.
-        float3 bhWorld = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
-                                   cam.spinAngleX, cam.spinAngleY,
-                                   cam.spinAngleZ) * cam.plateRadius;
-        float rsW   = cam.horizonR * cam.plateRadius;      // r_s in world units
-        // F5 2026-08-10: was `normalize(-cam.cameraPos.xyz)`, which is the
-        // direction camera→ORIGIN, not the view axis. Identical while the camera
-        // looks at the origin; wrong the moment a dolly/POV points elsewhere.
-        float3 dHat = float3(cam.viewForwardX, cam.viewForwardY, cam.viewForwardZ);
-        float along = dot(worldPos - bhWorld, dHat);       // + = behind the hole
-        if (isSecondary && along <= rsW) cullThis = true;  // front: no 2nd image
-        // ── THE SEAM, REMOVED (2026-07-26 13:56:00) ──────────────────────────
-        // This used to be `if (along > rsW) { ... }` with NO else, i.e. the bend
-        // was applied to the far HALF-SPACE only: matter one hair behind the
-        // plane was displaced most of the way to the photon ring, matter one hair
-        // in front was drawn untouched. That step IS the artefact Jamal has been
-        // reporting for weeks — "two circles on top of each other", "very much
-        // circles not rings", "that artificial half overlay", "weird depending on
-        // which side you look at it" (the plane is defined by dHat, so it rotates
-        // with the camera), and "two rotations on top of each other": the two
-        // arcs sit at two different APPARENT radii while the Keplerian playback
-        // spins each particle by Ω(r) from its PHYSICS radius, so one ring's worth
-        // of matter shows two radius<->rate laws at once. His lens on/off A/B
-        // confirmed it twice (2026-07-23 18:05, 2026-07-26 13:49): lens off = ONE
-        // coherent ring; lens on = two rings + the crescent.
-        //
-        // The gate was never needed. The solve is β = θ − α(θ)·D, so as D → 0 the
-        // α·D term vanishes and θ → β on its own — the displacement already fades
-        // to nothing at the hole's plane. The D1 intent (2026-06-13, keep
-        // foreground matter IN THE ROOM instead of the hole painting a flat disc)
-        // is preserved for free by D = 0, without a step.
-        // Two things still need the depth: the photon-sphere floor max(th, 2.62rs)
-        // would otherwise shove un-lensed foreground matter outward, and the
-        // magnification would jump. Both are ramped by depthMix, which is 0 at the
-        // plane and 1 one r_s behind it — exactly where the old gate switched on.
-        {
-            float3 perp = (worldPos - bhWorld) - along * dHat;
-            float beta  = length(perp);
-            float D     = max(along, 0.0f);              // clamp, do not gate
-            float depthMix = smoothstep(0.0f, max(rsW, 1e-6f), D);
-            if (beta > 1e-4f * rsW) {
-                float3 pHat = perp / beta;
-                if (!isSecondary) {
-                    // PRIMARY image: solve β = θ − α(θ)·D. Weak-field seed
-                    // (α=2r_s/θ) then 3 Newton steps on the exact LUT.
-                    float th = beta;                     // D = 0 → no deflection
-                    if (D > 0.0f) {
-                        th = 0.5f * (beta + sqrt(beta * beta + 8.0f * rsW * D));
-                        for (int it = 0; it < 3; ++it) {
-                            float a  = lensAlphaSample(lensAlphaLUT, th / rsW);
-                            float a2 = lensAlphaSample(lensAlphaLUT, th * 1.02f / rsW);
-                            float da = (a2 - a) / (0.02f * th);
-                            th -= (th - a * D - beta) / max(1.0f - da * D, 0.25f);
-                            th  = max(th, 2.62f * rsW);
-                        }
-                    }
-                    float thEff = mix(beta, th,
-                                      cam.tuneLens * lensRamp * depthMix);
-                    // ── CAPTURE TEST ON THE IMAGE, NOT THE SOURCE ───────────
-                    // (2026-08-14 — the NASA gap.) A per-pixel geodesic tracer
-                    // makes the shadow a property of RAY FATE: a pixel is black
-                    // iff its ray ends on the horizon, so light can never appear
-                    // inside b_c = 2.5980762 r_s. We forward-map sprites, so the
-                    // shadow is only as empty as our culls happen to leave it —
-                    // and it was guaranteed empty only out to r_h (:821), i.e.
-                    // 1.0 r_s against a true shadow of 2.598 r_s. 85% of the
-                    // shadow AREA had no reliable mechanism.
-                    // Two leaks filled it: (a) the floor at :988 is diluted by
-                    // tuneLens (0.85 default), so images bottomed out at
-                    // 0.85*2.62 = 2.227 r_s — INSIDE the shadow; (b) depthMix is
-                    // 0 for matter within one r_s behind the hole, so that slab
-                    // drew UNLENSED straight through the middle, and the
-                    // straight-line cull that used to catch it is gated off
-                    // whenever the lens is on (:857 !lensWillImage) — the slab
-                    // exception its comment (:803) claims was deleted at :853.
-                    // The honest test is the same one the SECONDARY already
-                    // applies (:1023): if the solved IMAGE lands inside the
-                    // capture radius, that photon spiralled in — it does not
-                    // arrive. Gated on along > 0: a source in FRONT of the hole
-                    // never passes near it, is never captured, and must keep
-                    // crossing the disc (that front/behind asymmetry is what
-                    // reads as a 3D body, :793).
-                    // The arch is NOT touched: floored primary images sit at
-                    // >= 2.62 r_s by construction, outside b_c.
-                    if (along > 0.0f && thEff < 2.5980762f * rsW) {
-                        cullThis = true;
-                    }
-                    out.position = cam.viewProjection *
-                                   float4(bhWorld + along * dHat + pHat * thEff, 1.0f);
-                    // PRIMARY MAGNIFICATION (2026-07-19): lensing conserves
-                    // surface brightness — a stretched image is a BRIGHTER
-                    // image, by the point-lens μ₊(u) = (u²+2)/(2u√(u²+4)) + ½
-                    // with u = β/θ_E. This fills the evacuated Einstein zone
-                    // with the smooth faint→blazing gradient of the real arcs
-                    // instead of equal-brightness dots. Clamped ×6 (μ₊→∞ on
-                    // axis); blended by the same tuneLens·lensRamp as the
-                    // displacement so dialing the lens off is honest.
-                    float thetaE = sqrt(2.0f * rsW * D);
-                    float u   = beta / max(thetaE, 1e-5f * rsW);
-                    float muP = (u * u + 2.0f) /
-                                (2.0f * u * sqrt(u * u + 4.0f)) + 0.5f;
-                    // depthMix too (2026-07-26): μ₊ → ∞ as D → 0 because θ_E → 0,
-                    // so without it foreground matter flashed to the ×6 clamp at
-                    // the seam. Now brightness ramps in with the displacement.
-                    imageWeight = mix(1.0f, min(muP, 6.0f),
-                                      cam.tuneLens * lensRamp * depthMix);
-                } else {
-                    // SECONDARY image: opposite side, β = α(θ)·D − θ.
-                    float th = 0.5f * (sqrt(beta * beta + 8.0f * rsW * D) - beta);
-                    th = max(th, 2.62f * rsW);
-                    for (int it = 0; it < 3; ++it) {
-                        float a  = lensAlphaSample(lensAlphaLUT, th / rsW);
-                        float a2 = lensAlphaSample(lensAlphaLUT, th * 1.02f / rsW);
-                        float da = (a2 - a) / (0.02f * th);
-                        th -= (a * D - th - beta) / min(da * D - 1.0f, -0.25f);
-                        th  = max(th, 2.60f * rsW);
-                    }
-                    if (th <= 2.605f * rsW) {
-                        cullThis = true;   // folded into the photon sphere
-                    } else {
-                        float3 target = bhWorld + along * dHat - pHat * th;
-                        // ── PARITY PINCH RING, REMOVED (2026-08-14 17:30:54) ──
-                        // This was `mix(worldPos, target, lensRamp)`, i.e. the
-                        // secondary was lerped from its UNLENSED position. That
-                        // makes the signed transverse coordinate
-                        //     θ_r(β) = (1−L)·β − L·th(β),  L = lensRamp
-                        // whose tangential eigenvalue θ_r/β is negative (the
-                        // mirror-reversed parity that PROVES this is real optics,
-                        // >180° paths crossing) only inside u = 1/√(R(1+R)),
-                        // R = (1−L)/L. Instance 1 is born at bhStrength > 0.5
-                        // (renderer.mm:3853) where L = 0.394 → correct parity only
-                        // inside 0.51 θ_E; outside that radius the image is
-                        // UN-flipped. A zero-parity ring inside the second image,
-                        // sweeping outward as the hole strengthens, with no
-                        // counterpart in optics. It self-heals only at
-                        // bhStrength >= 0.9, where lensRamp saturates to 1.
-                        // A second image does not fade in by SLIDING from the
-                        // source to its true place — it forms where the lens
-                        // equation puts it and fades in by being FAINT. Strength
-                        // is carried by imageWeight below, which is already
-                        // proportional to lensRamp; bit8 culls the instance
-                        // outright (:920). At L→0 the old form also stacked the
-                        // secondary exactly on the primary = a doubled sprite at
-                        // the source. Both artefacts die with the mix.
-                        out.position = cam.viewProjection * float4(target, 1.0f);
-                        // Honest relative magnification, real Einstein radius.
-                        float thetaE = sqrt(2.0f * rsW * D);
-                        float u = beta / max(thetaE, 1e-5f * rsW);
-                        float A = (u * u + 2.0f) / (u * sqrt(u * u + 4.0f));
-                        // ── THE SLIDER IS NOW HONEST (2026-08-14 17:53:52) ──
-                        // Was bare `lensRamp * clamp(...)`. The primary blends by
-                        // cam.tuneLens · lensRamp · depthMix (:992, :1039) but the
-                        // secondary ignored tuneLens entirely, so the Lens Bend
-                        // dial could not turn the second image off — only the bit8
-                        // toggle could (:920). That made every lens A/B done with
-                        // the SLIDER untrustworthy: the fold-over arc survived at
-                        // full strength no matter where the dial sat.
-                        // Multiply, don't mix: the second image has no unlensed
-                        // brightness to fall back to — with no lens it simply does
-                        // not exist. At tuneLens = 0 the weight goes to 0 and
-                        // :1621 drops pointSize to 0, i.e. the same outcome bit8
-                        // produces. depthMix is not included because it is
-                        // identically 1 here (the secondary is culled at
-                        // along <= rsW, :945), so it would only be decoration.
-                        imageWeight = cam.tuneLens * lensRamp *
-                                      clamp((A - 1.0f) / (A + 1.0f), 0.0f, 1.0f);
-                    }
-                }
-            } else if (D > 0.0f) {
-                // on-axis (β≈0): the true image is a full Einstein ring a
-                // sprite can't represent; an unlensed draw would leak a dot
-                // INSIDE the shadow (the cull no longer removes it) — cull.
-                // GATED ON D > 0 (2026-07-26): with the half-space gate gone this
-                // block is now reachable by FOREGROUND matter, which is not lensed
-                // at all and must keep drawing — culling it would punch a hole in
-                // the matter in front of the hole.
-                cullThis = true;
-            }
-        }
-    } else if (lensActive) {
-        // Hole-centered too (same skeleton fix): centre + front/behind plane
-        // from the hole's world position, not the origin.
-        float3 bhWorldF = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
-                                    cam.spinAngleX, cam.spinAngleY,
-                                    cam.spinAngleZ) * cam.plateRadius;
-        float4 bhClip = cam.viewProjection * float4(bhWorldF, 1.0);
-        if (bhClip.w > 0.001f && out.position.w > 0.001f) {
-            float2 ndcP  = out.position.xy / out.position.w;
-            float2 ndcBH = bhClip.xy / bhClip.w;
-            // Work in screen-isotropic coords: NDC x covers more world than y
-            // by `aspect`, so scale x up to make a screen-circle a true circle.
-            float asp = max(cam.aspect, 1e-4f);
-            float2 d = (ndcP - ndcBH);
-            d.x *= asp;
-            float beta = length(d);
-            // DEPTH-AWARE LENSING (Phase D1, 2026-06-13 — Jamal's flaw #1: "the
-            // BH is a 2D layer, not in the room"). Light is only gravitationally
-            // bent if it passes BEHIND the hole. A particle in FRONT of the BH
-            // (nearer the camera than the origin) is NOT lensed — it renders at
-            // its true 3D position and OCCLUDES the shadow. So the hole sits
-            // inside the scene with matter correctly in front of / behind it,
-            // instead of the lens always painting a flat disc over everything.
-            // F5 2026-08-10: see the dHat site above — same substitution, same
-            // reason. This one gates `behindBH`, i.e. the occlusion that puts
-            // the hole IN the scene rather than over it.
-            float3 viewDir = float3(cam.viewForwardX, cam.viewForwardY, cam.viewForwardZ);
-            bool behindBH = dot(worldPos - bhWorldF, viewDir) > 0.0f; // farther than the HOLE
-            if (isSecondary && !behindBH) cullThis = true;    // front matter casts no 2nd image
-            if (beta > 1e-5f && behindBH) {
-                float thetaE = cam.bhShadowNdcRadius;
-                float disc   = sqrt(beta * beta + 4.0f * thetaE * thetaE);
-                if (!isSecondary) {
-                    // PRIMARY image θ₊ = ½(β+√(β²+4θ_E²)), outside the ring.
-                    // Gentle blend keeps the disk's real 3D radius while pulling
-                    // inner material toward the photon-ring brightening.
-                    float thetaPlus = 0.5f * (beta + disc);
-                    float theta = mix(beta, thetaPlus, cam.tuneLens * lensRamp);
-                    float2 lensed = (d / beta) * theta;
-                    lensed.x /= asp;
-                    out.position.xy = (ndcBH + lensed) * out.position.w;
-                } else {
-                    // SECONDARY image θ₋ = ½(β−√(β²+4θ_E²)) < 0 → opposite side,
-                    // inside the ring: the fold-over arc. Brightness = the real
-                    // relative magnification μ₋/μ₊ (→1 at ring, →0 far), faded
-                    // in by lensRamp — the honest faintness of the 2nd image.
-                    float thetaMinus = 0.5f * (beta - disc);          // negative
-                    float2 lensed = (d / beta) * (thetaMinus * lensRamp);
-                    lensed.x /= asp;
-                    out.position.xy = (ndcBH + lensed) * out.position.w;
-                    float u = beta / max(thetaE, 1e-5f);
-                    float A = (u * u + 2.0f) / (u * sqrt(u * u + 4.0f));
-                    imageWeight = lensRamp * clamp((A - 1.0f) / (A + 1.0f), 0.0f, 1.0f);
-                }
-            } else if (isSecondary) {
-                cullThis = true;   // front / degenerate: no second image
-            }
-        } else if (isSecondary) {
-            cullThis = true;
-        }
-    }
 
     // out.position already set at line 102, modified by lensing block above.
 
@@ -1384,7 +1123,6 @@ vertex VertexOut particle_vertex(
     // scratches in arbitrary directions (the cheap look). Shift the end by
     // the same image displacement: first-order, both ends of a short streak
     // bend alike, so the streak is pure motion again. No-op when unlensed.
-    v2_screen += (v1_screen - preLensNDC);
     out.velDir2D = (v2_screen - v1_screen) * STREAK_GAIN;
 
     // ── FLUID STREAK (bit18, 2026-07-24) — THE ARC GETS ITS OWN ROOM ────────
@@ -3206,7 +2944,6 @@ fragment float4 dust_fragment(DustVertexOut in [[stage_in]],
 // ORTHO = OBSERVER AT INFINITY. The camera sits ~8.5 r_s out, but an ortho
 // projection is parallel rays, i.e. a telescope at infinity. So each ray is
 // back-extended along its own direction to r = 60 r_s and integrated from
-// there; starting at the camera would bend the ray from inside the field.
 
 struct BHMarchUniforms {
     float inverseViewProj[16]; // same CPU helper the postfx pass already uses
@@ -3329,391 +3066,37 @@ static float4 mulM4(constant float* m, float4 v) {
 // pulled on 2026-07-26 and the helper has been dead code since. The blob was
 // never a sampling problem; see the handoff.)
 
-// METRIC-NATIVE EMISSION (2026-07-25, Jamal: "calculate the entire black hole,
-// not a lens... how are you gonna calculate the inner and outer ring if it's
-// just a 2D circle"). This pass integrates the null geodesic BACKWARD through
-// the honest metric and ACCUMULATES the emission of the REAL deposited particle
-// field (the CIC hash grid) wherever the ray crosses it. Consequences fall out
-// of the paths, nothing placed by hand: rays winding OVER the hole pick up the
-// far side of the disk (the arch), rays that fall in stop gathering (the shadow
-// is the ABSENCE of gathered light — no black is ever painted, so the overlay
-// problem cannot recur). ADDITIVE blend: emit=0 adds nothing. Honors the BH
-// core directive — the light IS the particles, viewed through g(M), not a decal.
-fragment float4 bhmarch_fragment(BHMarchOut in [[stage_in]],
-                                 constant CameraUniforms& cam [[buffer(0)]],
-                                 constant BHMarchUniforms& mu [[buffer(1)]],
-                                 device const uint* cellCounts [[buffer(2)]],
-                                 constant SpatialHashUniforms& su [[buffer(3)]],
-                                 device const uint* fineCellMass [[buffer(4)]],
-                                 constant SpatialHashUniforms& fsu [[buffer(5)]])
-{
-    // No honest hole -> this pass adds NOTHING (additive: transparent black).
-    if (cam.horizonR <= 0.0f) return float4(0.0f);
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔪 THE GEODESIC RAY-MARCH IS DELETED — 2026-08-27 20:49:10, HIS ORDER
+// ═══════════════════════════════════════════════════════════════════════════
+// "the march as it is rn is dead too delete it all of it to never retun its
+//  the oranghe blob itsnot what we want."                        [HIS WORDS]
+//
+// ~410 lines removed: bhmarch_fragment in full — the backward null-geodesic
+// RK4, the CIC/fine-grid emission gather, the Shakura-Sunyaev T(r), the g
+// factor and its g^3 beaming, the radiative transfer, and both of today's
+// fixes to it (the step-rule ceiling kMarchStepRefRs and the visible-band
+// Planck amplitude visBandWeight). Its pipeline, its encode block, its bit19
+// toggle and its three dials go with it.
+//
+// WHY, and it is not the geodesics. Integrating null geodesics backward is the
+// right idea and it is what NASA/Goddard do (Schnittman & Powell 2024). The
+// defect was WHAT THIS ONE GATHERED: it accumulated emission from a 128^3
+// density grid, NEAREST-sampled, with no temperature of its own. That is a
+// volumetric FOG renderer. NASA's rays terminate on a disc and take that
+// disc's emission; ours summed a cloud along the whole path. A fog integral
+// over a box can only ever produce a soft blob, and dressing it in a colour
+// law (2026-08-17) or a Planck amplitude (2026-08-27) does not change what it
+// is. He banned it for being orange on 2026-07-28, it came back orange by a
+// different route, and today he ended it.
+//
+// ⛔ DO NOT REBUILD THIS PASS. Anything that replaces it must terminate rays
+// on the matter that is actually there, at the resolution the sprites are
+// drawn at — not average a grid along a line.
+//
+// KEPT ON PURPOSE, because bhbody_fragment below still needs them:
+//   bhmarch_vertex, struct BHMarchOut, struct BHMarchUniforms (only its
+//   inverseViewProj is read now) and bhMarchUniformBuffer. That pass is the
+//   depth-only capture sphere he PASSED on 2026-08-14 ("THE HOLE IS A BODY"),
+//   and it is what makes the hole occlude as geometry. It is not the march.
 
-    // Hole centre + r_s in WORLD units — identical construction to the lens
-    // block above (hole-centered), so the two agree on where the hole is.
-    float3 bhWorld = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
-                               cam.spinAngleX, cam.spinAngleY,
-                               cam.spinAngleZ) * cam.plateRadius;
-    float rsW = cam.horizonR * cam.plateRadius;
-    if (rsW <= 1e-6f) return float4(0.0f);
-
-    // Unproject this pixel to a world ray (ortho AND perspective).
-    float4 pn = mulM4(mu.inverseViewProj, float4(in.ndc, 0.0f, 1.0f));
-    float4 pf = mulM4(mu.inverseViewProj, float4(in.ndc, 1.0f, 1.0f));
-    float3 ro = pn.xyz / pn.w;
-    float3 rd = normalize(pf.xyz / pf.w - ro);
-
-    // Impact-parameter cull: b_c = 2.598 r_s. Pixels well beyond that neither
-    // bend meaningfully nor cross the near-hole disk region we care about.
-    float3 p0 = ro - bhWorld;
-    float  b  = length(cross(p0, rd));
-    if (b > mu.bCull * rsW) return float4(0.0f);
-
-    // Back-extend to r = rMarchStart * r_s.
-    float R   = mu.rMarchStart * rsW;
-    float pd  = dot(p0, rd);
-    float disc = pd * pd - dot(p0, p0) + R * R;
-    if (disc <= 0.0f) return float4(0.0f);    // never enters the marched region
-    float tStart = -pd - sqrt(disc);          // the INCOMING root (may be < 0)
-
-    // MARCH IN UNITS OF r_s (x/rsW): the step rule dl = stepScale * r^1.5 is
-    // calibrated for r_s = 1 (bc_validate.cpp). World rsW is 90..2000, so
-    // normalizing here makes this loop the validated integrator bit-for-bit.
-    float3 x = (p0 + rd * tStart) / rsW;
-    float3 v = rd;
-    float3 hv = cross(x, v);
-    float  h2 = dot(hv, hv);
-    float  rEsc = mu.rMarchStart * 1.02f;
-
-    float3 emit = float3(0.0f);               // gathered emission (additive out)
-    // TRANSMITTANCE — the missing half of the transfer (2026-08-17). Without it
-    // `emit +=` sums an unbounded ∫ρ ds over a 60 r_s path, so the biggest volume
-    // (thin, cool outer gas) dominates and paints the brown fill. DNGR §7.3 runs
-    // emission AND extinction; we only ran emission.
-    float trans = 1.0f;
-
-    for (int i = 0; i < mu.maxSteps; ++i) {
-        float r = length(x);
-        if (r < 1.0f) break;                  // captured: stop gathering (shadow)
-        if (r > rEsc && dot(x, v) > 0.0f) break;  // escaped
-
-        float dl = mu.stepScale * r * sqrt(r);   // r^1.5
-
-        // ── SAMPLE THE REAL PARTICLE FIELD at this ray point ───────────────
-        // world (spun × R) = hole centre + x·r_s  →  physics coords for the grid.
-        // Skip the inner region (r < emitInnerR): matter there is captured /
-        // inside ISCO and must not fill the shadow with light (the "yolk" fix).
-        if (su.gridSize > 0 && r > mu.emitInnerR && trans > 0.003f) {
-            // ── MATCH THE SPRITES' DILATION SHEAR (2026-07-26 21:07:41) ──────
-            // particle_vertex draws every body at applySpin(posW, spinAngle *
-            // tDilate(|posW|)) — a radius-dependent SHEAR, not a rigid turn
-            // (that shear is the "time warp traces"). This gather used the FULL
-            // angle, so the march was sampling the field in a DIFFERENT frame
-            // from the one the sprites are drawn in, rotated apart by
-            // spinAngle*(1-tDilate). Two pictures of one disk at two rotations
-            // is Jamal's "the black hole is in front of the ring which can't
-            // even be" (2026-07-26 20:41).
-            // Invertible EXACTLY: applySpin is a rotation so it preserves |p|,
-            // and tDilate is a function of |p| alone — so the radius of the
-            // sample point in spun coords recovers the very tDilate the sprite
-            // was drawn with. Same constant (BH_R_IN_SIM) and same 0.4 floor as
-            // particle_vertex; if that profile changes, change it in both.
-            float3 q   = bhWorld + x * rsW;
-            float3 qp  = q / cam.plateRadius;
-            float  rDl = length(qp);
-            float  tDl = sqrt(max(0.4f, 1.0f - BH_R_IN_SIM
-                                        / max(rDl, BH_R_IN_SIM + 1e-3f)));
-            float3 pp  = applyInverseSpin(qp,
-                                          cam.spinAngleX * tDl,
-                                          cam.spinAngleY * tDl,
-                                          cam.spinAngleZ * tDl);
-            // COHERENT TIME-LAPSE SAMPLING (2026-07-25): the sprite playback
-            // (render.metal:355) sweeps matter FORWARD by Ω(r)·tdil·bhPoseTime
-            // about the hole. Sample the field where that matter came FROM —
-            // rotate pp BACKWARD by the same angle — so the emission rotates
-            // WITH the sprites instead of lagging at the slow physics rate
-            // (Jamal: "a low-res copy of something slower"). Same Ω, tdil.
-            if (cam.bhToggles & 0x100000u) {
-                float2 c2 = float2(cam.bhX, cam.bhY);
-                float2 d  = pp.xy - c2;
-                float rxy = length(d);
-                if (rxy > max(1e-3f, cam.horizonR)) {
-                    float om  = sqrt(cam.bhDiskGM / (rxy * rxy * rxy));
-                    float rsD = (cam.horizonR > 0.0f) ? cam.horizonR : 1.0f;
-                    float td  = sqrt(max(0.4f, 1.0f - rsD / max(rxy, rsD + 1e-3f)));
-                    float ang = -om * td * cam.bhPoseTime;   // backward
-                    float ca = cos(ang), sa = sin(ang);
-                    pp.xy = c2 + float2(d.x * ca - d.y * sa, d.x * sa + d.y * ca);
-                }
-            }
-            // ── FINE-GRID GATHER (2026-07-26 13:41:00) — THE LENS RESOLUTION ──
-            // Jamal: "maybe the lens is like too low res… does it actually
-            // properly reflect what it clones… maybe the lens needs to be
-            // oversampled to not break in resolution and to also properly
-            // connect to the rings."
-            //
-            // He was right and the number is brutal: this gather used the COARSE
-            // hash — kGridSize 128 over halfExtent 64 => cellSize 1.0 sim — while
-            // r_h is ~0.15 and the whole visible disk spans ~0.5..2 sim. So the
-            // entire lensed image was being built from about 2-4 cells, with a
-            // NEAREST fetch (int3(round(gp))). No number of march steps or screen
-            // pixels can fix that; the source field had ~2 samples across the
-            // feature. Meanwhile the sprites draw the same matter at sub-pixel
-            // precision — two pictures of one object ~100x apart in resolution,
-            // additively overlaid, which is also why it "doesn't connect to the
-            // rings".
-            //
-            // The fine AMR grid is the same 128³ over ±kAmrFineExtent (4.0 sim)
-            // => cellSize 0.0625, 16x finer, ~32 samples across the disk. It
-            // holds Σ mass in MASS_FP=64 fixed point (bin_fine_mass), so convert
-            // to M☉ and rescale by the cell-volume ratio to keep the magnitude
-            // comparable to the coarse per-cell COUNT the emission dial was tuned
-            // against (particles are ~1 M☉, so count ≈ mass there).
-            // Outside the fine box, fall back to the coarse counts so nothing
-            // goes dark. Still nearest-neighbour — trilinear is the next step.
-            // FINE GRID FIRST (2026-07-26). The coarse hash is cellSize 1.0 sim
-            // while the visible disk spans ~0.5..2 — 2 to 4 samples for the whole
-            // lensed image, which is Jamal's "the lens is like too low res / it
-            // doesn't properly connect to the rings". The fine AMR grid is the
-            // same 128^3 over ±4.0 => cellSize 0.0625, SIXTEEN times finer,
-            // ~32 samples across the disk.
-            // It costs NOTHING new: bin_fine_mass already runs every 2nd frame
-            // (renderer.mm, gated pmGravityOn && sorFrame && totalAmplitude<0.02)
-            // — i.e. in silence, which is exactly when a horizon exists. The
-            // 2026-07-26 revert of this idea was caused by adding a SECOND
-            // binning pass every frame, not by the fine grid itself; fps did not
-            // return after that revert, which already said the grid was innocent.
-            // Units: bin_fine_mass stores sum(m)*MASS_FP(64) as fixed point, so
-            // /64 gives M_sun. The emission dial was tuned against the coarse
-            // per-cell COUNT, so rescale by the cell-VOLUME ratio to express this
-            // as a density in coarse-cell-equivalent units.
-            // ⚠ CALIBRATION CAVEAT: that equivalence assumes ~1 M_sun/particle.
-            // Measured now, the field is ~82% dwarfs below 0.5 M_sun, so mass
-            // density under-reads count density by roughly 2x. If the march comes
-            // out too dim this factor is the first place to look — it is a scale,
-            // not a bug in the sampling.
-            // Outside the fine box fall back to the coarse counts so nothing goes
-            // dark: the fine box is ORIGIN-centred while the hole drifts
-            // off-origin after PLAY.
-            float dens = -1.0f;
-            if (fsu.gridSize > 0 &&
-                max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < fsu.halfExtent) {
-                // TRILINEAR PULLED 2026-07-26 21:14:22 on Jamal's verdict ("no
-                // huuuge difference... it's not that the bending is blocky it's
-                // just annoying and wrong"). The triSampleGrid() helper was
-                // deleted 2026-07-28 once it was clear the blob is not a
-                // sampling artefact at all — see the handoff. It cost 8 gathers
-                // per march step for no visible win.
-                float3 gpF = (pp + fsu.halfExtent) * fsu.invCellSize - 0.5f;
-                int3 cf = clamp(int3(round(gpF)), int3(0), int3(fsu.gridSize - 1));
-                float mSun = float(fineCellMass[uint((cf.z * fsu.gridSize + cf.y)
-                                                     * fsu.gridSize + cf.x)])
-                             * (1.0f / 64.0f);
-                float vC = su.cellSize * su.cellSize * su.cellSize;
-                float vF = max(fsu.cellSize * fsu.cellSize * fsu.cellSize, 1e-12f);
-                dens = mSun * (vC / vF);
-            } else if (max(max(abs(pp.x), abs(pp.y)), abs(pp.z)) < su.halfExtent) {
-                float3 gp = (pp + su.halfExtent) * su.invCellSize - 0.5f;
-                int3 c = clamp(int3(round(gp)), int3(0), int3(su.gridSize - 1));
-                dens = float(cellCounts[
-                    uint((c.z * su.gridSize + c.y) * su.gridSize + c.x)]);
-            }
-            // ── g — THE ONE SHIFT FACTOR (2026-08-17, his order: "add g to the
-            // march") ────────────────────────────────────────────────────────
-            // DNGR §3: what sets the observed colour AND brightness of disk gas is
-            // g = f_obs/f_emit, the Doppler and gravitational shift COMBINED. In
-            // the Interstellar render it is the whole story — their disk is
-            // isothermal at 4500 K and the entire red→white sweep across it comes
-            // from g alone (approaching g≈1.5, receding g≈0.4). So g is the part
-            // that stays true whatever we later decide our gas IS; the RIAF-vs-
-            // thin-disc question is still open and this does not presume it.
-            //
-            // The march can use the EXACT expression where the sprite pass could
-            // only linearise (1 + K·β_los), because it integrates the geodesic and
-            // therefore HOLDS the photon's conserved angular momentum. For an
-            // emitter on a circular geodesic at radius r, seen from infinity:
-            //     g = 1 / [ u^t (1 − Ω·b) ],  u^t = 1/√(1 − 3M/r),  Ω = √(M/r³)
-            // b = photon angular momentum about the ORBIT AXIS, per unit energy.
-            // u^t carries gravitational redshift + emitter time dilation, (1−Ω·b)
-            // carries the Doppler. ONE factor, not two multiplied together — so
-            // this cannot repeat the double-count the DNGR doc corrected on
-            // 2026-07-24 (g³·B(ν/g,T) ≡ B(ν,g·T); never apply both).
-            //
-            // UNITS: this loop already marches in r_s = 1, hence M = 0.5 exactly.
-            // Independent check that the normalisation is right — Ω·r at the ISCO
-            // (r = 6M = 3) is √(0.5/27)·3 = 0.4082, and particles.metal:246
-            // MEASURES our own disc's orbV max at 0.4092c. Agree to 0.25%.
-            //
-            // SIGN: the march runs BACKWARD (v points camera → scene), so the
-            // physical photon's angular momentum is −(x × v). Verified on a case
-            // rather than assumed: gas at +x̂ orbiting about +ẑ moves +ŷ; for a
-            // camera at +ŷ the backward v is −ŷ, giving −dot(x×v, ẑ) = +R > 0, so
-            // (1 − Ω·b) < 1 and the APPROACHING limb comes out blueshifted.
-            //
-            // AXIS: poseAxis — the same position-derived orbit normal U7 gave the
-            // sprites and the trails. It degenerates to +Z in the disk (which is
-            // where the gas is) and stays right for inclined matter. Five
-            // sightings of the 90°-off-plane fault say do not hardcode +Z here.
-            float gShift = 1.0f;
-            if (r > 1.5f) {          // no circular geodesic inside the photon sphere
-                float3 axisP = poseAxis(pp - poseCentre(cam));
-                float3 axisW = applySpin(axisP, cam.spinAngleX * tDl,
-                                                cam.spinAngleY * tDl,
-                                                cam.spinAngleZ * tDl);
-                float Mg   = 0.5f;                        // r_s = 1 ⟹ M = 0.5
-                float om   = sqrt(Mg / (r * r * r));      // circular-geodesic Ω(r)
-                float beta = min(om * r, 0.99f);          // orbital speed, c = 1
-                float bAx  = -dot(hv, axisW);             // backward ray ⟹ minus
-                float ut   = rsqrt(max(1.0f - 3.0f * Mg / r, 1e-4f));   // u^t
-                gShift = 1.0f / max(ut * (1.0f - om * bAx), 1e-3f);
-                // BOUND IT WITH PHYSICS, NOT A CHOSEN CEILING. For an emitter at
-                // speed β the head-on / tail-on Doppler factors are √((1±β)/(1∓β));
-                // g cannot fall outside that window at ANY viewing angle. Rays
-                // grazing the photon sphere can drive (1 − Ω·b) through zero, and
-                // this bounds that coordinate singularity using the same β the
-                // term is built from — no free number. Window is 0.65..1.55 at the
-                // ISCO, 0.52..1.93 at the photon sphere.
-                float gMax = sqrt((1.0f + beta) / (1.0f - beta));
-                gShift = clamp(gShift, 1.0f / gMax, gMax);
-            }
-            if (dens > 0.0f) {
-                // emission ∝ density × path length (∫ρ ds), beamed by g³.
-                // LIOUVILLE: specific intensity transforms as I_ν ∝ ν³ (DNGR §3,
-                // their Fig 15c caption), so the observed emission carries g³. The
-                // exponent is 3, NOT the sprite pass's 1.4 — that block's own note
-                // (:1654) calls 1.4 out as less than half the real power law.
-                // WHY g³ HERE AND NOT blackbody(g·T): they are the same operation
-                // and applying both double-counts. blackbody(g·T) is the better
-                // half because it fixes the hue too, but it needs a T for the gas
-                // and that is the open RIAF-vs-thin-disc decision. This form is
-                // correct with the fixed chromaticity we have today, and when the
-                // hue is derived later the g³ moves into the transfer — it does
-                // not have to be unpicked from a colour LUT.
-                // ⚠ g³ raises the peak. Exposure stays HIS, through the existing
-                // live Emission dial (mu.emitScale / config.bhRayEmitScale) — no
-                // gain, no floor, no normalisation added here. The 2026-08-14
-                // revert (:1638) failed on a sparse ADDITIVE point cloud with no
-                // opacity; this pass is a path integral, the "lit surface" that
-                // same note says the reference has and the sprites lack.
-                float beam = gShift * gShift * gShift;
-
-                // ── THE HUE — HARDCODED ORANGE DELETED (2026-08-17) ───────────
-                // Was float3(1.0, 0.55, 0.25): a private constant with no
-                // temperature input, the pass's only colour, and the reason he
-                // banned bit19 on 2026-07-28 ("this orange shadow of the
-                // blackhole is super old and must leave asap", app_state.h:57).
-                // It is the same second layer as the deleted "orange hair" ramp.
-                //
-                // HIS CALL ON THE FORK (2026-08-17): "a mix between the nasa and
-                // interstellar vibe". Physically those two differ in exactly ONE
-                // thing, so the mix is a real object rather than a blend:
-                //   · Interstellar/DNGR: T = 4500 K ISOTHERMAL by choice, the
-                //     whole red→white sweep coming from g alone (doc §3, :166).
-                //   · NASA/Goddard: a genuinely accreting disc, so T FALLS with
-                //     radius — deep red outer edge → yellow-white inner edge —
-                //     with g on top. That radial term is the only difference.
-                // Take NASA's radial structure, anchored at Interstellar's own
-                // colour temperature. Both halves cited, neither picked to feel
-                // right.
-                //
-                // SHAPE — Shakura–Sunyaev thin disc, no freedom in it:
-                //     T_eff(r) ∝ (r/r_in)^(−3/4) · [1 − √(r_in/r)]^(1/4)
-                // The −3/4 is viscous dissipation D(r) ∝ ṀM/r³ against σT⁴; the
-                // bracket is the zero-torque inner boundary at the ISCO, and it
-                // is what makes the bright inner RING of the NASA reference
-                // instead of a bright point — T → 0 at the ISCO, peaking just
-                // outside at r = (49/36)·r_in. r_in = ISCO = 6M = 3 r_s, and this
-                // loop already marches in r_s = 1 (M = 0.5), so r_in = 3 exactly.
-                //
-                // ANCHOR — 6500 K at the profile's peak. NOT a chosen number:
-                // it is DNGR's own white-balance point (doc §3, :172 — "White
-                // balance set so 6500 K → equal RGB"), and it is where
-                // blackbodyRGB is neutral. The r^(−3/4) falloff then carries the
-                // disc down through Interstellar's 4500 K in the body (≈8 r_s)
-                // to deep red at the marched edge — the NASA sweep, end to end.
-                //
-                // 🚨 THIS IS A DECLARED TRANSFER, NOT A CLAIM ABOUT OUR GAS.
-                // Our disc measures h/r = 0.746 (particles.metal:245) — a thick
-                // RIAF at ~4e10 K, which emits in X-ray and has NO true RGB.
-                // Every visible image of such a flow (Chandra, EHT) is a stated
-                // mapping, and this is ours: physical SHAPE, cited ANCHOR,
-                // labelled as a transfer. The open question the fork actually
-                // asked — whether to COOL the gas so h/r drops and the thin disc
-                // becomes true rather than represented — is untouched by this
-                // and still his.
-                //
-                // g enters the HUE as T_obs = g·T (observer-frame bands) and the
-                // BRIGHTNESS as the g³ above. That is not the double-count the
-                // doc corrected on 2026-07-24: blackbodyRGB is max-channel
-                // NORMALISED (:201, and the convention note at :1938), so it
-                // carries chromaticity only and the amplitude has to be supplied
-                // explicitly — the doc's own exception, "only if the colour
-                // lookup is normalised chromaticity with brightness applied
-                // separately".
-                // INSIDE THE TEMPERATURE PEAK, HOLD THE PEAK. The bracket sends
-                // T → 0 AT the ISCO, so evaluating the profile below r_peak would
-                // paint the innermost gas COLD — blackbodyRGB clamps at 1000 K, so
-                // a deep-red fill right where the reference is at its whitest, and
-                // at full brightness because the brightness comes from ∫ρ ds, not
-                // from the profile. Physically that region is plunging matter off
-                // the inner edge: the hottest material there is, not the coolest.
-                // Evaluating at max(r, r_peak) holds it at the peak and makes the
-                // mapping monotone, so tDisk is bounded by T_ANCHOR_K by
-                // construction.
-                const float T_ANCHOR_K = 6500.0f;   // DNGR white balance, §3
-                const float R_ISCO_RS  = 3.0f;      // ISCO = 6M, M = 0.5, r_s = 1
-                const float R_TPEAK_RS = 4.083333f; // (49/36)·r_in, profile max
-                const float F_PEAK     = 0.487871f; // f(R_TPEAK_RS), computed
-                float rT = max(r, R_TPEAK_RS);
-                float fr = pow(rT / R_ISCO_RS, -0.75f)
-                         * pow(max(1.0f - sqrt(R_ISCO_RS / rT), 0.0f), 0.25f);
-                float tDisk = T_ANCHOR_K * (fr / F_PEAK);
-
-                // ── RADIATIVE TRANSFER, NOT A SUM (2026-08-17) ────────────────
-                // Was: emit += colour · (dens·dl·emitScale·beam) — pure emission,
-                // no absorption, so the integral had no ceiling. That is why the
-                // outer volume browned the screen: it is the biggest volume, and
-                // ∫ρ ds over 60 r_s of thin cool gas outweighs the bright inner
-                // disc no matter what the gain is. Turning the gain down hid it;
-                // it did not fix it.
-                //
-                // NO NEW CONSTANT. In LTE the source function IS the Planck
-                // function, so the SAME κρ ds serves as emissivity and as optical
-                // depth (Kirchhoff). Emergent intensity then saturates at B(T)
-                // where the flow is thick and stays ∝ ρ where it is thin — which
-                // is the correct physics AND makes an unbounded fill impossible.
-                // His Emission dial stops being an open-ended gain and becomes
-                // the optical depth, which is a quantity with a meaning.
-                //
-                // GRACEFUL: at the −7.5 default dTau ≈ 3e-8, so 1−exp(−dTau) ≈
-                // dTau and this is numerically the old behaviour. It only bites
-                // as the dial comes up — and then it bites as a SURFACE instead
-                // of a haze. That surface is the thing the 2026-08-14 beaming
-                // revert (:1638) said the reference has and we lack, and it is
-                // what lets the disc occlude itself so the far-side and underside
-                // images can read as separate.
-                float dTau = dens * dl * mu.emitScale;
-                float aSeg = 1.0f - exp(-dTau);
-                emit  += trans * aSeg * blackbodyRGB(gShift * tDisk) * beam;
-                trans *= (1.0f - aSeg);
-            }
-        }
-
-        // RK4 on the 6-vector (x, v); accel = -(3/2) h^2 x / r^5, r_s = 1.
-        float  q1 = length(x);
-        float3 a1 = x * (-1.5f * h2 / (q1*q1*q1*q1*q1));
-        float3 x2 = x + v * (dl * 0.5f),  v2 = v + a1 * (dl * 0.5f);
-        float  q2 = length(x2);
-        float3 a2 = x2 * (-1.5f * h2 / (q2*q2*q2*q2*q2));
-        float3 x3 = x + v2 * (dl * 0.5f), v3 = v + a2 * (dl * 0.5f);
-        float  q3 = length(x3);
-        float3 a3 = x3 * (-1.5f * h2 / (q3*q3*q3*q3*q3));
-        float3 x4 = x + v3 * dl,          v4 = v + a3 * dl;
-        float  q4 = length(x4);
-        float3 a4 = x4 * (-1.5f * h2 / (q4*q4*q4*q4*q4));
-        x += (v + v2 * 2.0f + v3 * 2.0f + v4) * (dl / 6.0f);
-        v += (a1 + a2 * 2.0f + a3 * 2.0f + a4) * (dl / 6.0f);
-    }
-    return float4(min(emit, float3(60.0f)), 1.0f);
-}

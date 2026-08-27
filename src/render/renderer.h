@@ -37,9 +37,6 @@ struct RenderConfig {
   // reserves T_lapse as the user's decision, hence a dial. RENDER CLOCK ONLY.
   float iscoScreenSeconds = 3.8f;
   int   physicsSubsteps = 1;      // N fixed-dt physics steps per frame (fast sweep w/o dt-blowup)
-  float bhRayEmitScale = 1.0e-6f; // metric ray-march (bit19) emission gain = 10^uiRayEmitLog
-  float bhRayBcull = 7.0f;        // ray-march extent: impact-parameter cull in r_s. Mirror of AppState::uiRayBcull (main.cpp copies it in every frame) — keep the two in step. See app_state.h for why 7.
-  float bhRayInnerR = 2.6f;       // ray-march inner no-emit radius in r_s → the dark shadow
 
   // New Simulation
   float modeP = 1.0f; // Depth Mode multiplier

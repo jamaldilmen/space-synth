@@ -1465,25 +1465,9 @@ int main() {
                               "and the ray-march samples the SAME advanced field so\n"
                               "emission + sprites agree. A timelapse of the real orbits.\n"
                               "OFF = raw physics motion (slow ~38s/orbit). ISCO dial = speed.");
-          ImGui::Checkbox("BH ray-march emission (metric hole)", &app.uiTogRayMarch);
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("bit19: CALCULATE the hole. Null geodesics of the honest\n"
-                              "metric, integrated backward; each ray ADDS the real\n"
-                              "particle field it crosses. Far side bends over the top\n"
-                              "(the arch), captured rays go dark (shadow=absence).\n"
-                              "Additive, no black paint. OFF = sprite-lens path only.");
-          UiSliderFloat("  BH emission (log10 gain)", &app.uiRayEmitLog, -8.0f, -2.0f, "%.2f");
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("emitScale = 10^this. 1e-3 (-3) was a solid orange yolk;\n"
-                              "sweep DOWN until saturation breaks and the disk/lens\n"
-                              "structure appears. Live dial, no rebuild.");
-          UiSliderFloat("  BH extent (b/r_s)", &app.uiRayBcull, 2.6f, 40.0f, "%.1f");
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("How far out the disk renders. 2.6 = shadow only (the\n"
-                              "filled core); the disk lives at 3..22 r_s, so widen this\n"
-                              "to draw it + its lensed rings. Higher = more pixels (FPS).");
-          UiSliderFloat("  BH shadow radius (r_s)", &app.uiRayInnerR, 0.0f, 6.0f, "%.2f");
-          if (ImGui::IsItemHovered())
+          // BH ray-march UI deleted 2026-08-27 20:49:10 (his order) — the
+          // pass, its bit19 toggle and its emission/extent/shadow dials are gone.
+
             ImGui::SetTooltip("Inner no-emit radius: matter inside this doesn't light,\n"
                               "so the centre goes DARK (the shadow). 0 = fill the core;\n"
                               "~2.6 = photon-capture shadow; 3 = ISCO gap.");
@@ -2351,13 +2335,9 @@ int main() {
         ((app.uiTogSpectralColour ? 1u : 0u) << 16) |
         ((app.uiTogAccretionGas ? 1u : 0u) << 17) |
         ((app.uiTogFluidStreak ? 1u : 0u) << 18) |
-        ((app.uiTogRayMarch ? 1u : 0u) << 19) |
         ((app.uiTogAnalyticSpin ? 1u : 0u) << 20);
     config.sphCoolTau = app.uiSphCoolTau;
     config.iscoScreenSeconds = app.uiIscoSeconds;
-    config.bhRayEmitScale = powf(10.0f, app.uiRayEmitLog);
-    config.bhRayBcull = app.uiRayBcull;
-    config.bhRayInnerR = app.uiRayInnerR;
     config.physicsSubsteps = app.uiPhysicsSubsteps;
     config.collapseFrac = app.uiCollapseFrac;
 

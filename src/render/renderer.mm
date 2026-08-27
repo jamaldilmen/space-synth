@@ -225,7 +225,7 @@ struct Renderer::Impl {
   // ray-march. Replaces the hole pass's r_h-sized particle silhouette with the
   // integrated capture set of the honest metric (b_c = 2.598 r_s). See the
   // shader banner in render.metal for the derivation + offline validation.
-  id<MTLRenderPipelineState> bhMarchPipeline = nil;
+  // bhMarchPipeline deleted 2026-08-27 20:49:10 (the march is gone).
   id<MTLRenderPipelineState> bhBodyPipeline = nil; // hole-as-body, depth only
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
@@ -765,40 +765,6 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
   }
 
   // ── METRIC-NATIVE EMISSION pipeline (2026-07-25) ───────────────────────
-  // ADDITIVE now (was darkening for the withdrawn black-paint shadow): the
-  // ray-march ACCUMULATES emission from the real particle field and ADDS it —
-  // emit=0 adds nothing, so no disc is ever painted over the frame (the overlay
-  // regression cannot recur). The shadow is the absence of gathered light.
-  {
-    id<MTLFunction> mV = [impl_->library newFunctionWithName:@"bhmarch_vertex"];
-    id<MTLFunction> mF = [impl_->library newFunctionWithName:@"bhmarch_fragment"];
-    if (mV && mF) {
-      MTLRenderPipelineDescriptor *md = [[MTLRenderPipelineDescriptor alloc] init];
-      md.vertexFunction = mV;
-      md.fragmentFunction = mF;
-      md.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; // HDR
-      // Attachment 1 must be DECLARED here (the pass has it). Masked off — but
-      // ⛔ NOT for the reason this comment used to give. It said "this draw is not
-      // moving matter", which is FALSE: the march is FLOWING GAS.
-      // The REAL reason is that `bhmarch_fragment` (render.metal:3342) returns a plain
-      // float4 and declares no [[color(1)]]. And this one is a DESIGN PROBLEM, not a
-      // port: a volumetric ray-march has no per-particle identity, so its velocity has
-      // to come from the gas flow field. Corrected 2026-08-26, board row G6.
-      md.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
-      md.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
-      md.colorAttachments[0].blendingEnabled = YES;
-      md.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
-      md.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
-      md.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
-      md.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
-      md.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-      impl_->bhMarchPipeline =
-          [impl_->device newRenderPipelineStateWithDescriptor:md error:&error];
-      if (error) NSLog(@"BH march pipeline error: %@", error);
-    } else {
-      NSLog(@"Missing bhmarch shader functions");
-    }
-  }
 
   // ── THE HOLE AS A BODY (2026-08-14) — depth only, ZERO colour ────────────
   // See the banner above bhbody_fragment in render.metal. This is the pass that
@@ -3913,7 +3879,14 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [dpe drawPrimitives:MTLPrimitiveTypePoint
             vertexStart:0
             vertexCount:particleCount
-          instanceCount:((bhStrength > 0.5f) ? 2u : 1u)];
+          // 🔪 LENS DEAD 2026-08-27 21:02:15 (his order) — instance 1 WAS the
+          // lens's second image, solved from the opposite root of
+          // beta = theta - alpha(theta)*D. With the lens gone there is no
+          // second root and no second image: one instance per particle. The
+          // far-side and underside images (R5/R6) now have to come from
+          // bhmarch_fragment, which is the only thing that can make them
+          // honestly. Was: ((bhStrength > 0.5f) ? 2u : 1u).
+          instanceCount:1u];
     [dpe endEncoding];
   }
 
@@ -4080,99 +4053,14 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // 2D circle that sampled no useful disk. Real gravitational lensing is applied
   // to the particles in the vertex shader (render.metal).
 
-  // ── METRIC RAY-MARCH EMISSION (bit19, 2026-07-25) ──────────────────────
-  // The "calculate the hole, don't put a lens there" pass (Jamal 07-24/25).
-  // Integrate null geodesics of the honest metric BACKWARD and ADD the emission
-  // of the REAL particle field gathered along each ray: rays winding over the
-  // hole pick up the far side of the disk (the arch = the "outer ring"), rays
-  // that fall in stop gathering (the shadow is the absence of light). Additive,
-  // so emit=0 paints nothing — the withdrawn black-disc overlay cannot recur.
-  // Drawn LAST in the scene pass, over the additive field it samples.
-  bool rayMarchOn = (config.bhToggles & (1u << 19)) != 0u && lastHorizonR > 0.0f;
-  if (rayMarchOn && bhMarchPipeline) {
-    CameraUniforms *camStruct = (CameraUniforms *)cameraBuffer[frameIdx].contents;
-    BHMarchUniforms mu = {};
-    invertMatrix4x4(camStruct->viewProj, mu.inverseViewProj);
-    // ── EXTENT IS NOW MEASURED, NOT A CONSTANT (2026-08-17) ─────────────────
-    // Both of these were constants expressed in r_s while BOTH r_s and the field
-    // move independently — so the marched region tracked the hole and lost the
-    // disc. Measured this session: meanR 43.91 sim, maxR 100.0 sim, r_s 0.2344
-    // sim ⟹ the field's mean radius is 187 r_s and bCull sat at 7. The march was
-    // covering 3.7% of the disc's radius, and the slider's own maximum (40)
-    // could only reach 21% — so no dial setting could ever show the disc. That
-    // is why three correct emission changes (g, T(r), the transfer) all read as
-    // "still the same".
-    // app_state.h:65 predicted exactly this and named the fix: "⚠ THIS DEFAULT
-    // TRACKS THE COLLAPSED BALL … 7 will CLIP the whole disk and this must be
-    // raised again (or, better, DERIVED FROM THE MEASURED maxR instead of being
-    // a constant)."
-    // Each of the two gets the measured quantity that matches its ROLE:
-    //   bCull       = meanR / r_s — which pixels can see light. The BULK, not
-    //                 maxR: marching to the outermost straggler is marching
-    //                 vacuum, the error the 2026-07-26 note caught at bCull 40.
-    //   rMarchStart = maxR  / r_s — where light stops existing, i.e. the radius
-    //                 the backward ray must be extended to so it starts outside
-    //                 all the matter.
-    // The dial is KEPT and becomes a multiplier: its old default 7.0 now means
-    // 1.0x the derived extent, so it still sweeps 0.37x..5.7x over its range.
-    float rsSim    = std::max(lastHorizonR, 1e-4f);
-    float bDerived = (measuredMeanR / rsSim)
-                     * (config.bhRayBcull / 7.0f);
-    float rStartD  = measuredMaxR / rsSim;
-    // Guard, not a tuning: a ray whose impact parameter exceeds the start radius
-    // never enters the marched sphere (disc <= 0) and returns black, so the
-    // start must clear the cull. maxR > meanR makes this inactive in practice.
-    mu.rMarchStart = std::max(rStartD, bDerived * 1.05f);
-    mu.stepScale   = 0.05f;   // coarser for FPS (0.03 validated, 0.10 breaks); dl = stepScale·r^1.5
-    mu.bCull       = bDerived;              // DERIVED above; dial is the x-factor
-    mu.maxSteps    = 256;     // halved for FPS (coarser stepScale needs fewer)
-    mu.emitScale   = config.bhRayEmitScale; // ∫ρ ds → light gain; live dial
-    mu.emitInnerR  = config.bhRayInnerR;    // inner no-emit radius → shadow (live)
-    memcpy(bhMarchUniformBuffer[frameIdx].contents, &mu, sizeof(mu));
-    // [MARCH] PROBE (2026-07-26 19:5x). The march self-gates in-shader on
-    // cam.horizonR <= 0 and returns transparent black, so it can be encoded
-    // every frame and still draw NOTHING. The HUD's "hole 100%" is a LATCH and
-    // is decoupled from the honest r_h (07-19), so it cannot be used to tell
-    // whether the march is live — measured this session: r_h ran 0.23..0.31 and
-    // then fell to 0.0000 while the HUD still read hole=1.00L. Without this
-    // line, "I see no difference" is unattributable between (a) the change did
-    // nothing, (b) the pass drew nothing, (c) stale binary.
-    // Also prints the fine-box coverage question directly: the fine AMR grid is
-    // ±kAmrFineExtent (4.0 sim) while the field's meanR measured 32.9 — so the
-    // 16x-finer sampling only ever applies to the inner core.
-    {
-      static double lastMarchPrint = 0.0;
-      double nowM = CACurrentMediaTime();
-      if (nowM - lastMarchPrint >= 1.0) {
-        lastMarchPrint = nowM;
-        printf("[MARCH] encoded=1 camHorizonR=%.4f lastHorizonR=%.4f "
-               "emitScale=%.3g innerR=%.3f bCull=%.2f rStart=%.1f "
-               "meanR=%.2f maxR=%.1f fineBox=%.1f "
-               "fineBufs=%d -> %s\n",
-               camStruct->horizonR, lastHorizonR, mu.emitScale, mu.emitInnerR,
-               mu.bCull, mu.rMarchStart,
-               measuredMeanR, measuredMaxR,
-               (double)Impl::kAmrFineExtent,
-               (fineCellMassBuffer && fineHashUniformBuffer) ? 1 : 0,
-               (camStruct->horizonR > 0.0f) ? "DRAWING" : "returns black (no r_h)");
-        fflush(stdout);
-      }
-    }
-    [enc setRenderPipelineState:bhMarchPipeline];
-    [enc setDepthStencilState:depthState];
-    [enc setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
-    [enc setFragmentBuffer:bhMarchUniformBuffer[frameIdx] offset:0 atIndex:1];
-    [enc setFragmentBuffer:cellCountsBuffer offset:0 atIndex:2];
-    [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:3];
-    // FINE AMR GRID for the march (2026-07-26): 16x finer than the coarse hash
-    // and ALREADY binned every 2nd frame in silence by bin_fine_mass, so this is
-    // two extra bindings and no new work. Both may be nil if AMR is disabled
-    // (SS_NO_AMR) — the shader guards on fsu.gridSize > 0 and falls back to the
-    // coarse counts, so a nil/unbuilt fine grid just restores the old picture.
-    [enc setFragmentBuffer:fineCellMassBuffer offset:0 atIndex:4];
-    [enc setFragmentBuffer:fineHashUniformBuffer offset:0 atIndex:5];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-  }
+  // 🔪 THE RAY-MARCH EMISSION PASS IS DELETED — 2026-08-27 20:49:10, his order:
+  // "the march as it is rn is dead too delete it all of it to never retun its
+  //  the oranghe blob itsnot what we want."  The pass gathered emission from a
+  // 128^3 density grid along each geodesic — a fog integral over a box, which
+  // can only ever be a soft blob. Its pipeline, uniforms block, bit19 toggle
+  // and three dials are gone with it. See the banner in render.metal.
+  // ⛔ Do not rebuild it. bhMarchUniformBuffer SURVIVES — the hole-as-a-body
+  // depth pass below is its only remaining user.
 
   [enc endEncoding];
 

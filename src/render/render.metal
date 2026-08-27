@@ -1043,10 +1043,14 @@ vertex VertexOut particle_vertex(
     // depend on the lens and never did.
     //
     // WHAT IS NOW MISSING AND MUST COME FROM THE MARCH: R5 (far-side arch),
-    // R6 (underside arc) and R2 (photon ring). That is bhmarch_fragment's job
-    // and it is now the only honest path. P1 (the step-rule ceiling, :3425)
-    // is what makes it wind: measured rmin 16.05 -> 1.512 r_s, turn 0.997*pi
-    // -> 3.82*pi.
+    // R6 (underside arc) and R2 (photon ring). ⚠️ UPDATED 2026-08-27 21:12:40:
+    // this used to say "that is bhmarch_fragment's job" — the march was deleted
+    // an hour later, on his order, so NOTHING in this codebase produces those
+    // three features today. See docs/blackhole-library/ before proposing what
+    // does. The short version: every renderer that has ever got this right —
+    // Luminet 1979, DNGR/Interstellar, NASA/Schnittman 2024, and the EHT's own
+    // forward models — asks a BACKWARD, PER-PIXEL question. Ours asked a
+    // forward, per-particle one twice, and died twice.
     //
     // ⛔ DO NOT REBUILD THIS. The deflection LUT in renderer.mm is real physics
     // and stays — the march can use it. The forward sprite displacement does

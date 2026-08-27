@@ -333,6 +333,10 @@ int main() {
   static bool arrowL = false, arrowR = false, arrowU = false, arrowD = false;
   static bool rollL = false, rollR = false;      // Option+←/→ = third-axis roll (Z)
   static float spinHold = 0.0f;
+  // TAP vs HOLD threshold. Used in BOTH places that need it: the release
+  // check that fires the camera quadrant-rotate, and the render-loop gate
+  // that engages the physical spin. One constant so they cannot drift.
+  static constexpr float kTapHoldSec = 0.18f;
   static float spinVelX = 0.0f, spinVelY = 0.0f; // current spin rate (rad/s)
   static float spinVelZ = 0.0f;                  // roll rate (rad/s)
   static float spinAngleX = 0.0f, spinAngleY = 0.0f; // accumulated spin angle (rad)
@@ -414,7 +418,7 @@ int main() {
       bool d = e.isDown;
       // TAP (quick press+release, under the threshold → spin never engaged) =
       // the old snapped-camera quadrant rotate. HOLD = the physical spin.
-      if (!d && spinHold < 0.18f) {
+      if (!d && spinHold < kTapHoldSec) {
         constexpr float TAP_STEP = 0.06f; // enough to soft-lock to next 90°
         if (e.keyCode == 123)      camera.rotateKey(+TAP_STEP, 0.0f);
         else if (e.keyCode == 124) camera.rotateKey(-TAP_STEP, 0.0f);
@@ -779,13 +783,23 @@ int main() {
       float dirZ = (rollR ? 1.0f : 0.0f) - (rollL ? 1.0f : 0.0f); // Option+←/→
       if (dirX != 0.0f || dirY != 0.0f || dirZ != 0.0f) {
         spinHold += dt;
-        // Engages IMMEDIATELY — even a tap nudges the spin a bit; holding ramps
-        // it up HARD (accel grows with hold time) to a fast top in ~3 s, and
-        // momentum carries it after release. No dead zone, no 9-second crawl.
-        float accel = 8.0f + spinHold * spinHold * 25.0f;
-        spinVelY += dirY * accel * dt;
-        spinVelX += dirX * accel * dt;
-        spinVelZ += dirZ * accel * dt;
+        // TAP CONTRIBUTES ZERO SPIN (his order 2026-08-27: "i only want that
+        // when i hold the keys"). Spin engages only once the press passes
+        // kTapHoldSec — the SAME threshold the release check uses to fire the
+        // camera rotate — so tap and hold are exactly complementary.
+        // WAS: engaged immediately. One ~60 ms tap put ~1.6 rad/s on the body,
+        // which the 2.5/s drag integrates to ~37° of REAL rotation after the
+        // finger lifts. The camera still snapped to its 90° quadrant, but the
+        // body had turned under it — which is why the snap stopped reading as a
+        // snap, and why a tap made the shape "dent and bend".
+        // Holding still ramps HARD (accel grows with hold time) and momentum
+        // still carries after release: the ramp below is UNCHANGED.
+        if (spinHold >= kTapHoldSec) {
+          float accel = 8.0f + spinHold * spinHold * 25.0f;
+          spinVelY += dirY * accel * dt;
+          spinVelX += dirX * accel * dt;
+          spinVelZ += dirZ * accel * dt;
+        }
       } else {
         spinHold = 0.0f;
       }

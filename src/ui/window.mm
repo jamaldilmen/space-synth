@@ -437,6 +437,44 @@ bool Window::create(int width, int height, const std::string &title) {
     io.FontGlobalScale = 1.0f / scale;
 
     [impl_->window setContentView:impl_->metalView];
+    // ── SS_SCREEN: put the window on a chosen display BEFORE it is shown ──
+    // (2026-08-27, his order "relaunch on screen 2 in 4k".) The app sized
+    // itself from [NSScreen mainScreen] and toggleFullScreen: takes whatever
+    // screen the window is already on, so with no way to move it there was no
+    // route to a second display at all.
+    //
+    // SS_SCREEN is an INDEX into [NSScreen screens] (0-based). Out-of-range or
+    // unset leaves the existing behaviour untouched, so this is inert unless
+    // asked for. The window frame is already in GLOBAL coordinates, so simply
+    // re-origining it inside the target screen's frame is enough — the
+    // fullscreen toggle below then lands on that screen.
+    //
+    // ⚠️ SEPARATE CONCERN from the physics change in particles.metal. This
+    // file, this commit, independently verifiable: launch with SS_SCREEN=1 and
+    // read the [SCREEN] line it prints.
+    if (const char *ss = getenv("SS_SCREEN")) {
+      NSArray<NSScreen *> *screens = [NSScreen screens];
+      int idx = atoi(ss);
+      if (idx >= 0 && idx < (int)screens.count) {
+        NSScreen *target = screens[(NSUInteger)idx];
+        NSRect sf = [target frame];
+        NSRect wf = [impl_->window frame];
+        // Centre it on the target screen; fullscreen replaces this anyway, but
+        // a sane windowed position matters if SS_FULLSCREEN is not set.
+        NSPoint o = NSMakePoint(sf.origin.x + (sf.size.width  - wf.size.width)  * 0.5,
+                                sf.origin.y + (sf.size.height - wf.size.height) * 0.5);
+        [impl_->window setFrameOrigin:o];
+        printf("[SCREEN] index %d of %lu -> %.0fx%.0f @ %ld Hz origin(%.0f,%.0f) "
+               "backing=%.1f EDRmax=%.2f\n",
+               idx, (unsigned long)screens.count, sf.size.width, sf.size.height,
+               (long)[target maximumFramesPerSecond], sf.origin.x, sf.origin.y,
+               [target backingScaleFactor],
+               [target maximumExtendedDynamicRangeColorComponentValue]);
+      } else {
+        printf("[SCREEN] SS_SCREEN=%s out of range (%lu screens) — ignored\n",
+               ss, (unsigned long)screens.count);
+      }
+    }
     [impl_->window makeKeyAndOrderFront:nil];
     [impl_->window makeFirstResponder:impl_->metalView];
     [NSApp activateIgnoringOtherApps:YES];

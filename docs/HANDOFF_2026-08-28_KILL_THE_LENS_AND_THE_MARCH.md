@@ -62,7 +62,41 @@
 ## 4. 🔬 PREFLIGHT
 
 ```
-PASTE_PREFLIGHT_HERE
+PREFLIGHT 2026-08-28 12:53:13  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE
+
+1. git
+  ok    branch post-tube, HEAD 8a39ab6
+  ok    working tree clean — committed
+  WARN  build artifact is TRACKED — commit sources separately FIRST, then it alone:
+          SpaceSynth.app/Contents/MacOS/SpaceSynth
+  WARN  no upstream set for post-tube
+
+2. board vs HEAD
+  ok    docs/BOARD_BLACKHOLE.md current at 9751d9a — 3 docs-only commit(s) since, no source change
+  ok    docs/BOARD_BLACKHOLE.md size 94129B
+  ok    docs/BOARD_CLOSED.md archive, 90810B — exempt (not read at cold start)
+  ok    docs/BOARD.md current at 9751d9a — 3 docs-only commit(s) since, no source change
+  WARN  docs/BOARD.md is 121403B — split closed rows into BOARD_CLOSED.md
+
+3. deployed artifact
+  ok    SpaceSynth newer than newest source
+  ok    default.metallib newer than newest source
+
+4. referenced paths (live docs only)
+  ok    35 referenced path(s) in live docs all resolve
+
+5. orbital-plane convention — READ THESE, do not skip
+  ?     src/render/render.metal:566:    return (m > 1e-12f) ? (L / m) : float3(0.0f, 0.0f, 1.0f);
+  ?     src/render/render.metal:753:            float3 axis = float3(0.0f, 0.0f, 1.0f);
+  ?     src/render/render.metal:1109:            float2 tang = float2(-rel.y, rel.x) / rxy;  // +Ω about z, matches
+  ?     src/render/render.metal:1407:        float rXY = length(spinPos.xy);
+  ?     src/render/render.metal:1410:            float3 tang = float3(-spinPos.y, spinPos.x, 0.0f) / rXY; // prograde about Z
+  ?     src/render/render.metal:2501:    float2 perp   = float2(-dir.y, dir.x);
+  ?     src/render/postfx.metal:66:    float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+  WARN  7 site(s) carry a plane assumption — confirm each is right HERE, not elsewhere
+
+────────────────────────────────────────────────────────
+PREFLIGHT: no failures.
 ```
 
 ## 5. ↩️ RETRACTED THIS SESSION

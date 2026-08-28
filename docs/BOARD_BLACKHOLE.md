@@ -6,7 +6,58 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
 
-**Commit at last verification:** `44d1798` ⭐ **RE-STAMPED 2026-08-27 17:23:30 — THE WORK IS NOW COMMITTED (his order: "COMMIT.").** Five commits: `aa97430` the validated j_l/P_l^m core · `912e4bf` the tube kill · `cc632d7` the SS_SCREEN selector · `7c6d080` the tracked binary ALONE (it was built from both source changes, so attaching it to either would have smuggled the other in — see §T0) · `44d1798` board + handoff. Working tree CLEAN. ⚠️ **NOT PUSHED** — no upstream is set on `tube-resonator-2026-08-26`, and commit ≠ push. ⚠️ **Bumping a sha does not re-verify a row:** only the §T rows were read at this state; every other row still carries its own older stamp. Previously `fb01f80` (2026-08-26 10:47:39) — ⭐ **re-stamped 2026-08-26 10:48:xx. `fb01f80` is a COMMENTS-AND-DOCS commit:** the only source change is the four corrected `colorAttachments[1]` comments in `renderer.mm`, no behaviour. **G6 and C4b WERE re-read in source today** (the fragment return types, the mask-to-pipeline mapping, the smear consumer); no other row was re-verified at this sha. — ⭐ **re-stamped 2026-08-25 15:17:5x, and the rows did NOT need re-reading: `448ed63` is the commit that COMMITTED the already-verified working tree.** The colour-session source it contains (`spectral_lut.h`, `render.metal`, `renderer.*`, `main.cpp`, `app_state.h`) is byte-identical to what was read at 2026-08-24 22:0x — only the sha moved from uncommitted to committed. *(Previously `0cf85b4`, 2026-08-23 14:40:21; both boards had mis-dated that sha as 08-24, corrected 2026-08-25 14:25:10.)*. 🚨 **THE SHA IS CURRENT BUT NO BH ROW WAS RE-READ AT IT.** The 2026-08-24 session was venue geometry, the colour pipeline and the phase tint; the hole was not opened. ⭐ **One BH-adjacent fact WAS measured and belongs here:** the Shakura–Sunyaev accretion-disk colour override at `render.metal:2103` is gated on `cam.horizonR > 0.0f`, and the live log reads `horizonR raw=0.0000 smooth=0.0000` — **that block never runs in the current default state.** It was wrongly suspected of flattening the field's colour and is cleared. Treat every other row below as carrying its own older stamp. Previously stamped `a44de13`.
+**Commit at last verification:** `9751d9a` ⭐ **RE-STAMPED 2026-08-27 23:10:00 — SESSION 2026-08-27 FOLDED IN AS §U.** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
+
+---
+
+
+## U. 🔪 SESSION 2026-08-27 — BOTH RENDERERS DELETED, AND THE HOLE'S REAL BUG FOUND
+
+> **HIS ORDERS, verbatim:** *"a black hole is not a lense. i want u to kill the lense like u killed the tube. FUCK THE LENSE. this enitre approach is ass."* · *"the march as it is rn is dead too delete it all of it to never retun its the oranghe blob itsnot what we want."* · *"collapse to one tree . commit."* `[HIS WORDS 2026-08-27]`
+
+**U1. THE LENS IS DELETED.** ~320 lines from `particle_vertex`: the bit8 gate, the angle-space solve `β = θ − α(θ)·D` with its Newton iteration on the LUT, the second instance and `imageWeight`, the hole-centred screen fallback, `lensRamp`, `preLensNDC`. `instanceCount` 2 → 1. Commit `00741f2`. `[HIS WORDS]`
+  ⭐ **The shadow SURVIVED and got stronger.** The straight-line photon-capture cull was gated `!lensWillImage`; with the lens gone it applies to every ray again, at the exact `b_c = 2.5980762 r_s`. **The shadow never depended on the lens.** `[READ render.metal:~1029]`
+
+**U2. THE RAY-MARCH IS DELETED.** ~410 lines: `bhmarch_fragment` in full, its pipeline, its encode block, bit19, and all three dials (`uiRayEmitLog` / `uiRayBcull` / `uiRayInnerR` gone from `app_state.h`, `main.cpp`, `renderer.h`). `[HIS WORDS]`
+  ⭐ **The defect was NOT the geodesics** — backward geodesic integration is exactly what NASA does. It was **what it gathered**: emission summed from a 128³ density grid, NEAREST-sampled, no temperature of its own. A fog integral over a box can only ever be a soft blob.
+  ⭐ **KEPT ON PURPOSE:** `bhmarch_vertex`, `BHMarchOut`, `BHMarchUniforms`, `bhMarchUniformBuffer` all still serve **`bhbody_fragment`** — the depth-only capture sphere he PASSED 2026-08-14. Do not clean them up as march residue. `[READ]`
+
+**U3. 🚨 THE HORIZON DETECTOR IS BLIND BEYOND r = 5.0 SIM — THIS IS "THE HOLE VANISHES INSTANTLY".**
+  `particles.metal:405` `RADIAL_MAX_R = 5.0f`; `:4271` hard-clips `if (encDist < RADIAL_MAX_R)`. Matter outside is **not counted at all**. `renderer.mm:3213-3228` then walks 256 shells for the largest r with `r_s(M(<r))/r ≥ 1.0` — **binary, no hysteresis**. The frame the enclosed profile fails, `lastHorizonR` is **exactly 0**. `[READ particles.metal:405]`
+```
+run2:  Mmax = 34,280 M☉  seeds=16  Menc=4,827    ->  horizonR raw = 0.0000
+run5:  Mmax = 16,325 M☉  seeds=4   Menc=157,550  ->  horizonR raw = 0.2344
+```
+  `[MEASURED n=4 runs]` A seed of **34,280 M☉ with the drawn horizon at exactly zero**; the run with LESS seed mass but 33× more mass inside the window HAD a horizon. It is not mass and not rest-vs-play — **it is whether the mass is inside the 5.0 window.**
+  ⇒ ***"it goes straight to the shapes"* and *"it vanishes instantly"* are ONE event, not two.** Closes §T8's question.
+
+**U4. THREE "MASS OF THE HOLE" NUMBERS, AND THE ONE THAT DRAWS IT IS THE FLIMSIEST.** `[READ]`
+  - `bhSeedMass` — monotonic, *"the seed IS the black hole"* → drives `bhStrength` + shadow radius
+  - `totalSeedM` — accumulated `renderer.mm:3198`, consumed ONLY by the printf at `:3441` → **drives nothing**
+  - `lastHorizonR` — from the radial profile → **`cam.horizonR`, the gate every BH consumer keys off**
+  ⭐ **`renderer.mm:3314` already prescribes the fix, in its own words:** *"basing the hole on it made the hole 'form then vanish'. The seed IS the black hole; r_s(M_seed) is its real horizon, monotonic → the hole forms and STAYS."* **The seed path was built. The gate still uses the profile.** No-hair says a hole has ONE M; ours has one number and two decorations.
+  ⏳ **THE FIX IS WRITTEN UP AND AWAITING HIS GO:** key the drawn hole off the monotonic seed mass.
+
+**U5. ⭐ THE PATTERN — THREE CONSTANTS FROZEN AT THE COLLAPSED-BALL ERA.** All were true when the field measured `meanR 3.92, maxR 4.4`; it now measures **meanR 12→71**. `[MEASURED]`
+  | constant | consequence |
+  |---|---|
+  | `RADIAL_MAX_R = 5.0` | the hole "vanishes" (U3) |
+  | march `dl = step·r^1.5` at `rMarchStart` 430–750 | rays flew **past** the photon sphere — 12 steps, `rmin` 16.05 r_s, turn 0.997π |
+  | `halfExtent = 64` | `maxR` pins against it at the 100 cap |
+  🚨 **Killing the tube did not break these — it removed the cylinder that kept the field small enough for them to be true.** ⇒ §T2 inflation is the ROOT, reaching a third board.
+
+**U6. ↩️ CORRECTIONS TO THIS BOARD, all verified in source or by running the tool.**
+  - ⛔ **L9 IS REFUTED.** `tools/bc_validate.cpp` **EXISTS AND RUNS** — the row searched `src/` and concluded it "never existed". Method A reproduces `b_c` to **8.2e-15**.
+  - ⛔ **"step 0.10 BREAKS, b_c collapses to 0.5" IS A CONFLATION.** Measured: 0.10 → `b_c = 2.60103` (rel err 1.2e-3). The 0.5 collapse is the **half-COEFFICIENT** config, a different row.
+  - ⛔ **§1b is 10 days stale** — it says the march is default OFF and "can only ever be orange". It was default **ON** since 2026-08-17 with a blackbody law. Moot now (deleted), but the row misled a whole session.
+  - ⛔ **bCull was NOT a raw 7.0** — `bDerived = (meanR/rsSim)·(dial/7.0)`, a multiplier on a derived extent ≈ 213 r_s. The `app_state.h:74` comment describes pre-derivation semantics.
+
+**U7. 📚 `docs/blackhole-library/` OPENED — his order.** *"research everything there is to know… anything we know as a species about bhs… create a dedicated folder within docs that is our personal library."* README (board) + `01_FORMATION` + `02_LIGHT` + `03_THE_REFERENCE_FRAMES`. The two NASA frames stay primary; **Gargantua added via the DNGR paper, with the trap stated — the film turned Doppler asymmetry OFF, so Fig. 15c is the reference, not the movie frame.**
+
+**U8. ⭐ HIS CHOSEN ARCHITECTURE — per-pixel backward geodesics that TERMINATE ON THE REAL PARTICLES.**
+  Each pixel's ray integrates backward; when it enters occupied space it **resolves against the particles there** and takes their emission and their `g`, then stops. Captured (`r < r_s`) → black by absence.
+  🚨 **The distinction that makes this legal and not a re-run of the march:** the march **averaged a grid along a line**; this **terminates on the same matter the sprites draw.** Same entity, per-pixel state — which is what NO SECOND LAYER actually means (his clarification 2026-08-26).
+  ⛔ **BLOCKED BY U4.** A tracer keyed to `lastHorizonR` inherits the one-frame cut. **Fix M first.**
 
 ---
 

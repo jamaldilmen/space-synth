@@ -6,10 +6,33 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
 
-**Commit at last verification:** `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
+**Commit at last verification:** `d0db70b` ⭐ **RE-STAMPED 2026-08-29 17:36:00 — SESSION 2026-08-29 FOLDED IN AS §W (read it FIRST). Engine-wide law + all measurements live in `docs/BOARD.md` §X.** Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
 
 ---
 
+
+## W. ⏱️ SESSION 2026-08-29 — WARP WAS KILLING THE HOLE, AND THE ×120 CONVENTION WAS WHY
+
+> **Full engine-wide law + all measurements: `docs/BOARD.md` §X. This section is the BH half only.**
+> **His words 2026-08-29:** *"mergers dont make sense on the high speeds yet."* · ***"I want the money shot to be two black holes merging."***
+
+### W1. ✅ WARP WAS DETERMINISTICALLY KILLING SEED FORMATION — root cause found and fixed
+`[READ particles.metal:1425/:3704/:4059]` the **"×120 seed-capture convention"** converted per-step displacement to velocity by assuming dt = 1/120 s. Real dt = 0.0165 (60.6/s), and under warp dt = 0.0165·warp ⇒ **`vrel²` wrong by 3.92 × warp²**.
+- `:3704` (merge bound test, **UNCLAMPED**) refuses fusion at `vrel2 >= vesc2` ⇒ an inflated `vrel²` declares BOUND pairs unbound. **This is the mergers-under-warp bug.**
+- `:1427` / `:4061` gravitational focusing is `rt·(2GM)/vrel²` — *"the accelerator… what powers the runaway to forming"* — so it was **~4× too weak at ×1 and ~63× too weak at ×4**.
+`[MEASURED n=2, seed 777, matched sim time 63.4 units]` **BEFORE at warp 16: `Mmax=50.0` (exactly `M_BH_SEED`), 0 seeds, 0 merges, 2.00M untouched — nothing formed at all.** AFTER: 11426 / 8734 with seeds forming, 2/2. Warp 1 unchanged; merges 11–15 → 20–33.
+Now `v = displacement / u.dt` (warp-invariant) at all three sites; the comment that taught the convention is corrected.
+
+### W2. 🚨 THE FOCUSING FIX IS MOSTLY BEING THROWN AWAY — clamp is next
+`[READ particles.metal:1429 and :4063]` `reach = 1.4f * su.cellSize; rt2 = min(rt2, reach*reach)`. The 3.92× stronger focusing W1 restored is capped straight back off. ⭐ **This is why the board already recorded that deleting the clamp alone plateaus (2.00–3.46 sim): focusing was broken TOO. Clamp + the 3×3×3 scan + ×120 all had to move — one is now done.**
+
+### W3. 🔴 THE HOLE'S GROWTH RATE IS SET BY THE FRAME RATE
+`[READ]` capture, `merge_stars` and `seed_apply` run ONCE per frame while the sim advances N× per frame under substeps, and `0.0165 × fps` sim-seconds per wall-second under warp. `[MEASURED n=3 seeds]` at matched sim time the frozen build reached **0.25×** the reference `Mmax`; unfreezing the force pipeline gave **0.99×**. See `BOARD.md` §X1.
+
+### W4. 🚨 STILL NOT TIME-INVARIANT — the real BH task
+Warp 16 reaches ~10k where warp 1 reaches ~95k at equal sim time — **~9× short.** Root is `BOARD.md` §X0 (`dt = 0.0165 × timeWarp`, one step per frame, no accumulator). ⭐ **His question for next session: how does true physics enable a 1:1-scale Kerr hole, and fix mergers + BH–BH mergers?** The honest answer starts here: until a wall-clock accumulator makes warp mean *more steps*, no merger dynamics measured under warp means anything — and `[READ]` the near-field is still sub-cell (horizon 0.1717, photon sphere 0.2576, ISCO 0.5151 all inside ONE softening length of 1.0), so a 1:1 Kerr hole has no resolution to live in yet. See `space_synth_a_body_has_no_radius_2026-08-29`.
+
+---
 
 ## V. 🕳️ SESSION 2026-08-28/29 — M RE-KEYED, THE DRAIN LOCATED, WARP NAMED AS THE BUG
 

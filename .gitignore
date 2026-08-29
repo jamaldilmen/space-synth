@@ -21,3 +21,7 @@ logs/
 # measure_n build artifacts (the .mm/.metal sources ARE tracked)
 tools/measure_n/measure_n
 tools/measure_n/osc.metallib
+
+# Run logs — session artifacts, reproducible, never state (2026-08-29)
+run.log
+run_*.log

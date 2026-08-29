@@ -10,7 +10,7 @@ Update it in place. Never fork it into a second board.
 🕳️ **ALL BLACK-HOLE WORK LIVES IN `docs/BOARD_BLACKHOLE.md`** (his order 2026-08-14 01:41:51). ✅ **EXECUTED 2026-08-19 00:14:12 on his order *"move bh stuff to bh board"*:** §A0, the accretion/horizon rows out of §A (A1, A1‴, A2, A3①, A3②, A3②-white, A3③, A5, A6, A8, MERGER-FACE), B1, B9 and §C12 Doppler all moved there verbatim as **§N**. ⚠️ **Three judgement calls left HERE, not moved — say if you want them over too:** **§A9** (dense matter can only add light — field/gas render, not hole-specific), **C7/C7b** (✅ closed Doppler-colour rows), **C9** (`bit18` flux-conserving arc).
 
 **Last verified against the code:** 2026-08-13 13:29:29 (bundle carries A1″ fit test + both trilinear ∇Φ reads + [PERF] + the DEAD-COMPUTE skip + the `SS_NO_DEADSKIP` A/B gate; merge-gate counters still LIVE — strip before shipping)
-**Commit at last verification:** `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §W (read it first; §V is the session before).** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
+**Commit at last verification:** `d0db70b` ⭐ **RE-STAMPED 2026-08-29 17:36:00 — SESSION 2026-08-29 FOLDED IN AS §X (read it FIRST; §W is the session before). ⏱️ THE LAW: A FRAME IS NOT A UNIT OF TIME.** Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §W (read it first; §V is the session before).** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
 **Bundle these rows were verified against:** `SPACE-SYNTH-TUBE-killtube/SpaceSynth.app` @ **2026-08-13 13:29:29** — log-verified only, **he has not looked at it.** ⚠️ **That binary no longer exists**: the live killtube bundle is now **2026-08-23 12:15:13** (stat'd 2026-08-23 14:12:09; it replaced the 2026-08-17 17:45:51 build this session), one second newer than the newest file under `src/` (`src/ui/window.mm` 2026-08-23 12:15:12), so it is NOT stale — but the rows below lose their artifact-level proof and carry their claim from the log alone.
 **Last correction:** ⭐ **TWO MORE RETRACTED 2026-08-13 — see A1″:** the merge "starves capture through the shared plate word" (never happened, `mrg=0/0/0`) and "the CAS route stalls the hole at 1,772" (real run, but that code path never executed in it — it was a late bootstrap into a diffuse field). **Cause both times: a mechanism inferred from a curve instead of counted at the gate.** Before that: ⭐ **THREE OF MY OWN CLAIMS RETRACTED IN ONE EVENING, 2026-08-12 — see the A1′-endgame row.** "The bound never engages" (it was the binding constraint), "capture delivers ~0.1 M☉/frame" (20–88 stars/frame), "the hole is out of fuel" (916,781 stars sat inside its capture radius, all refused by my own budget). **All three came from reading `feed=` in the log — a ONE-FRAME sample of a buffer that is cleared every frame.** Before that: "SOR is not the monster" was written off 9 samples and is WRONG — with 25 it is ~6 ms and real, 2026-08-11, §H5.
 **THE SHOW: COLOGNE opening event, 2026-09-05 — 13 days out** (counted 2026-08-23). ⛔ **NOT Berlin New Media Week / 2026-09-02** — this header carried the Berlin date until 2026-08-23 14:12:09, two days after it moved (his message 2026-08-21). 🎪 **And the venue is a THREE-WALL ROOM — 15 × 4 + 15 × 4 + 10 × 4 m, 160 m², ~270°.** Every "2.5:1" written on this board before 2026-08-23 is the FRONT WALL ONLY. Cold start for the show is **row S00 in `docs/TODO.md`**; the working is `docs/DESIGN_2026-08-23_THREE_WALL_ROOM.md`.
@@ -61,6 +61,64 @@ Update it in place. Never fork it into a second board.
 
 ---
 
+
+## X. ⏱️ SESSION 2026-08-29 — **A FRAME IS NOT A UNIT OF TIME.** THE ENGINE-WIDE LAW.
+
+> **HIS FRAME, verbatim 2026-08-29 17:05:00** (origin: an LED ventilator at Radio eins soundcheck spinning fast enough to read as a screen):
+> *"Our frames are just a window. The universe does a lot in between a single frame. The renderer is just the readout of the physics. Our shutter. Our engine runs based off of the clock of the computer it runs on. That's the core anchor. Cause our universe and the one we're in are the same time. A second is a second. Speed of light can't go further than speed of light. No matter how much 8x or 2x we do. Unified system."*
+> *"Frames per second are not real. It's just an abstract concept so I can see it. But the physics don't give a shit about that. The apple is falling at its rate that it's falling at. I'm only seeing it at the rate I'm seeing it fall at because I'm a human being. The apple doesn't give a shit."*
+> **His verdict on the state 2026-08-29 15:43:00:** *"at non rest the entire thing is still very broken. stuff shoots out violently after 2x basically. mergers dont make sense on the high speeds yet... during rest its ok. but this is not a wallpaper but an instrument."*
+> **On the finding 2026-08-29 17:20:00:** *"we just had the biggest breakthrough in physics since we started this project."*
+
+⭐ **THE LAW: nothing physical may be expressed per FRAME.** The renderer is the shutter; the wall clock is the anchor. This is ONE rule that replaces the eight separate "bugs" below — they are eight leaks of the shutter into the physics.
+
+### X0. 🚨 THE ROOT — THE UNIVERSE'S CLOCK RATE IS PROPORTIONAL TO FRAME RATE
+`[READ renderer.mm:1466]` `dt = 0.0165f * timeWarpVal`, **ONE step per frame, NO accumulator** ⇒ sim-seconds per wall-second = `0.0165 × fps`. Only **60.61 fps** is honest.
+`[MEASURED n=5, 2026-08-29]` 119.5 fps → **1.97× real time**; 70.4 → 1.16×; 53.7 → **0.89×**. **A 2.2× spread in one session, from frame rate alone.**
+🚨 **And the sequencer advances `seqTime += dt` in WALL seconds while the physics advances in SIM seconds** — his rhythm and his universe run on two clocks whose ratio is the frame rate. Invisible in a wallpaper, fatal in an instrument.
+⭐ **FIX SHAPE (his frame):** the pinned dt was HALF right — a fixed step killed the variable-FPS energy pump (`renderer.mm:1886` says so). The missing half is the **wall-clock accumulator**: carry leftover real time, take as many fixed steps as the clock demands. Then **warp = MORE STEPS per wall second, NEVER a bigger step**, capped by an accuracy governor. **NOT BUILT.**
+
+### X1. ✅ SUBSTEPS WERE COUNTERFEIT — PROVEN AND CLOSED
+`[READ renderer.mm dispatch positions]` 22 of 23 compute passes ran ONCE per frame (hash `:2138–2207`, centroids `:2234`, CIC `:2260`, SPH `:2337–2458`, Poisson `:2517`, AMR `:2614`, merge `:3013`, seed `:3034`); only `physicsPipeline` re-ran. Every force term (`phi[]`, `finePhi[]`, `sphForce[]`, `cellMass[]`, `cellStarts`) was a frozen buffer.
+⭐ Position-Verlet under a CONSTANT acceleration is exact at any step count ⇒ substeps bought almost nothing over raw dt-scaling, which is why both went chaotic together.
+`[MEASURED n=3 seeds × 3 checkpoints]` at matched sim time, N=4 frozen = **0.25×** the N=1 reference; N=4 with forces re-run = **0.99×**. Probe `SS_TRUE_SUBSTEPS=1`.
+`[MEASURED n=4 repeats, one build]` run-to-run spread is **0.88–1.05×** — so any single-run comparison here is worthless.
+💰 Cost: force pipeline **23.65 ms** vs integrate **1.77 ms** (**13.4×**). A true substep ⇒ N=4 ≈ 9 fps (predicted 94.6, measured 93.3 ms, within 1.4%). **Brute force is unaffordable — the fix must REDUCE the required step, not buy more.**
+
+### X2. ✅ THE "×120 CONVENTION" — FIXED, A/B'd
+`[READ particles.metal:1425/:3704/:4059]` velocity was per-step displacement **× 120**, i.e. it assumed dt = 1/120 s. Real dt = 0.0165 → 60.6 steps/s, so `vrel²` was wrong by **3.92 × warp²**. `:3704` refuses fusion at `vrel2 >= vesc2` ⇒ **mergers shut off under warp**. Comment called it *"the ×120 seed-capture convention"* — a NAMED convention is still not a mechanism.
+`[MEASURED n=2, seed 777, matched sim time 63.4 units]` **BEFORE warp 16: `Mmax=50.0` (= `M_BH_SEED`), 0 seeds, 0 merges, 2.00M particles untouched — deterministically DEAD**, after the sim time that at warp 1 builds a 94,000 M☉ hole. **AFTER: 11426 / 8734, seeds form, 2/2.** Warp 1 unchanged; merges 11–15 → 20–33.
+⚠️ **Still ~9× short of time-invariance** (warp 16 ≈ 10k vs warp 1 ≈ 95k) — X0 is why.
+
+### X3. ✅ THE PLAY VELOCITY CAP WAS PER-FRAME — FIXED
+`[READ particles.metal:3209]` was `mix(u.speedCap * dt, CHLADNI_VCAP, playGate)` — mixing a per-second quantity with a per-FRAME constant. **The speed of light moved when he turned the warp dial: 20.69c @×1, 10.35 @×2, 5.17 @×4, 1.29 @×16, 0.32 @×64.**
+`[MEASURED]` his own log: `speed max 20.690 c` — predicted 20.691 to four figures. **862 of 1496 play samples pinned to exactly the cap**, avg 15.7–16.5c, while at rest the c-cap is respected (`max 1.000`).
+Now `mix(u.speedCap, CHLADNI_VCAP_PER_SEC, playGate) * dt`, identity at warp 1 by construction (72.7273 × 0.0165 = 1.200000). `[MEASURED]` peak now warp-invariant **22.4 / 21.6 / 21.1** at ×1/×2/×4.
+🚨 ⛔ **OPEN, AND HIS LAW DECIDES IT: 20.69c is superluminal BY DESIGN.** Under *"speed of light can't go further than speed of light"* this is not a tuning knob, it is a violation. **The cap must come down to c and the Chladni reach earned by force/coupling/time.** ⚠️ Dropping it caused a ~41× pattern throttle in June — that regression must be solved honestly, not by re-raising the cap.
+
+### X4. 🔴 THE FIELD NEVER SETTLES BETWEEN NOTES — the instrument bug, OPEN
+`[MEASURED, SS_SEQ driver + 0.05 s SEQPROBE]` rest = 0.14c. Between-note "silence" (`phase=0, voices=0`): **held chord 0.037c (settles) · transitions 2.65c (67% above c) · staccato 5.39c (91% above c)**. Relaxation e-folds at **τ = 0.512 s** (n=11 gaps) ⇒ shedding the cap needs **2.60 s**; his staccato gap is **0.85 s**. Predicts 4.26c residual, measured 5.39c.
+`[READ particles.metal:854]` damping is keyed to the **envelope amplitude**, not the field's state, and is **inverted**: `fricPlay = pow(0.9,dt)` is HEAVIER than `fricRest = pow(0.99,dt)`, so leaving the play regime gives LESS damping exactly when the field is fastest.
+`[READ main.cpp:2756]` `smoothedAmp` was a per-FRAME smoother and **is** `u.totalAmplitude` in the shader, gating `playGate` → the cap AND the drive. Tail length moved with fps (0.065 s @120, 0.196 s @40). Made time-based (identity at 60 fps).
+⚠️ **THAT CHANGE IS UNRESOLVED — net-negative alone, n=1 per cell:** transitions improved 3/3 (2.65→1.31, 1.64→1.12, 1.39→1.03) but held **regressed 0.037→0.832** at 120 fps, because it now exits the play regime later there and `playGate` gates the DRIVE. **Decide: revert it, or land state-based damping.**
+
+### X5. 🔴 THE REMAINING DRESSES — located, NOT fixed
+- `[READ renderer.mm:2522]` the Poisson solve for gravity Φ runs on odd ticks **and only while `totalAmplitude < 0.02`** ⇒ **Φ is NEVER re-solved while he plays.**
+- `[READ renderer.mm:2359]` SPH on a 2-tick cadence (energy compensated via `dtU`, the force is not). *(Both cadences now count SUBSTEPS not frames — identity on the shipped path, `nTrue==1, tsub==0 → stepTick == frameCounter`. Not proven to be an improvement.)*
+- `[READ main.cpp:2713]` `universeClockSec` never multiplies by `physicsSubsteps` ⇒ **the clock under-reports elapsed time by exactly N.**
+- `[READ renderer.mm:1792]` the pose/analytic-spin clock is WALL time, never warp- or substep-scaled ⇒ sprites and physics desync by warp×N.
+- `[READ]` capture / merge / `seed_apply` still run once per FRAME on the SHIPPED path (only the probe unfroze them) ⇒ **the hole's growth rate is set by the frame rate.**
+- `[READ particles.metal:735]` sustain rebirth draws `noise(id, u.frameCounter)`, identical across substeps ⇒ the SAME particles revive N× per frame. Sustain-gated, **predicted not measured**.
+- `[READ particles.metal:375/:383]` `REST_RECYCLE` / `SUSTAIN_REBIRTH` still declared "fraction per frame".
+- `[READ particles.metal:828]` a debug path forces `dt = 1/60`.
+
+### X6. 📋 HIS NEXT-SESSION LIST — verbatim 2026-08-29 17:25:00
+1. **RENDERING / camera:** *"as of now i can only screen record. A screen recording video looks like absolute shit. We have the expected resolution now. How are we gonna tackle a +16k reso in total."*
+2. **OFFLINE RENDER:** *"Getting true physics right will enable ableton like offline rendering. More complex simulations rendered instead of real time. Beyond our machines capacity. Or, as in this case, pre-recording a set with automations in Ableton. Camera rides as macro. Camera shifts. Ortho cam. POV cam. All that needs to be tackled before the show day."*
+3. **BH window:** *"how will true physics enable a true kerr 1:1 black hole to scale? How will it help fix mergers. And black hole mergers."* ⭐ ***"I want the money shot to be two black holes merging."***
+4. **Scale + camera distance:** *"I want a single particle to look like the sun when I zoom onto it. How does distance work right now? When zoomed out stuff over saturates. It doesn't look right."*
+
+---
 
 ## W. 🎥 SESSION 2026-08-28/29 — CAMERA SHIPPED AND JUDGED, PROCESS GAP CLOSED
 

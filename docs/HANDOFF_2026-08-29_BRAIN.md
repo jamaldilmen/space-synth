@@ -127,4 +127,4 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 ---
 
 **Last Updated:** 2026-08-29 10:50:00
-**Folded into board:** `docs/BOARD.md` §W + `docs/BOARD_BLACKHOLE.md` §V @ 2026-08-29 10:45:00, both re-stamped at `ea14dbc`
+**Folded into board:** `docs/BOARD.md` §W + `docs/BOARD_BLACKHOLE.md` §V @ 2026-08-29 10:45:00, both re-stamped at `01f1048`

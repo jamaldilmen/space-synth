@@ -94,4 +94,4 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 ---
 
 **Last Updated:** 2026-08-29 03:12:44
-**Folded into board:** `docs/BOARD_BLACKHOLE.md` §V (BH detail) + `docs/BOARD.md` §W (non-BH) @ 2026-08-29 10:45:00 — folded by the brain window; both re-stamped at `ea14dbc`.
+**Folded into board:** `docs/BOARD_BLACKHOLE.md` §V (BH detail) + `docs/BOARD.md` §W (non-BH) @ 2026-08-29 10:45:00 — folded by the brain window; both re-stamped at `01f1048`.

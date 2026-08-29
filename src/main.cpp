@@ -406,10 +406,11 @@ int main() {
     }
 
     // Arrow keys = orbit camera. Handled BEFORE the isRepeat gate so a
-    // held key fires every macOS key-repeat tick → smooth continuous
-    // rotation. Step is a velocity impulse; Camera::update applies
-    // friction and soft-locks to the nearest 90° quadrant when the
-    // user lets go.
+    // held key fires every macOS key-repeat tick.
+    // A TAP steps the camera TARGET one exact EIGHTH-turn (45°) in the direction
+    // pressed; the spring in Camera::update eases it there and stops. It no
+    // longer writes a velocity impulse, so there is nothing to soft-lock: the
+    // landing is exact by construction rather than caught on the way down.
     //   123=Left  124=Right  125=Down  126=Up
     // Hold to RAMP the spin up to extreme (light-trail territory). Track held
     // state for down AND up; the per-frame ramp lives in the render loop.
@@ -417,13 +418,15 @@ int main() {
         e.keyCode == 126) {
       bool d = e.isDown;
       // TAP (quick press+release, under the threshold → spin never engaged) =
-      // the old snapped-camera quadrant rotate. HOLD = the physical spin.
+      // the camera step. HOLD = the physical spin.
       if (!d && spinHold < kTapHoldSec) {
-        constexpr float TAP_STEP = 0.06f; // enough to soft-lock to next 90°
-        if (e.keyCode == 123)      camera.rotateKey(+TAP_STEP, 0.0f);
-        else if (e.keyCode == 124) camera.rotateKey(-TAP_STEP, 0.0f);
-        else if (e.keyCode == 126) camera.rotateKey(0.0f, +TAP_STEP);
-        else if (e.keyCode == 125) camera.rotateKey(0.0f, -TAP_STEP);
+        // ±1 = one 45° step, exactly — 8 taps per revolution, his order
+        // 2026-08-28. WAS a 0.06 rad velocity impulse that a magnetic detent
+        // then caught near a multiple of 90°.
+        if (e.keyCode == 123)      camera.rotateKey(+1, 0);
+        else if (e.keyCode == 124) camera.rotateKey(-1, 0);
+        else if (e.keyCode == 126) camera.rotateKey(0, +1);
+        else if (e.keyCode == 125) camera.rotateKey(0, -1);
       }
       if (e.keyCode == 123)      arrowL = d;
       else if (e.keyCode == 124) arrowR = d;
@@ -447,6 +450,23 @@ int main() {
 
     if (e.isRepeat)
       return;
+
+    // C = CINEMATIC MODE. His spec 2026-08-28, verbatim: "i press a key.
+    // ideally c and the cmaera movement becomes smooth as a cienma camera .
+    // thats it."
+    // Toggles the settle time and damping of the ONE camera law — orbit, tilt
+    // and zoom all slow together and stop overshooting. It does NOT touch the
+    // body spin or the time warp: those move the OBJECT, not the camera
+    // ("at warp we spin the object not the camera").
+    // keyCode 8 = 'C'. Free: it is not in the note keyMap above (0,13,1,14,2,
+    // 3,17,5,16,4,32,38,40,31,37,35,41) and had no other handler.
+    if (e.keyCode == 8 && e.isDown && !e.isRepeat) {
+      camera.setCinematic(!camera.isCinematic());
+      printf("[CINE] cinematic camera %s\n",
+             camera.isCinematic() ? "ON" : "OFF");
+      fflush(stdout);
+      return;
+    }
 
     // Z/X = octave shift
     if (e.keyCode == 6 && e.isDown) {

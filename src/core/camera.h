@@ -9,9 +9,109 @@
 
 namespace space {
 
+// ── SECOND-ORDER DAMPED SPRING — EXACT SOLUTION ─────────────────────────────
+//
+// Solves  a + 2ζω·v + ω²x = 0  ANALYTICALLY over the step, rather than
+// integrating it. Ryan Juckett's closed form (the same math behind Unity's
+// SmoothDamp and Game Programming Gems 4).
+//
+// 🚨 WHY THE EXACT FORM AND NOT A LERP: the old camera bled velocity with
+// `friction = max(0, 1 - dt*6)`, which only APPROXIMATES e^(-6·dt) and diverges
+// as dt grows. Measured fps on this project spans 18.7 to 120.2, so the camera
+// FEEL changed with particle load — the opposite of an operator's hand. The
+// closed form is exact for any dt, so frame-rate independence is free rather
+// than a thing to tune. That is not a nicety here; it is the difference between
+// a move that lands the same every take and one that does not.
+struct SpringCoef {
+  float posPos = 1.0f, posVel = 0.0f;
+  float velPos = 0.0f, velVel = 1.0f;
+};
+
+// ω = angular frequency (rad/s), ζ = damping ratio.
+// ζ = 1 critically damped (fastest arrival with NO overshoot)
+// ζ < 1 under-damped (overshoots, then settles)
+inline SpringCoef springCoefficients(float dt, float omega, float zeta) {
+  const float eps = 1e-4f;
+  SpringCoef c;
+  if (omega < eps) return c; // ω→0: frozen, coefficients are the identity
+  if (zeta < 0.0f) zeta = 0.0f;
+
+  if (zeta > 1.0f + eps) {
+    // Over-damped: two real roots, no oscillation, slower than critical.
+    float za = -omega * zeta;
+    float zb = omega * std::sqrt(zeta * zeta - 1.0f);
+    float z1 = za - zb, z2 = za + zb;
+    float e1 = std::exp(z1 * dt), e2 = std::exp(z2 * dt);
+    float invTwoZb = 1.0f / (2.0f * zb);
+    float e1t = e1 * invTwoZb, e2t = e2 * invTwoZb;
+    float z1e1t = z1 * e1t, z2e2t = z2 * e2t;
+    c.posPos = e1t * z2 - z2e2t + e2;
+    c.posVel = -e1t + e2t;
+    c.velPos = (z1e1t - z2e2t) * z2;
+    c.velVel = -z1e1t + z2e2t;
+  } else if (zeta < 1.0f - eps) {
+    // Under-damped: overshoots by ~5% at ζ=0.7, which is what reads as a human
+    // operator rather than a script.
+    float omegaZeta = omega * zeta;
+    float alpha = omega * std::sqrt(1.0f - zeta * zeta);
+    float expTerm = std::exp(-omegaZeta * dt);
+    float cosTerm = std::cos(alpha * dt);
+    float sinTerm = std::sin(alpha * dt);
+    float invAlpha = 1.0f / alpha;
+    float expSin = expTerm * sinTerm;
+    float expCos = expTerm * cosTerm;
+    float expOmegaZetaSinOverAlpha = expTerm * omegaZeta * sinTerm * invAlpha;
+    c.posPos = expCos + expOmegaZetaSinOverAlpha;
+    c.posVel = expSin * invAlpha;
+    c.velPos = -expSin * alpha - omegaZeta * expOmegaZetaSinOverAlpha;
+    c.velVel = expCos - expOmegaZetaSinOverAlpha;
+  } else {
+    // Critically damped: arrives as fast as possible without ever overshooting.
+    float expTerm = std::exp(-omega * dt);
+    float timeExp = dt * expTerm;
+    float timeExpFreq = timeExp * omega;
+    c.posPos = timeExpFreq + expTerm;
+    c.posVel = timeExp;
+    c.velPos = -omega * timeExpFreq;
+    c.velVel = -timeExpFreq + expTerm;
+  }
+  return c;
+}
+
+// Advance one axis toward `target`. pos/vel are updated in place.
+inline void springStep(const SpringCoef &c, float &pos, float &vel,
+                       float target) {
+  float oldPos = pos - target;
+  float oldVel = vel;
+  pos = oldPos * c.posPos + oldVel * c.posVel + target;
+  vel = oldPos * c.velPos + oldVel * c.velVel;
+}
+
 class Camera {
 public:
   Camera() { reset(); }
+
+  // ── FEEL CONSTANTS ────────────────────────────────────────────────────────
+  // ω is derived from a SETTLE TIME, not tasted: a critically-damped system is
+  // within 2% of its target at ω·t ≈ 5.83, so ω = 5.83 / T_settle. T_settle is
+  // the one number here in a unit he can actually feel — "how long until the
+  // camera has arrived."
+  //
+  // ⛔ NO BPM, NO BEAT, NO TEMPO TERM. An earlier draft sourced ω from the beat
+  // (12.4 rad/s at 128 BPM). His ruling 2026-08-28: "we dont want a bpm sync
+  // its not needed for now u got that wrong. its just about smoothness in
+  // camer amotion." Only the SOURCE of ω changed; the math below is untouched.
+  static constexpr float kSettleConst = 5.83f;  // ω·t for 2% settle, critical
+  static constexpr float kSettleNormal = 0.50f; // s  → ω ≈ 11.7
+  static constexpr float kSettleCine = 1.50f;   // s  → ω ≈  3.9
+  // ζ: zoom never overshoots (an overshooting zoom reads as a mistake). Orbit
+  // overshoots slightly in normal mode — that ~5% is the operator's hand.
+  // In CINEMATIC mode both go critical: a cinema camera does not bounce.
+  static constexpr float kZetaOrbit = 0.70f;
+  static constexpr float kZetaZoom = 1.00f;
+
+  static constexpr float kMinRho = 50.0f;
+  static constexpr float kMaxRho = 2000.0f;
 
   void reset() {
     // 400 puts the horizon at ~12% of half-screen at default zoom
@@ -26,44 +126,62 @@ public:
     // screenshot without driving the user's mouse. No env = unchanged.
     if (const char *cr = getenv("SS_CAM_RHO")) {
       float v = (float)atof(cr);
-      if (v >= 50.0f && v <= 2000.0f) rho = v;
+      if (v >= kMinRho && v <= kMaxRho) rho = v;
     }
     theta = M_PI_F / 2.0f; // Elevation — face-on horizontal view
     phi = 0.0f;            // Azimuth
     velRho = velTheta = velPhi = 0.0f;
+    // The camera starts AT its target, at rest. Anything else would make the
+    // app open on a move nobody asked for.
+    tgtRho = rho;
+    tgtTheta = theta;
+    tgtPhi = phi;
   }
 
+  // ── CINEMATIC MODE ────────────────────────────────────────────────────────
+  // His spec 2026-08-28, verbatim: "i press a key. ideally c and the cmaera
+  // movement becomes smooth as a cienma camera . thats it."
+  //
+  // ONE scalar, and it reaches EVERY camera motion — orbit, tilt and zoom, in
+  // every state. It is not a second code path and not a per-axis tuning set;
+  // it changes the settle time and the damping of the ONE law below.
+  //
+  // ⛔ IT DOES NOT TOUCH TIME WARP OR THE BODY SPIN, deliberately. His ruling:
+  // "at warp we spin the object not the camera u know so the question doesnt
+  // make sens." Cinematic mode is about the speed of the CAMERA. The arrow-HOLD
+  // spin and the shift+arrow time warp move the OBJECT and are a different
+  // system — see docs/CAMERA_STEP2_DESIGN.md §2.
+  void setCinematic(bool on) { cinematic = on; }
+  bool isCinematic() const { return cinematic; }
+
   void update(float dt) {
-    // Velocity-based damping for inertia
-    float friction = std::max(0.0f, 1.0f - dt * 6.0f);
-    velPhi *= friction;
-    velTheta *= friction;
-    velRho *= friction;
+    if (dt <= 0.0f) return;
 
-    phi += velPhi;
-    theta += velTheta;
-    rho = std::max(50.0f, std::min(2000.0f, rho + velRho));
+    float settle = cinematic ? kSettleCine : kSettleNormal;
+    float omega = kSettleConst / settle;
+    // A cinema camera does not bounce: cinematic forces critical damping.
+    float zOrbit = cinematic ? 1.0f : kZetaOrbit;
 
-    // Wrap to [-π, π] so the values stay numerically tame even with
-    // infinite rotation. Display layer can convert to degrees / quadrant.
-    phi = wrapPi(phi);
-    theta = wrapPi(theta);
+    SpringCoef cOrbit = springCoefficients(dt, omega, zOrbit);
+    SpringCoef cZoom = springCoefficients(dt, omega, kZetaZoom);
 
-    // Soft-lock at N·π/2 (0°, 90°, 180°, 270°) for screenshot framing.
-    // ONLY engages when the last input was an arrow key. Mouse drag stays
-    // free-form so the user can frame off-axis shots without the camera
-    // pulling itself onto an axis.
-    if (snapNextSettle) {
-      constexpr float SOFT_LOCK_RAD = 0.12f;    // ≈ 6.9°
-      constexpr float SOFT_LOCK_VEL = 0.003f;   // ~1°/frame at 60fps
-      softLockToQuarter(phi, velPhi, SOFT_LOCK_RAD, SOFT_LOCK_VEL);
-      softLockToQuarter(theta, velTheta, SOFT_LOCK_RAD, SOFT_LOCK_VEL);
-      // Once both axes have settled (velocity near zero), arm cleared so
-      // a subsequent mouse drag isn't snapped at the end.
-      if (std::abs(velPhi) < 1e-4f && std::abs(velTheta) < 1e-4f) {
-        snapNextSettle = false;
-      }
-    }
+    // 🚨 EVERY MOTION GOES THROUGH THE SPRING. There is no path that writes a
+    // position or a velocity directly any more — that inversion IS the fix.
+    // Input moves the TARGET; the camera chases it. An impulse is instantaneous
+    // acceleration, so the old camera was at peak speed on frame one and
+    // everything decayed from maximum: ease-OUT only, ease-IN unobtainable at
+    // any setting. The spring accelerates from rest, so a move now has a
+    // beginning as well as an end.
+    springStep(cOrbit, phi, velPhi, tgtPhi);
+    springStep(cOrbit, theta, velTheta, tgtTheta);
+    springStep(cZoom, rho, velRho, tgtRho);
+
+    // Keep phi/theta numerically tame under infinite rotation WITHOUT ever
+    // disturbing the error the spring is solving: wrap the actual, then shift
+    // the target by the SAME multiple of 2π. (phi - tgtPhi) is unchanged, so
+    // the camera cannot be made to take the long way round by a wrap.
+    coWrap(phi, tgtPhi);
+    coWrap(theta, tgtTheta);
 
     // Compute Cartesian position
     float sinTheta = std::sin(theta);
@@ -76,42 +194,41 @@ public:
     posZ = rho * sinTheta * cosPhi;
   }
 
-  // Free-form rotation (mouse drag). Does NOT enable 90° snap.
+  // Free-form rotation (mouse drag). Moves the TARGET, not the camera.
+  // Gain is unchanged at 0.0015 rad/pt and that is now a DERIVED number rather
+  // than a tuned one: a ~1920 pt drag across the window sweeps 1920 × 0.0015 ≈
+  // 2.9 rad ≈ 165°, i.e. dragging the width of the screen turns the view about
+  // half a revolution.
   void rotate(float dPhi, float dTheta) {
-    velPhi += dPhi;
-    velTheta += dTheta;
-    snapNextSettle = false;
+    tgtPhi += dPhi;
+    tgtTheta += dTheta;
   }
 
-  // Arrow-key rotation. Same impulse as rotate(), but ALSO arms the
-  // 90° soft-lock so the next time the camera settles it snaps onto a
-  // quarter-turn for clean screenshots.
-  void rotateKey(float dPhi, float dTheta) {
-    velPhi += dPhi;
-    velTheta += dTheta;
-    snapNextSettle = true;
+  // Arrow-key TAP. Steps the target to the NEXT EIGHTH-TURN (45°) in the
+  // direction pressed, EXACTLY — 8 taps for a full revolution, on BOTH axes.
+  // His order 2026-08-28: "pls make it exactly double as many taps need yeah
+  // so 8 taps for a full rotation on either axis not 4 ok". Was 90°/4 taps,
+  // which he approved the feel of first ("i love the feel the snappiness") —
+  // only the grid spacing changed, not the law.
+  //
+  // ⭐ This replaces `softLockToQuarter`, a magnetic detent that watched for the
+  // velocity to fall below a threshold and then snapped the angle. That hack
+  // existed only because input wrote velocity: you cannot land on an angle by
+  // throwing velocity at it, so it had to be caught on the way down. With a
+  // target the landing is exact by construction, in one tap, every time, and it
+  // eases in and out on the way. ~25 lines of detent logic deleted.
+  void rotateKey(int stepPhi, int stepTheta) {
+    // The step grid. Shared by both branches below, so one constant covers
+    // "either axis". The round-to-grid form lands exactly at any spacing; the
+    // grid is simply twice as fine now. The default theta = π/2 (:131) is still
+    // ON this grid, so nothing jumps at launch.
+    const float Q = M_PI_F * 0.25f; // 45°
+    if (stepPhi) tgtPhi = (std::round(tgtPhi / Q) + (float)stepPhi) * Q;
+    if (stepTheta) tgtTheta = (std::round(tgtTheta / Q) + (float)stepTheta) * Q;
   }
 
-  void zoom(float dRho) { velRho -= dRho; }
-
-  // Continuous arrow-HOLD spin: drive angular velocity directly each frame
-  // (free-form, no soft-lock) so holding the key ramps the spin up as fast as
-  // commanded — light-trail territory. update()'s friction still nudges it, but
-  // we re-set every frame, so the net is the commanded speed.
-  void driveSpin(float vPhi, float vTheta) {
-    velPhi = vPhi;
-    velTheta = vTheta;
-    snapNextSettle = false;
-  }
-  // Arm the 90° settle-snap (call once on key release so it eases onto an axis).
-  void armSnap() { snapNextSettle = true; }
-
-  // Snap directly to a target angle (skips inertia). Used by quick-snap
-  // shortcuts like number-key presets if we ever wire them.
-  void setAngles(float newPhi, float newTheta) {
-    phi = wrapPi(newPhi);
-    theta = wrapPi(newTheta);
-    velPhi = velTheta = 0.0f;
+  void zoom(float dRho) {
+    tgtRho = std::max(kMinRho, std::min(kMaxRho, tgtRho - dRho));
   }
 
   float getRho() const { return rho; }
@@ -178,30 +295,25 @@ public:
 
   // World-space UNIT FORWARD (eye → look-at target).
   //
-  // F5 (2026-08-10). render.metal computes its view axis inline, TWICE, as
-  // `normalize(-cam.cameraPos.xyz)` — at the `dHat` site and at the `viewDir`
-  // site (grep: `// view axis`). Both feed the front/behind test that decides
-  // which matter is lensed and which OCCLUDES the hole, i.e. the thing that
-  // puts the hole in the room instead of painting it as a flat layer.
+  // F5 (2026-08-10). render.metal used to compute its view axis inline as
+  // `normalize(-cam.cameraPos.xyz)`, which is not a view axis but "the
+  // direction from the camera to the ORIGIN" — correct only while
+  // buildViewMatrix() hardcodes the same assumption. The shader is TOLD the
+  // forward vector instead of re-deriving it from that assumption.
   //
-  // That inline form is not a view axis, it is "the direction from the camera
-  // to the ORIGIN". It is correct today only because buildViewMatrix() below
-  // hardcodes the same assumption (forward = -pos). The moment a dolly or a POV
-  // follow points the camera anywhere else, both sites silently misclassify
-  // front matter as behind: the lens bends the wrong half of the field and the
-  // occlusion inverts. No error, no warning — it just looks wrong.
-  //
-  // So the shader must be TOLD the forward vector rather than re-deriving it
-  // from an assumption. While the target is still the origin this returns
-  // exactly normalize(-pos), so plumbing it through is a visual NO-OP — which
-  // is the point: it is verifiable BEFORE it is useful.
+  // ⚠️ Its two ORIGINAL consumers (the lens front/behind test and the `behindBH`
+  // occlusion) died with the lens and the geodesic march on 2026-08-27. The two
+  // that survive are FIELD consumers, not BH optics: render.metal ~:1221 (ortho
+  // depth for the PSF size falloff) and ~:2388 (per-cell dust absorption
+  // direction). So this stays load-bearing, and the moment a ride points the
+  // camera somewhere other than the origin both become correct for free.
   void getForward(float *out) const {
     float fx = -posX, fy = -posY, fz = -posZ;
     float len = std::sqrt(fx * fx + fy * fy + fz * fz);
     if (len < 1e-12f) {
       // Degenerate only if the camera sits exactly on the target. rho is
-      // clamped to >= 50 in update(), so this is unreachable today; it exists
-      // so a future free-fly/POV camera cannot produce a NaN axis.
+      // clamped to >= kMinRho, so this is unreachable today; it exists so a
+      // future free-fly/POV camera cannot produce a NaN axis.
       out[0] = 0.0f;
       out[1] = 0.0f;
       out[2] = -1.0f;
@@ -213,10 +325,11 @@ public:
   }
 
 private:
-  float rho, theta, phi;
-  float velRho, velTheta, velPhi;
+  float rho, theta, phi;          // ACTUAL — what the renderer reads
+  float tgtRho, tgtTheta, tgtPhi; // TARGET — what input writes
+  float velRho, velTheta, velPhi; // internal to the spring; nothing else writes
   float posX, posY, posZ;
-  bool snapNextSettle = false; // Armed by arrow keys, cleared by mouse rotate
+  bool cinematic = false;
 
   // Wrap an angle to (-π, π].
   static float wrapPi(float a) {
@@ -227,21 +340,13 @@ private:
     return a - M_PI_F;
   }
 
-  // Magnetic detent toward the nearest multiple of π/2. Acts when the
-  // user has stopped driving (|vel| < velThresh). Pulls strongly within
-  // tolRad of the snap target so screenshots land exactly on 0°/90°/etc.
-  static void softLockToQuarter(float &angle, float &vel, float tolRad,
-                                float velThresh) {
-    if (std::abs(vel) > velThresh)
-      return;
-    const float QUARTER = M_PI_F * 0.5f;
-    float k = std::round(angle / QUARTER);
-    float target = k * QUARTER;
-    float diff = target - angle;
-    if (std::abs(diff) < tolRad) {
-      angle = target;
-      vel = 0.0f;
-    }
+  // Wrap `actual` into (-π, π] and shift `target` by the SAME amount, so the
+  // error between them survives the wrap exactly.
+  static void coWrap(float &actual, float &target) {
+    float wrapped = wrapPi(actual);
+    float shift = wrapped - actual; // an exact multiple of 2π
+    actual = wrapped;
+    target += shift;
   }
 };
 

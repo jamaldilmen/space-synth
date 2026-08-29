@@ -1904,9 +1904,9 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
   }
   if ((physicsUniforms.frameCounter % 240u) == 0u && perfN > 0u) {
     fprintf(stderr,
-            "[PERF] fps=%.1f worst=%.1fms ortho=%d warp=%.2f particles=%d n=%u\n",
+            "[PERF] fps=%.1f worst=%.1fms ortho=%d warp=%.2f sub=%d particles=%d n=%u\n",
             (double)perfN / perfSum, perfWorst * 1000.0, lastOrtho,
-            (double)timeWarpVal, particleCount, perfN);
+            (double)timeWarpVal, physicsSubsteps, particleCount, perfN);
     perfSum = 0.0;
     perfWorst = 0.0;
     perfN = 0u;
@@ -2017,6 +2017,39 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     bool needSpatialHash = collisionsEnabled ||
         physicsUniforms.envelopePhase < 0.5f || physicsUniforms.envelopePhase > 3.5f ||
         (physicsUniforms.envelopePhase >= 1.5f && physicsUniforms.envelopePhase < 3.5f);
+
+    // ── TRUE SUB-STEP PROBE (SS_TRUE_SUBSTEPS=1, 2026-08-29) ────────────────
+    // MEASUREMENT ONLY — default path is byte-for-byte unchanged (nTrue==1).
+    // WHY: 22 of the 23 compute passes run ONCE per frame and only the physics
+    // integrate re-runs per substep, so N substeps advance N steps against a
+    // FROZEN force field (phi[], finePhi[], sphForce[], cellMass[], cellStarts
+    // are all written above this point). Position-Verlet under a constant
+    // acceleration is exact regardless of step count, which is why substeps
+    // buy almost nothing over raw dt-scaling and both go chaotic together.
+    // MEASURED 2026-08-29: at MATCHED sim time (elapsed substeps = 240*(k-1)*N,
+    // [GRAV] and [PERF] share the %240u cadence) N=1/2/4 disagree by 2.5-3.6x
+    // on Mmax. A faithful integrator CONVERGES as N rises; ours diverges.
+    // This flag re-runs the WHOLE force pipeline + physics + seed_apply per
+    // substep — what Universe Sandbox's IntegratorSubstepSystemGroup does —
+    // so the divergence should collapse. Cost measured at 23.65 ms/substep, so
+    // expect ~9 fps at N=4. That is fine: this proves the diagnosis, it does
+    // not ship. If the divergence does NOT collapse, the diagnosis is wrong.
+    static int sTrueSubstep = -1;
+    if (sTrueSubstep < 0) sTrueSubstep = getenv("SS_TRUE_SUBSTEPS") ? 1 : 0;
+    const int nTrue = sTrueSubstep ? std::max(1, physicsSubsteps) : 1;
+    if (sTrueSubstep && (physicsUniforms.frameCounter % 240u) == 0u)
+      fprintf(stderr, "[TRUESUB] force pipeline re-run %d x/frame\n", nTrue);
+    for (int tsub = 0; tsub < nTrue; tsub++) {
+    // ⏱️ SUB-STEP TICK — the cadence clock. A FRAME IS NOT A UNIT OF TIME
+    // (his thesis 2026-08-29). The two heavy passes below are throttled on a
+    // cadence; gating them on frameCounter meant they refreshed once per FRAME
+    // however many substeps that frame advanced, so gravity and SPH went stale
+    // exactly when the sim ran fastest. This advances with the SIM, not the
+    // display. IDENTITY ON THE DEFAULT PATH: nTrue==1, tsub==0 → stepTick is
+    // frameCounter exactly, so the shipped build cannot change behaviour.
+    const uint32_t stepTick =
+        physicsUniforms.frameCounter * (uint32_t)nTrue + (uint32_t)tsub;
+
 
     // ── Snapshot live particles → read buffer for the hash + collision reads.
     // MUST happen whenever the hash is built (not only for collisions): the hash
@@ -3067,7 +3100,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
      // so matter flew off its constrained paths (v→0.33c, COLLAPSE 0%). The full
      // loop keeps every force each step → stable, but costs ~N× physics (FPS)
      // and runs drain/merge N× too. Keep N small.
-     int nSub = std::max(1, physicsSubsteps);
+     int nSub = sTrueSubstep ? 1 : std::max(1, physicsSubsteps);
      for (int ssub = 0; ssub < nSub; ssub++) {
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:physicsPipeline];
@@ -3129,6 +3162,8 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
       [comp endEncoding];
     }
+
+    }  // ── end TRUE SUB-STEP loop (nTrue==1 on the default path) ──
 
     // ── Stats reduction ────────────────────────────────────────────
     if (reduceStatsPipeline && partialSumsBuffer && !skipStats) {

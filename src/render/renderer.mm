@@ -2356,7 +2356,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           if (v >= 1 && v <= 8) kSphCadence = (uint32_t)v;
         }
       }
-      bool sphFrame = (physicsUniforms.frameCounter % kSphCadence) == 0u;
+      bool sphFrame = (stepTick % kSphCadence) == 0u;  // SIM cadence, not frame
 
       // Phase 5a1.5: SPH DENSITY FLOOR — EVERY particle gets the uncapped
       // cell-mean ρ (cellMass/MASS_FP/h³, self-term minimum) BEFORE the ≤32-
@@ -2519,7 +2519,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       // of one frame carrying both — steadier pacing. (First aligned-vs-offset
       // comparison was invalidated by stray app instances sharing the GPU;
       // re-measured clean.)
-      bool sorFrame = (physicsUniforms.frameCounter % 2u) == 1u;
+      bool sorFrame = (stepTick % 2u) == 1u;  // SIM cadence, not frame
       if (poissonPipeline && phiBuffer && pmGravityOn && sorFrame &&
           physicsUniforms.totalAmplitude < 0.02f) {  // rest only (matches centroids)
         // Zero Φ once on first use; afterward it persists (warm start).

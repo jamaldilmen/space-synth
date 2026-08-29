@@ -4473,11 +4473,24 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // or ImGui's frame state desyncs and the next NewFrame asserts.
   ImGui::Render();
 
+  // TWO-WINDOW MODE is a Syphon-build feature: `uiLayer` is declared inside
+  // `#if HAS_SYPHON` (:46) but was USED here unguarded, so a build without
+  // Syphon failed with three `undeclared identifier 'uiLayer'` errors instead of
+  // simply losing the feature. That bites every fresh `git worktree add`,
+  // because `third_party/syphon/` is GITIGNORED and never comes with the tree
+  // (found 2026-08-29 creating SPACE-SYNTH-TRUE-PHYSICS). Behaviour with Syphon
+  // present is unchanged: this alias IS `uiLayer`. Without it, nil selects the
+  // single-window branch below, which is the correct degrade.
+#if HAS_SYPHON
+  CAMetalLayer *uiLayerOrNil = uiLayer;
+#else
+  CAMetalLayer *uiLayerOrNil = nil;
+#endif
   id<CAMetalDrawable> uiDrawable = nil;
-  if (uiLayer) {
+  if (uiLayerOrNil) {
     // TWO-WINDOW MODE: the panels go to the settings window and the output
     // drawable is left completely clean.
-    uiDrawable = [uiLayer nextDrawable];
+    uiDrawable = [uiLayerOrNil nextDrawable];
     if (uiDrawable) {
       MTLRenderPassDescriptor *uiPass =
           [MTLRenderPassDescriptor renderPassDescriptor];
@@ -4515,7 +4528,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
 }
 
 void Renderer::setUILayer(void *metalLayer) {
+#if HAS_SYPHON
   impl_->uiLayer = (__bridge CAMetalLayer *)metalLayer;
+#else
+  (void)metalLayer;   // two-window mode requires the Syphon build
+#endif
 }
 
 void Renderer::renderImGui(void *renderEncoder) {

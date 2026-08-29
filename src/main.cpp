@@ -288,6 +288,18 @@ int main() {
   // (after the honest horizon fires); this only keeps it out of test beds.
   if (getenv("SS_NO_CAPTURE")) app.uiTogSeedCapture = false;
 
+  // SS_SUBSTEPS=N — pin the physics-substep slider at launch (2026-08-29).
+  // Measurement hook ONLY: it writes the same app.uiPhysicsSubsteps the slider
+  // writes (main.cpp:1474), so the code path is identical to dragging it. It
+  // exists because the sweep 1/2/4/8/16/32 stalls the UI before it reaches the
+  // top by hand (his report 2026-08-29), which makes the high-N rows of the
+  // cost table unobtainable from the slider. Clamped to the slider's own 1..32.
+  if (const char *nsub = getenv("SS_SUBSTEPS")) {
+    int v = atoi(nsub);
+    app.uiPhysicsSubsteps = (v < 1) ? 1 : (v > 32 ? 32 : v);
+    fprintf(stderr, "[SUBSTEPS] pinned to %d by SS_SUBSTEPS\n", app.uiPhysicsSubsteps);
+  }
+
   // 🔬 TEMP-DIAG isolation ladder (docs/BUG_lines_2026-07-12.md): SS_INERT=1
   // turns EVERY optional force OFF (all bhToggles force bits cleared, legacy
   // grid pressure retired; renderer.mm skips the ungated merge_stars pass under
@@ -365,6 +377,42 @@ int main() {
     printf("[SEQ] Start: %s (%d notes)\n", name, (int)notes.size());
   };
 
+  // SS_SEQ=<pattern> — drive the instrument at launch (2026-08-29).
+  // Measurement hook ONLY: calls the same firePreset the SEQUENCER buttons call.
+  // WHY: his verdict 2026-08-29 — "play short notes, chords.. pauses, what
+  // happens in between. not just a held note". Every measurement before this ran
+  // at REST (phase=0.0 amp=0.000), which is the regime he says is FINE. A held
+  // note never shows the TRANSITIONS, and the transitions are suspect: hashFresh
+  // (particles.metal:1687) is FALSE during attack, so PM gravity (:1696), field
+  // self-gravity (:1785) and dynamic friction (:1971) all switch OFF on every
+  // note onset. Short notes = permanent attack = gravity permanently off.
+  // All patterns start at t=6s so the field settles first.
+  if (const char *sq = getenv("SS_SEQ")) {
+    if (!strcmp(sq, "transitions")) {
+      // staccato run -> pause -> chord -> pause -> stabs -> sustained chord
+      firePreset("SS_SEQ transitions", {
+        {60, 6.0f, 0.20f}, {62, 6.8f, 0.20f}, {64, 7.6f, 0.20f},
+        {65, 8.4f, 0.20f}, {67, 9.2f, 0.20f}, {69, 10.0f, 0.20f},
+        {60, 13.0f, 1.5f}, {64, 13.0f, 1.5f}, {67, 13.0f, 1.5f}, {71, 13.0f, 1.5f},
+        {72, 17.0f, 0.15f}, {74, 17.6f, 0.15f},
+        {48, 20.0f, 3.0f}, {55, 20.0f, 3.0f}, {60, 20.0f, 3.0f},
+      });
+    } else if (!strcmp(sq, "staccato")) {
+      firePreset("SS_SEQ staccato", {
+        {60, 6.0f, 0.15f}, {60, 7.0f, 0.15f}, {60, 8.0f, 0.15f},
+        {60, 9.0f, 0.15f}, {60, 10.0f, 0.15f}, {60, 11.0f, 0.15f},
+        {60, 12.0f, 0.15f}, {60, 13.0f, 0.15f}, {60, 14.0f, 0.15f},
+        {60, 15.0f, 0.15f}, {60, 16.0f, 0.15f}, {60, 17.0f, 0.15f},
+      });
+    } else if (!strcmp(sq, "held")) {   // CONTROL: the easy case, one long chord
+      firePreset("SS_SEQ held", {
+        {60, 6.0f, 12.0f}, {64, 6.0f, 12.0f}, {67, 6.0f, 12.0f}, {71, 6.0f, 12.0f},
+      });
+    } else {
+      fprintf(stderr, "[SS_SEQ] unknown pattern '%s' (transitions|staccato|held)\n", sq);
+    }
+  }
+
 
   // ── Simulation pause (SPACE) — physics freezes, render/camera live on ──
   bool simPaused = false;
@@ -379,6 +427,21 @@ int main() {
   // ── TIME WARP (SHIFT+←/→) — multiplicative ramp, rides key-repeat like
   // the camera arrows: hold to sweep. ×1.3 per tick, range 1/64× … 64×.
   float timeWarp = 1.0f;
+  // SS_TIME_WARP=X — pin the time-warp dial at launch (2026-08-29).
+  // Measurement hook ONLY, same idiom as SS_SUBSTEPS: it writes the same
+  // `timeWarp` the UI writes, so the code path is identical. Needed to A/B the
+  // "x120 convention" (particles.metal:1425/:3704/:4059), whose error scales as
+  // warp^2 and therefore cannot be seen at warp 1.
+  if (const char *tw = getenv("SS_TIME_WARP")) {
+    float v = (float)atof(tw);
+    if (v >= 0.01f && v <= 64.0f) {
+      timeWarp = v;
+      fprintf(stderr, "[TIMEWARP] pinned to %.2f by SS_TIME_WARP\n", timeWarp);
+    } else {
+      fprintf(stderr, "[TIMEWARP] SS_TIME_WARP=%s out of range 0.01..64, ignored\n", tw);
+    }
+  }
+
   // Running UNIVERSE CLOCK — accumulated PHYSICS time (real seconds), ticked in
   // the sim loop (kTimeLapse·simDt per frame). Shown in adaptive human units.
   double universeClockSec = 0.0;
@@ -591,13 +654,24 @@ int main() {
         }
       }
 
-      // Log stats every 0.5s
+      // ── SEQ PROBE (2026-08-29) — the physics state THROUGH the transitions.
+      // Was every 0.5s and it fetched `stats` only to `(void)` them away, so a
+      // 0.15s stab fell entirely between two samples. Now 0.05s, and it prints
+      // what actually matters across a note edge: the envelope PHASE (0 silence,
+      // 1 attack, 2 decay, 3 sustain, 4 release — gravity is OFF in phase 1, see
+      // particles.metal:1687 hashFresh), the speeds against the play cap, and
+      // the integrator clamp population. ⚠ avgSpeed/maxSpeed/accOverCount come
+      // from the cached readback (getPhysicsStats), which refreshes on a coarser
+      // cadence than this line — so read them as a step function, not per-frame.
       seqLogTimer += dt;
-      if (seqLogTimer >= 0.5f) {
-        auto stats = renderer.getPhysicsStats();
-        (void)stats; // Suppress unused warning
-        printf("[SEQ-DATA] t=%.1f voices=%d amp=%.2f\n", seqTime,
-               synth.activeVoiceCount(), synth.totalAmplitude());
+      if (seqLogTimer >= 0.05f) {
+        auto st = renderer.getPhysicsStats();
+        auto ev = synth.getDominantEnvelope();
+        printf("[SEQPROBE] t=%6.2f phase=%.1f voices=%d amp=%.3f "
+               "vAvg=%.3f vMax=%.3f clamped=%d worst=%.3g warp=%.2f\n",
+               seqTime, ev.phase, synth.activeVoiceCount(),
+               synth.totalAmplitude(), st.avgSpeed, st.maxSpeed,
+               st.accOverCount, st.maxAccRatio, timeWarp);
         seqLogTimer = 0;
       }
 

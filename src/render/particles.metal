@@ -1421,8 +1421,14 @@ kernel void compute_physics(
                         // contact; this is what powers the runaway to forming.
                         float rt = 1.5f * MERGE_RSUN_SIM * pow(mass, 0.8f) *
                                    pow(mS / mass, 1.0f / 3.0f);
+                        // ⏱️ v = displacement / dt. Was x120, i.e. it assumed
+                        // dt = 1/120 s. The real step is 0.0165 (60.6/s), and
+                        // under warp dt = 0.0165*warp — so the old constant made
+                        // vrel^2 wrong by 3.92*warp^2 and CRUSHED the focusing
+                        // term below (it divides by vrel2). 1/dt is warp-invariant.
+                        float invDtS = 1.0f / max(u.dt, 1e-6f);
                         float3 dvS = (float3(vpx, vpy, vpz) -
-                                      (sp - particles[sid2].prevW.xyz)) * 120.0f;
+                                      (sp - particles[sid2].prevW.xyz)) * invDtS;
                         float vrel2 = max(dot(dvS, dvS), 1e-4f);
                         float G1s = u.gravGM / max(u.massTotal, 1.0f);
                         rt2 = rt * rt + rt * (2.0f * G1s * mS) / vrel2;
@@ -3701,7 +3707,13 @@ kernel void merge_stars(
         float mergeViolence = 0.0f;            // (v_rel/v_esc)² ∈ [0,1) for the flash below
         if (ma < M_BH_SEED && mb < M_BH_SEED) {
             float3 vrel = (a.posW.xyz - a.prevW.xyz) - (b.posW.xyz - b.prevW.xyz);
-            float vrel2 = dot(vrel, vrel) * (120.0f * 120.0f);
+            // ⏱️ v = displacement / dt (was the x120 frame assumption). This
+            // one is NOT clamped by reach, so it gates fusion outright at the
+            // `vrel2 >= vesc2 -> continue` below: an inflated vrel2 declares
+            // BOUND pairs unbound and refuses the merge. Error scaled as warp^2,
+            // which is why mergers died under time warp.
+            float invDtM = 1.0f / max(u.dt, 1e-6f);
+            float vrel2 = dot(vrel, vrel) * (invDtM * invDtM);
             float rcAB  = MERGE_RSUN_SIM * (pow(ma, 0.8f) + pow(mb, 0.8f));
             float G1s   = u.gravGM / max(u.massTotal, 1.0f);
             float vesc2 = 2.0f * G1s * (ma + mb) / max(rcAB, 1e-4f);
@@ -4055,8 +4067,13 @@ kernel void seed_feed(
                     // σ = πR_t²(1 + 2GM/(R_t·v_rel²)): a slow passer-by is
                     // captured from far beyond R_t, and the boost grows with
                     // the hole's mass → accretion self-accelerates as it
-                    // eats. v_rel in sim/s (velW are per-frame, ×120).
-                    float3 dv = ((v.posW.xyz - v.prevW.xyz) - vSeed) * 120.0f;
+                    // eats. v_rel in sim/s = per-step displacement / u.dt.
+                    // (Was "velW are per-frame, ×120" — a frame-rate
+                    //  assumption dressed as a unit convention, which is why
+                    //  it survived so long. Corrected 2026-08-29.)
+                    // ⏱️ v = displacement / dt (was the x120 frame assumption).
+                    float invDtA = 1.0f / max(u.dt, 1e-6f);
+                    float3 dv = ((v.posW.xyz - v.prevW.xyz) - vSeed) * invDtA;
                     float vrel2 = max(dot(dv, dv), 1e-4f);
                     float G1 = u.gravGM / max(u.massTotal, 1.0f);
                     float rt2 = rt * rt + rt * (2.0f * G1 * mNow) / vrel2;

@@ -206,7 +206,17 @@ struct Renderer::Impl {
   // the matter, and that radius is a measured property of the field, not 60.
   float measuredMaxR = 100.0f;
   float bhMassEnc = 0.0f;     // stars (M_sun) within R_ENC of the peak
-  float bhSeedMass = 0.0f;    // mass of the biggest body = the accreted BH (conserved, monotonic)
+  float bhSeedMass = 0.0f;    // mass of the biggest body, RAW per-frame (= gMaxMass)
+  // ⚠️ NOT monotonic, despite what this line said until 2026-08-28 10:00:00.
+  // MEASURED over 17 captured runs (10,204 samples): gMaxMass FALLS between
+  // consecutive samples in 8 of them, worst 108,670 → 40,776 M_sun in one step
+  // (−62.5%), and three runs end at exactly 50 = M_BH_SEED (the seed is gone).
+  // The 2026-06-13 note at the assignment site asserts "gMaxMass only grows via
+  // eating, so the signal is monotonic and never flickers" — that is false.
+  // Anything needing a hole that cannot shrink must use bhSeedMassMono below.
+  float bhSeedMassMono = 0.0f; // THE HOLE'S MASS: running max of the seed while a
+                               // seed-class body survives; 0 when none does. A black
+                               // hole cannot shed mass, so its horizon cannot shrink.
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
   float lastHorizonMass = 0.0f; // M(<r_h) [M_sun] — drives the emergent time-lapse disk GM
   // HOW CLOSE THE FIELD IS TO BEING A HOLE, continuously: sup over the radial
@@ -3203,6 +3213,23 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           if (sums[i].maxTemp > gMaxTemp) gMaxTemp = sums[i].maxTemp;
           if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
         }
+        // ── THE HOLE'S MASS (2026-08-28) ───────────────────────────────────
+        // One quantity, and it only grows. No-hair: a hole has M and a, so the
+        // drawn hole must key off a single M — not the radial profile, which is
+        // a WINDOW (particles.metal:405, RADIAL_MAX_R = 5.0 sim) that stops
+        // counting mass past 5 sim and was calibrated when the field collapsed
+        // to meanR 3.92. The field now runs far wider, so the profile reads 0
+        // and the hole vanishes with a 34,280 M_sun seed still sitting there.
+        // Reset ONLY when no seed-class body survives — that is the hole dying,
+        // which must stay reversible; a shrinking gMaxMass is not.
+        {
+          // M_BH_SEED, particles.metal:218. Hand-synced: no build-time link.
+          constexpr float kMBhSeedMsun = 50.0f;
+          if (gMaxMass >= kMBhSeedMsun)
+            bhSeedMassMono = std::max(bhSeedMassMono, gMaxMass);
+          else
+            bhSeedMassMono = 0.0f;  // seed gone → the hole un-forms
+        }
         // HONEST GEOMETRIC HORIZON (observe-only — full_physics_todo B2). From the
         // radial mass profile (mass binned by distance from the BH candidate), find
         // the largest r where r_s(M(<r)) ≥ r. This resolves r_s far below the coarse
@@ -3223,13 +3250,20 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             if (ratio > maxRatio) maxRatio = ratio;
             if (ratio >= 1.0) { r_h = r; mEncRh = cum; } // horizon here
           }
-          lastHorizonR = (float)r_h;   // → uniform next frame: pressure yields inside r_h
+          // r_h from the profile is still computed above and still LOGGED — it
+          // is the honest enclosed-mass reading and we want to see it move. It
+          // is no longer what gets drawn. The drawn hole is r_s of the seed:
+          // matter merely ORBITING inside a radius is not inside the hole, and
+          // counting it is why the old value sloshed and vanished.
+          lastHorizonR = (float)(kRsSimPerMsun * (double)bhSeedMassMono);
           lastHorizonMass = (float)mEncRh; // → emergent time-lapse disk GM
           lastHorizonRatio = (float)maxRatio; // continuous approach signal → formation ramp
           if ((physicsUniforms.frameCounter % 120u) == 0u) {
             fprintf(stderr,
-                    "[HORIZON] r_h=%.4f sim  M(<r_h)=%.3e Msun  (honest geometric, observe-only)\n",
-                    r_h, mEncRh);
+                    "[HORIZON] profile r_h=%.4f M(<r_h)=%.3e | DRAWN r_h=%.4f "
+                    "from seed M=%.0f (raw seed %.0f)\n",
+                    r_h, mEncRh, (double)lastHorizonR,
+                    (double)bhSeedMassMono, (double)gMaxMass);
             // ── SLICE 0 (2026-07-11): MEASURE THE WALL — how tightly does the
             // core actually concentrate at rest? Baseline for the AMR before/after.
             // Second pass over the SAME radial profile (mass binned 0..5 sim, 256

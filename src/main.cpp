@@ -2753,7 +2753,22 @@ int main() {
     // Phase 1A: Smoothed amplitude envelope (attack-release)
     // Prevents jarring jumps and ensures particles have time to respond
     static float smoothedAmp = 0.0f;
-    float rise = 0.25f, decay = 0.12f;
+    // ⏱️ 2026-08-29 — WAS a bare per-FRAME smoother (rise 0.25, decay 0.12), so
+    // its time constant depended on frame rate: the decay e-folded in 0.065 s at
+    // 120 fps but 0.196 s at 40 fps. This value IS `u.totalAmplitude` in the
+    // shader, and it gates playGate (particles.metal:1319) — which selects the
+    // 20.69c play velocity cap and the play friction. So the length of the
+    // "still playing" tail after a note ends moved with the frame rate.
+    // MEASURED 2026-08-29: with SS_SEQ=staccato the probe reports amp=0.000
+    // (raw envelope, silent) while vMax still reads ~21c — the shader was still
+    // in the play regime because THIS lagged. Now a real time constant.
+    // IDENTITY AT 60 fps BY CONSTRUCTION: 1-exp(-(1/60)/0.130380) = 0.120000 and
+    // 1-exp(-(1/60)/0.057936) = 0.250000, the exact old coefficients.
+    const float kTauRise  = 0.057936f;  // s
+    const float kTauDecay = 0.130380f;  // s
+    float dtAmp = std::clamp(dt, 1.0f / 480.0f, 0.1f);   // guard stalls
+    float rise  = 1.0f - std::exp(-dtAmp / kTauRise);
+    float decay = 1.0f - std::exp(-dtAmp / kTauDecay);
     if (effectiveTotalAmp > smoothedAmp)
         smoothedAmp = rise * effectiveTotalAmp + (1.0f - rise) * smoothedAmp;
     else

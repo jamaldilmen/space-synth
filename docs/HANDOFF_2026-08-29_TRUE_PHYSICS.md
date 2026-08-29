@@ -130,4 +130,4 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 ---
 
 **Last Updated:** 2026-08-29 17:38:00
-**Folded into board:** `docs/BOARD.md` §X + `docs/BOARD_BLACKHOLE.md` §W @ 2026-08-29 17:36:00, both re-stamped at `d0db70b`.
+**Folded into board:** `docs/BOARD.md` §X + `docs/BOARD_BLACKHOLE.md` §W @ 2026-08-29 17:36:00, both re-stamped at `4847e92` (the bundle; sources end at `d0db70b`).

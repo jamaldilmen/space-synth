@@ -292,3 +292,148 @@ deleted out from under it, and the plumbing kept its value anyway.
 at the end of BOTH copies, and the `sizeof` number changes in BOTH files. That struct has real
 guards — `sizeof == 288` plus three offset anchors at 108 / 200 / 268, mirrored in
 `renderer.h` and `render.metal`. Unlike `PhysicsUniforms`, which has none.
+
+---
+
+## 9. AUTOMATED RIDES — WAYPOINTS + BOUNCE (design, 2026-08-28 13:34:02)
+
+**His ask, verbatim:** *"i think multiple points would be cool and also back and forth like
+bounce back to start once destiantion ahs been reched"*
+
+⛔ **DESIGN ONLY. Not written. No source in `src/` for this.** The `c`-key smoothness change
+(§4) is finished and is the precondition; this sits on top of it and gets its own build and its
+own verdict.
+
+### 9.1 The ride is a TARGET SCHEDULER. That is the whole thing.
+
+Because input now writes a target and a spring chases it, a ride does not need a camera at all.
+It needs a list, an index, a direction, and one line that writes the target. The motion, the
+ease-in, the ease-out and the frame-rate independence are already solved by §4 and are not
+re-solved here.
+
+```
+waypoints[]   (phi, theta, rho)   — the same triple the camera already is
+idx           which one we are heading for
+dir           +1 outbound, -1 on the way back
+```
+Per frame, while riding: `target = waypoints[idx]`. On arrival: advance `idx` by `dir`; at
+either end, flip `dir`. That is the bounce — it falls out of one sign.
+
+**No splines. No arc-length reparameterisation. No path code.** The spline machinery scoped in
+the 2026-08-10 sequence as steps 5–6 was only ever needed because the camera could not be
+told where to go.
+
+### 9.2 ⭐ EVERY LEG TAKES THE SAME TIME — and that is a decision, not a bug
+
+A linear second-order system settles in `t = 5.83/ω` **regardless of how far it travels**. So a
+2° leg and a 170° leg take exactly the same wall-clock time. That means:
+
+- **Equal-time legs** (ω fixed): a long leg moves fast, a short leg crawls. Reads as uneven.
+- **Even-speed legs** (ω per leg): derive it — `T_leg = T_base · (d_leg / d_ref)`, then
+  `ω_leg = 5.83 / T_leg`. Long legs take proportionally longer and the apparent speed is
+  constant across the whole ride.
+
+`d_leg` is the angular distance of the leg, with rho folded in at some scale. **This is the
+arc-length problem, solved by arithmetic instead of by splines**, because we are chaining
+straight legs rather than sampling a curve.
+
+**Recommendation: even-speed, ω derived per leg.** Uneven speed is the specific thing that
+makes an automated move read as broken.
+
+### 9.3 The corner: arrive at rest, or carry speed through?
+
+At a waypoint the spring's velocity goes to zero. Chained naively, a multi-point ride therefore
+**stops at every waypoint**. Two honest options:
+
+| | behaviour | cost |
+|---|---|---|
+| **(a) Arrive, dwell, depart** | passes EXACTLY through every point, brief hold at each | the motion stops at each corner |
+| **(b) Advance the target early** | continuous motion, never stops | rounds the corners — travels NEAR the points, not through them |
+
+**Recommendation: (a), with `dwell` as a dial (first value 0.4 s).** A cinema camera holding on
+a composition is a shot, not a stall — and this is for a live show where each waypoint is a
+framing he chose. (b) stays available later as a lookahead and needs no new machinery: advance
+`idx` when the error drops below a threshold instead of when it reaches zero.
+
+### 9.4 Authoring: he flies it, he does not type it
+
+The cheapest and most useful capture is a key that **records the camera's current position as
+the next waypoint**. He flies somewhere he likes, presses it, that is a point. Repeat. Then one
+key to run and stop the ride.
+
+No UI work, no coordinate entry, and the waypoints are by construction reachable framings he
+picked with his own hands. Suggested keys, all verified free in the same way `c` was:
+- record current position as a waypoint
+- clear the list
+- run / stop the ride
+
+⚠️ **ANY manual input during a ride CANCELS it** — mouse drag, arrow tap, scroll. Non-negotiable
+for a live show: touching the controls must take back the camera instantly, with no mode to
+exit first. Cheap to implement: the same three entry points that write the target also clear
+the riding flag.
+
+### 9.5 The one real trap: angular wrap when SETTING a target
+
+A waypoint stored at +170° with the camera at −170° is **20° away, not 340°**. Setting the
+target naively sends the camera the long way round the entire field.
+
+```
+tgtPhi = phi + wrapPi(waypointPhi - phi);     // always the short way
+```
+Same for theta. `§4`'s `coWrap` keeps an in-flight error intact; this is the separate case of
+choosing the representation at the moment the target is set. Both are needed and they are not
+the same fix.
+
+### 9.6 Interaction with cinematic mode
+
+The ride uses the same ω as everything else, so **pressing `c` slows the rides too** — one law,
+one dial, exactly as §4.3 intends. Nothing extra to build, and nothing to keep in sync.
+
+### 9.7 Verification plan
+
+1. **Bounce is exact:** run a 3-point ride for several cycles, log the camera state at each
+   arrival. Point 1 on cycle 5 must equal point 1 on cycle 1 to float precision. A drifting
+   ride is the classic failure and it is trivially detectable.
+2. **Even speed:** log angular speed per frame across legs of very different lengths. With ω
+   derived per leg the plateau speeds must match within a few percent; with fixed ω they will
+   differ by the length ratio, which is the thing being avoided.
+3. **Cancel is instant:** touch the mouse mid-leg and confirm the ride flag clears in the same
+   frame and the camera does not snap.
+4. **Short way round:** place waypoints at +170° and −170° and confirm the traverse is 20°.
+5. Stack 4+ runs before any claim.
+
+---
+
+## 10. ⚠️ WHAT CHANGED UNDER HIS FINGERS — MEASURED, 2026-08-28 13:44:19
+
+He said this morning *"arrows are working fine."* §4 changed what a tap does, so this is the
+one thing that most needs to reach him accurately. I measured the OLD camera directly by
+compiling the pre-change `camera.h` and running one tap to settle at each frame rate:
+
+| frame rate | OLD travel per tap | NEW travel per tap |
+|---|---|---|
+| 18.7 fps | **7.28°** | 90.00° |
+| 30 fps | 13.75° | 90.00° |
+| 60 fps | **30.94°** | 90.00° |
+| 90 fps | 48.13° | 90.00° |
+| 120.2 fps | **65.43°** | 90.00° |
+
+The 30.94° at 60 fps reproduces the BH window's independent 2026-08-27 measurement exactly,
+which validates the model.
+
+**The headline is not "3× bigger". It is that the old tap had a 9× SPREAD and the new one has
+none.** One tap used to travel anywhere from 7° to 65° depending on how loaded the field was —
+and he switches the display between 60 Hz and 120 Hz mid-session, so his own tap distance was
+doubling when he changed screens.
+
+That also explains the detent that was never quite right: at 60 fps three taps came to 92.8°,
+close enough for the magnetic snap to grab. At 120 Hz three taps came to 196° — nowhere near a
+quadrant. **The "3 taps = one quadrant" trick only ever worked at exactly one frame rate.**
+
+Honest statement of what is and is not verified:
+- ✅ **Numerically verified**: ease-in, exact landing, frame-rate independence, zero-overshoot
+  cinematic, wrap safety, zoom rails, no drift at rest. 7/7.
+- ❓ **NOT verified, and it is a different axis rather than a weaker one**: whether 90° per tap
+  FEELS right to him. No harness can answer that, and it is the property most likely to be
+  wrong. If a tap should move less, the change is the multiplier in `rotateKey`; if it should
+  not overshoot, it is `kZetaOrbit` 0.70 → 1.00. Both are one constant, and both are his call.

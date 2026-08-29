@@ -6,10 +6,158 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
 
-**Commit at last verification:** `9751d9a` ⭐ **RE-STAMPED 2026-08-27 23:10:00 — SESSION 2026-08-27 FOLDED IN AS §U.** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
+**Commit at last verification:** `ea14dbc` ⭐ **RE-STAMPED 2026-08-29 10:45:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
 
 ---
 
+
+## V. 🕳️ SESSION 2026-08-28/29 — M RE-KEYED, THE DRAIN LOCATED, WARP NAMED AS THE BUG
+
+**Read at `68ee28c` + this session's uncommitted work. Every row tagged.**
+
+### V1. The drawn hole no longer keys off the blind radial profile — SHIPPED, UNJUDGED
+`renderer.mm` +38. `bhSeedMassMono` (running max of the biggest body while a seed-class body
+survives, 0 when none does) replaces the windowed profile as the source of `lastHorizonR`.
+The profile is still computed and still logged; `[HORIZON]` now prints both.
+- `[MEASURED n=233]` profile blinked to 0 on **13**; drawn on **2**, both pre-seed. The vanish
+  reproduced live and the fix absorbed it.
+- `[MEASURED n=137]` **BUT: hole present 57% (was 7%) while size fell to 0.018 of the profile
+  (n=10 both-nonzero).** ⚠️ **The fix TRADES SIZE FOR PERSISTENCE.** The earlier "0.627" was one
+  mature run and does NOT generalise; the brain relayed it as if it did.
+- `[MEASURED n=58]` the profile can only return multiples of **0.0195** (`RADIAL_MAX_R 5.0/256`),
+  11 distinct values in 58 samples. **That staircase is why the ×0.03 easing was added 2026-07-19.
+  A seed-derived radius is continuous — gone at the source.**
+
+### V2. 🚨 RETRACTED — `gMaxMass` NON-MONOTONICITY IS HIS FEATURE, NOT A BUG
+`[READ particles.metal:786-807]` A revived corpse returns at `imfMassOfId(id)` — its **exact**
+spawn mass — **withdrawn from the hole** via the `seedAccum[6]` ledger. The comment:
+*"gMaxMass becomes NON-MONOTONE for the first time — the only way the hole can shrink under
+play… Explicit call by Jamal, 2026-08-04: reversibility wins."*
+- `[MEASURED n=19]` **15 of 19 significant `Mmax` drops are at `phase=3.0`** (sustain).
+- `[HIS WORDS 2026-08-29]` *"the reverisbitliy through lay is mandatory a feuature nto abug"*.
+- ⛔ **CONSEQUENCE: the `max()` latch in V1 SUPPRESSES the shrink he asked for** — raw seed
+  dropped **10×**, latched **2×**; 8 of his own note-driven shrinks were hidden.
+  ⭐ **STANDING RECOMMENDATION (BH window, against its own change): delete the `max()`, keep the
+  seed keying.** The vanish came from the profile window, not the seed. **Not yet ruled on.**
+- 🪶 **NEW TRAP: a comment can be honest and still wrong because the DESIGN moved under it.**
+  `renderer.mm:209` and the 2026-06-13 note at `:3313` both say *"conserved, monotonic"* and both
+  PRE-DATE his 08-04 call. **Check a comment's DATE against later design decisions.**
+  ⛔ And [[space_synth_bh_reversibility_2026-08-07]] already recorded this — **the brain
+  dispatched "key it off the MONOTONIC seed" without reading its own index.**
+
+### V3. 🚨 TIME WARP IS A SOLVED PROBLEM BEHIND THE WRONG CONTROL — his top physics bug
+`[HIS WORDS 2026-08-29]` *"its ampfliefied when i advanc time or uppen the x4 x8 x16. then the
+bh dies and evaporates even if i dont play… the only thing its uspposed to do is play it faster."*
+- `[READ main.cpp:2697]` `float simDt = 0.0165f * timeWarp;` then **ONE** `computeStep`. At ×64
+  the step is **1.056 in a single step** — a different integration, not faster physics.
+- `[READ main.cpp:2691]` the code admits it: *"Above ~8× the Verlet integrator coarsens… honest
+  tradeoff for review speed."* **Written as a review tool; he uses it as a performance control.**
+- ⭐ `[READ app_state.h:73]` **`uiPhysicsSubsteps` IS the fixed-dt accumulator, already built,
+  already stable, already a slider (`main.cpp:1474`, 1..32):** *"each step is the stable
+  dt=0.0165, so it does NOT detonate like dt×64 (which just scales the step past the stability
+  limit → the field explodes into dots). **Leave time-warp at ×1 and dial THIS for speed.**"*
+- ⛔ `[READ renderer.mm:3064]` `nSub` is the **FULL** physics loop. The cheap central-gravity
+  substep was tried, **EXPLODED**, and was replaced. (Brain had this backwards.)
+- ⚠️ **DO NOT NAIVELY WIRE warp → substeps.** Same comment: *"rate-based effects (drain/recycle)
+  currently run per-substep = N× per frame."* **The rebirth withdrawal is rate-based** — wired
+  naively the hole still evaporates, for a new reason.
+- ⭐ **TWO DISTINCT MASS-LOSS BUGS — stop conflating:** *with play* = the withdrawal (his
+  feature); *with warp, no play* = integrator blow-up. **No withdrawal fires when he is not
+  playing**, so the phase-3.0 evidence says nothing about the second.
+- 📋 **BLOCKED ON HIM: the substep sweep** — set the slider to 1/2/4/8/16, read `[PERF] fps`.
+  No code. `[MEASURED n=209]` whole-frame at ×1/2M: **median 61.7 fps, range 23.7–120.0** — that
+  is frame, not step, so it does NOT give ms/step. ⭐ It also IS the proof: **substeps ×16 at warp
+  ×1 is the correct physics at 16× speed.** Survives there + dies at warp ×16 ⇒ diagnosed.
+- ⚠️ **"ZERO mergers, ever" and "never test above 1×" were SYMPTOMS of this.** Retest after.
+
+### V4. THE NEAR FIELD IS DECIDED BY MESH CONSTANTS, NOT PHYSICS — the "toilet drain"
+`[HIS WORDS 2026-08-28]` *"our black hoel is still a toilet drain. stuff behvaes differntly near
+a balckhole i want this executed just as well as kill the tube."*
+`[READ]` every characteristic radius is smaller than the smoothing length:
+
+| | sim | in r_h |
+|---|---|---|
+| r_h (measured) | 0.1717 | 1.00 |
+| photon sphere | 0.2576 | 1.5 |
+| ISCO | 0.5151 | 3.0 |
+| **softening ε = cellSize** (`:1803`) | **1.0000** | **5.82** |
+| **capture clamp 1.4×cellSize** (`:1429`) | **1.4000** | **8.15** |
+
+- `[READ particles.metal:1429]` `rt2 = min(rt2, reach*reach)` — the tidal radius is computed
+  honestly one line above from mass and relative velocity, **then thrown away.** At cellSize 1.0
+  the hole's reach is **1.4 sim regardless of mass.** ⭐ Fake in exactly the way the lens was.
+- ⚠️ **Deleting it alone plateaus at 2.00–3.46 sim** — the capture scan is 3×3×3
+  (`:1378-1381`), which bounds separation independently. **Clamp + scan width must move together.
+  Do NOT predict "reach scales with mass".**
+- `[READ :3812]` `cellSeedMap[cell] = tid + 1u` — **one seed per cell, no atomic, last writer
+  wins.** With 11 seeds live, two in a cell means one is invisible to capture AND merge.
+- `[READ :3807]` rejection is **per-axis**, so the seed-map domain is a **CUBE of half-side 64**
+  while `[GRAV] maxR=100.0`. Matter sits outside the faces.
+- `[MEASURED]` `[CELLPROBE]` at rest: `matterInCapped=86.1% scanCanSee=14.9%`,
+  `matterOver32=88.5% ghostReads=74.2%`, `maxCell=234890` vs `meanOccCell=15.7`.
+
+### V5. THE SEED MECHANISM HAS NO REPRESENTATION ACROSS SCALE
+`[HIS WORDS 2026-08-29]` *"the entire seed mechanism is kinda broken size and mass and color has
+no rperesantation there scaled up form single merger to a black hole itself. our rules for
+gravity and all dont chnage accordingly as required to get both right."*
+- `[READ render.metal:2110]` past `M ≥ 50` the branch sets `out.color = blackbodyRGB(20000 + …)`
+  and `out.luminance = 10 + …` — **neither depends on mass.** A 50 M☉ seed and a 101,800 M☉ body
+  are the same colour and brightness.
+- **Crossing 50 M☉: luminance 1000 → 10 (100× DROP).** Kelvin cliff is 40,000 → 20,000
+  (`unifiedKelvin` clamps at 40,000, `:492`) — **not** the uncapped 49,626 the brain first gave.
+- ⭐ `[READ render.metal:488]` `float M = clamp(massMsun, 0.08f, 500.0f)` — **mass is clamped to
+  500 M☉ BEFORE the kelvin law**, so colour is already saturated above 500 on the STAR path too.
+  His complaint is true on **both** sides of the threshold.
+- The branch is gated `cam.horizonR <= 0.0f` — it **stops entirely** once a horizon exists: a
+  third regime with no continuity. `M_BH_SEED` appears **24×** in `particles.metal` as a hard
+  `>=`, gating physics and rendering alike, with no ramp anywhere.
+- ⭐ **ROOT CAUSE (BH window): a body has a MASS but no RADIUS.** Every law needing one substitutes
+  a mass formula or a mesh constant — which is *why* the gravity rules cannot follow the body.
+- **Design: `docs/SEED_CONTINUUM_DESIGN_2026-08-29.md`.** Compactness `χ = r_s(M)/R`;
+  `R_vis = mix(R, r_s, χ)`, `K = K_star·sqrt(1−χ)`, `L = L_star·(1−χ)²`. At χ≈1e-5 the star laws
+  are recovered to float precision. **On R∝M^0.8, χ goes 4.2e-6 → 4.2e-5 from 1 to 100,000 M☉ —
+  a body never becomes compact by getting heavier, only by collapsing.**
+- ⛔ **BLOCKER, his call: there is NO spare component in `Particle`.** `[READ particles.metal:16-22]`
+  the `entanglement` comment says *"y: pad1, z: pad2, w: pad3"* and **all three carry live data** —
+  `.y` = original id (`spatial_hash.metal:366`), `.z`/`.w` = theta/aphi as bitcast floats
+  (`:1163-1164`) AND bond origin ids (`:2922`, `:2956`). Carrying `R` needs a **wider struct**.
+  ⚠️ `.z`/`.w` double-duty float/uint is a possible aliasing bug — noted, NOT this job.
+
+### V6. VISUAL SPEC — the references agree; `docs/blackhole-library/04_HOW_THE_REFERENCES_DO_IT.md`
+`[HIS WORDS 2026-08-29]` *"how does nasa do it ? how did ineterstellar do it ? dont guess research
+our references there sltitle room for interpretation."* **He was right — they agree.**
+Backward per-pixel null geodesics; the ray **terminates on the emitter**, never a fog integral;
+disk over AND under; higher-order images stack on the shadow edge; ONE net `g`; `I_ν ∝ ν³`;
+shadow at `b_c = 3√3/2 = 2.598 r_s`.
+- ⭐ **R5/R6/R2 are ONE mechanism indexed by winding number**, not three features.
+- ⭐ **On DISK STRUCTURE, NASA is the reference and Interstellar is not** — NASA renders knots
+  shearing into lanes from real velocity shear; the film's disk is a **static artist's texture at
+  uniform 4500 K, not even accreting.** We are particles with real shear: natively closer to NASA.
+- 🚨 **The EHT ring is NOT the photon ring** — it is lensed near-horizon emission near it
+  (M87\*: 42±3 μas). Our own `BH_REFERENCE.md` R2 conflates them. **n=1 reachable at 4K; n=2
+  needs ~535× finer — say "n=1 only" aloud.**
+- 🚨 **WE RUN A SPINNING DISK ON A NON-SPINNING SPACETIME.** `[READ render.metal:308]`
+  `KERR_A = 0.5f`, used **only** at `:1409` in `Ω(r)=1/(r^1.5+a)`; the shadow uses
+  `kLensBc = 2.5980762` (`:337`, `:990`) = the **Schwarzschild** capture parameter.
+  **Kinematics a=0.5, geometry a=0, Gargantua a=0.999 — three spins in one renderer.**
+  ⛔ Gargantua's D-shaped shadow is frame dragging: **unreachable without Kerr in the METRIC.**
+  (CAMERA reported "no Kerr `a` anywhere" — a grep miss, corrected by brain.)
+- ⭐ **THE REAL OPEN PROBLEM:** every reference terminates rays on an **analytic** surface. His
+  direction terminates them on **real particles.** **Nobody has solved ray-vs-particle-cloud
+  because nobody else had the particles.** Everything around it is settled.
+- ⚠️ **A8, never respected: caustics MUST be filtered or oversampled.** DNGR spent ray bundles,
+  NASA 500 billion photons — **neither shipped one unfiltered ray per pixel, which is exactly what
+  GARGANTY did.** ⛔ FPS rejection of the raytracer **stands**; rebuild nothing. But *"impossible
+  because of polar caustics"* is not a correct sentence — that needed Kerr caustics AND an
+  infinitely thin disk AND unfiltered single rays. Our emitters have finite extent.
+
+### V7. Seeds / mergers / BH — the state he asked for `[MEASURED n=191]`
+seeds form up to **11**; capture fires in bursts (0 most samples, peak **638 meals, 204/frame**);
+seed–seed merges **20 landed, 0 refused**; `Mmax` 0 → **101,800**. ⛔ **"ZERO mergers, ever" is
+REFUTED.** But the trajectory is `100,552 → 101,800 → 13,457 → 50 (seeds=0)` and it **cycles** —
+peak varies **6×** across three runs of the same build (47,259 / 101,800 / 303,137).
+`[HIS WORDS]` *"the way that the mergers behave is broken."* **Queued behind V3** — warp corrupts
+merge rates, so measuring mergers first measures the wrong thing.
 
 ## U. 🔪 SESSION 2026-08-27 — BOTH RENDERERS DELETED, AND THE HOLE'S REAL BUG FOUND
 

@@ -10,7 +10,7 @@ Update it in place. Never fork it into a second board.
 🕳️ **ALL BLACK-HOLE WORK LIVES IN `docs/BOARD_BLACKHOLE.md`** (his order 2026-08-14 01:41:51). ✅ **EXECUTED 2026-08-19 00:14:12 on his order *"move bh stuff to bh board"*:** §A0, the accretion/horizon rows out of §A (A1, A1‴, A2, A3①, A3②, A3②-white, A3③, A5, A6, A8, MERGER-FACE), B1, B9 and §C12 Doppler all moved there verbatim as **§N**. ⚠️ **Three judgement calls left HERE, not moved — say if you want them over too:** **§A9** (dense matter can only add light — field/gas render, not hole-specific), **C7/C7b** (✅ closed Doppler-colour rows), **C9** (`bit18` flux-conserving arc).
 
 **Last verified against the code:** 2026-08-13 13:29:29 (bundle carries A1″ fit test + both trilinear ∇Φ reads + [PERF] + the DEAD-COMPUTE skip + the `SS_NO_DEADSKIP` A/B gate; merge-gate counters still LIVE — strip before shipping)
-**Commit at last verification:** `9751d9a` ⭐ **RE-STAMPED 2026-08-28 12:55:00.** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
+**Commit at last verification:** `ea14dbc` ⭐ **RE-STAMPED 2026-08-29 10:45:00 — SESSION 2026-08-28/29 FOLDED IN AS §W (read it first; §V is the session before).** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
 **Bundle these rows were verified against:** `SPACE-SYNTH-TUBE-killtube/SpaceSynth.app` @ **2026-08-13 13:29:29** — log-verified only, **he has not looked at it.** ⚠️ **That binary no longer exists**: the live killtube bundle is now **2026-08-23 12:15:13** (stat'd 2026-08-23 14:12:09; it replaced the 2026-08-17 17:45:51 build this session), one second newer than the newest file under `src/` (`src/ui/window.mm` 2026-08-23 12:15:12), so it is NOT stale — but the rows below lose their artifact-level proof and carry their claim from the log alone.
 **Last correction:** ⭐ **TWO MORE RETRACTED 2026-08-13 — see A1″:** the merge "starves capture through the shared plate word" (never happened, `mrg=0/0/0`) and "the CAS route stalls the hole at 1,772" (real run, but that code path never executed in it — it was a late bootstrap into a diffuse field). **Cause both times: a mechanism inferred from a curve instead of counted at the gate.** Before that: ⭐ **THREE OF MY OWN CLAIMS RETRACTED IN ONE EVENING, 2026-08-12 — see the A1′-endgame row.** "The bound never engages" (it was the binding constraint), "capture delivers ~0.1 M☉/frame" (20–88 stars/frame), "the hole is out of fuel" (916,781 stars sat inside its capture radius, all refused by my own budget). **All three came from reading `feed=` in the log — a ONE-FRAME sample of a buffer that is cleared every frame.** Before that: "SOR is not the monster" was written off 9 samples and is WRONG — with 25 it is ~6 ms and real, 2026-08-11, §H5.
 **THE SHOW: COLOGNE opening event, 2026-09-05 — 13 days out** (counted 2026-08-23). ⛔ **NOT Berlin New Media Week / 2026-09-02** — this header carried the Berlin date until 2026-08-23 14:12:09, two days after it moved (his message 2026-08-21). 🎪 **And the venue is a THREE-WALL ROOM — 15 × 4 + 15 × 4 + 10 × 4 m, 160 m², ~270°.** Every "2.5:1" written on this board before 2026-08-23 is the FRONT WALL ONLY. Cold start for the show is **row S00 in `docs/TODO.md`**; the working is `docs/DESIGN_2026-08-23_THREE_WALL_ROOM.md`.
@@ -61,6 +61,101 @@ Update it in place. Never fork it into a second board.
 
 ---
 
+
+## W. 🎥 SESSION 2026-08-28/29 — CAMERA SHIPPED AND JUDGED, PROCESS GAP CLOSED
+
+**BH detail is `docs/BOARD_BLACKHOLE.md` §V. This section is the non-BH diff.**
+
+### W1. ✅ CAMERA STEP 2 SHIPPED AND HE LIKES IT
+`camera.h` 248→345, `main.cpp` 3 call sites + a key handler. Input writes a **TARGET**; a
+second-order spring (Juckett closed form) chases it. Nothing outside the class writes a position
+or velocity any more. Deleted, all previously zero-caller: `driveSpin`, `armSnap`, `setAngles`,
+`softLockToQuarter`, `snapNextSettle`, `TAP_STEP`.
+- `[HIS WORDS 2026-08-28 13:55]` **"i love the feel the snappiness."** Clarified 14:xx that he
+  meant the **ZOOM**: *"i also wasnt asking about the taps but baout the zoom it feel differne"*.
+- ⭐ **"Snappiness" is a verdict IN FAVOUR of ζ=0.70. Do NOT raise `kZetaOrbit` to 1.00.**
+  Zoom is `kZetaZoom = 1.00` (critically damped, zero overshoot); orbit keeps ~4.13° overshoot.
+- `[HIS WORDS]` **"tap is fine"**, and his order *"8 taps for a full rotation on either axis"* →
+  `camera.h:225` `Q = M_PI_F * 0.25f`. `[MEASURED]` 8 taps = 360.0000° phi / 359.9997° theta.
+- `[MEASURED]` **the OLD tap and zoom were FRAME-RATE DEPENDENT — a 9× spread.** `camera.h:43`
+  (pre-change) was `phi += velPhi` with **no `dt`**, so travel = `TAP_STEP·f/(1−f)`, f = 1−6dt:
+  **7.28° @18.7fps, 30.94° @60, 65.43° @120.** Same law for zoom: 2.1× / 9.0× / 19.0× the delta.
+  ⭐ **"3 taps = one quadrant" was a 60 Hz ACCIDENT, never a fact** — 196° at 120 Hz. **He
+  switches the display 60↔120 mid-session, so his tap distance was silently doubling.**
+  Derived from source by brain, reproduced by CAMERA's harness, matches the BH window's live
+  08-27 measurement — three independent paths on the same column.
+
+### W2. ⛔ DEAD ROADS — do not re-pitch
+- **BPM sync.** `[HIS WORDS 2026-08-28]` *"we dont want a bpm sync its not needed for now u got
+  that wrong. its just about smoothness in camer amotion."* 🚨 **Recorded as the BRAIN's wording
+  error, not the camera window's** — they raised beat-derived damping as an open *question* with a
+  derivation; brain relayed it twice as a *proposal*. 🪶 **Quote a peer's question; do not re-word it.**
+- **Cinematic mode owning time warp.** `[HIS WORDS]` *"at warp we spin the object not the camera
+  u know so the question doesnt make sens."* Cinematic = `c`, camera speed ONLY. ⚠️ This NARROWS
+  his earlier DJI brief (*"zoom and tilts and time warp become super slowed down"*). But arrow-HOLD
+  spins the BODY while reading as camera motion, so smoothness must still reach that system.
+
+### W3. RIDES — designed, parked, ONE ANSWER OUTSTANDING
+`docs/CAMERA_STEP2_DESIGN.md` §9. `[HIS WORDS 2026-08-28]` *"i think multiple points would be cool
+and also back and forth like bounce back to start once destiantion ahs been reched."*
+The ride is a **target scheduler**: a list, an index, a direction, one line writing the target;
+the bounce is one sign flip. **No splines, no path code.** ⭐ A linear spring settles in the same
+*time* regardless of distance, so even speed needs `ω_leg = 5.83/(T_base·d_leg/d_ref)` — arithmetic,
+not machinery. He authors by flying (one key records the current pose as the next waypoint); any
+manual input cancels a ride instantly.
+📋 **BLOCKED ON HIM:** dwell ~0.4 s at each waypoint (passes exactly through his framings) **vs**
+advance the target early (continuous, rounds corners). Recommendation: **dwell.**
+
+### W4. 🚨 PROCESS — ONE TREE MEANS THE TOKEN HOLDER OWNS THE WHOLE TREE
+At 13:15:23 a build made to test the M fix compiled CAMERA's brand-new, never-run camera rewrite,
+because both windows were writing to one tree. Both windows caught it independently within minutes.
+- ⭐ **RULE ADOPTED: no window writes source while another holds the token. Draft to
+  `docs/` or scratchpad and apply on handover.** ⛔ **Writing source IS staging a build.**
+- **The fault was the brain's**: it told CAMERA *"you do not hold the token — write and design
+  freely"*, which is wrong in a single tree. The collapse to one tree created this gap on 08-27
+  and nobody wrote it down.
+
+### W5. 🚨 MEASUREMENT DISCIPLINE — three ways we were wrong in one afternoon
+His screenshot showed grids; **five tests on two frames came back clean.** All three failures are
+about the *instrument*, and the rule below outranks all of them.
+1. **Procedural:** brain read crop coordinates off a **~2000px-wide rendering** of a 3024×1964
+   file → wrong region at the wrong scale. The "34.1×33.0 px isotropic lattice" was an artefact.
+2. **1D FFT peaks on a sparse dot field are ARTEFACTS.** Brain's 46/52 px and the BH window's
+   50/133 px were both noise. ⭐ Use a **high-passed 2D tile autocorrelation**: a real lattice
+   gives ~0.1, the clean frames gave **±0.001**.
+3. **Two screenshots one second apart were DIFFERENT FRAMES** (`13.27.07` diffuse cloud on the
+   Desktop; `13.27.08` collapsed core in temp). Always check which file you were handed.
+- 🚨 **THE RULE THAT OUTRANKS ALL THREE: five clean tests on two frames is evidence about THE
+  FRAMES, never about his claim.** See [[feedback_dont_second_guess_his_claims]]. He was
+  **windowed** (2560×1600 at (201,160)) and star size is in DEVICE PIXELS with no normalisation to
+  the drawable — two independent reasons a clean frame proves nothing.
+- `[HIS WORDS 2026-08-29]` *"its clearly in the physics as ive said dozens of tiems before"* —
+  and he demoted it: *"the grid was just aside info its not our main issue rn… write it down for
+  later."* **Written down: `space_synth_the_grid_is_in_the_physics_2026-08-28`.** It folded into
+  BOARD_BLACKHOLE §V4 as the toilet-drain mechanism.
+
+### W6. ⭐ THE ERA-FROZEN CONSTANT CLASS — a sweep, not four coincidences
+Four constants calibrated when the field was a collapsed ball at meanR≈4, never re-derived as the
+field grew to meanR 8–29 / maxR 100: **`RADIAL_MAX_R = 5.0`**, the march step rule (deleted),
+**`halfExtent = 64`** against a spawn cap of 100, **`kAmrFineExtent = 4.0`** (`renderer.mm:132`).
+⭐ **Any constant whose comment cites a measurement from that period is suspect until re-derived.**
+Cheap to grep for, expensive to keep discovering one at a time. **Queued, not started.**
+
+### W7. Star spikes — HIS DECISION, queued
+`[HIS WORDS 2026-08-29]` **6-point JWST** (3 bars at 60°), chosen against 4-point / 8-point /
+none. Today `render.metal:2652` draws `spikeX`/`spikeY` = a 4-point cross. **Not built.**
+
+### W8. `docs/STATUS.md` — new, his order
+`[HIS WORDS 2026-08-29]` *"your reporting is inconcise ansd confusing af bro… no consie summaries
+with my to dos in days its spread all over."* One page: what is live, what is queued, what is
+blocked on him, what is dead. **Keep it current; it is for him, not for us.**
+
+### W9. 📐 COLOGNE PIXEL SPECS RECEIVED — noted, NOT discussed, his instruction
+From the venue tech 2026-08-29 01:20: **3 slices, front wall 5340×1680, 2× side walls 7152×1680**
+⇒ **19,644×1680** total, *"breiter als die 16k"*, packed in Resolume. Their two open questions:
+**60 fps?** and **do we bring an external SSD?** ⚠️ Side walls are **34% wider in pixels** than the
+front while being physically narrower (10.01 m vs 14.75 m) — pixel budget is NOT proportional to
+physical width. `[HIS WORDS]` *"just note the for now we will discuss later."* **Do not act.**
 
 ## V. 🌳 SESSION 2026-08-27/28 — ONE TREE, AND BOTH BH RENDERERS DELETED
 

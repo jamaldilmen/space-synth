@@ -32,6 +32,7 @@ compiles, not when the physics is defensible.
 | **01** | `01_FORMATION_how_a_star_becomes_one.md` | ⭐ NEW — stellar collapse, the mass ladder, TOV, what actually falls in | written 2026-08-27 |
 | **02** | `02_LIGHT_how_it_travels_near_one.md` | ⭐ NEW — the one card: geodesics, deflection, photon sphere, shadow, the ring stack, g, beaming | written 2026-08-27 |
 | **03** | `03_THE_REFERENCE_FRAMES.md` | ⭐ NEW — the visual bible incl. Gargantua + NASA 2024 | written 2026-08-27 |
+| **04** | `04_HOW_THE_REFERENCES_DO_IT.md` | ⭐ NEW — **how NASA and Interstellar actually do it**, mechanism by mechanism; where they AGREE (= the spec) and the 5 places they differ (= our only choices); which reference explains R2/R5/R6 | written 2026-08-29 |
 | — | `../RESEARCH_2026-07-24_blackhole_sota.md` | metric, key radii, accretion, EHT, light, the render clock | existing, 2026-07-24 |
 | — | `../RESEARCH_2026-07-24_interstellar_dngr.md` | **the Interstellar/Gargantua paper as an implementable spec** — Kerr ODEs, backward ray-trace, disk emitter, image orders | existing, 379 lines, the deepest thing we have |
 | — | `../DESIGN_2026-07-24_metric_native_blackhole.md` | the metric-native design | existing |
@@ -74,4 +75,4 @@ Read `02_LIGHT` before proposing anything.
 
 ---
 
-**Last Updated:** 2026-08-27 21:05:40
+**Last Updated:** 2026-08-29 01:52:11 — added shelf 04.

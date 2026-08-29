@@ -347,7 +347,21 @@ constant float STAR_MAP_CAP    = 100.0f; // silence: NO cap (the star map has no
 // 25, tuned against this cap) ~41× and shook the pattern apart (2026-06-13
 // regression). This is the ORIGINAL pre-c-cap sculpt-scale cap (1.2 sim/frame),
 // restored ONLY in the play regime; the c-cap stays intact for rest/infall.
-constant float CHLADNI_VCAP    = 1.2f;   // sim/frame — the tuned cymatics speed
+// ⏱️ 2026-08-29 — WAS 1.2 sim/FRAME. A frame is not a unit of time, so that
+// made the play-regime speed limit depend on the warp dial: 20.69c at x1,
+// 10.35c at x2, 1.29c at x16, 0.32c at x64. MEASURED in his own run.log:
+// `speed max 20.690 c` in 862 of 1496 play samples — the field SATURATED
+// against it, avg 15.7-16.5c, while at rest the c-cap is respected (max 1.000).
+// That is his "stuff shoots out violently after 2x": the speed of light moved
+// when he turned the dial. Now expressed as a real VELOCITY in sim/s, applied
+// as v*dt below, so it is warp- and frame-rate invariant.
+// IDENTITY AT WARP 1 BY CONSTRUCTION: 72.7273 * 0.0165 = 1.2 sim/frame exactly,
+// so his tuned sculpt magnitude is preserved and the 2026-06-13 ~41x Chladni
+// throttle regression is NOT reintroduced.
+// NOTE (his call, not mine): 72.7273 sim/s = 20.69c is deliberately superluminal
+// — the "cymatics standing-wave regime" the comment below describes. This fix
+// makes it a HONEST constant, it does not decide whether it should be that big.
+constant float CHLADNI_VCAP_PER_SEC = 72.7273f; // sim/SECOND (= the old 1.2/frame at dt=0.0165)
 
 // NOTE (2026-07-22): a "play-collapse" experiment (keep a fraction of self-gravity
 // during play to fill the cavity) was tried and REVERTED — gravity is directional
@@ -3188,7 +3202,11 @@ kernel void compute_physics(
     // regression that throttled the Chladni pattern ~41×). Same play gate the
     // friction/jitter blends use (totalAmplitude·4, saturating at amp≈0.25).
     // playGate declared once at the gravity-regime switch above; reused here.
-    float vCapFrame = mix(u.speedCap * dt, CHLADNI_VCAP, playGate);
+    // Both terms are now VELOCITIES (sim/s); dt converts to this step's
+    // displacement. Previously this mixed c*dt (per-second, dt-scaled) with a
+    // bare per-FRAME constant — mixing units, which is why the play cap moved
+    // with the warp dial while the rest cap did not.
+    float vCapFrame = mix(u.speedCap, CHLADNI_VCAP_PER_SEC, playGate) * dt;
     float speed = length(finalV);
     if (speed > vCapFrame) {
         finalV = (finalV / max(speed, 0.0001f)) * vCapFrame;

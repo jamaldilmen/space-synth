@@ -271,14 +271,46 @@ struct Renderer::Impl {
   // the raw delta — filter it. An EMA gives BOTH properties: the mean tracks
   // true wall time (rate is framerate-independent) while frame-to-frame noise
   // is smoothed over ~10 frames.
+  // ⏱️ TRUE TIME — E2, 2026-08-30. THE SOURCE IS SIM TIME, NOT WALL TIME.
+  // The EMA above fixed rate-vs-FRAMERATE. It did NOT fix rate-vs-WARP: the raw
+  // delta was `CACurrentMediaTime()` differences, i.e. real seconds, while the
+  // physics advances 0.0165*warp per step and (since E1) 0, 1 or more steps per
+  // frame. So at x4 the matter moved four times as far per real second and the
+  // posed disk kept spinning at exactly one — sprites and physics desynced by
+  // warp x N (board §X5). Under his law both are readouts of ONE clock.
+  // The fix is the SOURCE, not the filter: feed the EMA the sim seconds the
+  // physics actually integrated this frame, so it now tracks warp and step
+  // count for free.
+  // 🚨 THIS CHANGES THE IMAGE — it is a VERDICT item, not a free one. It is an
+  // identity ONLY at 60.61 fps, where a frame's wall delta and a step's 0.0165
+  // coincide. He runs 32-52 fps, where the wall delta is 0.019-0.031 s, so the
+  // posed spin SLOWS BY 20-45% — down to exactly the rate the matter is moving
+  // at (the measured realtime 0.53-0.86x). That IS the unification: the disk
+  // and the matter now share one clock and fall behind real time together,
+  // instead of the sprites running at real time over matter that is not.
+  // Do not "fix" that slowdown by re-introducing wall time here; the cure is
+  // the step cost, upstream.
+  // The EMA still earns its keep: post-E1 the raw signal alternates 0 / 0.0165
+  // as the clock skips frames, and smoothing that over ~10 frames keeps the
+  // spin steady at the correct MEAN rate instead of strobing at the skip rate.
+  // The old clamps are gone deliberately: the lower one (1/480) would forbid a
+  // legitimately skipped frame's 0, and the upper one (0.1 s) would silently
+  // CAP the spin above warp 6 (0.0165*8 = 0.132) — a clamp that quietly eats a
+  // time control is the same class of bug as everything else on this board.
+  // Sim time per frame is already bounded by maxSteps * dt, so neither is
+  // needed. bhPoseClock is kept updated: other code reads it as a timestamp.
   double emergentPoseDt(bool paused, bool holdTimelapse) {
-    double now = CACurrentMediaTime();
-    double raw = (bhPoseClock > 0.0) ? (now - bhPoseClock) : (1.0 / 60.0);
-    bhPoseClock = now;
-    // Guard stalls and absurd frames before they enter the filter.
-    raw = std::min(std::max(raw, 1.0 / 480.0), 0.1);
-    if (poseDtSmooth <= 0.0) poseDtSmooth = raw;   // cold start = no ramp-in
+    bhPoseClock = CACurrentMediaTime();
+    double raw = simSecExecLast;
+    if (poseDtSmooth <= 0.0)                       // cold start = no ramp-in
+      poseDtSmooth = (raw > 0.0) ? raw : (1.0 / 60.0);
     poseDtSmooth += (raw - poseDtSmooth) * 0.1;    // ~10-frame e-fold
+    {   // [POSECLK] — verification probe for E2b; must scale with warp.
+      static uint64_t pc = 0;
+      if ((pc++ % 240u) == 0u)
+        fprintf(stderr, "[POSECLK] raw=%.6f smooth=%.6f poseTime=%.4f\n",
+                raw, poseDtSmooth, bhPoseTime);
+    }
     // Pause still freezes unless the time-lapse is explicitly held.
     return (paused && !holdTimelapse) ? 0.0 : poseDtSmooth;
   }

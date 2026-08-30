@@ -3,9 +3,11 @@
 > **His verdict 2026-08-29 17:20:00:** *"we just had the biggest breakthrough in physics since we started this project lol. Amazing."*
 > **His verdict on the build 2026-08-29 15:43:00:** *"at non rest the entire thing is still very broken. stuff shoots out violently after 2x basically. mergers dont make sense on the high speeds yet... during rest its ok. but this is not a wallpaper but an instrument."*
 > **Cold start:** read **`docs/BOARD.md` §X** (the law + every measurement) and **`docs/BOARD_BLACKHOLE.md` §W** (the BH half) — NOT this file, NOT older handoffs.
-> 📅 **7 DAYS TO REVEAL** (his count, 2026-08-29). Show: Cologne 2026-09-05.
+> 📅 **6 DAYS TO REVEAL** as of 2026-08-30 (his count was 7 on 2026-08-29). Show: Cologne 2026-09-05.
 
-**Tree:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` branch `post-tube` @ `d0db70b` (sources) — bundle commit is the last one.
+**Tree (CORRECTED 2026-08-30 11:21:04):** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` branch `true-physics` @ `d9c457c` — clean, upstream `origin/true-physics`, in sync.
+> Branched 2026-08-29 from `post-tube` @ `ba16ba6` (itself pushed to `origin/post-tube`). The session below was WORKED in `SPACE-SYNTH-POST-TUBE` @ `d0db70b` (sources) / `4847e92` (bundle) — that tree is provenance now, not the working tree.
+> 🚨 A fresh worktree needs `third_party/syphon/` copied in by hand (gitignored) + `git submodule update --init`. Without Syphon the build now COMPILES (`d9c457c` guards `uiLayer`); it just loses the two-window feature.
 **Build + launch:** `bash package_macos.sh` (**never bare `make`**) then `SS_FULLSCREEN=1 ./SpaceSynth.app/Contents/MacOS/SpaceSynth 2>&1 | tee run.log`
 **New measurement gates:** `SS_SUBSTEPS=N` · `SS_TIME_WARP=X` · `SS_TRUE_SUBSTEPS=1` · `SS_SEQ=transitions|staccato|held`
 
@@ -70,6 +72,7 @@ Origin: an LED ventilator at Radio eins soundcheck, spinning fast enough to read
 
 ```
 PREFLIGHT 2026-08-29 17:30:16  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE
+  [HISTORICAL — the run that closed the 08-29 session. Not the live tree; see below.]
 
 1. git
   ok    branch post-tube, HEAD 081de6d
@@ -113,6 +116,8 @@ PREFLIGHT 2026-08-29 17:30:16  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUB
 PREFLIGHT: FAILURES ABOVE — fix before handing off.
 ```
 
+**Live tree, verified 2026-08-30 11:21:04:** `SPACE-SYNTH-TRUE-PHYSICS` @ `d9c457c`, `git status --porcelain` EMPTY, upstream `origin/true-physics` at the same sha. The preflight above is the POST-TUBE record, kept for provenance.
+
 **The FAIL was REAL and is now CLEARED.** Sources committed one concern per commit (`61562fc` probe, `0d68201` cadences, `93603f6` measurement gates, `052ec8a` ×120, `3e96a7b` play cap, `d0db70b` smoother), then docs, then the **tracked binary alone and last**. `run*.log` added to `.gitignore` — session artifacts, never state. `imgui.ini` restored at commit time. Re-run output is in the final commit message.
 
 ## 5. ↩️ RETRACTED THIS SESSION
@@ -129,5 +134,5 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 ---
 
-**Last Updated:** 2026-08-29 17:38:00
+**Last Updated:** 2026-08-30 11:21:04 (header corrected to the live tree; body is the 2026-08-29 17:38:00 record, unchanged)
 **Folded into board:** `docs/BOARD.md` §X + `docs/BOARD_BLACKHOLE.md` §W @ 2026-08-29 17:36:00, both re-stamped at `4847e92` (the bundle; sources end at `d0db70b`).

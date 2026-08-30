@@ -443,7 +443,8 @@ int main() {
   }
 
   // Running UNIVERSE CLOCK — accumulated PHYSICS time (real seconds), ticked in
-  // the sim loop (kTimeLapse·simDt per frame). Shown in adaptive human units.
+  // the sim loop by kTimeLapse x renderer.simSecondsLastStep() — i.e. per STEP
+  // ACTUALLY TAKEN, not per frame (E2, 2026-08-30). Adaptive human units.
   double universeClockSec = 0.0;
 
   // ── Key events ──────────────────────────────────────────────────────
@@ -2785,14 +2786,34 @@ int main() {
     renderer.setTimeWarp(timeWarp);
     float simDt = 0.0165f * timeWarp;
     if (!simPaused) {
-      // Tick the universe clock by the PHYSICS time this frame represents
-      // (kTimeLapse maps integrator time → real physics seconds).
-      universeClockSec += (double)space::units::kTimeLapse * (double)simDt;
       renderer.computeStep(simDt, voiceData.data(), (int)voiceData.size(),
                            smoothedAmp, app.uiWaveDepth,
                            app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
                            app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,
                            app.uiRestLength, debugFlags);
+      // ⏱️ TRUE TIME — E2, 2026-08-30. Tick the universe clock by the sim time
+      // the step ACTUALLY integrated, and tick it AFTER the step, not before.
+      // WAS: `kTimeLapse * simDt`, once per FRAME, from a 0.0165 literal this
+      // file recomputed for itself. Two faults in one line.
+      //   1. It assumed exactly one step per frame. Under substeps it
+      //      under-reported elapsed time by exactly N, and under E1's wall-clock
+      //      accumulator a frame can integrate 0 or 2 steps, so the readout and
+      //      the sim drift apart with no bound.
+      //   2. `0.0165f * timeWarp` here is a SECOND copy of the step length,
+      //      agreeing with renderer.mm:1466 only by coincidence of the literal.
+      //      The renderer owns the step; ask it what it did.
+      // kTimeLapse maps integrator time -> real physics seconds, unchanged.
+      universeClockSec +=
+          (double)space::units::kTimeLapse * renderer.simSecondsLastStep();
+      // [UCLOCK] — verification probe for E2. The clock is UI-only, so without
+      // this the change is unobservable from a log. Same 240-frame cadence as
+      // [PERF]/[GRAV] so the three lines can be read against each other.
+      {
+        static uint64_t uc = 0;
+        if ((uc++ % 240u) == 0u)
+          fprintf(stderr, "[UCLOCK] clock=%.6f simSecLastStep=%.6f\n",
+                  universeClockSec, renderer.simSecondsLastStep());
+      }
     }
 
     // Two-window mode is a per-frame fact, not a one-time setup: he can also

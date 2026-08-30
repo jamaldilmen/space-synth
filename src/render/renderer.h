@@ -524,6 +524,10 @@ public:
 
   void setScale(float s);
   void setTimeWarp(float w); // x2/x4/x8 time controls — scales the pinned physics dt
+  // ⏱️ TRUE TIME (E2, 2026-08-30): the sim SECONDS the last computeStep actually
+  // integrated = dt x the steps the wall clock owed. The host must tick the
+  // universe clock by THIS, never by a dt it recomputed itself — see main.cpp.
+  double simSecondsLastStep() const;
   void triggerReset(); // Phase 12 stability: Force GPU re-seed
   void setCollisionsEnabled(bool enabled);
   bool collisionsEnabled() const;

@@ -254,7 +254,8 @@ struct Renderer::Impl {
   bool bhPosed = false;       // analytic BH pose active → spin the posed disk
   double bhPoseTime = 0.0;    // elapsed seconds since pose (render-clock driven)
   double bhPoseClock = 0.0;   // last render timestamp, for the pose dt
-  double poseDtSmooth = 0.0;  // low-pass filtered wall frame delta (time-lapse clock)
+  double poseDtSmooth = 0.0;  // low-pass filtered SIM seconds/frame (time-lapse clock)
+  double simSecExecLast = 0.0; // sim seconds the LAST executed pass integrated
 
   // ── EMERGENT TIME-LAPSE POSE dt (2026-07-26 19:3x) ────────────────────────
   // Was a FIXED 1.0/60.0 per RENDERED FRAME. That made the spin RATE
@@ -1973,6 +1974,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
 
 void Renderer::setScale(float s) { impl_->physicsUniforms.plateRadius = s; }
 void Renderer::setTimeWarp(float w) { impl_->timeWarpVal = std::max(w, 1.0e-3f); }
+double Renderer::simSecondsLastStep() const { return impl_->simSecExecLast; }
 
 // Internal helper for compute
 void Renderer::triggerReset() { impl_->resetPending = true; }
@@ -3284,6 +3286,14 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }
 
     }  // ── end TRUE SUB-STEP loop (nTrue==1 on the default path) ──
+
+    // ⏱️ TRUE TIME (E2, 2026-08-30): record what this pass ACTUALLY integrated.
+    // nTrue is the only honest count — on the SS_TRUE_SUBSTEPS probe path it is
+    // physicsSubsteps and pendingSteps is bypassed, so a readout keyed to
+    // pendingSteps would report the steps the clock ASKED for rather than the
+    // steps that ran. The host reads this one frame later, which lags the
+    // display by a frame but cannot drift: every frame is counted exactly once.
+    simSecExecLast = (double)physicsUniforms.dt * (double)nTrue;
 
     // ── Stats reduction ────────────────────────────────────────────
     // ⏱️ TRUE TIME (E1, 2026-08-30): radialMassBuffer's clear USED TO LIVE inside

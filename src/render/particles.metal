@@ -386,6 +386,10 @@ constant float ERUPT_TEMP      = 4.0f;  // flash temperature (hot plasma)
 // dead matter to its star-map home at rest too, so the core reaches EQUILIBRIUM
 // (a BH still forms — the heavy accretion seeds keep growing, only the dead
 // walls recycle) instead of a runaway pile-up. Tune to taste.
+// ⚠️ PER-FRAME AND STILL WRITTEN THAT WAY — deliberately left alone 2026-08-30.
+// It is DELIBERATELY UNREFERENCED (see the bit6 cut at the use site below), so
+// it is a record of an old rate, not a live clock leak. If it is ever switched
+// back on it must become a per-SECOND rate first, like SUSTAIN_REBIRTH_PER_SEC.
 constant float REST_RECYCLE    = 0.005f; // fraction of dead matter recycled per frame at rest
 
 // ── SUSTAIN REBIRTH RATE (2026-08-03) ───────────────────────────────────────
@@ -394,7 +398,18 @@ constant float REST_RECYCLE    = 0.005f; // fraction of dead matter recycled per
 // its whole length instead of dumping the pile in a single frame — the gesture
 // is tied to how long the note is held, which is the point of putting it on
 // sustain. A short stab gives some matter back, a long drone gives all of it.
-constant float SUSTAIN_REBIRTH = 0.0056f;
+// ⏱️ 2026-08-30 — WAS 0.0056 "per frame". The comment above states the intent
+// in SECONDS ("180 frames = 1.5 s at 120 fps"), which is the tell: the gesture
+// is meant to last as long as he HOLDS the note, and a per-frame fraction makes
+// its length a function of frame rate instead. 0.0056/frame is 0.667/s at the
+// 120 fps it was authored at, but only 0.224/s at the 40 fps he actually runs —
+// so a hold that was designed to feed the shape over 1.5 s took 4.5 s, and the
+// pile emptied at a different speed on every machine.
+// Now a per-SECOND rate, converted at the use site with u.dt. IDENTITY AT THE
+// 120 fps IT WAS TUNED AT BY CONSTRUCTION: 0.666667 * (1/120) = 0.005556.
+// 🚨 VERDICT ITEM: at his frame rate this makes sustain rebirth ~3x faster than
+// it has been, which is the authored intent, but it is a visible change.
+constant float SUSTAIN_REBIRTH_PER_SEC = 0.666667f; // 1/1.5 s
 // Newborns appear beside a living particle, offset by this much. 5x the contact
 // radius MERGE_RSUN_SIM (0.01): any closer and merge_stars eats the newborn on
 // the frame it appears, which would make the rebirth invisible AND feed the
@@ -746,7 +761,8 @@ kernel void compute_physics(
     // envelopePhase: 0 silence, 1 attack, 2 decay, 3 sustain, 4 release.
     bool sustainHeld = (u.envelopePhase >= 2.5f && u.envelopePhase < 3.5f);
     bool streamNow   = sustainHeld &&
-                       ((noise(id, u.frameCounter + 977u) + 0.5f) < SUSTAIN_REBIRTH);
+                       ((noise(id, u.frameCounter + 977u) + 0.5f) <
+                        (SUSTAIN_REBIRTH_PER_SEC * u.dt));
     // ── REST TRICKLE CUT FROM bit6 (2026-08-04 00:07:15) ─────────────────────
     // MEASURED, 5.5 min rest soak, nothing touched, envelopePhase 0.0 throughout:
     // Mlive 594563 -> 664608, +11.8% (~12.7k M_sun/min). streamNow cannot fire

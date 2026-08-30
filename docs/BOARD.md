@@ -10,7 +10,7 @@ Update it in place. Never fork it into a second board.
 🕳️ **ALL BLACK-HOLE WORK LIVES IN `docs/BOARD_BLACKHOLE.md`** (his order 2026-08-14 01:41:51). ✅ **EXECUTED 2026-08-19 00:14:12 on his order *"move bh stuff to bh board"*:** §A0, the accretion/horizon rows out of §A (A1, A1‴, A2, A3①, A3②, A3②-white, A3③, A5, A6, A8, MERGER-FACE), B1, B9 and §C12 Doppler all moved there verbatim as **§N**. ⚠️ **Three judgement calls left HERE, not moved — say if you want them over too:** **§A9** (dense matter can only add light — field/gas render, not hole-specific), **C7/C7b** (✅ closed Doppler-colour rows), **C9** (`bit18` flux-conserving arc).
 
 **Last verified against the code:** 2026-08-13 13:29:29 (bundle carries A1″ fit test + both trilinear ∇Φ reads + [PERF] + the DEAD-COMPUTE skip + the `SS_NO_DEADSKIP` A/B gate; merge-gate counters still LIVE — strip before shipping)
-**Commit at last verification:** `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §X (read it FIRST; §W is the session before). ⏱️ THE LAW: A FRAME IS NOT A UNIT OF TIME.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §W (read it first; §V is the session before).** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
+**Commit at last verification:** `d0697d8` ⭐ **RE-STAMPED 2026-08-30 23:45:00 — SESSION 2026-08-30 FOLDED IN AS §Y (read it FIRST; §X is the session before). ⏱️ CLOCK UNIFICATION LANDED — nine leaks closed, one concern per commit. 🚨 AND THE GRID SAMPLES 32 OF 334,576 (§Y1).** 🌳 **TREE IS `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`.** Previously `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §X (read it FIRST; §W is the session before). ⏱️ THE LAW: A FRAME IS NOT A UNIT OF TIME.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §W (read it first; §V is the session before).** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
 **Bundle these rows were verified against:** `SPACE-SYNTH-TUBE-killtube/SpaceSynth.app` @ **2026-08-13 13:29:29** — log-verified only, **he has not looked at it.** ⚠️ **That binary no longer exists**: the live killtube bundle is now **2026-08-23 12:15:13** (stat'd 2026-08-23 14:12:09; it replaced the 2026-08-17 17:45:51 build this session), one second newer than the newest file under `src/` (`src/ui/window.mm` 2026-08-23 12:15:12), so it is NOT stale — but the rows below lose their artifact-level proof and carry their claim from the log alone.
 **Last correction:** ⭐ **TWO MORE RETRACTED 2026-08-13 — see A1″:** the merge "starves capture through the shared plate word" (never happened, `mrg=0/0/0`) and "the CAS route stalls the hole at 1,772" (real run, but that code path never executed in it — it was a late bootstrap into a diffuse field). **Cause both times: a mechanism inferred from a curve instead of counted at the gate.** Before that: ⭐ **THREE OF MY OWN CLAIMS RETRACTED IN ONE EVENING, 2026-08-12 — see the A1′-endgame row.** "The bound never engages" (it was the binding constraint), "capture delivers ~0.1 M☉/frame" (20–88 stars/frame), "the hole is out of fuel" (916,781 stars sat inside its capture radius, all refused by my own budget). **All three came from reading `feed=` in the log — a ONE-FRAME sample of a buffer that is cleared every frame.** Before that: "SOR is not the monster" was written off 9 samples and is WRONG — with 25 it is ~6 ms and real, 2026-08-11, §H5.
 **THE SHOW: COLOGNE opening event, 2026-09-05 — 13 days out** (counted 2026-08-23). ⛔ **NOT Berlin New Media Week / 2026-09-02** — this header carried the Berlin date until 2026-08-23 14:12:09, two days after it moved (his message 2026-08-21). 🎪 **And the venue is a THREE-WALL ROOM — 15 × 4 + 15 × 4 + 10 × 4 m, 160 m², ~270°.** Every "2.5:1" written on this board before 2026-08-23 is the FRONT WALL ONLY. Cold start for the show is **row S00 in `docs/TODO.md`**; the working is `docs/DESIGN_2026-08-23_THREE_WALL_ROOM.md`.
@@ -61,6 +61,58 @@ Update it in place. Never fork it into a second board.
 
 ---
 
+
+## Y. ⏱️ SESSION 2026-08-30 — **CLOCK UNIFICATION LANDED. AND THE GRID IS SAMPLING 32 OF 334,576.**
+
+> **His standing order this session, 2026-08-30:** *"fix the clock dont report unless its fixed dont priooritze other issue sbefore the center of our universe is fixed"* · *"CLOCK UNIFICATION is still main prio"*
+> **His verdict on the sampling finding, 2026-08-30:** *"so... then our spptosch here is shit. how does... u guessed it.. NASA do that?"*
+
+⭐ **THE LAW IS UNCHANGED (§X): nothing physical may be expressed per FRAME.** This session closed nine leaks of it. Sources end at `d0697d8`.
+
+### Y0. ✅ NINE CLOCK LEAKS CLOSED — one concern per commit
+
+| # | Fault | Was | Now | Commit | Proof |
+|---|---|---|---|---|---|
+| 1 | 🚨 **`compute_physics` ran on a hardcoded 1/60** | `dt = (debugFlags & (1<<6)) ? 1/60 : u.dt`, labelled "deterministic debug". **Bit 6 was repurposed as the sustain-rebirth gate 2026-08-03 (`uiTogResurrection = true`, DEFAULT ON)** and this consumer was never updated — so it was taken on EVERY shipped run | `dt = u.dt` | `e2838f6` | `[READ particles.metal]` **95 uses of `dt` vs 2 of `u.dt` in one kernel** — two clocks diverging by the warp factor: 1.01× at ×1, **4× at ×4, 16× at ×16** |
+| 2 | Step count assumed 1/frame | sim-s per wall-s = `0.0165 × fps` | wall-clock accumulator drives the count; step SIZE untouched | `574765f` | `[MEASURED n=6 interleaved]` 239–240 steps per 240 frames both arms |
+| 3 | `stepTick` non-monotonic | `frameCounter*nTrue + tsub` — monotonic only while `nTrue` is constant, and it gates the SPH + Poisson cadences | monotonic count of executed steps | `574765f` | `[READ renderer.mm]` |
+| 4 | `universeClockSec` under-reported by exactly N | `kTimeLapse * simDt` per FRAME, from a SECOND 0.0165 literal in `main.cpp` | ticks by `simSecondsLastStep()`, after the step | `84df144` | `[MEASURED]` `0.016500` at N=1, `0.066000` at N=4, rate ratio **4.000** |
+| 5 | Pose/time-lapse clock was WALL time | warp-immune; sprites desynced from matter by warp × N | EMA fed SIM seconds | `7c90ca3` | `[MEASURED]` `raw=0.016500` at ×1, `0.066000` at ×4 |
+| 6 | Wall delta clamped to 0.033 s | **the wall clock lied below 30 fps** — sequencer, VJ rates, camera spin, `smoothedAmp` all up to 24% slow at his frame rate | bound 0.25 s (same as the accumulator's stall guard) | `d0697d8` | `[MEASURED]` `SS_SEQ=staccato`, notes 1.000 s apart, **+0.077 s over 11.09 s = 0.69%** at 48 fps |
+| 7 | `SUSTAIN_REBIRTH` a per-frame fraction | its own comment states the intent in SECONDS ("180 frames = 1.5 s at 120 fps") ⇒ 4.5 s at the 40 fps he runs | `SUSTAIN_REBIRTH_PER_SEC × u.dt`; identity at 120 fps by construction | `d9c485d` | `[READ particles.metal]` |
+| 8 | `physicsUniforms.time` (read by shaders) per frame | `+= dt` | `+= dt × steps` | `574765f` | `[READ renderer.mm]` |
+| 9 | `radialMassBuffer` cleared INSIDE the step loop, accumulated OUTSIDE | a zero-step frame double-counted the 256-shell profile ⇒ `lastHorizonR` inflated | clear moved beside its consumer | `851cf70` | `[READ renderer.mm]` — it is the ONLY buffer with that split |
+
+🚨 **THREE OF THESE CHANGE THE IMAGE — verdict items, he has not looked yet:** posed spin slows **20–45%** at his fps (down to the rate the matter actually moves); sustain rebirth becomes **~3× faster** (its authored intent); warp now genuinely scales the step instead of 95 of 97 uses being accidentally warp-immune, **so warp may look WORSE — honestly so.**
+
+### Y1. 🚨 **THE GRID SAMPLES 32 OF 334,576 — AND IT DECIDES WHETHER A BLACK HOLE FORMS**
+`[READ spatial_hash.metal scatter_particles]` `if (currentOffset < 32)` — first-come-first-served `atomic_fetch_add`. **Which 32 survive is decided by GPU scheduling order, not by physics.** `[READ particles.metal merge_stars, seed capture]` both scan `min(cellCounts[cid], 32u)`.
+`[MEASURED]` `bhPeakCount` (documented "densest single cell, true count, uncapped") logs **334,576**. So in the core — the only place a hole can form — the physics considers **0.01% of the matter**, resampled nondeterministically every frame.
+⭐ **THE A/B, `[MEASURED n=4 stacked per arm]`, warp 1, fullscreen, 2M, `Mmax` at matched window 5:**
+
+| cap | r1 | r2 | r3 | r4 | **fork** | seeds @ win 2 |
+|---|---|---|---|---|---|---|
+| **32** | 3388 | 3345 | 37257 | 35224 | **11.1×** | 1, 1, 2, 2 |
+| **64** | 20979 | 21418 | 7229 | 6223 | **3.4×** | **8, 7, 8, 8** |
+
+🚨 **Doubling the sample cut the run-to-run fork from 11.1× to 3.4× and QUADRUPLED the number of seeds that form.** Seed formation is currently decided by a buffer size, not by gravity.
+⚠️ Still bimodal at 64 — sampling is *a* cause, not proven the only one. fps read 45.2/40.4/28.9/25.9 across the cap-64 runs vs ~48 at cap 32, but those were sequential and drifting: **cost is real, not yet quantified.**
+⛔ **Cap is BACK AT 32 in the tree.** `particles.metal` already says it: *"IT IS NOT A TUNABLE… raising the scatter costs real bandwidth and is a separate, measured decision."* It is now measurable.
+🚨 **CONSEQUENCE FOR THIS WHOLE BOARD: every single-run comparison ever made here is unreliable**, mine included — and any constant tuned against one is tuned against a coin flip. `count_cells` already carried the warning: *"a seed in a 15k-star core cell was sampled 0.2% of frames and STARVED (measured: Mmax froze)."* The seed registry worked around it for seeds; merge and capture never got the same treatment.
+
+### Y2. 🔴 OPEN, ranked by magnitude
+1. **Y1 — the sampling cap.** Architectural: no cell should hold 334k particles. Raising the cap is O(count²) in the merge inner loop and still nondeterministic. ⭐ **His first question for the next window: "How does NASA do this?"** — how real N-body/SPH codes do neighbour finding without a fixed per-cell sample.
+2. **`u.frameCounter` seeds the RNG per FRAME** — all substeps in a frame draw identically. Off the shipped path (1 step/frame). Needs per-step uniforms; ⚠️ `PhysicsUniforms` has **no static_asserts** — do not reshape it casually.
+3. **0.69% residual sequencer drift** at 48 fps — now bounded, no longer grows with fps.
+4. **Φ never re-solved while playing** (`renderer.mm`, gated `totalAmplitude < 0.02`). Large, but a physics decision he made, not a clock leak — deliberately untouched.
+
+### Y3. ⛔ DEAD ROADS
+- **Clamping the accumulator's debt to zero — MEASURED WORSE THAN THE BUG, 2026-08-30.** 208–238 steps per 240 frames vs legacy's 240; realtime 0.81 → 0.58–0.79. Carry one step of debt instead.
+- **Buying frame rate by shrinking the window (`SS_WIDTH/SS_HEIGHT`) — REJECTED, his order.** *"yo u launched it in a tin y window lol"*. Frame rate IS the independent variable in these tests; shrinking the drawable changes the quantity under test. Get it from the real load or not at all.
+- **`SS_ORTHO` launch gate — REJECTED, his order 2026-08-30.** *"i dont want ortho off by dfault. this is not a fix lol"*. Reaching for a config that runs fast enough to make the change look like it works is dodging the test. Reverted, not in the tree.
+- **Sequential A/B arms — INVALID.** Running all of one arm then all of the other confounds the change with thermal drift, battery drain and display idle. Interleave, and alternate the within-pair order.
+
+---
 
 ## X. ⏱️ SESSION 2026-08-29 — **A FRAME IS NOT A UNIT OF TIME.** THE ENGINE-WIDE LAW.
 

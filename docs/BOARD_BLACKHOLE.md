@@ -6,10 +6,25 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
 
-**Commit at last verification:** `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §W (read it FIRST). Engine-wide law + all measurements live in `docs/BOARD.md` §X.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
+**Commit at last verification:** `d0697d8` ⭐ **RE-STAMPED 2026-08-30 23:45:00 — SESSION 2026-08-30 FOLDED IN AS §X (read it FIRST). 🚨 THE HOLE'S FORMATION IS DECIDED BY A 32-PER-CELL BUFFER SIZE — every single-run BH comparison on this board is unreliable. Engine-wide clock law + closures in `docs/BOARD.md` §Y.** 🌳 **TREE IS `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`.** Previously `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §W (read it FIRST). Engine-wide law + all measurements live in `docs/BOARD.md` §X.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
 
 ---
 
+
+## X. 🕳️ SESSION 2026-08-30 — **THE HOLE'S FORMATION IS DECIDED BY A BUFFER SIZE**
+
+> Engine-wide clock law + all nine clock closures live in `docs/BOARD.md` §Y. This is the BH half.
+
+🚨 **`merge_stars` and the seed capture both scan `min(cellCounts[cid], 32u)`, and `scatter_particles` stores only the first 32 per cell on a first-come `atomic_fetch_add`.** The densest cell logs **334,576** particles (`bhPeakCount`, uncapped). The hole therefore forms out of a **0.01% sample chosen by GPU scheduling order.**
+
+`[MEASURED n=4 stacked per arm]` warp 1, fullscreen, 2M, `Mmax` at matched window 5 — cap 32: 3388 / 3345 / 37257 / 35224 (**11.1× fork**, seeds at window 2 = 1,1,2,2). Cap 64: 20979 / 21418 / 7229 / 6223 (**3.4× fork**, seeds = 8,7,8,8).
+⭐ **Doubling the sample quadrupled the seeds and cut the fork 3×.** The discriminator between the slow and fast branch is whether a SECOND seed forms in the opening 240 frames.
+
+⚠️ **This invalidates single-run BH comparisons across this whole board.** `Mmax` at matched sim time forks 11× on identical inputs, so any accretion constant tuned against one run was tuned against a coin flip. `count_cells` already warned: *"a seed in a 15k-star core cell was sampled 0.2% of frames and STARVED (measured: Mmax froze)."*
+
+🚨 **Warp still does not form the hole properly, and the 2026-08-29 ×120 fix did NOT close it** — the handoff row claiming "mergers died under warp → fixed" overstated what was measured. `[MEASURED 2026-08-30]` at warp 4 one run was **stone dead** (`Mmax=50.0` = `M_BH_SEED`, `seeds=0`, `mrg=0/0/0`, 2M particles untouched, `peak=1897514` — the field imploded into one cell) while others formed partially. Root cause now known: `compute_physics` was integrating on a hardcoded 1/60 for 95 of its 97 `dt` uses (§Y0 row 1), so warp barely reached the integrator; the two sites the ×120 fix touched were among the 2 that did. Fixed at `e2838f6` — **warp is now honestly a bigger step, and therefore honestly unstable.** The cure is warp as MORE steps, gated on step cost.
+
+---
 
 ## W. ⏱️ SESSION 2026-08-29 — WARP WAS KILLING THE HOLE, AND THE ×120 CONVENTION WAS WHY
 

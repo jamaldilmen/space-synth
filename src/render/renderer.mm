@@ -2271,9 +2271,6 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [clearBlit fillBuffer:cellOffsetsBuffer
                       range:NSMakeRange(0, kTotalCells * sizeof(uint32_t))
                       value:0];
-      [clearBlit fillBuffer:radialMassBuffer   // 256-shell horizon profile, re-accumulated each frame
-                      range:NSMakeRange(0, 256 * sizeof(uint32_t))
-                      value:0];
       // compute_physics adds sphForce[id] to gacc for EVERY particle (bit11), but
       // sph_force only WRITES the ≤32 particles per cell that scatter_particles
       // kept. An unwritten id used to keep its LAST force forever → a frozen
@@ -3289,6 +3286,20 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     }  // ── end TRUE SUB-STEP loop (nTrue==1 on the default path) ──
 
     // ── Stats reduction ────────────────────────────────────────────
+    // ⏱️ TRUE TIME (E1, 2026-08-30): radialMassBuffer's clear USED TO LIVE inside
+    // the step loop (next to the other per-frame clears) while reduce_stats, its
+    // only consumer, ACCUMULATES into it out here. That paired a clear that can
+    // now run 0 times with an accumulate that always runs once, so on any frame
+    // the clock owed no step the 256-shell profile double-accumulated and
+    // lastHorizonR — the honest r_h fed back into pressure-yield — inflated.
+    // The clear belongs with its consumer, not with the loop.
+    if (reduceStatsPipeline && partialSumsBuffer && !skipStats && radialMassBuffer) {
+      id<MTLBlitCommandEncoder> rmClear = [cmdBuf blitCommandEncoder];
+      [rmClear fillBuffer:radialMassBuffer
+                    range:NSMakeRange(0, 256 * sizeof(uint32_t))
+                    value:0];
+      [rmClear endEncoding];
+    }
     if (reduceStatsPipeline && partialSumsBuffer && !skipStats) {
       id<MTLComputeCommandEncoder> comp = [cmdBuf computeCommandEncoder];
       [comp setComputePipelineState:reduceStatsPipeline];

@@ -298,6 +298,15 @@ struct Renderer::Impl {
   bool collisionsEnabled = false;  // OFF (Jamal 2026-07-07 14:25, A/B vs the god-forms look)
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI), default all-on
   int physicsSubsteps = 1;        // N fixed-dt physics steps/frame (set from config, read in runComputePass)
+  // ⏱️ TRUE TIME (E1, 2026-08-30) — the wall-clock accumulator's state.
+  // A FRAME IS NOT A UNIT OF TIME: the step SIZE is still pinned (0.0165*warp),
+  // but the step COUNT is now owed by the real clock instead of assumed to be 1.
+  double   trueTimeAcc  = 0.0;    // unspent real seconds carried between frames
+  double   trueTimeLast = 0.0;    // CACurrentMediaTime() at the last computeStep
+  int      pendingSteps = 1;      // steps the clock owes THIS frame (0, 1 or more)
+  uint32_t simStepCounter = 0;    // monotonic count of steps ACTUALLY executed
+  uint32_t ttStepsWindow = 0;     // [PERF] steps taken in the reporting window
+  uint32_t ttClampWindow = 0;     // [PERF] frames the clamp had to drop debt
   bool bondNetworkEnabled = false; // OFF (Jamal 2026-07-07 14:25, A/B)
 
   // Noether symmetry breaking
@@ -1467,6 +1476,97 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.dt = dt;
   impl_->physicsUniforms.dtPrev = dt; // tcv = dt/dtPrev = 1 exactly (fixed step)
   impl_->lastDt = dt;
+
+  // ⏱️ TRUE TIME — E1, 2026-08-30. THE WALL-CLOCK ACCUMULATOR.
+  // HIS LAW: "Our frames are just a window... the renderer is the readout of
+  // the physics. Our shutter. A second is a second." Nothing physical may be
+  // expressed per FRAME.
+  // WAS: exactly one step per frame ⇒ sim-seconds per wall-second = 0.0165*fps.
+  // Only 60.61 fps was honest. MEASURED 2026-08-29 (n=5): 119.5 fps → 1.97x
+  // real time, 70.4 → 1.16x, 53.7 → 0.89x — a 2.2x spread from frame rate
+  // alone, and the sequencer meanwhile advanced in WALL seconds, so his rhythm
+  // and his universe ran on two clocks whose ratio was the frame rate.
+  // NOW: the real clock says how many steps are owed; the frame just draws
+  // whatever the universe reached.
+  // ⭐ WHY THE WALL COST OF A STEP IS 0.0165 s AT EVERY WARP: a step advances
+  // 0.0165*warp sim-seconds, and warp W is defined as "W sim-seconds per real
+  // second", so wall-per-step = (0.0165*warp)/warp = 0.0165 exactly. The step
+  // RATE is a constant 60.606 Hz — warp makes each step BIGGER, never more
+  // frequent. That is why this half is affordable and why "warp = more steps"
+  // (the other half, still open) is not: it would cost 23.65 ms per extra step.
+  // SCOPE: step SIZE is untouched. Only the COUNT moves. At the frame rates he
+  // actually runs this is 1 most frames, 0 when the shutter beat the universe,
+  // 2 when it lagged.
+  {
+    static int sTrueTime = -1;
+    if (sTrueTime < 0) {
+      const char *e = getenv("SS_TRUE_TIME");
+      sTrueTime = (e && e[0] == '0') ? 0 : 1;   // ON by default: this is the fix
+      fprintf(stderr, "[TRUETIME] wall-clock accumulator %s\n",
+              sTrueTime ? "ON" : "OFF (legacy: exactly 1 step per frame)");
+    }
+    // Anti-spiral clamp, and it defaults to ONE — MEASURED, not assumed.
+    // A/B 2026-08-30, same machine, 2M particles, ortho on, warp 1:
+    //   legacy (1 step/frame)  fps 47.5-51.9, realtime 0.78-0.86x, clamp 0
+    //   accumulator, max 2     fps 15.0-16.2, realtime 0.50x, clamp 196-222/240
+    // The second step does NOT buy time: this machine tops out near 50 physics
+    // steps per WALL second, so asking for ~1.95 steps per frame just halved the
+    // frame rate and delivered LESS real time for 2x the GPU. When the clock
+    // outruns the machine the deficit is THROUGHPUT, not the clock — and the
+    // cure for that is a cheaper step or an offline render, never more steps.
+    // At max=1 this is >= legacy everywhere: above 60.61 fps it SKIPS steps and
+    // pins the sim at real time (the fix); below it, it behaves exactly like
+    // legacy and reports the shortfall as realtime<1 instead of hiding it.
+    // SS_MAX_STEPS=N re-opens it for the catch-up experiment once a step is
+    // cheap enough to be worth taking.
+    static int sMaxSteps = -1;
+    if (sMaxSteps < 0) {
+      const char *e = getenv("SS_MAX_STEPS");
+      sMaxSteps = e ? std::max(1, atoi(e)) : 1;
+    }
+    const double kStepWall = 0.0165;  // real seconds one step represents
+    // Measured here, NOT taken from the frame callback: window.mm:712 clamps
+    // that dt to 0.033 s, so any frame slower than 30 fps would under-report
+    // real time — the exact class of hidden clock error this change removes.
+    double nowTT = CACurrentMediaTime();
+    double wall = (impl_->trueTimeLast > 0.0) ? (nowTT - impl_->trueTimeLast)
+                                              : kStepWall;  // first frame
+    impl_->trueTimeLast = nowTT;
+    if (wall > 0.25) wall = 0.25;   // stall, or the far side of a SPACE pause
+    if (!sTrueTime) {
+      impl_->pendingSteps = 1;      // byte-for-byte the old behaviour
+    } else {
+      impl_->trueTimeAcc += wall;
+      int n = (int)std::floor(impl_->trueTimeAcc / kStepWall);
+      if (n < 0) n = 0;
+      if (n > sMaxSteps) {
+        // CANNOT KEEP UP. Cap the steps — but CARRY one step's worth of debt,
+        // never zero it. MEASURED 2026-08-30 (interleaved n=3 pairs, fullscreen,
+        // 2M): zeroing here DELETED real time. Legacy took 240 steps per 240
+        // frames; this path took 208-238 and realtime fell 0.81 -> 0.58-0.79,
+        // i.e. the clamp was worse than the bug it replaced. Capping the carry
+        // at one step instead is spiral-proof (the debt can never grow) AND
+        // lossless up to that bound: below 60.61 fps the accumulator then earns
+        // exactly one step per frame, which IS the legacy path, and above it it
+        // skips as intended. That is the "never worse than legacy" property the
+        // zeroing broke.
+        n = sMaxSteps;
+        impl_->ttClampWindow++;
+      }
+      // SPEND ONLY WHAT WAS TAKEN — the clamped n, not the demanded n. Doing
+      // this with the DEMANDED n (as the first cut did) silently discards the
+      // steps the clamp refused, which is the same clock deletion in a new
+      // dress: it left the carry a bare sub-step remainder and cost real time.
+      impl_->trueTimeAcc -= (double)n * kStepWall;
+      // Bounded carry: at most ONE step may ever be owed. That is what makes it
+      // spiral-proof AND identical to legacy below 60.61 fps (every frame longer
+      // than a step earns exactly one step, so steps == frames), while still
+      // skipping above it.
+      if (impl_->trueTimeAcc > kStepWall) impl_->trueTimeAcc = kStepWall;
+      impl_->pendingSteps = n;
+    }
+    impl_->ttStepsWindow += (uint32_t)impl_->pendingSteps;
+  }
   impl_->physicsUniforms.totalAmplitude =
       totalAmplitude; // Phase 17: Pass real synth amplitude for ADSR dynamics
   impl_->physicsUniforms.voiceCount = voiceCount; // Bug fix: Don't force 1 if 0
@@ -1519,7 +1619,9 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.bondNetworkOn = impl_->bondNetworkEnabled ? 1.0f : 0.0f;
 
   static float accumulatedTime = 0.0f;
-  accumulatedTime += dt;
+  // ⏱️ TRUE TIME (E1): this clock is READ BY THE SHADER, so it must advance by
+  // the sim time this frame actually integrates — dt per STEP, not dt per FRAME.
+  accumulatedTime += dt * (float)impl_->pendingSteps;
   impl_->physicsUniforms.time = accumulatedTime;
 
   impl_->hasCompute = true;
@@ -1903,13 +2005,27 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     perfLast = nowPf;
   }
   if ((physicsUniforms.frameCounter % 240u) == 0u && perfN > 0u) {
+    // ⏱️ TRUE TIME (E1) — THE NUMBER THAT DECIDES THIS CHANGE.
+    // Each step represents 0.0165 real seconds at EVERY warp (see computeStep),
+    // so steps*0.0165 is the real time the universe actually lived through, and
+    // dividing by the real time that elapsed gives 1.000 when the clock is
+    // honest. It is warp-independent by construction, so one number covers x1
+    // and x16. Before this change it was 0.0165*fps: 1.97 at 119.5 fps, 0.89 at
+    // 53.7. clamp= counts frames where the machine could not keep up and the
+    // debt was dropped — real lag, reported instead of hidden.
+    double ttReal = (perfSum > 0.0) ? ((double)ttStepsWindow * 0.0165) / perfSum
+                                    : 0.0;
     fprintf(stderr,
-            "[PERF] fps=%.1f worst=%.1fms ortho=%d warp=%.2f sub=%d particles=%d n=%u\n",
+            "[PERF] fps=%.1f worst=%.1fms ortho=%d warp=%.2f sub=%d particles=%d n=%u "
+            "steps=%u realtime=%.3fx clamp=%u\n",
             (double)perfN / perfSum, perfWorst * 1000.0, lastOrtho,
-            (double)timeWarpVal, physicsSubsteps, particleCount, perfN);
+            (double)timeWarpVal, physicsSubsteps, particleCount, perfN,
+            ttStepsWindow, ttReal, ttClampWindow);
     perfSum = 0.0;
     perfWorst = 0.0;
     perfN = 0u;
+    ttStepsWindow = 0u;
+    ttClampWindow = 0u;
   }
   // TEMP-PERF: SS_SPH_SKIP="density,pressure,force,centroid,merge,cellmax,stats"
   // (any subset) skips individual passes so [PROFILE/120f] deltas give exact
@@ -2036,7 +2152,10 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // not ship. If the divergence does NOT collapse, the diagnosis is wrong.
     static int sTrueSubstep = -1;
     if (sTrueSubstep < 0) sTrueSubstep = getenv("SS_TRUE_SUBSTEPS") ? 1 : 0;
-    const int nTrue = sTrueSubstep ? std::max(1, physicsSubsteps) : 1;
+    // ⏱️ TRUE TIME (E1, 2026-08-30): the count comes from the wall clock now,
+    // not from the assumption "one frame = one step". SS_TRUE_SUBSTEPS keeps its
+    // original probe semantics so the 08-29 measurements stay reproducible.
+    const int nTrue = sTrueSubstep ? std::max(1, physicsSubsteps) : pendingSteps;
     if (sTrueSubstep && (physicsUniforms.frameCounter % 240u) == 0u)
       fprintf(stderr, "[TRUESUB] force pipeline re-run %d x/frame\n", nTrue);
     for (int tsub = 0; tsub < nTrue; tsub++) {
@@ -2047,8 +2166,12 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
     // exactly when the sim ran fastest. This advances with the SIM, not the
     // display. IDENTITY ON THE DEFAULT PATH: nTrue==1, tsub==0 → stepTick is
     // frameCounter exactly, so the shipped build cannot change behaviour.
-    const uint32_t stepTick =
-        physicsUniforms.frameCounter * (uint32_t)nTrue + (uint32_t)tsub;
+    // ⏱️ TRUE TIME (E1): was frameCounter*nTrue + tsub, which is only monotonic
+    // while nTrue is CONSTANT. The clock now varies it per frame (0/1/2), so
+    // that formula would jump backwards and scramble both cadences below.
+    // A count of steps actually executed is the honest clock and is identity
+    // with frameCounter on any run that took exactly one step per frame.
+    const uint32_t stepTick = simStepCounter++;
 
 
     // ── Snapshot live particles → read buffer for the hash + collision reads.

@@ -709,8 +709,19 @@ void Window::run() {
     double nanos =
         (double)elapsed * impl_->timebaseInfo.numer / impl_->timebaseInfo.denom;
     float dt = (float)(nanos / 1.0e9);
-    if (dt > 0.033f)
-      dt = 0.033f;
+    // ⏱️ 2026-08-30 — WAS clamped to 0.033 s, i.e. THE WALL CLOCK LIED BELOW
+    // 30 fps. This delta is the real-time anchor for everything that is
+    // legitimately real-time: the sequencer (main.cpp:638 `seqTime += dt`), the
+    // VJ band release/crossfade rates, the camera spin integration and
+    // camera.update(dt), and the smoothedAmp time constants. He runs 32-52 fps,
+    // so at the low end every one of those ran up to 24% slow — his RHYTHM
+    // included, which is fatal in an instrument and invisible in a wallpaper.
+    // A bound is still wanted for genuine stalls (window drag, display wake),
+    // but 0.033 is not a stall guard, it is a 30 fps ceiling. 0.25 s is the same
+    // bound the physics accumulator uses, so both clocks now agree on what
+    // counts as a stall.
+    if (dt > 0.25f)
+      dt = 0.25f;
 
     ImGui_ImplMetal_NewFrame(nil);
     // DisplaySize comes from whichever view actually hosts the UI.

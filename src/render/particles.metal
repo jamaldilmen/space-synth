@@ -838,8 +838,25 @@ kernel void compute_physics(
     float vpy = (py - prevY) * tcv;
     float vpz = (pz - prevZ) * tcv;
 
-    // ── Phase 7: Deterministic Debug Mode ──────────────────────────
-    float dt = (u.debugFlags & (1 << 6)) ? (1.0f / 60.0f) : u.dt;
+    // ── THE STEP. ONE CLOCK. ───────────────────────────────────────
+    // ⏱️ 2026-08-30 — WAS: `(u.debugFlags & (1<<6)) ? (1.0f/60.0f) : u.dt`,
+    // labelled "Phase 7: Deterministic Debug Mode".
+    // 🚨 BIT 6 STOPPED MEANING "DEBUG" ON 2026-08-03. It was repurposed as the
+    // SUSTAIN-REBIRTH gate (app_state.h:50, `uiTogResurrection = true`, DEFAULT
+    // ON), and this consumer was never updated. So the branch was taken on every
+    // shipped run and this kernel integrated on a hardcoded 1/60 s.
+    // The scale of it: `dt` is used 95 times in this kernel; `u.dt` twice. The
+    // 95 were frozen at 1/60 while the 2 scaled with the time warp — two clocks
+    // inside one kernel, diverging by exactly the warp factor (1.01x at x1,
+    // 4x at x4, 16x at x16). That is his "one bug in a million dresses" wearing
+    // the oldest dress in the codebase.
+    // ⚠️ EXPECTED CONSEQUENCE, stated BEFORE measuring: at warp 1 this is a 1%
+    // step change and should be near-invisible. Above warp 1 it makes the step
+    // GENUINELY bigger for the first time, so warp may look WORSE than it did
+    // while 95 of 97 uses were accidentally warp-immune. That is honest: warp as
+    // a bigger step is wrong, and the cure is warp as MORE STEPS, not a frozen
+    // constant hiding it.
+    float dt = u.dt;
     
     // Base friction. Was pow(0.02, dt) ≈ 0.968/frame (heavy damping) which
     // killed orbital stability — Kepler orbits need energy conservation,

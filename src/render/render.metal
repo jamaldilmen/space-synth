@@ -323,7 +323,14 @@ constant float STREAK_GAIN     = 3.0f;  // screen-space streak amplification (lo
 
 // ── DEFLECTION MAP (2026-07-17) — exact Schwarzschild bending angle α(b) ──
 // 256-entry LUT computed once on the CPU by integrating the real null-geodesic
-// deflection integral (renderer.mm schwarzschildAlpha). Scale-free: indexed by
+// deflection integral, built inline at renderer.mm:938 (⛔ corrected 2026-08-31
+// 18:15:00 — this credited a function `schwarzschildAlpha`, which does not exist
+// anywhere in the tree; the integral is inline, not a named function).
+// 🚨 THE TABLE IS COMPUTED, UPLOADED AND BOUND EVERY FRAME — AND READ BY NOTHING.
+// `lensAlphaSample` (:340) has ZERO callers and `lensAlphaLUT` (:653) appears only
+// as the parameter declaration. Dead data on a live upload, since the lens was
+// deleted 2026-08-27. ⭐ Keep it: it is correct physics and it is the validation
+// ORACLE for the geodesic renderer being designed against it. Scale-free: indexed by
 // x = b/r_s, log-spaced x ∈ [2.60, 200] (x_crit = 3√3/2 ≈ 2.598 = capture).
 // This is the DNGR-doc verdict (docs/blackhole_render_research_notes.md §0/§5):
 // the light of the particles bends through the metric in WORLD space — the
@@ -824,8 +831,19 @@ vertex VertexOut particle_vertex(
     // (relative magnification μ₋/μ₊ < 0.5% beyond u≈6), yet the second
     // instance ran the FULL heavy shader for all 2M particles whenever a hole
     // existed — doubling the most expensive pass for matter that can never
-    // fold. Project once, cheaply, and bail beyond 8·θ_E (the margin absorbs
-    // the aspect + dilation approximations of this quick projection).
+    // fold. Project once, cheaply, and bail beyond 8·θ_E.
+    // ⛔ "THE MARGIN ABSORBS THE ASPECT" WAS FALSE — fixed 2026-08-31, his order
+    // ("fix this freaking shadow, the egg"). A margin cannot absorb an
+    // ANISOTROPY; it only makes the wrong shape bigger. NDC is square and the
+    // drawable is not, so `length(dNdc) > k` is a circle in NDC and an ELLIPSE
+    // on screen — stretched horizontally by exactly width/height (1.54 at his
+    // 3024x1964). That hard elliptical boundary, where every particle's second
+    // image vanishes at once, is the EGG he saw over the disk.
+    // cam.aspect has existed since the lens work and its own declaration says
+    // it is "to make the lens screen-isotropic" (renderer.h:219) — it had ZERO
+    // shader consumers until this line. A uniform nothing reads is a bug, not a
+    // tooltip. bhShadowNdcRadius is in NDC-Y units (halfH, renderer.mm:1875),
+    // so scaling x by the aspect puts both axes in the same unit.
     if (isSecondary && mass > 0.001f) {
         float3 pSpin = applySpin(in.posW.xyz, cam.spinAngleX, cam.spinAngleY,
                                  cam.spinAngleZ);
@@ -836,6 +854,7 @@ vertex VertexOut particle_vertex(
         bool cullFar = (pClip.w <= 0.0f) || (bClip.w <= 0.0f);
         if (!cullFar) {
             float2 dNdc = pClip.xy / pClip.w - bClip.xy / bClip.w;
+            dNdc.x *= cam.aspect;   // NDC is square, the drawable is not
             cullFar = length(dNdc) > 8.0f * max(cam.bhShadowNdcRadius, 1e-4f);
         }
         if (cullFar) {

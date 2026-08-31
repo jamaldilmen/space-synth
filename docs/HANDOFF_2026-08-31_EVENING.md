@@ -42,9 +42,16 @@ code running for the first time. `[MEASURED live]` `fps=120.0 worst=10.7ms realt
 
 2. **"no shortcuts no fake lense.. how are u going to verify its not a fak elens"** — 2026-08-31.
    `MEASURE:` `DESIGN_BH_2026-08-31_F1_FALSIFIABLE_TESTS.md` — five tests, kill table.
-   State: two cannot be cheated — **RING CLOSURE** (image count is a property of the CODE, not the geometry)
-   and **RESURRECTION** (a post-render warp cannot, the pixels were culled before it ran). ⚠️ **Scope:
-   transport only.** The deleted fog march would pass all five; its defect was what it GATHERED.
+   State: ⛔ **CORRECTED 2026-08-31 20:01:04 by FABLE, who owns the kill table. My original line here —
+   "two cannot be cheated" — was an OVERCLAIM, and it was mine, not the table's.** The truth:
+   **T3 RING CLOSURE is the ONLY individually uncheatable test** (image count is a property of the CODE,
+   not the geometry — no k-root map passes at any k). **T4 RESURRECTION kills the POST-RENDER WARP CLASS
+   ONLY**; a forward per-sprite displacement applied BEFORE the cull — **the deleted lens's exact
+   ordering** — passes it, and the kill table's own row always said so.
+   ⭐ **What cannot be cheated is THE SET, not two members of it.** Anyone answering his "how are u going
+   to verify its not a fak elens" must say one-plus-the-set. An overclaim on the falsifiability argument
+   is the worst possible place to carry one. ⚠️ **Scope: transport only.** The deleted fog march would
+   pass all five; its defect was what it GATHERED.
 
 3. **"i just want stuff to behave correct around the bh… suns near the bh are like torn into gas"** — 2026-08-31.
    `MEASURE:` D1–D6 in `DESIGN_BH_2026-08-31_DISRUPTION_ARCHITECTURE.md`; D3 is `t^(-5/3)` **emerging** from
@@ -120,8 +127,19 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 ```
 
 ⚠️ **The two remaining FAILs are OPUS's live B2 work, not unfinished business of mine.** `render.metal` and
-`renderer.mm` are modified because OPUS holds the build token and is mid-step; the artifact is stale for the
-same reason. **Do not commit over them and do not rebuild on top of them** — ask OPUS.
+`renderer.mm` are modified because OPUS holds the build token.
+
+⛔ **CORRECTED 2026-08-31 20:01:04 — I WROTE "the artifact is stale" AND IT WAS NEVER TRUE.**
+`[MEASURED 19:57:12]` newest source `renderer.mm` **19:42:03**; `SpaceSynth` + `default.metallib` **19:42:07**
+— the artifact is **4 s NEWER** than the newest source. OPUS built it at 19:42:07 and it runs.
+⭐ **The lesson, and it is a naming one: UNCOMMITTED and STALE are different properties.** Uncommitted = not
+in git. Stale = older than source. I inferred the second from the first in prose, **one section below my own
+preflight that had measured it correctly** (§4 step 3 reads `ok SpaceSynth newer than newest source`).
+🚨 **The preflight check is NOT broken and must not be "fixed"** — it compares mtimes and got the right
+answer. The defect was the prose contradicting the check.
+⚠️ OPUS also reports its edits are **finished and safe to commit or build over** — nothing half-written.
+`tools/lens_march_validate.cpp` is **UNTRACKED** and is B1's deliverable: it must go in the SAME commit or
+it is lost. **Still ask OPUS before committing — the build token is its.**
 
 ## 5. ↩️ RETRACTED THIS SESSION
 

@@ -1,0 +1,17 @@
+property,A_star_plus_star,B_star_plus_BH,C_BH_plus_BH
+Event class (literature name),Luminous red nova / common-envelope ejection transient,Micro-tidal disruption event (micro-TDE),Stellar-mass binary black hole coalescence
+Reference observed events,V1309 Sco; V838 Mon; M31LRN2015; M101 OT2015-1; AT2018bwo; AT2019zhd; AT2021blu,None confirmed. Candidate class only (AT2018cow-like LFBOTs proposed),GW150914 and ~90 further GWTC-3 events; all electromagnetically dark
+Peak luminosity (erg/s),1e39 - 1e42 (1e5 - 1e8 Lsun),1e41 - 1e44 predicted (wind-reprocessed); L_Edd(50 Msun) = 6.3e39,"L_GW,peak = 3.7e56 (mass-independent); L_EM = 0 (no detection)"
+Radiated energy (erg),1e46 - 1e48 (photons),"1e49 - 1e52 predicted (photons, efficiency-limited)",8.6e54 in gravitational waves = 4.84 Msun c^2; ~0 in photons
+Rise time,days - weeks (fast blue peak),"hours (t_fb,min = 6.9 h) but observed rise set by diffusion: ~1 d","no EM rise; GW amplitude peaks over ~1 orbit, ~5 ms"
+Characteristic duration,30 - 300 d (double-peaked; plateau 40 d typical),1 d - 1 month observed; fallback t^-5/3 tail continues for years,ringdown tau_220 = 5.8 ms (~1 cycle); whole signal < 0.5 s
+Photospheric temperature (K),3000 - 6000 falling to <1000; dust at 30 - 1000,1e5 - 1e6 (UV/blue) predicted,not applicable
+Colour evolution,blue -> red -> infrared; TiO/VO molecular bands; dust forms,stays hot and blue/UV; no molecular phase,none
+Emitting geometry,equatorially-focused pre-dynamical outflow + quasi-spherical fast shell; shock in the equatorial plane; dusty torus,"two tidal streams (one unbound, one returning) -> compact thick super-Eddington disc + optically thick wind",no emitting matter of its own; any light comes from pre-existing gas
+Spatial scale of emitting region,"1e13 - 1e15 cm (100 - 10000 Rsun), growing at 200 - 500 km/s",r_t = 2.6e11 cm = 3.7 Rsun; disc a_min = 4.7e11 cm; wind photosphere 1e12 - 1e13 cm,r_s(M_f) = 2.8e7 cm = 281 km; disturbance propagates at c
+Scale in units of r_s of the hole,not applicable (no hole),r_t/r_s = 1.7e4 ; a_min/r_s = 3.2e4,merger completes inside ~10 r_s
+Ejected / unbound mass,0.01 - 0.5 Msun at 200 - 500 km/s,~0.5 M_star unbound at ~1200 km/s (parabolic); more if the encounter is hyperbolic,0 baryonic; 4.84 Msun of rest mass converted to gravitational waves
+Power-law decay,no clean power law; recombination plateau then dust-dominated decline,Mdot_fb ~ t^-5/3 (full) or t^-2.26 (partial); observed light curve is NOT the fallback rate,"exponential ringdown, exp(-t/tau); not a power law"
+Recoil imparted to the remnant,negligible; remnant is a bloated single star,BH recoils by momentum exchange with unbound debris (mass ratio 50:1),"exactly 0 for equal-mass nonspinning; up to ~5000 km/s for spinning, unequal cases"
+Mass bookkeeping the sim must respect,M_1 + M_2 conserved minus ejecta; no mass-energy loss,"M_BH grows by the bound debris fraction only, not by M_star",M_f = 0.95162 (M_1+M_2): a 4.84 percent mass deficit is mandatory
+Fraction of the inelastic energy budget that becomes light,0.01 - 0.1 of the outflow kinetic power (Pejcha et al. 2016b); ~5 percent for AT2018bwo,"<< 1; hyper-Eddington, most energy advected or blown out in winds",~1e-9 or less; essentially all of it goes into gravitational waves

@@ -1,0 +1,7 @@
+stellar_type,M_star_Msun,R_star_Rsun,rt_over_rs_at_1.02e5,rt_over_rs_at_1.61e5,rt_over_rs_at_field_5.94e5,swallow_whole_M_BH_Msun,reachable_in_sim,verdict,R_star_basis
+solar-type main sequence,1.0,1.0,107.77924432827255,79.35146227708235,33.318459549474156,114291928.92894079,False,ALWAYS disrupted,IAU 2015 nominal R_sun
+M dwarf,0.2,0.21,38.702982223990745,28.494709283761164,11.964490526083473,24594019.142309606,False,ALWAYS disrupted,"low-mass MS, R/Rsun ~ M/Msun"
+B star,10.0,4.0,200.10677478773334,147.32674449446043,61.860235919207334,289138250.8716333,False,ALWAYS disrupted,"MS, R ~ 4 Rsun at 10 Msun"
+red giant,1.0,100.0,10777.924432827254,7935.1462277082355,3331.8459549474155,114291928928.94073,False,ALWAYS disrupted,"RGB, R ~ 100 Rsun"
+white dwarf,0.6,0.013,1.6612235142283354,1.2230603011243502,0.5135442246456063,218703.113471211,True,disrupted below / swallowed above threshold,"Chandrasekhar M-R, ~9000 km at 0.6 Msun"
+neutron star,1.4,2e-05,0.0018030790608686723,0.0013275001228004132,0.0005573969007527888,,True,ALWAYS swallowed whole,"Miller+2019 NICER PSR J0030+0451, 13.02 km"

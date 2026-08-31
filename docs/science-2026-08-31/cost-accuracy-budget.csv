@@ -1,0 +1,10 @@
+Method,ms_N1e7,ms_N2e6,Basis,published_or_estimate,fits_16ms_at_N1e7
+"Direct summation, all pairs",142500.0,5700.0,"my arithmetic, O(N^2) from the 2e6 estimate",estimate,False
+"Barnes-Hut tree, published rate (1 GTX480, 2012)",3967.605299007243,714.0,"Bedorf+2012 2.8e6 p/s, N-scaled x logN",published,False
+"Abacus near/far split (1 V100, 1e-5 force error)",833.3333333333334,167.0,Garrison+ ~1.2e7 updates/s/GPU,published,False
+"Barnes-Hut scaled to 14 TFLOPS, all particles",381.1735090831959,68.6,"my arithmetic, flop-ratio (UPPER BOUND on speedup)",estimate,False
+"Same, opening angle raised 0.75 -> 1.0",252.6156875424849,45.5,"my arithmetic, exponent 1.43 from Bedorf+2012",estimate,False
+Same at 0.75 + block timesteps (17% updated),64.79949654414331,11.8,"my arithmetic, Ahmad-Cohen 1973 / McMillan 1986",estimate,False
+Same at 1.0 + block timesteps (17% updated),42.944666882222435,7.74,"my arithmetic, both levers",estimate,False
+Cell-list rebuild: radix sort of 10M keys,1.6,0.32,"my arithmetic, memory-traffic, linear in N",estimate,True
+Particle-mesh far field: 256^3 FFT pair + deposit,0.89,0.29,"my arithmetic, FFT fixed + 1e7 deposit",estimate,True

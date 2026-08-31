@@ -13,7 +13,7 @@ Update it in place. Never fork it into a second board.
 **Commit at last verification:** `5b65a97` ⭐ **RE-STAMPED 2026-08-30 23:45:00 — SESSION 2026-08-30 FOLDED IN AS §Y (read it FIRST; §X is the session before). ⏱️ CLOCK UNIFICATION LANDED — nine leaks closed, one concern per commit. 🚨 AND THE GRID SAMPLES 32 OF 334,576 (§Y1).** Sources end at `d0697d8`; `5b65a97` is the bundle, which carries NO source change. 🌳 **TREE IS `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`.** Previously `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §X (read it FIRST; §W is the session before). ⏱️ THE LAW: A FRAME IS NOT A UNIT OF TIME.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §W (read it first; §V is the session before).** 🌳 **ONE TREE:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** — he named it 2026-08-28 (*"New tree is called POST TUBE"*). ⛔ `SPACE-SYNTH-BH`, `SPACE-SYNTH-RESONATOR` and `SPACE-SYNTH-TUBE-camera` are **DELETED** — every path under them in this file is DEAD. Still on disk: `SPACE-SYNTH-TUBE` (main repo, holds `.git`), `killtube` (FROZEN, not merged), `STAGE-BUILD`. 🚨 **BOTH BH RENDERERS WERE DELETED 2026-08-27 — the lens and the ray-march. All BH detail is now `docs/BOARD_BLACKHOLE.md` §U, and the knowledge is `docs/blackhole-library/`.** ⚠️ Only §V was read at this sha; every other row carries its own older stamp. Previously `44d1798`.
 **Bundle these rows were verified against:** `SPACE-SYNTH-TUBE-killtube/SpaceSynth.app` @ **2026-08-13 13:29:29** — log-verified only, **he has not looked at it.** ⚠️ **That binary no longer exists**: the live killtube bundle is now **2026-08-23 12:15:13** (stat'd 2026-08-23 14:12:09; it replaced the 2026-08-17 17:45:51 build this session), one second newer than the newest file under `src/` (`src/ui/window.mm` 2026-08-23 12:15:12), so it is NOT stale — but the rows below lose their artifact-level proof and carry their claim from the log alone.
 **Last correction:** ⭐ **TWO MORE RETRACTED 2026-08-13 — see A1″:** the merge "starves capture through the shared plate word" (never happened, `mrg=0/0/0`) and "the CAS route stalls the hole at 1,772" (real run, but that code path never executed in it — it was a late bootstrap into a diffuse field). **Cause both times: a mechanism inferred from a curve instead of counted at the gate.** Before that: ⭐ **THREE OF MY OWN CLAIMS RETRACTED IN ONE EVENING, 2026-08-12 — see the A1′-endgame row.** "The bound never engages" (it was the binding constraint), "capture delivers ~0.1 M☉/frame" (20–88 stars/frame), "the hole is out of fuel" (916,781 stars sat inside its capture radius, all refused by my own budget). **All three came from reading `feed=` in the log — a ONE-FRAME sample of a buffer that is cleared every frame.** Before that: "SOR is not the monster" was written off 9 samples and is WRONG — with 25 it is ~6 ms and real, 2026-08-11, §H5.
-**THE SHOW: COLOGNE opening event, 2026-09-05 — 13 days out** (counted 2026-08-23). ⛔ **NOT Berlin New Media Week / 2026-09-02** — this header carried the Berlin date until 2026-08-23 14:12:09, two days after it moved (his message 2026-08-21). 🎪 **And the venue is a THREE-WALL ROOM — 15 × 4 + 15 × 4 + 10 × 4 m, 160 m², ~270°.** Every "2.5:1" written on this board before 2026-08-23 is the FRONT WALL ONLY. Cold start for the show is **row S00 in `docs/TODO.md`**; the working is `docs/DESIGN_2026-08-23_THREE_WALL_ROOM.md`.
+**THE SHOW: COLOGNE opening event, 2026-09-05 — 6 DAYS OUT** (counted 2026-08-30 23:50:11; this line said "13 days out" until then). ⛔ **NOT Berlin New Media Week / 2026-09-02** — this header carried the Berlin date until 2026-08-23 14:12:09, two days after it moved (his message 2026-08-21). 🎪 **And the venue is a THREE-WALL ROOM — sides 14.75 × 3.50 ×2 + front 10.01 × 3.50 m = unwrapped 39.5 × 3.50 m, 138.25 m², 11.286:1, ~270°.** ⛔ ~~15 × 4 + 15 × 4 + 10 × 4 = 160 m²~~ was his PRE-WALK ESTIMATE and this header carried it until 2026-08-30 23:50:11 — **area overstated 15.7%, height 14.3%.** He measured 3.50 m walls on 2026-08-24 and a Polycam scan (256,532 verts) confirmed it. 📐 Venue pixel feed: front **5340×1680**, sides **7152×1680** each ⇒ **19,644×1680**. Every "2.5:1" written on this board before 2026-08-23 is the FRONT WALL ONLY. Cold start for the show is **row S00 in `docs/TODO.md`**; the working is `docs/DESIGN_2026-08-23_THREE_WALL_ROOM.md`.
 
 > 🚨 **FOUR BUNDLES EXIST. KNOW WHICH ONE YOU ARE LAUNCHING.** (all re-stat'd 2026-08-23 14:41:39.) ⚠️ **The newest mtime on disk is NO LONGER the live one** — creating the STAGE-BUILD worktree at 14:41:39 wrote a fourth copy that is **byte-identical** to killtube's (md5 `6beb34c7…`, checked both). mtime cannot tell them apart; only the PATH can.
 >
@@ -101,10 +101,39 @@ Update it in place. Never fork it into a second board.
 🚨 **CONSEQUENCE FOR THIS WHOLE BOARD: every single-run comparison ever made here is unreliable**, mine included — and any constant tuned against one is tuned against a coin flip. `count_cells` already carried the warning: *"a seed in a 15k-star core cell was sampled 0.2% of frames and STARVED (measured: Mmax froze)."* The seed registry worked around it for seeds; merge and capture never got the same treatment.
 
 ### Y2. 🔴 OPEN, ranked by magnitude
+
+> ⏸️ **HIS RULING 2026-08-31 00:31:01 — WARP-AS-MORE-STEPS IS DEFERRED, NOT DISPUTED.** He eyed the clock build
+> and said: *"yeah warp defo needs more steps but thats not for now."* **The diagnosis is AGREED — do not
+> re-argue it, do not re-measure it to prove it.** The cure (drive step COUNT from warp instead of step
+> SIZE) is understood, costed and parked: forces run **13.4× the integrate**, so more steps is a real
+> perf bill, not a refactor. ⛔ **Warp looking unstable is now EXPECTED BEHAVIOUR, not a bug report** —
+> it is the honest consequence of a bigger step, and it stays that way until he unparks this.
 1. **Y1 — the sampling cap.** Architectural: no cell should hold 334k particles. Raising the cap is O(count²) in the merge inner loop and still nondeterministic. ⭐ **His first question for the next window: "How does NASA do this?"** — how real N-body/SPH codes do neighbour finding without a fixed per-cell sample.
 2. **`u.frameCounter` seeds the RNG per FRAME** — all substeps in a frame draw identically. Off the shipped path (1 step/frame). Needs per-step uniforms; ⚠️ `PhysicsUniforms` has **no static_asserts** — do not reshape it casually.
 3. **0.69% residual sequencer drift** at 48 fps — now bounded, no longer grows with fps.
 4. **Φ never re-solved while playing** (`renderer.mm`, gated `totalAmplitude < 0.02`). Large, but a physics decision he made, not a clock leak — deliberately untouched.
+
+### Y4. 🚨 **A THIRD OF THIS BOARD'S CITATIONS POINT AT THE WRONG CODE — audit 2026-08-30 23:53:58**
+
+> **His law, 2026-08-30 23:53:58:** *"pls verify that our crutial docs are mandatorily code base verified with every comment written. thats a law. not a rule."*
+> Triggered by him opening `BOARD_BLACKHOLE.md` and reading its TITLE — *"says last updated on board like 3 weeks ago?"* — which was the board's CREATION date, not its stamp.
+
+**Machine-checked all 393 `file:line` citations across `BOARD.md`, `BOARD_BLACKHOLE.md`, `TODO.md`, `STATUS.md`.** Tool committed: **`tools/verify_citations.py`** (run it; exit 1 on a dead cite).
+
+| check | result |
+|---|---|
+| **RANGE** — does the cited line exist? | ⛔ **4 DEAD** (labelled, all fixed): `render.metal:3129` ×2 (BH board §1, §3), `:3164`/`:3177` (TODO BH3/BH8) |
+| **ANCHOR** — does the code the row NAMES appear within ±18 lines of the cite? | 🚨 **124 of 393 MISS — 31.6%** |
+
+⭐ **THE LESSON, AND IT IS THE GENERAL ONE: "in-range" IS NOT "true."** After a big deletion every line number below it still *resolves* — it just points somewhere else, and **nothing flags it.** `bhmarch_fragment` (~410 lines, deleted 2026-08-27 `00741f2`) shifted the whole bottom of `render.metal`; the 08-30 clock commits shifted `main.cpp` and `renderer.mm`. Range-checking gave a clean bill of health on a board that was a third wrong.
+
+**Verified by hand, 6/6 samples stale** — not a false-positive rate: `render.metal:878` names `viewProjection` (really `:834`) · `main.cpp:2713` names `universeClockSec` (really `:448`) · `particles.metal:3343` names `playCap` (really `:3371`) · `camera.h:123` names `buildViewMatrix` (really `:238`) · `render.metal:541` names `pointSize` (really `:807`) · `renderer.mm:2495` names `poisson_sor` (really `:561`).
+
+✅ **FIXED THIS PASS** — the rows that gate current work: BH board §1 + §3 (L4 was a HARD LIMIT on deleted code, and the header's "describes deleted code" warning did not even list §3) · TODO BH2 (⭐ **it is no longer "two Ω laws" — the march half is gone; ONE law survives at `render.metal:1409`, so the row must be re-scoped, not worked**) · BH3 · BH5 · BH8 · A2 + A7 (`main.cpp:1802` → **`:1929`**; and **VJ mode is one of EIGHT dead panels**, all *"removed 2026-06-26"* — a UI-wide decision, not a VJ row).
+
+🔴 **STILL OPEN: the other ~117 anchor-misses have NOT been re-read.** They are stale line numbers, not necessarily false claims — the finding usually survives, the pointer does not. ⚖️ **His call whether that sweep is worth any of the 6 days before Cologne.** ⛔ Until it is done, **re-grep any citation before acting on it** — do not trust a line number on this board because it resolves.
+
+💬 **This is the "decayed `file:line`" half of [[space_synth_comment_is_not_a_mechanism]], now measured for the first time.**
 
 ### Y3. ⛔ DEAD ROADS
 - **Clamping the accumulator's debt to zero — MEASURED WORSE THAN THE BUG, 2026-08-30.** 208–238 steps per 240 frames vs legacy's 240; realtime 0.81 → 0.58–0.79. Carry one step of debt instead.
@@ -263,9 +292,18 @@ blocked on him, what is dead. **Keep it current; it is for him, not for us.**
 ### W9. 📐 COLOGNE PIXEL SPECS RECEIVED — noted, NOT discussed, his instruction
 From the venue tech 2026-08-29 01:20: **3 slices, front wall 5340×1680, 2× side walls 7152×1680**
 ⇒ **19,644×1680** total, *"breiter als die 16k"*, packed in Resolume. Their two open questions:
-**60 fps?** and **do we bring an external SSD?** ⚠️ Side walls are **34% wider in pixels** than the
-front while being physically narrower (10.01 m vs 14.75 m) — pixel budget is NOT proportional to
-physical width. `[HIS WORDS]` *"just note the for now we will discuss later."* **Do not act.**
+**60 fps?** and **do we bring an external SSD?** ⛔ **THIS ROW HAD THE TWO WALLS SWAPPED — CORRECTED 2026-08-30 23:50:11.** It read *"side walls are 34% wider
+in pixels than the front while being physically narrower (10.01 m vs 14.75 m) — pixel budget is NOT
+proportional to physical width."* **The sides are the WIDE walls (14.75 m); the front is the narrow
+one (10.01 m)** — his own message says so (*"2 at … 15 m and one / front that's a bit smaller …
+10 m"*), and `memory/space_synth_three_wall_room_2026-08-23.md` has carried the measured table since
+2026-08-24. ✅ **The truth is the opposite of what this row concluded: density is nearly uniform —
+sides 7152/14.75 = 485 px/m, front 5340/10.01 = 533 px/m, a 10% spread.** The sides carry 34% more
+pixels because they are 47% wider. Pixel budget IS roughly proportional to physical width.
+⚠️ **Consequence that survives the correction, and it is the real one:** star size is in DEVICE
+PIXELS and is never normalised to the drawable, so **the same star is still a different physical
+size on a side wall than on the front** — 10% now, not 34%, but nonzero and structural.
+`[HIS WORDS]` *"just note the for now we will discuss later."* **Do not act.**
 
 ## V. 🌳 SESSION 2026-08-27/28 — ONE TREE, AND BOTH BH RENDERERS DELETED
 
@@ -305,7 +343,7 @@ physical width. `[HIS WORDS]` *"just note the for now we will discuss later."* *
 > **HIS VERDICT 2026-08-27 ~14:13:** *"so yeah tube is gone relaunch pls"* and *"the shapes themselves are isanen now. great the tube is gone."* `[HIS WORDS]`
 > ⚠️ **UNCOMMITTED.** The change is `M src/render/particles.metal` in `SPACE-SYNTH-RESONATOR` @ `tube-resonator-2026-08-26`. He has not ordered a commit. `M src/ui/window.mm` (the SS_SCREEN selector) is a SECOND, unrelated uncommitted change in the same tree — commit them separately.
 
-**T1. THE REGIME SPLIT IS DELETED.** `particles.metal:3323` `playCap` gated a CYLINDER (r≤6, |z|≤6, `:3325` radial + `:3354` axial) against a SPHERE (r=100, `:3365`). Not one clamp at two radii — two different SHAPES. Play now uses the sphere. `[READ particles.metal:3323]` `[HIS WORDS]`
+**T1. THE REGIME SPLIT IS DELETED.** `particles.metal:3343` `playCap` gated a CYLINDER (r≤6, |z|≤6, `:3325` radial + `:3354` axial) against a SPHERE (r=100, `:3365`). Not one clamp at two radii — two different SHAPES. Play now uses the sphere. `[READ particles.metal:3343]` `[HIS WORDS]`
   ⭐ **It stood alone, against my own earlier claim.** I wrote that deleting the wall orphans `kRho`/`kZ` and that #2 and the j_l core were one change. **Wrong:** `particles.metal:2516` `if (rho < EIGEN_R)` hard-gates the Gor'kov force independently of the clamp, so the pattern inside r<6 is BIT-IDENTICAL after the delete. The orphaning is a conceptual debt, not a runtime break. `[READ particles.metal:2516]`
 
 **T2. 🚨 THE FIELD NOW INFLATES AND NEVER SETTLES — THIS IS THE COST OF T1.** Sustained note, 4.0 s/sample, n=16 samples: `[MEASURED n=16]`
@@ -341,7 +379,7 @@ Monotonic, still climbing at 64 s. **There is no converged shape extent.** MECHA
   📌 **HIS RAMP BRIEF, NOT YET BUILT:** the hold ramp must be *"waaaaaaaaaaaaaay longer"* and anchored to a physical reference, not taste. Measured today: `kSpinMax = 2.08e-5 × 2.1e7 = 436.80 rad/s = 69.519 rev/s`, reached in **~3.7 s** via `accel = 8 + spinHold²·25` (`main.cpp:785`). The time-lapse `2.1e7` is the only taste number; `2.08e-5 rad/s` (c at M87*'s photon sphere) is real. Hole's own rotation: **1.000 rev/s at ISCO = 4.1774 s physical, 4.18× real time, WALL-CLOCK LOCKED** (`renderer.mm:263-273`) so held-pause fps does NOT speed it. The arrow-hold cap is **69.5× the hole's own rate.** `[MEASURED]`
 
 **T6. 🚨 WHY THERE IS NO PHOTON RING — NOTHING IS TRYING TO MAKE ONE.**
-  (a) **No near-hole regime exists.** Every `insideHorizon` gate is binary on `r < u.horizonR`; a particle at 1.01 r_h feels exactly what one at r=18 feels. No photon sphere term, no ISCO term, nothing that strengthens on approach. Crossing r_h strips outward v, multiplies v by 0.90, sets T=0 (`particles.metal:3196-3207`). Ordinary star outside, frozen corpse inside, **no state between**. `[READ particles.metal:3196]`
+  (a) **No near-hole regime exists.** Every `insideHorizon` gate is binary on `r < u.horizonR`; a particle at 1.01 r_h feels exactly what one at r=18 feels. No photon sphere term, no ISCO term, nothing that strengthens on approach. Crossing r_h strips outward v, multiplies v by 0.90, sets T=0 (`particles.metal:3225-3207`). Ordinary star outside, frozen corpse inside, **no state between**. `[READ particles.metal:3225]`
   (b) **No motion blur.** A sprite is drawn at discrete positions with the arc between them EMPTY, at any frame rate. `config.pixelStretch` (`main.cpp:2401`) smears each dot sideways to hide the gap — `main.cpp:328-329` calls it a fuse that *"bridges the per-frame gap so it doesn't strobe."* **More rev/s only aliases harder.** `[READ main.cpp:2401]`
   (c) **The lens is still a PLATE.** `render.metal:1085` builds the whole deflection on `cam.viewForward*` — the CAMERA's axis — then relocates sprites in that frame (`:1113-1132`). Turn the camera and the "physics" turns with it. `[READ render.metal:1085]`
 
@@ -550,7 +588,7 @@ The register was written at 11:48 but its `file:line`s were read **before** the 
 | **P4** ✅⚠️ | `render.metal:595`, `:530` (was cited `:586`, `:532`) | ✅ **CONFIRMED — rotates `.xy` only about Z, Ω from the 2D radius `rxy`. An annulus pretending to be a disk.** ⚠️ **The original omitted the gate that decides when it is live:** `:586` is `(bhToggles & bit20) && bhDiskGM > 0 && bhDiskAxisY < 0.5 && cam.envelopePhase < 0.5f`. **So P4 runs in the idle / star-map regime and is switched OFF for the whole time he is playing a note.** Any judgement of it must be made on an idle screen. | ★★ |
 | **P5** ✅ **FIXED** | `render.metal:527` (cited `:576`, exact at the time) | ✅ **CONFIRMED EXACTLY, and it was the more misleading half that was right.** `app_state.h:56` is `uiTogAnalyticSpin = true` and its own inline comment says **"DEFAULT ON"**, set 2026-07-25 19:15 (*"build the clean time-lapse"*), while the shader comment kept saying "DEFAULT OFF" — the two have contradicted each other for 17 days, and the shader's version tells a reader that P4 is dead code. **✅ COMMENT CORRECTED 2026-08-11 12:31:44 — see §H7.** | ★★ |
 | **P6** ❌ | `render.metal:782` (was cited `:796`) | ❌ **REFUTED — THE FIX IS A NO-OP AND MUST NOT BE BUILT.** The code reads as claimed (`rDil = length(in.posW.xyz)`, measured from the origin), but the implied repair — re-centre on `cam.bhX/Y/Z` — **changes nothing, because those are always exactly (0,0,0).** `bhPosX/Y/Z` are hard-set to `0.0f` at `renderer.mm:3293-3295` (**the ORIGIN LOCK, his own call**) and the enclosure-COM refinement that could move them is inside `if (false)` at `:2935`. **The renderer's hole centre IS the origin, so `length(posW.xyz)` already measures from it.** The "hole sits at r=3.8–5.9" figure describes where the physical MASS is — a quantity the render never receives. **4th no-op fix logged on this board** (cf. A3①'s `kREnc`, A3③'s latch). ⭐ **Real consequence: P6 is not a 3D-faking row at all, it is A3② wearing yet another costume.** Folded into A3②. ✅ Refutation written into both files 12:31:44 so nobody re-derives it. | ~~★★~~ **0** |
-| **P7** ✅ | `spatial_hash.metal:281` (was cited `:262`) | ✅ **CONFIRMED ON ALL FOUR COUNTS, incl. the one that was only asserted.** Averages 128³ along world Z into a `texture2d`; normalisation cites *"800k in 256x256"* against a live 2M on 128³; **and the "nothing samples it" claim is now proven, not assumed** — `densityTexture` appears at exactly four sites (`renderer.mm:288, 1201, 1209, 2701`) and the only binding is `[comp setTexture:]`, a compute **write**. No fragment or vertex stage ever reads it. Dispatch is gated on `collisionsEnabled`, which ships `false` (`:277`). ✅ **All four facts written into the kernel header 12:31:44; NOT deleted** — it is free while gated off, and deleting a collisions-path kernel is a physics call (cf. the refused scatter cap). | ★ |
+| **P7** ✅ | `spatial_hash.metal:281` (was cited `:262`) | ✅ **CONFIRMED ON ALL FOUR COUNTS, incl. the one that was only asserted.** Averages 128³ along world Z into a `texture2d`; normalisation cites *"800k in 256x256"* against a live 2M on 128³; **and the "nothing samples it" claim is now proven, not assumed** — `densityTexture` appears at exactly four sites (`renderer.mm:326, 1201, 1209, 2701`) and the only binding is `[comp setTexture:]`, a compute **write**. No fragment or vertex stage ever reads it. Dispatch is gated on `collisionsEnabled`, which ships `false` (`:277`). ✅ **All four facts written into the kernel header 12:31:44; NOT deleted** — it is free while gated off, and deleting a collisions-path kernel is a physics call (cf. the refused scatter cap). | ★ |
 | **P8** ✅ | `render.metal:927` (was cited `:941`) | ✅ **CONFIRMED**, and the same block already carries a 2026-07-23 note that the lens was fixed once for being *"measured from the ORIGIN while the hole sits OFF-ORIGIN"* — which, per P6, is a distinction the renderer cannot currently make. | ★ |
 | **P9** ✅ | `render.metal:157`, gate at `:1236` | ✅ **CONFIRMED, line exact.** `velDir2D`/`strDir2D`, webbing gated on `screenDist < 0.15f && > 0.002f` in NDC — two particles far apart in depth but adjacent on screen get strung together. | ★ |
 | **P10** ✅ | `render.metal:1247`, `out.pointSize` `:1288` (was cited `:1261`) | ✅ **CONFIRMED** — *"The sphere impostor needs ~20+ pixels to read as a 3D sphere."* A painted sphere, not geometry. **Same root as C3** (99.3% of stars at one pixel): an impostor that never gets its 20 pixels is a dot. | ★ |
@@ -756,7 +794,7 @@ Confirmed this pass: `git status src/ui/` is clean and has been across the whole
 | E1 | NASA / Open MCT-informed UI. 🚨 **SAMPLE AND FLIP, NEVER LIFT** — every number on screen must have a stated derivation. Matching the source exactly means we did it wrong. | ⬜ | **L** |
 | E2 | Accent colour **derived from the blackbody locus**, not picked | ⬜ | **S** |
 | E3 | 4-level limit ladder (yellow→orange→red→purple); numeric typeface as its own role; numeric/tabular → fixed-width, narrative → proportional; stale data must be indicated | ⬜ | **M** |
-| E4 | ⚠️ **Stale-bundle trap:** indigo hover states in a running app mean you are looking at an orphan bundle, not the code | — | — |
+| E4 | ⛔ **FALSE — RETRACTED 2026-08-31 16:45:00.** This said indigo hover states mean you are looking at an ORPHAN bundle. **Indigo is in the LIVE theme:** `ui_theme.h:48` `ImVec4(0.40f, 0.50f, 1.00f, 1.00f)` "Electric Indigo" drives SliderGrab / SliderGrabActive / ButtonActive. 🚨 **Never use indigo as a staleness signal** — it will call a correct build stale. The **bundle stamp** is the reliable check. (`TODO.md` U5 already flagged this; the two rows disagreed.) | ⛔ | — |
 
 ---
 
@@ -816,3 +854,25 @@ file and `BOARD_CLOSED.md`. Nothing was reworded.
 
 **What did NOT move, deliberately:** every ❌ / ⛔ dead road, every retraction, every open row,
 the standing rules, and the priority. A rejected approach is load-bearing; a shipped one is not.
+
+---
+
+## ⚖️ W. SESSION 2026-08-31 (OPUS window) — TWO CEILINGS KILLED, ONE CLAIM REFUTED, ONE LAW LAID DOWN
+
+📄 **Full detail lives in `docs/BOARD_BLACKHOLE.md` §Z.** This section is the index; do not duplicate it here.
+
+| # | What | Verdict | `file:line` |
+|---|---|---|---|
+| **W1** | ⚖️ **THE MUTUAL-EXCLUSION LAW** — *"bh and chladni cant coexist, max in transition to one another. play is end of bh formed. force pumps out of bh into the chladni shapes."* | 🆕 **HIS LAW 2026-08-31 16:35:00.** Measure all future formation work against it. | §Z, law only |
+| **W2** | ⛔ **The BH outcome cap is DEAD** — *"kill the cap. its so 2014."* Taper + merge refusal gone; `F_BH_CLUSTER`/`FB_TAPER_FROM` deleted. | ✅ **SHIPPED + MEASURED.** Idle **Mmax 161,690** vs the old 102,144 ceiling that stalled at 99.66%. | `particles.metal:1505`, `:1638`, `:262` |
+| **W3** | ⛔ **The horizon RATCHET is DEAD** — `bhSeedMassMono` was a running max, so the drawn hole could never shrink. | ✅ **SHIPPED.** Seed drained 72,494→938 with `DRAWN r_h` frozen at 0.1220 and `LATCH` still printing. | `renderer.mm:3452`, `:3481` |
+| **W4** | ⛔ **REFUTED: "the field mass is 5× the anchor."** Only **2M** of the 10M uploaded particles gravitate. | ✅ **MEASURED DEAD.** `Mlive=594276`, `live=1993624`. Anchor is correct to 1.3e−5. | `app_state.h:13`, `main.cpp:2519` |
+| **W7** | ⛔ **THE EGG IS NOT EXPLAINED — my attribution RETRACTED 2026-08-31 17:30:00.** The cull I fixed feeds instances that `render.metal:1070` culls unconditionally, so it cannot have changed a pixel. The aspect fix is correct and harmless; it is not the cause. | 🔴 **OPEN.** Likely hidden because no hole had formed after the relaunch (`bhStrength > 0.5f` gates the instance). **Expect it to return.** | `render.metal:1070`, `:1533` |
+| **W5** | 🔴 **NEW, unfixed:** the particle-count slider silently desyncs spawn `v_circ` from live gravity. | 🔴 **OPEN, unordered.** Only bites off the 2,000,000 default. | `main.cpp:1676` vs `renderer.mm:2122` |
+| **W6** | 🚨 **His standing complaint, restated:** *"the bh is still no lens no nothing."* | 🔴 **= F1.** Both BH renderers deleted 2026-08-27. **Gates the eyes-on verdict for W1–W3.** | §Z3 |
+
+⭐ **The pattern in W2 and W3, and it is the reusable lesson:** both ceilings were justified by a written
+belief about how the instrument behaves — *"a Berlin set is 40-60 minutes"* and *"a black hole cannot shed
+mass"*. **Both beliefs were already dead in his own rulings before the code was touched.**
+🚨 **When a constant's comment argues from how he PLAYS, or from textbook astrophysics that contradicts his
+stated feature, check the ruling before you trust the constant.**

@@ -1,15 +1,107 @@
-# 🕳️ THE BLACK HOLE BOARD — dedicated, 2026-08-14
+# 🕳️ THE BLACK HOLE BOARD — created 2026-08-14 · **LIVE, last folded 2026-08-31 16:02:19 (§Y)**
+
+> ⚠️ **The date in this title is the day the board was CREATED, not the day it was last touched.** It read as "last updated 3 weeks ago" to him on 2026-08-30 23:38. The live stamp is the line below and §X is the newest session.
 
 > **His order, 2026-08-14 01:41:51:** *"create dedicated board for BH. with all knowledge every hard limit and inspo we know of and track this shit down properly. I want my proper bh with the time / space mindfuck look. Nothing below that."*
 
 🎯 **COLD START = `docs/TODO.md`** (12 KB, ~3k tokens) — the whole open list in four buckets, every `file:line` re-read against the code 2026-08-20 14:08:59. **Open this file only for the detail of a row you are actually working.**
 
-**This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. Every row carries a **verified `file:line`** checked on **2026-08-14 01:41:51** against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`, bundle `01:28:44`. A row with no citation is a claim, not a fact, and is labelled as such.
+**This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. ⛔ **CITATION BASIS CORRECTED 2026-08-30 23:48:34.** This line used to read *"every row carries a verified `file:line` checked on 2026-08-14 01:41:51 against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`"* — **that tree is FROZEN and dead**, so it certified nothing about the live code. `[VERIFIED 2026-08-30 23:48:34 against `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`, sources `d0697d8`]` **all 138 `file:line` citations on this board machine-checked: 136 resolve in range, 2 are DEAD and now labelled inline.** A row with no citation is a claim, not a fact, and is labelled as such. ⭐ **In-range is not the same as true** — the §X rows were additionally content-checked against the source this session.
 
 **Commit at last verification:** `5b65a97` ⭐ **RE-STAMPED 2026-08-30 23:45:00 — SESSION 2026-08-30 FOLDED IN AS §X (read it FIRST). 🚨 THE HOLE'S FORMATION IS DECIDED BY A 32-PER-CELL BUFFER SIZE — every single-run BH comparison on this board is unreliable. Engine-wide clock law + closures in `docs/BOARD.md` §Y.** Sources end at `d0697d8`; `5b65a97` is the bundle, which carries NO source change. 🌳 **TREE IS `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`.** Previously `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §W (read it FIRST). Engine-wide law + all measurements live in `docs/BOARD.md` §X.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
 
 ---
 
+
+## Y. 🕳️ SESSION 2026-08-31 — **THE HOLE IS AN IMBH, AND THE SOFTENING VERDICT IS POSITIONAL**
+
+> Source: the Claude Science track, `docs/SCIENCE_2026-08-31_INDEX.md` + `ADDENDUM_01/02`. ⭐ **Its `file:line` anchors were quoted from `SCIENCE_PROMPTS_2026-08-31.md`, NOT read from `src/`.** Everything below carries `[VERIFIED 2026-08-31 15:36:34]` = I re-grepped it in `src/` myself, or `[SCIENCE, UNCHECKED]` = their arithmetic, which I have not reproduced.
+
+### Y1. ⛔ **RETRACTED 2026-08-31 16:45:00 — ITS CEILING NO LONGER EXISTS. READ §Z4 FIRST.**
+
+> 🚨 **THE 102,144 M☉ CEILING WAS KILLED 34 MINUTES AFTER THIS SECTION WAS VERIFIED.** Y1 is stamped
+> `[VERIFIED 2026-08-31 15:36:34]`; the cap died on his order at **16:10:25** (*"kill the cap. its so
+> 2014"*) — see **§Z4**, which contradicts everything below and is the current truth.
+> **What is now FALSE in this section:**
+> - *"the largest remnant this code can produce is exactly 102,144 M☉"* — **there is no maximum.**
+>   Idle has already MEASURED **Mmax = 161,690 M☉**, i.e. 158% of this "ceiling".
+> - *"It is a REFUSAL, not a clamp"* — the refusal (`if (headM <= 0) continue`) is **deleted**.
+> - Every `file:line` it cites for the bound is **gone**: `F_BH_CLUSTER` and `FB_TAPER_FROM` were
+>   deleted outright, and the old `:1647-1649` merge refusal is now a single `headM = 6.0e7f`.
+> - The **`tau_220 = 6.19 s`** headline and *"the ceiling of the ceiling"* — both were derived FROM the
+>   ceiling. ⭐ **The direction of the error is good news:** a bigger remnant means a LONGER ringdown,
+>   so the science track's 11.8 s is no longer unreachable. **The number is unknown until re-measured.**
+>
+> ⭐ **WHY IT IS KEPT, not deleted:** the SCALING LAWS (`tau ∝ M`, `f ∝ 1/M`, `T ∝ M^-1/4`) and the
+> Sgr A*/NSC provenance are still correct physics — only the mass they were evaluated AT is dead.
+> **Re-evaluate them at a measured remnant; do not re-derive the ratio.**
+> 🪶 **The lesson, and it is the third sighting today:** this section was VERIFIED and TRUE when written.
+> **Check the DATE of a verification stamp against later orders, not just its presence.**
+
+#### Y1 (historical) — THE FORMED HOLE IS **102,144 M☉** — AN IMBH, NOT A STELLAR-MASS HOLE.
+
+`[VERIFIED 2026-08-31 15:36:34 — `particles.metal:277,:289`]` The number is already in the code and has been since 2026-08-11 17:53:12: `F_BH_CLUSTER = 0.17188f` (Sgr A* 4.297e6 / MW NSC 2.5e7, observed) × the 594,276 M☉ field = **102,144 M☉**.
+
+⭐ **`0.1717` on this board is that same number wearing the other hat.** §V4 lists it as the measured horizon in sim units — and it is, identically, because `1 sim length = r_s(M_field)` makes `r_s(M)/r_s(M_field) = M/M_field`. A mass fraction and a horizon radius are the same digits under this convention. Claude Science derived the mass from the radius by that route, independently, and landed on the same value; that is corroboration of the unit system, not a new fact.
+
+🚨 **The consequence is new, and it is good news for the show.** `[SCIENCE — `SCIENCE_2026-08-31_merger_signatures.md`]` every P1/P2 number was computed at the 50 M☉ **seed** mass. At 102,144 M☉ — ⭐ **the two ringdown rows are now `[VERIFIED 2026-08-31 15:53:47]`** (recomputed from their own `tau = 0.060593 ms × M_f/M☉` and `f = 17019 Hz × M☉/M_f` scaling, at the traced maximum remnant); the other three rows remain **UNCHECKED**:
+
+| quantity | at 50 M☉ | at 1.02e5 M☉ | scaling |
+|---|---|---|---|
+| ringdown `tau_220` | 5.77 ms | **6.19 s = 1.06 sim-time** | `M` |
+| ringdown `f_220` | 178.8 Hz | 0.167 Hz | `1/M` |
+| peak disc T (Page-Thorne, `a_*`=0) | 4.08e6 K | 6.07e5 K | `M^(-1/4)` |
+| GR apsidal precession / orbit | 56 arcsec | 2.5° | `M^(2/3)` |
+| `r_t/r_s`, solar-type star | 1.7e4 | 108 | `M^(-2/3)` |
+
+⭐ **A BH–BH ringdown at seed mass is a 5.8 ms blip — unshowable. At the mass that actually forms it runs 6.19 s.** The money shot has a duration. ⚠️ The cost is the disc: 6.07e5 K is EUV, not soft X-ray.
+
+⛔ **CORRECTED 2026-08-31 15:53:47 — the science track's 11.8 s is UNREACHABLE IN THIS CODE, and the reason is a mechanism worth its own row.** 11.8 s needs `M_f = 0.95162 × 2 × 1.02e5 = 1.944e5 M☉` — two formed holes merging — which is **32.7% of the field**, above the 17.2% ceiling. `[VERIFIED 2026-08-31 15:53:47]` the ceiling is enforced ON THE MERGE PATH itself:
+
+- `particles.metal:1580` — `bit3` seed-seed merge, `mass >= M_BH_SEED`.
+- `:1647-1649` — `mBoundM = F_BH_CLUSTER × fieldMassMsun`; `headM = mBoundM - mS`; **`if (headM <= 0) continue`**.
+- `:1636` — the victim's mass must **FIT WHOLE**, so overshoot is exactly zero by construction.
+- `:1641` — *"Merges stay completely FREE below the ceiling — the taper is deliberately absent here, because a merge is a discrete event and a smoothstep on a discrete event is just a slower lottery."*
+
+⭐ **AND THE GUARD BINDS ON THE PARENT SUM, NOT THE REMNANT** `[VERIFIED 2026-08-31 16:02:19]` — `:1648` measures the SURVIVOR (`headM = mBound - mS`) and `:1636` requires the victim to fit whole, so the constraint is `survivor + victim <= 102,144`. Sum and remnant coincide **only because mass is conserved through the merge** — which is exactly the invariant §2 row 9 (the mandatory 4.84% GW deficit) removes. They separate the moment it lands:
+
+| | max parent sum | remnant | `f_220` | `tau_220` |
+|---|---|---|---|---|
+| **today** | 102,144 M☉ | 102,144 M☉ | 0.167 Hz | **6.19 s** |
+| **once row 9 lands** | 102,144 M☉ | 97,202 M☉ | 0.175 Hz | **5.89 s** |
+
+⚠️ So `tau_220` is **6.19 s today, 5.89 s once row 9 is implemented** — it drops by exactly the 4.84% deficit — **unless the guard is moved to bind on the post-deficit remnant, which is a deliberate change, not a consequence of row 9.** Largest equal-mass pair the guard permits: **51,072 + 51,072**.
+
+🚨 **It is a REFUSAL, not a clamp.** A merge that would breach the ceiling simply does not happen: `:1644-1646` — *"the victim stays alive and orbiting, mass is conserved exactly, and if the field grows the room reopens and it merges later."* So the largest remnant this code can produce is **exactly 102,144 M☉**, and `tau_220 = 6.19 s` is the ceiling of the ceiling. 11.8 s requires removing the bound or roughly doubling the field mass.
+
+⭐ **Two holes that decline to merge and keep orbiting is a SHOWABLE behaviour in its own right** — and it is what the endgame actually looks like once the survivor reaches the bound, not the runaway-to-one-giant that `:1577` describes below the ceiling.
+
+### Y2. ⛔ **§V4's "ALL INSIDE ONE SOFTENING LENGTH" IS COARSE-ONLY — the verdict is conditional on POSITION, not mass**
+
+`[VERIFIED 2026-08-31 15:36:34]` There are **two live softening lengths**, and §V4 quotes only the coarse one:
+
+| | sim | in coarse ε=1.0 | in AMR fine ε=0.0625 |
+|---|---|---|---|
+| r_h | 0.1717 | 0.17 | **2.75** |
+| photon sphere | 0.2576 | 0.26 | **4.12** |
+| `b_c` = 3√3·M | 0.4461 | 0.45 | **7.14** |
+| ISCO | 0.5151 | 0.52 | **8.24** |
+
+- **coarse ε = cellSize = 1.0 sim**, 128³ over ±64 (`renderer.mm:2255-2258`). ⭐ That is **exactly `r_s(M_field)`**.
+- **fine ε = 0.0625 sim**, 128³ over ±`kAmrFineExtent`=4.0 (`renderer.mm:132,:2824`), **DEFAULT ON** (`renderer.mm:2137`), and it **replaces** coarse gravity inside the box — which is where the core and the hole sit (`comShift` pins the box to the core).
+- 🚨 **ε is a FLOOR, not a constant** (`particles.metal:1856,:1880`): `cellSoftFloor = 1.0f·cellSize²`, then `max(cellSoftFloor, 4·G1·cm·dt/speedCap)` — **a heavy cell softens harder than one cell.**
+- ⛔ `particles.metal:2211` still says `cellSize ~0.031`: **DECAYED**, invalidated by the DAM test 2026-07-13 when the box went 2.0→4.0 (`renderer.mm:130` says so in its own words). That stale comment reached Claude Science through the prompt pack and made every ε-relative number in its first pass **2× too large**. 13th sighting of the comment-decay pattern.
+- **Threshold:** a hole's horizon spans one fine ε at **37,142 M☉**, one coarse ε at the whole field mass. Branch on `2·M_hole/ε`, don't hard-code a verdict.
+
+🔴 **OPEN — NOT CHECKED: can a formed hole leave the ±4.0 fine box?** If it can, the resolution verdict flips **discontinuously** as it crosses the face. Worth an assert either way.
+
+### Y3. 📋 WHAT ELSE THE SCIENCE TRACK LANDED — pointers, not rows
+
+`[SCIENCE, UNCHECKED]` 22 ranked code corrections in `SCIENCE_2026-08-31_INDEX.md` §2, each with a source. Highest two: the Ω law at `render.metal:308,:1409` is Bardeen-Press-Teukolsky **in M=1 units**, so fed sim-unit `r` the constant `a=0.5` implies `a_* = 19.9`, twenty times over-extremal; and the 32-per-cell cap at `spatial_hash.metal:352` **buys nothing** — an exact radix-sort + prefix-sum cell list costs **1.6 ms at 1e7 particles**, with the 27-cell stencil being the larger error underneath it. F2 verdict: **nothing in the literature fits full tree gravity for 1e7 particles in 16 ms on one GPU** (65 ms best case).
+
+⚠️ **The prompt pack that fed this track was wrong in 4 rows** — particles (2e6 → **1e7**), ε, the softening verdict, and one dead anchor. Corrected in place `2026-08-31 15:36:34`; §5 of `SCIENCE_PROMPTS_2026-08-31.md` records what broke. **P0 has not been run.**
+
+---
 
 ## X. 🕳️ SESSION 2026-08-30 — **THE HOLE'S FORMATION IS DECIDED BY A BUFFER SIZE**
 
@@ -22,7 +114,7 @@
 
 ⚠️ **This invalidates single-run BH comparisons across this whole board.** `Mmax` at matched sim time forks 11× on identical inputs, so any accretion constant tuned against one run was tuned against a coin flip. `count_cells` already warned: *"a seed in a 15k-star core cell was sampled 0.2% of frames and STARVED (measured: Mmax froze)."*
 
-🚨 **Warp still does not form the hole properly, and the 2026-08-29 ×120 fix did NOT close it** — the handoff row claiming "mergers died under warp → fixed" overstated what was measured. `[MEASURED 2026-08-30]` at warp 4 one run was **stone dead** (`Mmax=50.0` = `M_BH_SEED`, `seeds=0`, `mrg=0/0/0`, 2M particles untouched, `peak=1897514` — the field imploded into one cell) while others formed partially. Root cause now known: `compute_physics` was integrating on a hardcoded 1/60 for 95 of its 97 `dt` uses (§Y0 row 1), so warp barely reached the integrator; the two sites the ×120 fix touched were among the 2 that did. Fixed at `e2838f6` — **warp is now honestly a bigger step, and therefore honestly unstable.** The cure is warp as MORE steps, gated on step cost.
+🚨 **Warp still does not form the hole properly, and the 2026-08-29 ×120 fix did NOT close it** — the handoff row claiming "mergers died under warp → fixed" overstated what was measured. `[MEASURED 2026-08-30]` at warp 4 one run was **stone dead** (`Mmax=50.0` = `M_BH_SEED`, `seeds=0`, `mrg=0/0/0`, 2M particles untouched, `peak=1897514` — the field imploded into one cell) while others formed partially. Root cause now known: `compute_physics` was integrating on a hardcoded 1/60 for 95 of its 97 `dt` uses (§Y0 row 1), so warp barely reached the integrator; the two sites the ×120 fix touched were among the 2 that did. Fixed at `e2838f6` — **warp is now honestly a bigger step, and therefore honestly unstable.** The cure is warp as MORE steps, gated on step cost. ⏸️ **DEFERRED BY HIM 2026-08-31 00:31:01: *"yeah warp defo needs more steps but thats not for now."* Agreed, parked. ⛔ Every BH measurement taken UNDER WARP therefore stays unreliable for the foreseeable — do not tune an accretion constant against one.**
 
 ---
 
@@ -111,6 +203,12 @@ bh dies and evaporates even if i dont play… the only thing its uspposed to do 
 ### V4. THE NEAR FIELD IS DECIDED BY MESH CONSTANTS, NOT PHYSICS — the "toilet drain"
 `[HIS WORDS 2026-08-28]` *"our black hoel is still a toilet drain. stuff behvaes differntly near
 a balckhole i want this executed just as well as kill the tube."*
+> ⛔ **SUPERSEDED IN PART BY §Y2 (2026-08-31 15:36:34): the table below is the COARSE ε only.**
+> On the AMR fine grid (ε=0.0625, default ON, and it replaces coarse gravity where the hole sits)
+> the same radii are **2.75 / 4.12 / 8.24 ε** — marginally resolved. The verdict is conditional on
+> POSITION, not mass. The rest of this section stands, but its anchors have DECAYED: the clamp is
+> `particles.metal:1482-1483` (also `:4131`), not `:1429`; softening is `:1856`, not `:1803`.
+
 `[READ]` every characteristic radius is smaller than the smoothing length:
 
 | | sim | in r_h |
@@ -209,7 +307,7 @@ merge rates, so measuring mergers first measures the wrong thing.
   ⭐ **KEPT ON PURPOSE:** `bhmarch_vertex`, `BHMarchOut`, `BHMarchUniforms`, `bhMarchUniformBuffer` all still serve **`bhbody_fragment`** — the depth-only capture sphere he PASSED 2026-08-14. Do not clean them up as march residue. `[READ]`
 
 **U3. 🚨 THE HORIZON DETECTOR IS BLIND BEYOND r = 5.0 SIM — THIS IS "THE HOLE VANISHES INSTANTLY".**
-  `particles.metal:405` `RADIAL_MAX_R = 5.0f`; `:4271` hard-clips `if (encDist < RADIAL_MAX_R)`. Matter outside is **not counted at all**. `renderer.mm:3213-3228` then walks 256 shells for the largest r with `r_s(M(<r))/r ≥ 1.0` — **binary, no hysteresis**. The frame the enclosed profile fails, `lastHorizonR` is **exactly 0**. `[READ particles.metal:405]`
+  `particles.metal:405` `RADIAL_MAX_R = 5.0f`; `:4271` hard-clips `if (encDist < RADIAL_MAX_R)`. Matter outside is **not counted at all**. `renderer.mm:3173-3228` then walks 256 shells for the largest r with `r_s(M(<r))/r ≥ 1.0` — **binary, no hysteresis**. The frame the enclosed profile fails, `lastHorizonR` is **exactly 0**. `[READ particles.metal:405]`
 ```
 run2:  Mmax = 34,280 M☉  seeds=16  Menc=4,827    ->  horizonR raw = 0.0000
 run5:  Mmax = 16,325 M☉  seeds=4   Menc=157,550  ->  horizonR raw = 0.2344
@@ -336,7 +434,7 @@ This is a real implementation of DNGR §7: unprojects each pixel to a world ray 
 **It is DEFAULT OFF** (`app_state.h:57`, `uiTogRayMarch = false`) since **2026-07-28 09:32:18**, on his order: *"this orange shadow of the blackhole is super old and must leave asap."*
 
 **Why it was killed — both reasons are structural, not tuning:**
-1. 🎨 **It can only ever be orange.** Its single colour is a hardcoded `float3(1.0f, 0.55f, 0.25f)` scaled by density (`render.metal:3129`). **There is no temperature input and no temperature grid exists anywhere in the renderer.** It physically cannot be anything but orange at some brightness.
+1. 🎨 **It can only ever be orange.** Its single colour was a hardcoded `float3(1.0f, 0.55f, 0.25f)` scaled by density (was `render.metal:3129`). ⛔ **DEAD CITATION — `render.metal` is 3106 lines and that constant is not in the file. `bhmarch_fragment` was DELETED 2026-08-27 (`00741f2`, ~410 lines); only comments name it now (`render.metal:908`, `:1047`, `:3031`, `:3079`, `renderer.mm:4132`). This row is HISTORY, not inventory** `[VERIFIED 2026-08-30 23:48:34]`. **There is no temperature input and no temperature grid exists anywhere in the renderer.** It physically cannot be anything but orange at some brightness.
 2. 🧱 **It can never carry Chladni structure.** Its output is a box-average of a **128³ density grid**; the sprites draw **2M+ bodies at sub-pixel precision**. Two pictures of one disk ~100× apart in resolution, **additively overlaid** — that is his *"it doesn't connect to the rings"*.
    ⭐ **The 2026-07-26 21:20 A/B settled it: lens bit8 ON, march OFF → *"ITS FINALLY THE CORRECT FEEL"*.**
 
@@ -381,9 +479,9 @@ Secondary placement (`render.metal:1055`): `target = bhWorld + along·dHat − p
 | ~~**L1**~~ | ✅ **FIXED 2026-08-20 15:36:28, UNVERIFIED — he has not looked.** The divisor is now the screen half-height **at the hole**: `frustum` in ortho (unchanged, byte for byte), `dHole * 0.414214` in perspective, where 0.414214 = tan(45°/2) and 45° is the fov `main.cpp:776` actually passes. The perspective shadow was **2.897× too small**, exactly the factor the code's own comment predicted before measurement. `dHole` is computed from the real camera and hole vectors, NOT from `cameraRho` — under the origin lock (L5) they are the same number today, and writing `cameraRho` would have baked that lock into the lens. | `renderer.mm:1661-1690` |
 | **L2** | **The lens is OFF during play.** `bhLensActive = (totalAmplitude < 0.02f)`. The hole only lenses at silence. Deliberate (star-map regime) but it means **the mindfuck look is a REST-STATE look** and cannot appear while he plays. | `renderer.mm:1618` |
 | **L3** | **A two-instance sprite scheme cannot produce S3.** n ≥ 2 windings need a per-pixel integrator. This is a representation ceiling, not a bug. | `renderer.mm:3643` |
-| **L4** | **The march can only be orange, and can only be 128³.** Both structural — no temperature input exists, and a box-averaged grid cannot resolve sub-pixel sprites. | `render.metal:3129`; `app_state.h:57` |
+| ~~**L4**~~ | ⛔ **MOOT — THE MARCH NO LONGER EXISTS.** *(Was: "the march can only be orange, and can only be 128³.")* `bhmarch_fragment` deleted 2026-08-27 `00741f2`. **A limit on deleted code is not a hard limit.** ⚠️ The header's "describes deleted code" warning listed §1a/§1b/§2/§5/§6 and did NOT list §3 — this row sat in HARD LIMITS unmarked until now. | ⛔ dead: `render.metal:3129` (file is 3106 lines) `[VERIFIED 2026-08-30 23:48:34]` |
 | **L5** | **Origin lock: the renderer's hole centre IS the origin.** `bhPosX/Y/Z` are hard-zeroed by design (the COM is pinned at 0/0/0 and the seed sinks there); the enclosure-COM refinement sits inside `if (false)`. So every "re-centre on the hole" fix is a **NO-OP** — 4 have been logged. Making it honest is real work (A3②), not a vector swap. ⚠️ `render.metal:774-775` cites this as `renderer.mm:3293-3295`; **that citation has drifted** — the live sites are below. | `renderer.mm:3555-3557` (the zeroing), `:3193` (`if (false)` refinement) |
-| **L6** | **⚠️ NEW — bit15 IS DOUBLE-BOOKED and the AMR kill-switch is broken.** bit15 = "metric shadow" in the render *and* = "AMR fine force" in the physics. `physicsUniforms.bhToggles = bhToggles \| (amrOn ? 0x8000u : 0u)` — an **OR**, which can only ADD the bit, never clear it. `uiTogMetricShadow` defaults **true**, so bit15 is always set ⟹ **`SS_NO_AMR=1` does not disable AMR while metric shadow is on.** Any AMR A/B run to date is suspect. | `renderer.mm:1897`, `particles.metal:2161`, `render.metal:821` |
+| **L6** | **⚠️ NEW — bit15 IS DOUBLE-BOOKED and the AMR kill-switch is broken.** bit15 = "metric shadow" in the render *and* = "AMR fine force" in the physics. `physicsUniforms.bhToggles = bhToggles \| (amrOn ? 0x8000u : 0u)` — an **OR**, which can only ADD the bit, never clear it. `uiTogMetricShadow` defaults **true**, so bit15 is always set ⟹ **`SS_NO_AMR=1` does not disable AMR while metric shadow is on.** Any AMR A/B run to date is suspect. | `renderer.mm:1897`, `particles.metal:2179`, `render.metal:821` |
 | **L7** | **Perf ceiling.** Baseline idle @2M, ortho, 1×: **~31–36 fps, worst frame 50–99 ms.** ~46% of the field is corpses running the full kernel. A per-pixel march on top of this is not free. 🚨 `physicsUniforms.dt` is a fixed `0.0165×warp` step — **never derive fps from it.** | `docs/BOARD.md` rows 10⁺, 12 |
 | **L8** | **Never test the hole above 1× time warp.** At 64× a star moves 127 contact-radii per frame and tunnels past every merge test. Accretion/merger results at high warp are artifacts. | [[space_synth_bh_reversibility_2026-08-07]] |
 | **L9** | **`bc_validate.cpp` DOES NOT EXIST IN THE TREE and never did** — `git log --all --diff-filter=A` finds no commit that ever added it. `render.metal:2990` and `app_state.h:53` both cite it as the integrator's validation (b_c to 1.4e-6). **That validation is currently an unverifiable claim.** Re-deriving it is cheap and should be done before the march is ever trusted again. | verified 2026-08-14 |
@@ -706,6 +804,237 @@ The block reconstructs an **analytic** `vOrbit` from a Kerr `Ω(r) = 1/(r^1.5 + 
 
 ---
 
-**Last Updated:** 2026-08-22 01:34:32 (BH4 — §2's two lens blend sites re-verified in source and their closure carried through to §5(A); the void-slider-A/B consequence promoted to a standing callout. §N added 2026-08-19 00:14:12; §0 still carries the verification stamp)
-**Live tree:** `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`
+
+---
+
+## ⚖️ Z. **THE MUTUAL-EXCLUSION LAW — his ruling 2026-08-31 16:33:00. READ BEFORE TOUCHING FORMATION.**
+
+> **His words, verbatim:** *"after play bh formed stays for a bit that cant ever be. play is end of bh
+> formed u get me. force pumps out of bh into the chladni shapes. bh and chladni cant coexist, max in
+> transition to one another."*
+
+**THE LAW, stated as a constraint the code must satisfy:**
+
+1. **The BH state and the Chladni state are MUTUALLY EXCLUSIVE.** They are not two things that share a
+   screen. They are two states of ONE entity — which is [[feedback_no_second_layer]] applied to time
+   instead of to geometry.
+2. **PLAY IS THE END OF THE FORMED HOLE.** Playing is not a modifier on a hole that persists; it is the
+   hole's terminating condition.
+3. **THE FORCE IS CONSERVED THROUGH THE TRANSITION** — it *pumps out of* the hole *into* the shapes.
+   Not a crossfade between two renderers; one budget moving from one state to the other.
+4. **COEXISTENCE IS LEGAL ONLY DURING THE TRANSITION,** and only "max" — the transition is the sole
+   window in which both are on screen.
+
+⭐ **This is a LAW, not a to-do.** Any future formation/dissolution work is measured against it.
+
+### Z1. ⛔ THE RATCHET IS DEAD — `bhSeedMassMono` no longer a running max. **His order 2026-08-31 16:33:00, SHIPPED.**
+
+**What it was:** `bhSeedMassMono = max(bhSeedMassMono, gMaxMass)`, and the DRAWN hole radius is
+`lastHorizonR = kRsSimPerMsun * bhSeedMassMono` (`renderer.mm:3481`). A running max cannot fall, so
+**the drawn hole could never shrink while any seed-class body survived.**
+
+**Its written justification was:** *"A black hole cannot shed mass, so its horizon cannot shrink."*
+⛔ **False in this instrument, and already ruled false before today:** REBIRTH withdraws from the hole
+every frame, and **a shrinking hole under play is HIS FEATURE** ([[space_synth_bh_reversibility_2026-08-07]]).
+It also rested on `gMaxMass` being monotone — **retracted 2026-08-28**
+([[space_synth_gmaxmass_is_not_monotonic_2026-08-28]]).
+
+**MEASURED that day, the run that proved it** (`play_err.log`, his play session):
+- The seed drained **72,494 → 2,561 → 938 M☉** under a held note.
+- `[HORIZON] DRAWN r_h` stayed frozen at **0.1220** across that entire 77× collapse.
+- `[BH-POP]` kept printing **`LATCH`** at 938 M☉.
+
+**The fix, one line** (`renderer.mm:3452`): `bhSeedMassMono = gMaxMass` — LIVE, not a running max.
+🚨 **The OTHER half of the old rationale SURVIVES and must not be undone:** the drawn hole keys off the
+**SEED MASS**, never the radial profile, because the profile is a 5.0-sim window (`particles.metal:405`)
+that reads 0 when the field runs wide and would vanish a hole with a live seed still in it.
+
+✅ **HIS VERDICT 2026-08-31 18:55:07 — *"app behaving great :)"*** — fullscreen, on the build carrying all
+four kills. **This is the first eyes-on acceptance any of today's BH work has had**, and it covers the
+riskiest item: the disk ROTATING for the first time (it adds behaviour rather than removing it) passed.
+📊 Same build, measured: `[PERF] fps=120.0 worst=10.7ms realtime=1.007x particles=2000000`. Pinned at the
+display rate. ⛔ **This RETIRES the earlier 556.9/530.5 ms frame concern** — that was one sample from an
+older build still carrying all four lag mechanisms. ⭐ **It is also the baseline the lens spends from: 120 fps
+WITHOUT any lens is not proof a lens is affordable.**
+🧾 Also printed live at startup, the count question settled by the app itself:
+`[SPAWN] raw IMF sum 2.9663e+06 Msun -> normalized to anchor 5.9428e+05` · `[GRAV] live=1989352 Mlive=594276`.
+
+⛔ **CORRECTED 2026-08-31 17:15:00 — MY FIRST DIAGNOSIS WAS INCOMPLETE, and the correction matters.**
+I wrote that *"the latch was NOT the bug, its INPUT was ratcheted"*. That is true of the latch's own
+clear logic (`renderer.mm:3668`, `if (lastHorizonR <= 0.0f)`) and it is still true — but it was **not the
+only thing freezing the drawn hole.** **THREE independent cannot-go-down rules were holding it up**, and
+killing the mass ratchet alone would not have let the hole die:
+| # | rule | `file:line` | kind | killed |
+|---|---|---|---|---|
+| 1 | `bhSeedMassMono` running max on the drawn radius | `renderer.mm:3452` | **ratchet** | 2026-08-31 16:10 |
+| 2 | `lastHorizonRSmooth` ×0.03/frame chase (~3 s) | `renderer.mm:1829` | **lag** | 2026-08-31 17:06 |
+| 3 | `bhStrength = latch ? max(ema, 1.0f)` — strength **floored at full** | `renderer.mm:3669` | **ratchet** | 2026-08-31 17:14 |
+| — | `bhStrengthEma` ×0.04/frame chase (~2 s) | `renderer.mm:3640` | **lag** | 2026-08-31 17:14 |
+🚨 **#3 is why the latch looked innocent.** It clears only at `lastHorizonR <= 0`, and in his play run the
+hole drained 72,471 → 938 M☉ — a SMALL horizon, never a zero one — so the latch held and the floor pinned
+the drawn strength at 1.0 the entire way down. **A clear condition that only fires at exactly zero is not
+a clear condition for a quantity that decays asymptotically.**
+⭐ **THE PATTERN, and it is the transferable lesson:** every one of these is a *cannot-go-down* or
+*lags-going-down* rule applied to a DRAWN quantity, each added to cure a flicker, each justified as
+cosmetic. **Together they ARE the law violation** — they are what made the hole outlive the physics.
+⚠️ **`bhFormedLatch` is now LOG-ONLY** — after #3 it affects no drawn value; its remaining reads are the
+`[BH-POP]` line and one pause path. **A name with no mechanism should be deleted, but that is not ordered.**
+✅ **SWEPT for a fourth** 2026-08-31 17:14:00: `renderer.mm:4568`
+`min(1, max(config.pixelStretch, bhStrength))` is **NOT** one — it ORs the spin dial with the collapse
+signal so neither can disable the other, and it FOLLOWS strength down. `:1851`'s `max` is the declared
+POSED hole, guarded by `bhPosed`. **No fourth found.**
+
+### Z2. ⛔ **SUPERSEDED BY §Z6 — the two eases are DEAD.** ~~STILL OPEN against the law — two eases and an exponential tail. NOT touched.~~
+> ⛔ **2026-08-31 19:39:56: both eases were killed on his order after this row was written, and a FOURTH was found that this row's sweep missed.** Read §Z6. The exponential-tail caveat still stands.
+| # | Mechanism | `file:line` | Why it fights the law |
+|---|---|---|---|
+| Z2a | render ease `×0.03/frame` on the drawn radius | `renderer.mm:1829` | ≈3 s to follow the mass down; the visual lags the physics through the whole transition |
+| Z2b | formation ease `×0.04/frame` on `bhStrengthEma` | `renderer.mm:3623` | ≈25 frames to 63%; formation/dissolution both ramp |
+| Z2c | REBIRTH withdrawal is **exponential** (rate ∝ hole mass) | `[REBIRTH]` line, `renderer.mm:3667` | 744.7 → 371.8 → 156.8 M☉/frame measured — an asymptote, so the hole never fully leaves |
+⭐ **His bigger fix, named but not ordered:** drive the pump-out from **play amplitude** rather than from
+rebirth. That is the version that actually implements clause 3 of the law.
+
+### Z3. 🚨 HIS STANDING COMPLAINT, restated 2026-08-31 16:33:00 — **the hole has no lens and no renderer**
+*"hard to see cause the bh is still no lens no nothing."* ⭐ **Consistent with the tree, not a new bug:**
+both BH renderers were deleted 2026-08-27 (`00741f2`, 852 deletions) — §1c. **Nothing currently produces
+the photon ring, the far-side arch or the underside arc.** ⚠️ **Consequence for this section:** Z1 is
+verified in the LOG, not on screen — he cannot see a hole shrink that nothing draws. **F1 gates the eyes-on
+verdict for the whole of §Z.**
+
+### Z4. ⛔ THE BH OUTCOME CAP IS DEAD — his order 2026-08-31 16:10:25, SHIPPED.
+*"kill the cap. its so 2014. we can do it."* Two call sites in `particles.metal`, both gone:
+- **merge path** `:1638` — `float headM = 6.0e7f` replaces the `mBound − mS` headroom and its refusal.
+  ⭐ The fit-whole test and the CAS are **untouched**, so overshoot is still exactly zero.
+- **feed path** `:1505` — the feedback taper `fFb` is gone; budget is the raw `MDOT·dt`.
+- `F_BH_CLUSTER` and `FB_TAPER_FROM` **deleted** — zero readers, re-grepped after the edit.
+**MDOT survives on purpose:** it bounds dM/dt, never M — a different mechanism, not what he killed.
+**Why it dies, so nobody re-derives it:** its justification was a model of how long he plays (*"a Berlin
+set is 40-60 minutes"*), and he voided that reasoning the same day — *"thats 0 concern to the sim."*
+**MEASURED:** idle reached **Mmax = 161,690 M☉** against the old 102,144 ceiling that used to stall dead
+at **99.66%**. Growth is linear and unbounded in time again, by design.
+🚨 **Known consequence, traced NOT fixed:** above ~356,475 M☉ the pre-horizon seed draws as a ~220-pixel
+blackbody sprite because the blob is gated on `horizonR` instead of mass (§ the blob row) — killing the
+cap makes that mass reachable again.
+
+### ⛔ Z6. THE EGG — **MY ATTRIBUTION WAS WRONG. RETRACTED 2026-08-31 17:30:00, BY ME, UNPROMPTED.**
+
+> 🚨 **THE FIX I SHIPPED CANNOT HAVE REMOVED A VISIBLE ELLIPSE, AND HIS "looking good" MUST NOT BE
+> READ AS CONFIRMING IT.** `render.metal:1070` sets `if (isSecondary) cullThis = true;` **unconditionally**
+> — the tombstone of the lens deleted 2026-08-27 — and `:1533` turns that into `out.pointSize = 0.0f`.
+> **Every secondary-image particle is invisible, always.** The early-out I corrected at `:839` only
+> decides whether the heavy vertex shader RUNS before a cull that was going to happen anyway.
+> **Its only possible effect is on cost, not on pixels.**
+> ✅ **What survives, and is still worth keeping:** the boundary genuinely WAS anisotropic, `cam.aspect`
+> genuinely HAD zero shader consumers, and `:828` genuinely DID claim a margin "absorbs the aspect",
+> which is false. The change is correct and harmless. **It is simply not the cause of the egg.**
+> 🔴 **THE EGG'S CAUSE IS UNIDENTIFIED AND THE BUG IS OPEN.** Untested suspects, in order: the
+> depth-only occluder sphere (`render.metal:3028`, `bc = 2.5980762f * rsW`); the straight-line
+> photon-capture cull at `render.metal:1029` (`b_c` absence, re-enabled for every ray once the lens
+> died); and the AMR box — a straight or perfectly-curved edge in a particle cloud is a PRIMITIVE.
+> ⭐ **A LIKELY REASON HE SAW IT GONE, and it is testable:** the secondary instance is only dispatched
+> when `bhStrength > 0.5f` (`renderer.mm:4240`), so anything tied to a formed hole disappears with the
+> hole. **The rebuild relaunched the app with no hole formed.** Expect the egg to RETURN next time one
+> forms. ⚠️ **Do not close this row on a run that never formed a hole.**
+> 🪶 **Why this is written down rather than quietly fixed:** I had flagged exactly this doubt when I
+> shipped it ("I have NOT proven this is the ellipse in his screenshot") and a verdict arrived anyway.
+> **A verdict on a coincidence is how a false SETTLED is born — see §Y1, same day.**
+
+#### Z6 (superseded) — the secondary-image cull was a CIRCLE IN NDC, i.e. an ELLIPSE ON SCREEN. SHIPPED 2026-08-31 16:52:00, **HIS VERDICT: *"looking good to me with the egg"***
+**His report:** *"fix this freaking SHADOW the EGG the thingy there u see it dont u"* — a hard, bright,
+egg-shaped outline sitting over the disc, offset from the dark centre.
+**The mechanism** (`render.metal:839`): the secondary-instance early-out culled on
+`length(dNdc) > 8·bhShadowNdcRadius`. **NDC is square; the drawable is not.** At his 3024×1964 that
+boundary lands on screen stretched horizontally by **1.54×** — a hard ellipse where every particle's
+second image switches off at once. ⭐ **A clean ellipse in a particle cloud is a GEOMETRIC PRIMITIVE**,
+the same reasoning that points at the AMR box for the squarish slab.
+**The fix, one line:** `dNdc.x *= cam.aspect;`
+🚨 **TWO STANDING RULES WERE BOTH BROKEN AT THIS ONE SITE — this is the value of the row:**
+- 💬 **A COMMENT IS NOT A MECHANISM.** `render.metal:828` claimed the margin *"absorbs the aspect"*.
+  **A margin cannot absorb an ANISOTROPY** — it only makes the wrong shape bigger. The comment named the
+  exact defect and then asserted it away, which is why nobody looked again for five weeks.
+- 🎚️ **A UNIFORM WITH ZERO SHADER CONSUMERS IS A BUG.** `cam.aspect` (`renderer.h:219`) is declared
+  *"width/height, to make the lens screen-isotropic"* — **the fix was written down as a field name and
+  never wired.** It had ZERO readers in any shader until this line. ⭐ Here the rule resolved by WIRING
+  it, not deleting it: the consumer was missing, not the uniform.
+⚠️ **NOT a proof that every ellipse is gone.** If a boundary reappears it should now be a CIRCLE — that
+would mean the `8.0f` radius is too tight, a different one-line change. Remaining suspects for hard
+edges: the depth-only occluder sphere (`render.metal:3028`, `bc = 2.598·rsW`) and the AMR box.
+
+### Z5. ⛔ **REFUTED — "the gravitating field mass is 5× our anchor".** Claim raised 2026-08-31 16:15, dead by 16:20.
+**The claim:** all 10M particles gravitate, so the field is 2.97e6 M☉ and `kMfieldMsun = 5.94276e5` is
+stale by 5×, making spawn `v_circ` √5 too low.
+**MEASURED, live:** `[GRAV] live=1993624 Mlive=594276/189044` — the GPU sum of `posW.w` is **594,276**,
+and **1,993,624** bodies are live, not 10,000,000.
+**The mechanism the claim missed:** `app_state.h:13` `uiParticleCount = 2000000`, pushed every frame at
+`main.cpp:2519` → `setActiveParticleCount` clamps the count to 2M. The 10M upload survives ~one frame.
+**Independent arithmetic** (standalone sum over `imf::massOfId`, no app): Σ ids 0…2e6−1 = **5.942680e5**
+(vs the anchor 5.94276e5, agreement 1.3e−5); Σ ids 0…10e6−1 = **2.966241e6**.
+⭐ **The prefix sum matching to five significant figures IS the proof** — a stride subsample would not
+reproduce that number. The *"uniform 1/5 id-subsample"* comment at `particles.cpp:242` is loose about the
+MECHANISM (it is an id **prefix**, not a stride) but is **TRUE and load-bearing — do not delete it.**
+✅ Spawn `v_circ` is **correct**: `massNorm` maps the 10M spawn profile onto the 2M that actually gravitate.
+✅ The `[GRAV] Mlive` watchdog was **never removed** — it prints at `renderer.mm:3714`.
+🔴 **What DOES survive as a real fragility:** `uiParticleCount` is a live slider spanning 0–10,000,000
+(`main.cpp:1676`). `gravGM`/`fieldMassMsun` recompute from it every frame (`renderer.mm:2122`, `:2139`),
+but the spawn normalisation is hardcoded to the 2M constant `kMbhMsun`. **Move that slider and the two
+silently disagree** — at the 10M end that IS the √5 velocity deficit. Conditional on the slider, not true
+of the default state. **Not fixed; nobody has been ordered to.**
+
+---
+
+**Last Updated:** 2026-08-31 16:35:00 (§Z added — the mutual-exclusion LAW, the ratchet kill, the cap kill, and the refuted 5× field-mass claim. Previous stamp 2026-08-22 01:34:32.)
+⛔ **TREE FOOTER CORRECTED 2026-08-31 16:35:00** — this file said `SPACE-SYNTH-TUBE-killtube` @ `kill-the-tube-2026-08-11`, which has been dead since the 2026-08-27 merge.
+**Live tree:** `SPACE-SYNTH-TRUE-PHYSICS`, branch `true-physics`
 **Build:** `bash package_macos.sh` — never bare `make`. Launch `--env SS_FULLSCREEN=1`, always.
+
+
+---
+
+### Z6. ✅ **ALL FOUR CANNOT-GO-DOWN RULES ARE DEAD — AND HE HAS SEEN IT.** 2026-08-31 19:39:56
+
+`[HIS WORDS 2026-08-31]` **"app behaving great :)"** — fullscreen, on the `18:55:07` build.
+⭐ **The first eyes-on verdict any of today's BH work has had.** Everything before this was log-verified only.
+
+**The full set, in the order they were found:**
+
+| # | rule | site | his order |
+|---|---|---|---|
+| 1 | `bhSeedMassMono` running max | `renderer.mm:3452` | §Z1 |
+| 2 | `×0.03` horizon ease | was `:1829` | *"kill the ease. fix probe rate instead obviously !!!"* |
+| 3 | strength floor `max(…,1.0f)` + `×0.04` EMA | was `:3669`, `:3640` | *"kill that too"* |
+| 4 | `×0.03` disk-rotation ease | was `:1995` | *"kill that one too, fix the underlying value"* |
+
+🚨 **#4 IS THE ONE Z2's SWEEP MISSED, and it was not an ease at all.** Flagged by FABLE, traced by BRAIN:
+`bhDiskGM` is **0-or-full across a boolean gate** (`renderer.mm:1948` / `:1986`), so the ease was a
+blanket over a **STEP FUNCTION**, not a smoother of a rough value. ⭐ **His cure, and it generalises:
+fix the underlying value, never smooth the render.** Z2's sweep looked for `max`/floor patterns and
+found none — it was looking for the wrong shape.
+
+⭐ **#4 ADDS BEHAVIOUR RATHER THAN REMOVING IT — and it is the one that passed his eye.** The emergent
+time-lapse rotation was gated on a radial-profile mass that `[MEASURED]` read **ZERO on 667 of 670
+samples** in one run and **38 of 43** in his play run — so that rotation had essentially never executed.
+It now runs off the hole's own live mass. **The disk turning is not new code; it is old code running for
+the first time.**
+
+`[MEASURED, live, 2026-08-31 18:55:22, fullscreen, 2M particles, warp 1.00]`
+`[PERF] fps=120.0 worst=10.7ms realtime=1.007x` — pinned at the display rate with headroom.
+⚠️ **That is the baseline the lens spends from, measured with NO lens in the build.**
+
+✅ **B1 PASSED** — the lens marcher reproduces the deflection law before a single pixel is bent.
+`tools/lens_march_validate.cpp`, offline CPU, `dphi = pi/512`, against FABLE's corrected three-leg gate:
+`STRONG b∈(1.001b_c,20] rel 2.166e-04` (4.6× margin) · `FAR b∈(20,200] abs 1.942e-05 rad` (5.1×) ·
+`CAPTURE b_c rel 3.365e-04` (3.0×). ⭐ **The capture leg is the one α never tests, and it is what catches
+a faked shadow.** ⚠️ `pi/512` is **8× FABLE's original `pi/64` assumption** — B2 measures the real cost;
+correctness was not shrunk to fit a budget.
+
+⛔ **GATE RETRACTED BEFORE IT SHIPPED, by FABLE, on its own design:** B1 first FAILED at `pi/64`
+(`1.240e-01`, 32× too coarse for its own gate). ⭐ **OPUS reported the failure as a result rather than
+tuning the step until it passed.** The gate was wrong — a *relative* criterion out to `b=200`, where α is
+0.010 rad and physically invisible, gating a regime the bounded march never enters. And its replacement
+justification (*"sub-half-pixel everywhere"*) was itself FOV-blind and retracted a second time: 1e-4 rad
+on the 5340 px wall is 0.31 px at 100° FOV but **1.02 px at 30°**, and the show has camera rides.
+
+🔴 **STILL OPEN, unchanged by any of the above:** the 220 px blackbody blob is still gated only on
+`cam.horizonR <= 0.0f` (`render.metal:2130`, size `pow(Mbh,0.8)` clamped 220 px). **The cap kill raised
+reachable mass, and the horizon measurement is known to read zero when TWO massive bodies exist** — the
+endgame §Z4 unlocks. One-line fix traced 2026-08-10 (`:713-715`), **never built, NOT ordered.**

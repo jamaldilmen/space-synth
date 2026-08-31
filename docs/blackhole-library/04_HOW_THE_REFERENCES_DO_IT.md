@@ -283,8 +283,9 @@ which is exactly the kind of name-as-mechanism claim that has bitten this projec
 
 - **The Schwarzschild deflection LUT is kept but UNREAD.** `README.md` records it as surviving the
   2026-08-27 deletions, which is true — but `lensAlphaSample` (`render.metal:340`) has **zero
-  callers in shader code**; the only other hits are three comments in `renderer.mm` (`:854`, `:870`,
-  `:876`). "Kept" should not be read as "in use". It is ready for a future integrator, not feeding
+  callers in shader code**; the only other hits are three comments in `renderer.mm` (`:908`, `:924`,
+  `:930`) ⛔ *(corrected 2026-08-31 16:52:00 — they were cited at `:854/:870/:876`; the file has since
+  shifted. 14th sighting of a decayed anchor.)*. "Kept" should not be read as "in use". It is ready for a future integrator, not feeding
   the current picture.
 - **A stale comment sits on the live capture cull.** `render.metal:994` still says *"With the lens
   on, the lens + membrane are the ONLY transport — no straight-line culls."* **The lens was deleted

@@ -3,21 +3,47 @@
 > **His message:** *"the projection is gonna be 3 walls in a room, 2 at 4m x 15m and one / front
 > that's a bit smaller let's say 10 m … it's a fucking like house in square meters lol … bro said
 > as long as it's at least 4k we good and that i need to think in three slices."*
-> **13 days out.** This supersedes the single 10×4 m / 2.5:1 assumption every board row was written
-> against.
+> **6 days out (2026-08-30).** This supersedes the single 10×4 m / 2.5:1 assumption every board row was
+> written against.
+>
+> 🚨 **THIS DOC WAS BUILT ON HIS ESTIMATE AND THE ESTIMATE WAS WRONG. CORRECTED 2026-08-30 23:49:52.**
+> He walked the venue 2026-08-24 and a Polycam scan (256,532 verts) confirmed it independently:
+> **the walls are 3.50 m, not 4**, and the sides are the WIDE pair. Until this edit every number in
+> §1 below was the superseded guess — **area was overstated 15.7%, height 14.3%** — while the board
+> pointed here as "the working" for the show. Fixed against
+> `memory/space_synth_three_wall_room_2026-08-23.md`.
 
 ---
 
 ## 1. THE GEOMETRY
 
-| surface | size | aspect | area |
-|---|---|---|---|
-| side wall ×2 | 15 × 4 m | **3.75:1** | 60 m² each |
-| front wall | 10 × 4 m | **2.5:1** | 40 m² |
-| **total** | unwrapped **40 × 4 m** | **10:1** | **160 m²** |
+**✅ MEASURED — he walked it 2026-08-24, Polycam scan confirms (floor plane y −1.50, wall tops y +2.00):**
 
-Room is therefore ~**10 m wide × 15 m deep × 4 m high**, audience **inside**. He is right about the
-square metres: 160 m² of projected surface is a family house's floor area.
+| surface | size | aspect | area | pixels (venue tech, 2026-08-29 01:20) | px/m |
+|---|---|---|---|---|---|
+| side wall ×2 | **14.75 × 3.50 m** | **4.214:1** | 51.6 m² each | **7152 × 1680** each | **485** |
+| front wall | **10.01 × 3.50 m** | **2.857:1** | 35.0 m² | **5340 × 1680** | **533** |
+| **total** | unwrapped **39.5 × 3.50 m** | **11.286:1** | **138.25 m²** | **19,644 × 1680** | — |
+
+⛔ ~~side ×2 15 × 4 m / front 10 × 4 m / unwrapped 40 × 4 m = 160 m², 10:1~~ — **his pre-walk estimate,
+superseded 2026-08-24.** Kept struck through, not deleted, because board rows written before that date
+were reasoned against it.
+
+⭐ **THE SIDES ARE THE WIDE WALLS (14.75 m), THE FRONT IS THE NARROW ONE (10.01 m).** His original
+message says it — *"2 at … 15 m and one / front that's a bit smaller … 10 m"*. `BOARD.md` §W9 had this
+**backwards** until 2026-08-30 23:49:52; see the correction there.
+
+📐 **Pixel density is very nearly uniform: 485 px/m on the sides vs 533 on the front, a 10% spread.**
+The sides carry 34% more pixels because they are 47% wider — pixel budget IS roughly proportional to
+physical width, within 10%. ⚠️ Their two open questions, unanswered: **60 fps?** and **external SSD?**
+
+🧍 **THE ROOM HAS PEOPLE IN IT.** A packed standing crowd kills the bottom **1.0 m**, leaving 2.5 m —
+71% of height. Usable front 4.000:1, usable side 5.900:1. 🎯 **The focus band is the top half of the
+front wall, 10 × 1.75 m, and it is only 12.66% of the room's surface.** Anything that must be READ
+goes there, and vertical framing must bias UP. The other 87.5% is peripheral vision by construction.
+
+Room is therefore ~**10 m wide × 15 m deep × 3.50 m high**, audience **inside**. He is right about the
+square metres: 138 m² of projected surface is a family house's floor area.
 
 ⚠️ **Every "2.5:1" on the board is now only the FRONT wall.** The pinned 3840×1536 we tested today is
 the front slice, not the show.
@@ -26,7 +52,10 @@ the front slice, not the show.
 
 ## 2. 🚨 THE ONE STRUCTURAL FACT — ONE CAMERA CANNOT RENDER THIS
 
-Three walls of a rectangular room wrap roughly **270°** around a viewer standing inside. A single flat
+✅ **COMPUTED 2026-08-31 00:47:15, not estimated: 291.67°** (`tools/frustum_validate.cpp` test 6, checked against a 360° closure). Front wall **68.33°**, each side **111.67°**, the beamer-less back wall **68.33°**. ⛔ The **~270°** this line carried was a guess and it UNDERSTATED the problem by 22°.
+
+Three walls of a rectangular room wrap **291.67°** around a viewer standing inside (⛔ this line said
+"roughly 270°" until 2026-08-31 16:45:00 — two lines below the correction that replaced it). A single flat
 perspective projection **cannot** cover that, and this is not a quality argument — it is arithmetic. A
 flat image plane needs width ∝ tan(fov/2):
 
@@ -77,7 +106,9 @@ At 4K per wall:
 | front | 3840 × 1536 | 5.90 MP |
 | **total** | | **13.8 MP/frame** |
 
-That is **2.33× the fill** of the 5.9 MP he ran today — and today's measurement was *"es läuft halt
+⛔ **SUPERSEDED 2026-08-31 00:53:55 — THAT WAS A 4K-PER-WALL GUESS, THE VENUE SPEC IS BIGGER.** Actual: front 5340×1680 = **8.97 MP** + sides 7152×1680 = **12.02 MP each** ⇒ **33.00 MP/frame** (== 19,644×1680 exactly). That is **5.56× the fill** of his 5.94 MP panel, and **2.39× MORE than this 13.8 MP plan assumed.** The line below is kept as the superseded estimate.
+
+~~That is **2.33× the fill** of the 5.9 MP he ran today~~ — and today's measurement was *"es läuft halt
 1 zu 1 so wie vorher"*, i.e. **no measurable cost at 2.5× the previous fill**. So fill rate is
 probably not the wall.
 

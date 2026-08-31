@@ -259,35 +259,31 @@ constant float MDOT_MSUN_PER_SIMTIME =
 constant float MDOT_MSUN_PER_WALLSEC =
     MDOT_MSUN_PER_SIMTIME * KTLAPSE_SIM_PER_WALLSEC;
 
-// ── THE OUTCOME BOUND (2026-08-11 17:53:12) ─────────────────────────────────
-// The rate limit above bounds dM/dt. It does NOT bound M. Board A1'-endgame,
-// measured on his screenshot 2026-08-10 15:52:00: a 41-minute idle run ended
-// with ONE body at 356,475 M☉ against a 594,276 M☉ field = 60.0% of everything,
-// ~4 objects left on screen. Linear growth is still unbounded in time, and a
-// Berlin set is 40-60 minutes. The board's own words: "A bound (feedback /
-// Eddington-like term / a cap tied to field mass) ... does not exist anywhere
-// in the code."
+// ── THE OUTCOME BOUND IS DEAD (killed 2026-08-31 16:10:25, his order) ───────
+// "kill the cap. its so 2014. we can do it."
 //
-// THE NUMBER IS OBSERVED, NOT CHOSEN. In the real Galactic Centre the central
-// black hole is a fixed fraction of its host cluster:
-//     Sgr A*  = 4.297e6 M☉   (GRAVITY Collaboration 2022)
-//     Milky Way nuclear star cluster = (2.5 +- 0.4)e7 M☉  (Schodel et al. 2014,
-//     half-light radius 4.2-5 pc)
-//     M_BH / M_cluster = 0.1719
-// Scaled to our field that is 594,276 x 0.1719 = 102,144 M☉ — the mass at which
-// this hole should stop, against the 356,475 it actually reached (3.5x over).
-// This is the same anchor the rest of the file already uses; BH_SGRA lives in
-// physics_constants.h. Full derivation: docs/STATE_2026-08-11_units_scale_real_numbers.md
+// It lived here 2026-08-11 → 2026-08-31 as a feedback taper: a hole's growth
+// was tapered to zero as it approached F_BH_CLUSTER × fieldMass, with
+// F_BH_CLUSTER = 0.17188 taken from Sgr A* (4.297e6 M☉, GRAVITY 2022) over the
+// Milky Way nuclear star cluster (2.5e7 M☉, Schodel et al. 2014). On our
+// 594,276 M☉ field that ceiling was 102,144 M☉.
 //
-// WHY A TAPER AND NOT A CAP: a hard cutoff is a switch, and real growth is
-// self-regulating (feedback expels the fuel as the hole grows — the observed
-// M-sigma relation is the endpoint of that process, not a clamp). The taper is
-// FLAT below 70% of the bound, so every regime this project has actually
-// measured — including the 2,451 M☉/wall-s linear growth verified 2026-08-08 —
-// is UNCHANGED. It only bites in the range where nothing has ever been verified
-// and where the field gets eaten.
-constant float F_BH_CLUSTER  = 0.17188f;  // 4.297e6 / 2.5e7, observed
-constant float FB_TAPER_FROM = 0.70f;     // full rate below this fraction of the bound
+// WHY IT DIES, so nobody re-derives it: its written justification was a model
+// of how long he plays — "a Berlin set is 40-60 minutes", i.e. the bound was
+// there to keep the hole from eating the field inside a show. He ruled that
+// reasoning out on 2026-08-31: "you must keep from thinking about how i play
+// the show... thats 0 concern to the sim." The rationale is VOID, not merely
+// overruled. The observed M/M_cluster ratio is still a real number about the
+// real universe; it was never a law forbidding this hole from growing.
+//
+// WHAT SURVIVES: MDOT_MSUN_PER_WALLSEC above. That is a RATE limit — it bounds
+// dM/dt out of the disc, a different mechanism, and it is not what he killed.
+// Growth is linear and unbounded in time again, by design.
+//
+// KNOWN CONSEQUENCE, traced not fixed: BOARD_BLACKHOLE.md:713-715 — above
+// ~356,475 M☉ the pre-horizon seed BLOB draws as a ~220-pixel blackbody sprite,
+// because it is gated on horizonR rather than on mass (render.metal:1941).
+// Killing the bound makes that mass reachable again.
 
 // ── Unified BH constants ────────────────────────────────────────────────────
 // All BH-related sizes derive from BH_M (the visual Schwarzschild radius in
@@ -1501,21 +1497,12 @@ kernel void compute_physics(
                     // free — the add only lands if the plate is still what we
                     // read. Residual overshoot is at most ONE victim (≤50 M☉),
                     // because the last meal that fits may cross the line.
-                    // ── OUTCOME BOUND (see F_BH_CLUSTER at the top) ─────────
-                    // Feedback factor from THIS hole's mass against the observed
-                    // M_BH/M_cluster ratio, measured against the LIVE field total
-                    // (u.massTotal) rather than a baked constant, so it tracks the
-                    // actual books instead of drifting away from them.
-                    // ⚠️ fieldMassMsun, NOT massTotal (fixed 2026-08-12 22:01:44).
-                    // massTotal carries the Size slider's massScale — it is the
-                    // gravity anchor, not the books. MEASURED with massTotal:
-                    // mBound = 0.17188 × 189,044 = 32,495, and an idle run
-                    // stalled dead at 32,384 = 99.66% of it, with 916,781 stars
-                    // inside the capture radius refused by this CAS every frame.
-                    float mBound = F_BH_CLUSTER * max(u.fieldMassMsun, 1.0f);
-                    float fFb    = 1.0f - smoothstep(FB_TAPER_FROM * mBound,
-                                                     mBound, mS);
-                    uint  budgetFx = uint(max(MDOT_MSUN_PER_WALLSEC * dt * fFb, 0.0f) * 64.0f);
+                    // ⛔ OUTCOME BOUND KILLED 2026-08-31 16:10:25, his order —
+                    // see the block at the top of this file. The feedback taper
+                    // fFb died with it, so the budget is the raw rate limit.
+                    // MDOT stays: it bounds dM/dt, never M. The CAS above is
+                    // UNCHANGED — it is what makes the rate limit hard.
+                    uint  budgetFx = uint(max(MDOT_MSUN_PER_WALLSEC * dt, 0.0f) * 64.0f);
                     uint  myFx     = uint(mass * 64.0f + 0.5f);
                     device atomic_uint *plate = &seedAccum[(slot - 1u) * 8u + 0u];
                     uint cur = atomic_load_explicit(plate, memory_order_relaxed);
@@ -1627,9 +1614,10 @@ kernel void compute_physics(
                     // ⭐ THE FIT TEST. Two changes, both deliberate:
                     //   1. BUDGET IS HEADROOM, NOT MDOT. A BH↔BH merger is
                     //      DYNAMICAL — there is no disc to drain, so the viscous
-                    //      rate has no physical claim on it. What DOES bind is the
-                    //      outcome bound, so the budget is this seed's remaining
-                    //      room to it: mBound − mS. (MDOT·dt is ~21–73 M☉/frame
+                    //      rate has no physical claim on it. The budget was this
+                    //      seed's remaining room to the outcome bound, mBound − mS;
+                    //      since 2026-08-31 that bound is DEAD and the budget is the
+                    //      fixed-point ceiling instead. (MDOT·dt is ~21–73 M☉/frame
                     //      depending on frame rate, below M_BH_SEED = 50, so keeping
                     //      it here would ban merges outright and with them the
                     //      runaway to one giant.)
@@ -1638,15 +1626,16 @@ kernel void compute_physics(
                     //      several victims converging on one seed in the same frame
                     //      are bounded TOGETHER on the shared plate rather than each
                     //      against a stale posW.w.
-                    // Merges stay completely FREE below the ceiling — the taper is
-                    // deliberately absent here, because a merge is a discrete event
-                    // and a smoothstep on a discrete event is just a slower lottery.
-                    // Refusing costs nothing and creates nothing: the victim stays
-                    // alive and orbiting, mass is conserved exactly, and if the field
-                    // grows the room reopens and it merges later.
-                    float mBoundM = F_BH_CLUSTER * max(u.fieldMassMsun, 1.0f);
-                    float headM   = mBoundM - mS;
-                    if (headM <= 0.0f) continue;      // survivor is already at the ceiling
+                    // Merges are FREE — the taper was deliberately absent here even
+                    // before the bound was killed, because a merge is a discrete
+                    // event and a smoothstep on a discrete event is just a slower
+                    // lottery. The only refusal left is a claim that does not fit
+                    // the fixed point; mass is still conserved exactly.
+                    // ⛔ CAP KILLED 2026-08-31 16:10:25, his order. There is no
+                    // ceiling to have headroom against any more, so headroom is
+                    // simply the largest value the ×64 fixed point can carry.
+                    // The refusal is what died; the FIT TEST below is untouched.
+                    float headM = 6.0e7f;
                     // min() keeps the ×64 fixed-point inside uint; mass < 1e8 above.
                     uint  budgetMx = uint(min(headM, 6.0e7f) * 64.0f);
                     uint  myMx     = uint(mass * 64.0f + 0.5f);

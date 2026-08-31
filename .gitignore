@@ -25,3 +25,16 @@ tools/measure_n/osc.metallib
 # Run logs — session artifacts, reproducible, never state (2026-08-29)
 run.log
 run_*.log
+
+# the compiled executable — UNTRACKED 2026-08-31 17:39:22, his order "clean that up".
+# It is built from the WHOLE tree, so committing it beside one source file
+# silently ships every other dirty change inside the binary, invisible in the
+# diff. The rest of SpaceSynth.app STAYS tracked: Info.plist, the font and the
+# preset are inputs, and Contents/Frameworks/Syphon.framework is a DEPENDENCY —
+# third_party/syphon/ is gitignored, so that framework may be the repo's only
+# copy of Syphon. Do not extend this rule to the .app as a whole.
+SpaceSynth.app/Contents/MacOS/SpaceSynth
+
+# python bytecode from tools/
+__pycache__/
+*.pyc

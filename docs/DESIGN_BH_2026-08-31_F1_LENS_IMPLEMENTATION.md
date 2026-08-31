@@ -133,7 +133,7 @@ table at runtime — it is the oracle, not the path).
 | # | Change | Verified by | Visual? |
 |---|---|---|---|
 | B1 | CPU reference marcher (mirror of the shader loop) + validation: recover α(b) from the marcher, compare to the live 256-entry table AND `bc_validate` | ⛔ **GATE CORRECTED 2026-08-31 18:50:14 — see the B1 RULING below the table.** Original "rel < 1e-3 over b ∈ (1.001·b_c, 200)" was WRONG and OPUS's run rightly failed it | no |
-| B2 | Region mask + fragment pass in DEBUG colouring (termination class per pixel: horizon / particle / aggregate / escape / cap) | T4 in debug form: a hidden emitter's cell class appears at b > b_c | yes — debug view, his first look |
+| B2 | Region mask + fragment pass in DEBUG colouring (termination class per pixel: horizon / particle / aggregate / escape / cap) | ⛔ **SPLIT BY OPUS 2026-08-31, ACCEPTED 20:04:29 — see the B2 SPLIT note below.** The original gate ("T4 in debug form") referenced B2b machinery and was wrong FOR B2a — same class of error as the original B1 gate | yes — debug view, his first look |
 | B3 | Real termination + emission + sprite suppression handover | T1 seam numbers; T4 for real; T2 triad sign | yes |
 | B4 | One net g³ + Kelvin shift | edge-on A/B (face-on is null by measurement) | yes |
 | B5 | A8: per-frame jitter + temporal accumulation inside the region | pebble check at the ring; T3 arc at closest alignment | yes |
@@ -142,6 +142,38 @@ table at runtime — it is the oracle, not the path).
 Each step STOPS for its verdict per working protocol. B1 needs no build token conflict —
 it is offline CPU code beside `bc_validate`. **The two pending cost numbers (coverage at
 b < 10/20 r_s, step cost) fall out of B2 for free** — the debug pass IS the cost probe.
+
+### THE B2 SPLIT — OPUS's deviation, accepted 2026-08-31 20:04:29, with per-half gates
+
+OPUS split B2 rather than applying it whole, and flagged the split instead of doing it
+silently — correct on both counts. **B2a** = region mask + per-pixel geodesic march +
+termination classes WITHOUT particle machinery (built, cost probe running).
+**B2b** = particle + opaque-cell termination classes (not started). The original B2 gate
+("T4 in debug form") needs B2b's machinery, so gating B2a on it would repeat the B1
+mistake. The per-half gates:
+
+- **B2a gate:** in the debug frame, (1) the termination class must be a function of `b`
+  ALONE — azimuthally uniform circles centred on the hole; with no particles involved,
+  ANY azimuthal structure in B2a's classes is a bug, and this can fail on one captured
+  frame; (2) the horizon-class disc's radius scales with live M (visible shrinking under
+  a drain, or two masses → two radii); (3) the winding-cap class appears only in a thin
+  annulus hugging `b_c`; (4) the two cost numbers (coverage at b < 10/20 r_s, ms at
+  π/512) are logged — B2a IS the cost probe.
+  ⚠️ **MEASUREMENT DISCIPLINE, added 2026-08-31 20:08:11 from OPUS's finding:** the cost
+  gate (4) CANNOT be measured against a free-running hole. `[MEASURED by OPUS]` two runs
+  at the SAME `SS_SPAWN_SEED` diverged 4× in Mmax after 50 s — the 32-of-334k neighbour
+  fork (F2) is set by GPU scheduling order, not the RNG, so region area ∝ (B_geo·r_s)²
+  is not reproducible between arms. OPUS's first A/B was invalid for exactly this reason
+  and was rightly not reported. **Gate (4) runs with `SS_LENS_PIN_RS` (debug-pass-only
+  r_s override; its banner marks it measurement-only — set otherwise it decouples the
+  drawn region from the mass, which is precisely a §Z violation). Gate (2) runs with the
+  pin OFF, as a separate observation — pinned, disc size is constant by construction and
+  the test is void.** ⭐ Same hazard, pre-empted for T1: the seam test compares
+  integrator vs sprites on IDENTICAL state — same-frame or frozen-state only, never two
+  free runs, or the fork measures "different hole", not "different transport".
+- **B2b gate:** the original criterion — a hidden emitter's particle class appears at
+  `b > b_c` (T4 in debug form), and the aggregate class appears ONLY in cells whose
+  UNCAPPED count marks them optically thick.
 
 ### THE B1 RULING — 2026-08-31 18:50:14, FABLE, after OPUS's validator failed the original gate
 
@@ -205,7 +237,13 @@ targeted science question BRAIN offered to write** — it is downstream of a len
 works at all, and it is the one P4 fragment worth keeping warm.
 
 ---
-**Last Updated:** 2026-08-31 18:52:39 — far-field justification corrected (BRAIN's
+**Last Updated:** 2026-08-31 20:08:11 — measurement discipline added to the B2a gate
+(OPUS's finding): cost pinned via SS_LENS_PIN_RS, mass-scaling checked pin-off, T1
+same-state rule pre-empted — the free-running hole diverges 4× at identical seed.
+Previous stamp 20:04:29 — B2 SPLIT accepted (OPUS's deviation, flagged not
+silent) with per-half gates; the original B2 gate referenced B2b machinery and gating B2a
+on it would have repeated the B1 mistake.
+Previous stamp 18:52:39 — far-field justification corrected (BRAIN's
 catch): "sub-half-pixel everywhere" was FOV-blind; now stated per-FOV with the narrow-FOV
 camera-ride case an accepted, named limit and the baseline's 5× cushion on record.
 Previous stamp 18:50:14 — B1 RULING added (§5): the original α gate was

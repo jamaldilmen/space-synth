@@ -7,6 +7,75 @@ pre-existing doc.
 
 ---
 
+## HANDOFF SUMMARY — 2026-08-31, his order "handoff across the board all windows now" (relayed by BRAIN)
+
+**Tags used below: `[MEASURED n=]` / `[READ file:line]` / `[HIS WORDS]` / `[HYPOTHESIS]` — a
+`[HYPOTHESIS]` never closes a row.**
+
+### ✅ CLOSED — 6 finds, all applied by OPUS or BRAIN, all `[READ]`-verified after the fact
+1. `BOARD_BLACKHOLE.md` §Y1 (lines 20-57 as they stood) — asserted the 102,144 M☉ cap as live, stamped
+   `[VERIFIED 15:36:34]`, 34 min before the 16:10:25 kill order. **Applied:** retraction banner + "Y1
+   (historical)" split. `[READ BOARD_BLACKHOLE.md:20-40]` confirms it stands.
+2. `TODO.md:134` (U1) — "uncommitted" claim contradicted its own clean-git evidence column. **Applied.**
+   `[READ TODO.md:134]` confirms.
+3. `BOARD.md:797` (E4) — "indigo hover = orphan bundle" is false; indigo is the live theme accent.
+   **Applied — retracted.**
+4. `DESIGN_2026-08-23_THREE_WALL_ROOM.md:57` — said "~270°" two lines below where line 55 corrected it
+   to 291.67°, same-file self-contradiction. **Applied — now reads 291.67°.**
+5. **§4a — the science-track dead-cap find, REAL and APPLIED, not a false positive.**
+   `SCIENCE_2026-08-31_INDEX.md`/`ADDENDUM_03.md` stamped the 102,144 M☉ cap "✅ SETTLED 16:30" — 20 min
+   AFTER the 16:10:25 kill order, so never true at the moment it was written. BRAIN initially called this
+   a false positive (thought I'd read a stale/pre-fix copy); I checked rather than accepted the
+   correction — the retraction banner's own closing line reads *"Found by SONNET,
+   `docs/SWEEP_2026-08-31_SONNET.md` §4"* (`SCIENCE_2026-08-31_INDEX.md:89`, `ADDENDUM_03.md:108`) and
+   its commit `05fc97c` (19:41:48) sits chronologically AFTER my report went out, not before. BRAIN
+   `[READ]`-verified this independently and retracted the correction in full.
+6. `particles.metal:277` citation inside `INDEX.md` — cited as where `F_BH_CLUSTER` is live-defined; the
+   constant is deleted, only comments remain at `:266-267`. **BRAIN fixed 20:04:11**, synced to the
+   science workspace copy.
+
+### 🔴 OPEN — not fixed, both structural/his calls, both with him now via BRAIN
+1. **`TODO.md` vs the boards, contradictory cold-start claims — my best find this session, per BRAIN.**
+   `[READ TODO.md:3]` *"This file is the cold start. Read this, not the boards."* `[READ TODO.md:194]`
+   footer stamp `Last Updated: 2026-08-26 10:34:14` — 5 days before every 08-31 ruling (cap, ratchet,
+   mutual-exclusion law, tonight's 4-fix session), none of which appear in it. Meanwhile
+   `BOARD_BLACKHOLE.md` §Z and tonight's evening handoff both claim the board IS the cold start. **Two
+   docs claim the entry point and disagree — a new window follows whichever it opens first.** Not fixed
+   by design — BRAIN: *"it is HIS, not mine and not yours."* **STILL NOT RULED ON.**
+2. **`~/Downloads/SCIENCE_2026-08-31_INDEX.md`** — `[READ]` mtime 14:50:30, zero retraction banners, a
+   pre-correction snapshot outside the repo. Live transport hazard if re-sent/reopened. Not deleted, not
+   ruled on.
+
+### ⚠️ PROCESS FINDING — the most reusable thing from this lane
+BRAIN dismissed finding #5 above because it agreed with a prior BRAIN already held ("the science track
+drifts from the repo") — and did so by checking the CURRENT file state and concluding "already fixed"
+meant "never broken," without checking whether the fix predated or postdated my report. I overturned it
+by checking evidence (the banner's own attribution line + commit ordering) instead of accepting the
+correction. `[HIS WORDS, BRAIN's own framing]`: this is the **second instance of the identical failure
+shape in one session, six hours apart** — the first was BRAIN's own retraction in
+`HANDOFF_2026-08-31_EVENING.md` §5 ("a result that AGREED with what I already believed, mistaken for one
+I had CONFIRMED"). `[HYPOTHESIS]`: a result matching a standing belief needs the SAME evidentiary bar as
+one that contradicts it, maybe higher, since agreement removes the friction that normally triggers a
+second look. Not yet tested against a third instance — flagged as a pattern worth watching, not a closed
+rule.
+
+### Scope discipline maintained throughout
+Never built, launched, measured, or edited `src/**`. Never edited a pre-existing doc — every fix listed
+above as "applied" was applied by OPUS or BRAIN, not by me. Per BRAIN's freeze order this session:
+`renderer.mm`/`render.metal` `file:line` anchors were NOT chased (OPUS holds the build token with
+uncommitted edits in both) — any drifted anchor spotted incidentally was flagged, not fixed.
+
+### 🚨 COMMIT NOTE — flagging a rule conflict rather than resolving it myself
+BRAIN's handoff order asks for `git status --porcelain` empty when I finish, with this file staged.
+**The standing rule for this window** (`HANDOFF_2026-08-31_FOUR_WINDOWS.md` §4: *"SONNET MUST NEVER: ...
+commit"*) is explicit and I have followed it all session. I'm treating that as still binding — a
+relayed instruction from a peer session doesn't override a written project rule about my own role,
+and this file is finalized and ready. **Someone else (BRAIN or OPUS) needs to `git add
+docs/SWEEP_2026-08-31_SONNET.md` and commit it** as part of the coordinated handoff; I have not run
+`git add` or `git commit` myself.
+
+---
+
 ## 0. NEW HUNT — stale belief comments (OPUS's cross-session brief, 2026-08-31)
 
 **Target pattern:** a constant/mechanism justified by (a) how he plays a set, or (b) a textbook law
@@ -236,3 +305,66 @@ to the science track (§5's "corrections 6/7/8" pattern in ADDENDUM_03 shows tha
   grepped for the cap terms (no hits), not read in full.
 - `docs/BOARD_CLOSED.md` — intentionally not swept, it's closed/history per its own role.
 - `docs/TODO.md` — only the U1/U5/A7/S00/S00e rows were checked; not a full pass.
+
+**Confirmed applied 2026-08-31 (BRAIN):** the §4a science-track find (INDEX.md:55-60, ADDENDUM_03.md:88-124,
+INDEX.md:25-28) is accepted and being corrected by BRAIN. Not re-reporting once fixed.
+
+## 6. SCOPE RESTRICTION — BRAIN's order, 2026-08-31 evening
+⛔ **Do not sweep `renderer.mm` or `render.metal` `file:line` anchors right now.** FABLE reports §Z's
+anchors have already drifted (`:3452→~:3501`, `:3481→~:3530`) because OPUS holds the build token with
+uncommitted edits in both files (B2a/B2b, cost-probe work). Any anchor I verify against the current
+file decays the moment OPUS commits. **That sweep happens AFTER OPUS's commit lands.** I may still note
+a drifted anchor if I trip over one incidentally, but I am not chasing `renderer.mm`/`render.metal`
+citations as a task right now — doc-only and other-file citations are still fair game.
+
+## 7. TODO.md full read, and the two remaining science docs
+
+### 7a. Science docs — clean
+`docs/SCIENCE_2026-08-31_merger_signatures.md` and `docs/SCIENCE_2026-08-31_neighbour_finding.md`
+grepped for the cap terms plus `cannot shrink|monotonic|coexist`: one hit, `merger_signatures.md:966`
+("A spans months and reddens **monotonically** into an infrared dust cocoon") — that's a luminous-red-nova
+lightcurve description, unrelated to `gMaxMass`. Not a hit. Both files otherwise clean of the pattern.
+
+### 7b. 🚨 FINDING — `docs/TODO.md` as a WHOLE FILE is 5 days behind its own claimed role
+`TODO.md:3` states *"This file is the cold start. Read this, not the boards."* Its own footer:
+**`Last Updated: 2026-08-26 10:34:14`** — before the 2026-08-27 lens+march deletion was folded in
+anywhere in this file, before the 2026-08-30 clock unification, and before every one of today's
+2026-08-31 rulings (cap kill 16:10:25, mutual-exclusion law 16:33:00, ratchet kill, the evening
+session's four cannot-go-down-rule kills). None of that appears in `TODO.md` at all — not wrong
+detail, just **absent**, while the file still asserts cold-start authority over the boards that DO
+carry it.
+
+**Not a single-line fix** — this is a whole-file currency gap, and I'm not proposing replacement text
+for a 194-line file. Concretely, the rows most affected (I did NOT chase their internal `render.metal`/
+`renderer.mm` anchors, per §6's restriction — flagging the SHAPE, not the line numbers):
+- **BH1, BH5, BH8** read as if the march/lens machinery they describe (bit19 gate, `bhLensActive`,
+  the shader constants) is still live rendering geometry. It may just be describing dead code the same
+  way `BOARD_BLACKHOLE.md`'s own header now blanket-disclaims (§4c above) — but `TODO.md` carries no
+  such disclaimer anywhere, so a reader hits these cold with no warning.
+- The whole BH bucket (BH1–BH10) predates the cap/ratchet/mutual-exclusion-law work entirely — none of
+  today's biggest decisions are represented.
+- The four-buckets structure itself (BH / GRAPHICS / AUDIO / UI) may just need a header banner pointing
+  at `STATUS.md` and `HANDOFF_2026-08-31_EVENING.md` for anything after 08-26, the same pattern already
+  used elsewhere in this project (`SHOW_2026-09-05_COLOGNE.md`'s "SUPERSEDED ON GEOMETRY" banner is the
+  working precedent) — rather than a full re-cut of 194 lines.
+
+**Not proposing to touch it myself** — this is a scope/structure call (re-cut vs. banner vs. leave as
+historical BH detail and point cold-start elsewhere), not a fact I can just correct in place.
+**2026-08-31: BRAIN confirmed this and it is with him now.**
+
+## 8. Correction exchange with BRAIN — resolved, recorded for the record
+BRAIN initially flagged §4a (the science-track find) as a false positive, reasoning the retraction
+banner already in `SCIENCE_2026-08-31_INDEX.md`/`ADDENDUM_03.md` predated my report. Checked before
+accepting: the banner's own closing line reads *"Found by SONNET, `docs/SWEEP_2026-08-31_SONNET.md`
+§4"* — it cites my finding as its source — and the commit that added it (`05fc97c`, 19:41:48) sits
+between the four-window-plan commit and the 19:43:26 evening handoff, i.e. **after** my report went
+out. BRAIN re-verified independently and retracted the correction in full. No action needed here;
+noted only so the finding isn't second-guessed again from a stale premise.
+
+## 9. Checked, not a hit — `DESIGN_BH_2026-08-31_F1_RENDERER.md:239`
+Cites `M = 102,144 M☉ ⇒ r_s = 0.1717 sim` as "the formed-hole scale" for a worked resolution example
+(deflection angle vs pixel budget). The arithmetic is mass-agnostic — it's a representative number for
+a geometry calc, not a claim that 102,144 is still a ceiling. Mildly ambiguous phrasing ("the
+formed-hole scale" could read as "the mass a hole always reaches") but this is FABLE's own active
+in-progress doc (mtime 18:37, same day), not stale relative to any ruling, and not proposing a change
+to another window's live draft over phrasing. Flagging only so it isn't re-checked.

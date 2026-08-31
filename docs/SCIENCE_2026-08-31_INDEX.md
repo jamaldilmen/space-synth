@@ -26,9 +26,13 @@ Two draft attributions were corrected by those checks.
 > not "the" formed hole. The `r_s -> M` conversion itself is unaffected and still checks out.
 > See `ADDENDUM_04` §2 for what re-scales. `[reasoned from src state reported 15:23; concluded 17:05]`
 > ⛔ **CORRECTED 2026-08-31 15:10 — see `SCIENCE_2026-08-31_ADDENDUM_01.md`.** This section
-> originally called this a finding the board was missing. **It is not.** The mass is already in
-> the code at `particles.metal:277` as `F_BH_CLUSTER = 0.17188f` with the arithmetic written out
-> (594,276 x 0.1719 = 102,144 M☉), since 2026-08-11. What follows is an independent confirmation
+> originally called this a finding the board was missing. **It is not.** The mass **was** in
+> the code as `F_BH_CLUSTER = 0.17188f` with the arithmetic written out
+> (594,276 x 0.1719 = 102,144 M☉), from 2026-08-11 until it was deleted at 16:10:25.
+> ⛔ **ANCHOR DECAYED — CORRECTED 2026-08-31 20:04:11.** This line cited `particles.metal:277` in the
+> PRESENT TENSE. `[MEASURED]` the constant no longer exists: `grep -rn F_BH_CLUSTER src/` returns
+> **two comment lines only**, `particles.metal:266-267`, which narrate the deleted history. `:277` is
+> now an unrelated comment. **No live definition remains.** What follows is an independent confirmation
 > by a different route, which is worth having but is not new. **The genuinely new part is the
 > consequence: `tau_220` = ⛔ **VOID — see the retraction below. No ceiling exists; the honest
 > value is UNKNOWN pending a played-run measurement.**

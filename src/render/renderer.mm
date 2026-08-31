@@ -36,6 +36,21 @@ struct BHMarchUniforms {
 };
 static_assert(sizeof(BHMarchUniforms) == 88, "BHMarchUniforms layout");
 
+// ── B2a LENS DEBUG (2026-08-31) — MUST match struct LensDebugUniforms in
+// render.metal exactly. A SEPARATE struct on purpose: BHMarchUniforms is
+// hand-synced and size-asserted, and widening it would shift its fields while
+// still compiling. New pass, new struct, nothing guarded is touched.
+struct LensDebugUniforms {
+  float inverseViewProj[16];
+  float bGeoOverRs;
+  float dphi;
+  float phiCap;
+  int   maxSteps;
+  int   mode;
+  float pinRs;
+};
+static_assert(sizeof(LensDebugUniforms) == 88, "LensDebugUniforms layout");
+
 struct Renderer::Impl {
   id<MTLDevice> device;
   id<MTLCommandQueue> commandQueue;        // For rendering
@@ -256,6 +271,10 @@ struct Renderer::Impl {
   // shader banner in render.metal for the derivation + offline validation.
   // bhMarchPipeline deleted 2026-08-27 20:49:10 (the march is gone).
   id<MTLRenderPipelineState> bhBodyPipeline = nil; // hole-as-body, depth only
+  id<MTLRenderPipelineState> lensDebugPipeline = nil;   // B2a, SS_LENS_DEBUG only
+  id<MTLBuffer> lensDebugUniformBuffer[3] = {nil, nil, nil};
+  id<MTLBuffer> lensStatsBuffer = nil;   // [0]=SIGMA steps, [1]=covered px (cost mode)
+  uint32_t lensCostFrame = 0;
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   // SPECTRAL STARMAP (increment 1, 2026-07-24): the one colour law's tables.
@@ -872,6 +891,28 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     } else {
       NSLog(@"Missing bhbody shader functions");
     }
+
+    // ── B2a — the lens region/march debug pass. Colour-writing, no depth.
+    // Built ALWAYS, DRAWN only under SS_LENS_DEBUG=1 (see the draw site).
+    id<MTLFunction> lV = [impl_->library newFunctionWithName:@"bhmarch_vertex"];
+    id<MTLFunction> lF = [impl_->library newFunctionWithName:@"lensdebug_fragment"];
+    if (lV && lF) {
+      MTLRenderPipelineDescriptor *ld = [[MTLRenderPipelineDescriptor alloc] init];
+      ld.vertexFunction = lV;
+      ld.fragmentFunction = lF;
+      ld.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+      ld.colorAttachments[0].blendingEnabled = NO;
+      // Attachment 1 masked off for the same reason bhBody masks it: an overlay
+      // must never write motion vectors, or the smear drags colour along it.
+      ld.colorAttachments[1].pixelFormat = MTLPixelFormatRG16Float;
+      ld.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
+      ld.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+      impl_->lensDebugPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:ld error:&error];
+      if (error) NSLog(@"Lens debug pipeline error: %@", error);
+    } else {
+      NSLog(@"Missing lensdebug shader functions");
+    }
   }
 
   // ── DUST pipeline (design §2b, 2026-07-23): cold+dense gas as ABSORBING
@@ -1237,6 +1278,13 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     impl_->bhMarchUniformBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(BHMarchUniforms)
                                    options:MTLResourceStorageModeShared];
+    impl_->lensDebugUniformBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(LensDebugUniforms)
+                                   options:MTLResourceStorageModeShared];
+    if (!impl_->lensStatsBuffer)
+      impl_->lensStatsBuffer =
+          [impl_->device newBufferWithLength:2 * sizeof(uint32_t)
+                                     options:MTLResourceStorageModeShared];
 #if HAS_SYPHON
     impl_->postUniformSyphonBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
@@ -4239,6 +4287,51 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   }
 
+  // ── B2a LENS DEBUG OVERLAY (2026-08-31) — SS_LENS_DEBUG=1 ONLY ────────────
+  // ⛔ DEFAULT OFF. An unset env is byte-for-byte the shipping path, the same
+  // contract SS_NO_STARPASS uses. It must not touch the picture he accepted at
+  // 18:55:07 ("app behaving great").
+  //   SS_LENS_DEBUG=1  termination class per pixel (horizon/escape/cap)
+  //   SS_LENS_DEBUG=2  step-count heat — THE COST PROBE
+  //   SS_LENS_BGEO=<x> region radius in r_s (default 20 — the strong-field leg
+  //                    boundary of FABLE's B1 gate, so what is drawn is exactly
+  //                    the range the marcher was validated to 1e-3 over)
+  //   SS_LENS_DPHI_DIV=<n>  step = pi/n (default 512 — FABLE's ruling 18:50:14;
+  //                    pi/64 was MEASURED 32x too coarse for its own gate)
+  // Drawn BEFORE the particles so the star pass still draws over it — the
+  // overlay is an instrument, not a replacement for the picture.
+  {
+    static const char *kLensDbgEnv = getenv("SS_LENS_DEBUG");
+    static const int kLensDbg = kLensDbgEnv ? atoi(kLensDbgEnv) : 0;
+    if (kLensDbg > 0 && lensDebugPipeline && lastHorizonR > 0.0f) {
+      static const char *kBgeoEnv = getenv("SS_LENS_BGEO");
+      static const float kBgeo = kBgeoEnv ? (float)atof(kBgeoEnv) : 20.0f;
+      static const char *kDivEnv = getenv("SS_LENS_DPHI_DIV");
+      static const int kDiv = kDivEnv ? std::max(8, atoi(kDivEnv)) : 512;
+      CameraUniforms *camL = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+      LensDebugUniforms lu = {};
+      invertMatrix4x4(camL->viewProj, lu.inverseViewProj);
+      lu.bGeoOverRs = kBgeo;
+      lu.dphi       = (float)(M_PI / (double)kDiv);
+      lu.phiCap     = (float)(3.0 * M_PI);   // n = 1 territory, per the P1 verdict
+      // Loop bound sized so the cap is reachable at this step and not before:
+      // 3*pi / dphi steps, +8 slack. A pixel that hits maxSteps instead of the
+      // cap would misreport as expensive, so this must not be the binding limit.
+      lu.maxSteps   = (int)(3.0 * kDiv) + 8;
+      lu.mode       = (kLensDbg >= 2) ? 1 : 0;
+      // SS_LENS_PIN_RS — measurement only; see the banner in render.metal.
+      static const char *kPinEnv = getenv("SS_LENS_PIN_RS");
+      lu.pinRs = kPinEnv ? (float)atof(kPinEnv) : 0.0f;
+      memcpy(lensDebugUniformBuffer[frameIdx].contents, &lu, sizeof(lu));
+      [enc setRenderPipelineState:lensDebugPipeline];
+      [enc setDepthStencilState:depthState];        // test only, no write
+      [enc setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
+      [enc setFragmentBuffer:lensDebugUniformBuffer[frameIdx] offset:0 atIndex:1];
+      [enc setFragmentBuffer:lensStatsBuffer offset:0 atIndex:2];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+  }
+
   // Draw Particles — ALWAYS (the particles ARE the black hole)
   [enc setRenderPipelineState:particlePipeline];
   [enc setDepthStencilState:depthState];
@@ -4776,6 +4869,113 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [cmdBuf presentDrawable:uiDrawable];
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
+
+  // ══ [LENSCOST] — THE LENS PASS IN ITS OWN COMMAND BUFFER ══════════════════
+  // docs/DESIGN_BH_2026-08-31_LENS_COST_MEASUREMENT.md §2. SS_LENS_COST=1 ONLY.
+  //
+  // ⭐ WHY ITS OWN COMMAND BUFFER AND NOT A SUBTRACTION. Metal reports
+  // GPUEndTime-GPUStartTime PER COMMAND BUFFER — the same instrument [PROFILE/120f]
+  // already trusts at renderer.mm:1790 — so the pass is timed DIRECTLY and the
+  // drifting rest-of-frame never enters the number.
+  // 🚨 THE MEASURED REASON THE DIFFERENTIAL DESIGN WAS ABANDONED: Render+PostFX
+  // swings 3.0x-5.0x WITHIN a single arm (5.48-29.08 ms) and is NON-MONOTONE — it
+  // humps. Resolving ~0.3 ms by differencing two ~7 ms encodes needs both stable to
+  // ~2%; we are two orders off. Bracketing needs only timestamp sanity.
+  // ⛔ This is why ABBA interleaving is NOT a sufficient fix either: ABBA cancels a
+  // LINEAR drift, and this drift is a hump.
+  //
+  // ⚠️ WHAT THIS COSTS AND WHY IT IS SAFE: a second command buffer adds scheduling
+  // latency and possibly a pipeline bubble; the atomics in mode 2 add more. ALL of
+  // it sits INSIDE the bracket, so the number errs HIGH — the conservative
+  // direction for a go/no-go. Never quietly subtract an estimate of it.
+  // ⛔ The frame is already presented above, so this draw is NOT visible. That is
+  // intentional: the GPU does identical work and the visual path is untouched.
+  {
+    static const char *kCostEnv = getenv("SS_LENS_COST");
+    static const int kCost = kCostEnv ? atoi(kCostEnv) : 0;
+    if (kCost > 0 && lensDebugPipeline && lastHorizonR > 0.0f && offscreenTexture) {
+      // ⛔ THE CLEAR MUST HAPPEN ON THE GPU, NOT HERE. A CPU-side memset at encode
+      // time RACES the previous frame's lens buffer, which may still be executing.
+      // MEASURED with the CPU clear: steps ran 1.95e9 -> 2.42e9 MONOTONICALLY across
+      // frames — the counters were accumulating over the whole run, not per frame.
+      // A blit fill inside THIS command buffer is ordered before the draw by
+      // construction, so the counters are genuinely per-frame.
+
+      CameraUniforms *camL = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+      LensDebugUniforms lu = {};
+      invertMatrix4x4(camL->viewProj, lu.inverseViewProj);
+      static const char *kBgeoEnv2 = getenv("SS_LENS_BGEO");
+      lu.bGeoOverRs = kBgeoEnv2 ? (float)atof(kBgeoEnv2) : 20.0f;
+      static const char *kDivEnv2 = getenv("SS_LENS_DPHI_DIV");
+      const int div2 = kDivEnv2 ? std::max(8, atoi(kDivEnv2)) : 512;
+      lu.dphi     = (float)(M_PI / (double)div2);
+      lu.phiCap   = (float)(3.0 * M_PI);
+      lu.maxSteps = (int)(3.0 * div2) + 8;
+      lu.mode     = 2;                            // COST: accumulate S and px
+      static const char *kPinEnv2 = getenv("SS_LENS_PIN_RS");
+      lu.pinRs = kPinEnv2 ? (float)atof(kPinEnv2) : 0.0f;
+      memcpy(lensDebugUniformBuffer[frameIdx].contents, &lu, sizeof(lu));
+
+      MTLRenderPassDescriptor *lp = [MTLRenderPassDescriptor renderPassDescriptor];
+      lp.colorAttachments[0].texture = offscreenTexture;
+      lp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+      lp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      lp.colorAttachments[1].texture = velocityTexture;
+      lp.colorAttachments[1].loadAction = MTLLoadActionLoad;
+      lp.colorAttachments[1].storeAction = MTLStoreActionDontCare;
+      lp.depthAttachment.texture = depthTexture;
+      lp.depthAttachment.loadAction = MTLLoadActionLoad;
+      lp.depthAttachment.storeAction = MTLStoreActionDontCare;
+
+      id<MTLCommandBuffer> lensBuf = [commandQueue commandBuffer];
+      id<MTLBlitCommandEncoder> lz = [lensBuf blitCommandEncoder];
+      [lz fillBuffer:lensStatsBuffer
+               range:NSMakeRange(0, 2 * sizeof(uint32_t))
+               value:0];
+      [lz endEncoding];
+      id<MTLRenderCommandEncoder> le =
+          [lensBuf renderCommandEncoderWithDescriptor:lp];
+      [le setRenderPipelineState:lensDebugPipeline];
+      [le setDepthStencilState:depthState];
+      [le setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
+      [le setFragmentBuffer:lensDebugUniformBuffer[frameIdx] offset:0 atIndex:1];
+      [le setFragmentBuffer:lensStatsBuffer offset:0 atIndex:2];
+      [le drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [le endEncoding];
+
+      __block id<MTLBuffer> statsBuf = lensStatsBuffer;
+      float restMs = lastRenderMs;   // the rest-of-frame bracket, same frame
+      // ── DOMAIN, recorded WITH the data so the fit cannot imply a range it never
+      // sampled. Everything measured tonight was at REST: all four probe arms were
+      // 100% [CLUSTER] SILENCE (470/470 etc.). Play is a DIFFERENT regime — REBIRTH
+      // returns matter to the field, so particle count and therefore S recover.
+      // ⚠️ ALSO: renderer.mm:1907 gates `bhLensActive` OFF during play
+      // (totalAmplitude < 0.02f). This bracket is gated on lastHorizonR only, so it
+      // keeps reporting while he plays — but `amp` below is what tells a reader
+      // whether the frame was at rest or driven. A row without it is undated.
+      float ampNow  = physicsUniforms.totalAmplitude;
+      float rsNow   = lastHorizonR;
+      float massNow = bhSeedMass;
+      [lensBuf addCompletedHandler:^(id<MTLCommandBuffer> b) {
+        double lensMs = (b.GPUEndTime - b.GPUStartTime) * 1000.0;
+        const uint32_t *r = (const uint32_t *)statsBuf.contents;
+        // CLOSURE (design §4): the two brackets must account for the frame. With
+        // separate command buffers they are additive by construction, so what is
+        // reported is the SUM and its parts — a reader can check it against
+        // [PROFILE/120f] Total for the same period. A leak shows up as the sum
+        // exceeding the profiled total.
+        printf("[LENSCOST] ms=%.4f steps=%u px=%u rest_ms=%.4f sum_ms=%.4f "
+               "steps_per_px=%.1f amp=%.4f rs=%.4f mass=%.0f %s\n",
+               lensMs, r[0], r[1], restMs, lensMs + restMs,
+               r[1] ? (double)r[0] / (double)r[1] : 0.0,
+               ampNow, rsNow, massNow,
+               (ampNow < 0.02f) ? "REST" : "PLAY");
+        fflush(stdout);
+      }];
+      [lensBuf commit];
+      lensCostFrame++;
+    }
+  }
 
   currentFrame = (currentFrame + 1) % kMaxInFlightFrames;
 }

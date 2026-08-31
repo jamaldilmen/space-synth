@@ -3123,3 +3123,148 @@ static float4 mulM4(constant float* m, float4 v) {
 //   depth-only capture sphere he PASSED on 2026-08-14 ("THE HOLE IS A BODY"),
 //   and it is what makes the hole occlude as geometry. It is not the march.
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B2a — THE LENS REGION MASK + PER-PIXEL GEODESIC MARCH, DEBUG COLOURING
+// docs/DESIGN_BH_2026-08-31_F1_LENS_IMPLEMENTATION.md §5 (FABLE owns the design)
+//
+// ⛔ THIS DRAWS NOTHING UNLESS SS_LENS_DEBUG=1. It is an instrument, not a look.
+// Gated so it cannot regress the picture he accepted on 2026-08-31 18:55:07.
+//
+// WHAT IT IS: the loop validated offline in tools/lens_march_validate.cpp, run per
+// pixel. That validator PASSED FABLE's three-leg gate at dphi = pi/512 on
+// 2026-08-31: strong-field rel 2.166e-04 (bound 1e-3), far-field abs 1.942e-05 rad
+// (bound 1e-4), capture b_c rel 3.365e-04 (bound 1e-3).
+// 🚨 IF THIS LOOP CHANGES, CHANGE IT IN THE VALIDATOR TOO AND RE-RUN IT. A marcher
+// that is not the validated marcher is an unvalidated marcher.
+//
+// WHAT IT IS NOT, YET: there is no particle or opaque-cell termination here — that
+// is B2b, and it is what T4 actually tests. The classes below stop at horizon /
+// escape / winding cap. Do not read a passing B2a as evidence about T4.
+//
+// THE EQUATION (r_s = 1, u = r_s/r; library 02's one card):
+//   d2u/dphi2 = (3/2)u^2 - u        energy: (du/dphi)^2 = 1/b^2 - u^2 + u^3
+// Initial conditions are taken at the FINITE camera, which is exact because b is
+// the conserved L/E — not an asymptotic approximation.
+// ═══════════════════════════════════════════════════════════════════════════
+struct LensDebugUniforms {
+    float inverseViewProj[16];
+    float bGeoOverRs;   // region radius, in r_s. Pixels beyond this are not marched.
+    float dphi;         // step in phi (baseline pi/512 — FABLE's ruling 18:50:14)
+    float phiCap;       // winding cap (3*pi): n = 1 territory, per the P1 verdict
+    int   maxSteps;     // hard loop bound, so a bad frame cannot hang the GPU
+    int   mode;         // 0 = class, 1 = step heat, 2 = COST (accumulate S and px)
+    float pinRs;        // >0: OVERRIDE r_s for this pass only. MEASUREMENT ONLY.
+};
+
+// ⭐ A SEPARATE struct on purpose. BHMarchUniforms is hand-synced with a
+// static_assert(sizeof == 88) in renderer.mm; widening it would shift ~7 fields
+// and still compile. New pass, new struct, nothing guarded is touched.
+
+// lensStats (mode 2 only): [0] = SIGMA STEPS over the frame, [1] = covered pixels.
+// ⚠️ THE ATOMICS ARE INSIDE THE BRACKET AND THEREFORE INFLATE THE MEASURED COST.
+// That is deliberate and it errs HIGH, which is the safe direction for a go/no-go —
+// the same argument the design makes for the second command buffer's scheduling
+// overhead. Their size is quantified by an A/B at pinned r_s with mode 1 vs mode 2,
+// and that delta must be reported next to any cost figure, never folded away.
+fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
+                                   constant CameraUniforms& cam [[buffer(0)]],
+                                   constant LensDebugUniforms& lu [[buffer(1)]],
+                                   device atomic_uint* lensStats [[buffer(2)]])
+{
+    if (cam.horizonR <= 0.0f) { discard_fragment(); return float4(0); }
+
+    // Same geometry construction bhbody_fragment uses — same unproject, same
+    // world-space hole, so the region and the capture sphere can never disagree.
+    float3 bhWorld = applySpin(float3(cam.bhX, cam.bhY, cam.bhZ),
+                               cam.spinAngleX, cam.spinAngleY,
+                               cam.spinAngleZ) * cam.plateRadius;
+    float rsW = cam.horizonR * cam.plateRadius;          // r_s in WORLD units
+    // ⛔ MEASUREMENT-ONLY OVERRIDE (SS_LENS_PIN_RS). Why it exists, so nobody
+    // mistakes it for a feature: the region's screen area goes as (B_geo*r_s)^2,
+    // and r_s follows the hole's live mass — which forks run-to-run. MEASURED
+    // 2026-08-31: two runs at the SAME SS_SPAWN_SEED reached Mmax 14,532 vs
+    // 55,390 in 50 s, because the 32-of-334,576 neighbour sample is picked by GPU
+    // scheduling order, not by the seed. So an A/B against a free-running hole
+    // compares two different region SIZES and can never isolate the pass's cost,
+    // no matter how long each arm runs. Pinning r_s makes covered pixels a
+    // constant. 🚨 NEVER set this outside a measurement — it decouples the drawn
+    // region from the hole's mass, which is precisely his mutual-exclusion law.
+    if (lu.pinRs > 0.0f) rsW = lu.pinRs * cam.plateRadius;
+    if (rsW <= 1e-6f) { discard_fragment(); return float4(0); }
+
+    float4 pn = mulM4(lu.inverseViewProj, float4(in.ndc, 0.0f, 1.0f));
+    float4 pf = mulM4(lu.inverseViewProj, float4(in.ndc, 1.0f, 1.0f));
+    float3 ro = pn.xyz / pn.w;
+    float3 rd = normalize(pf.xyz / pf.w - ro);
+
+    // ── IMPACT PARAMETER, in r_s. b is the perpendicular distance from the hole
+    // to the ray line — the conserved quantity the whole march is indexed by.
+    float3 oc     = ro - bhWorld;
+    float  tClose = -dot(oc, rd);
+    float3 perp   = oc + rd * tClose;
+    float  b      = length(perp) / rsW;
+
+    // ── THE REGION MASK. This is the contract: B_geo scales with r_s(M), so as the
+    // hole's mass falls the disc shrinks, and at M = 0 the pass covers zero pixels.
+    // The four cannot-go-down rules are dead (his verdict 18:55:07), so cam.horizonR
+    // really does fall now — this mask tracks the live value, not the old lag.
+    if (b > lu.bGeoOverRs) { discard_fragment(); return float4(0); }
+
+    // ── INITIAL CONDITIONS AT THE FINITE CAMERA (exact; b is conserved) ──
+    float rCam = length(oc) / rsW;                       // camera radius in r_s
+    if (rCam <= 1.0f) { discard_fragment(); return float4(0); }  // camera inside r_s
+    float u     = 1.0f / rCam;
+    float invb2 = 1.0f / max(b * b, 1e-12f);
+    float g0    = invb2 - u * u + u * u * u;
+    if (g0 <= 0.0f) { discard_fragment(); return float4(0); }
+    // Sign from the actual geometry: approaching => u increasing => v > 0.
+    float v = (tClose > 0.0f) ? sqrt(g0) : -sqrt(g0);
+
+    // ── THE MARCH ──
+    int   cls   = 3;              // 0 horizon, 1 escape, 2 cap, 3 unresolved
+    float phi   = 0.0f;
+    int   steps = 0;
+    float uMax  = u;
+
+    for (int i = 0; i < lu.maxSteps; ++i) {
+        if (phi >= lu.phiCap) { cls = 2; break; }         // winding cap
+        // RK2 midpoint — the validated loop, byte for byte in structure.
+        float k1u = v,                       k1v = 1.5f * u * u - u;
+        float um  = u + 0.5f * lu.dphi * k1u;
+        float vm  = v + 0.5f * lu.dphi * k1v;
+        float k2u = vm,                      k2v = 1.5f * um * um - um;
+        u   += lu.dphi * k2u;
+        v   += lu.dphi * k2v;
+        phi += lu.dphi;
+        steps++;
+
+        uMax = max(uMax, u);
+        // HORIZON — shadow by ABSENCE. The ray simply ends; b_c is never stamped.
+        if (u >= 1.0f) { cls = 0; break; }
+        // ESCAPE — back out past the camera radius, still travelling outward.
+        if (v < 0.0f && u <= 1.0f / rCam) { cls = 1; break; }
+        if (u <= 0.0f) { cls = 1; break; }
+    }
+
+    // ── COST MODE: accumulate the frame's total geodesic work. ──
+    // S = sum of steps over every marched pixel. This is the x-axis of the cost
+    // model ms(S); px is reported alongside so k can be read per-step or per-pixel.
+    if (lu.mode == 2) {
+        atomic_fetch_add_explicit(&lensStats[0], (uint)steps, memory_order_relaxed);
+        atomic_fetch_add_explicit(&lensStats[1], 1u,          memory_order_relaxed);
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);   // writes nothing visible
+    }
+
+    // ── DEBUG COLOURING. Deliberately flat and ugly: this is an instrument.
+    if (lu.mode == 1) {
+        // COST PROBE: step count as heat. White = at the loop bound, which means
+        // the cap or maxSteps is being hit, not that the pixel is expensive.
+        float t = float(steps) / float(max(lu.maxSteps, 1));
+        return float4(t, t * 0.35f, 1.0f - t, 1.0f);
+    }
+    if (cls == 0) return float4(0.02f, 0.00f, 0.05f, 1.0f);  // horizon — near black
+    if (cls == 1) return float4(0.10f, 0.35f, 0.90f, 1.0f);  // escape  — blue
+    if (cls == 2) return float4(0.90f, 0.10f, 0.70f, 1.0f);  // cap     — magenta
+    return float4(1.0f, 0.85f, 0.0f, 1.0f);                  // unresolved — yellow
+}

@@ -213,10 +213,22 @@ struct Renderer::Impl {
   // (−62.5%), and three runs end at exactly 50 = M_BH_SEED (the seed is gone).
   // The 2026-06-13 note at the assignment site asserts "gMaxMass only grows via
   // eating, so the signal is monotonic and never flickers" — that is false.
-  // Anything needing a hole that cannot shrink must use bhSeedMassMono below.
-  float bhSeedMassMono = 0.0f; // THE HOLE'S MASS: running max of the seed while a
-                               // seed-class body survives; 0 when none does. A black
-                               // hole cannot shed mass, so its horizon cannot shrink.
+  float bhSeedMassMono = 0.0f; // THE HOLE'S MASS: the LIVE seed mass while a
+                               // seed-class body survives; 0 when none does.
+  // ⛔ THE RATCHET IS DEAD (2026-08-31, his order). This was a running max, and
+  // its stated reason was "a black hole cannot shed mass, so its horizon cannot
+  // shrink". In THIS instrument that is false and always was: REBIRTH withdraws
+  // from the hole every frame (renderer.mm's [REBIRTH] line), and a shrinking
+  // hole under play is his FEATURE, not a glitch to be filtered out.
+  // HIS LAW, 2026-08-31: "play is end of bh formed... force pumps out of bh into
+  // the chladni shapes. bh and chladni cant coexist, max in transition to one
+  // another." A hole that cannot shrink cannot transition, so it made the law
+  // unimplementable. MEASURED that day: the seed drained 72,494 -> 938 M_sun
+  // while the drawn r_h sat frozen at 0.1220 and [BH-POP] still printed LATCH.
+  // ⭐ The OTHER half of the old rationale SURVIVES and must not be undone: the
+  // drawn hole keys off the SEED MASS, never the radial profile, because the
+  // profile is a 5.0-sim window (particles.metal:405) that reads 0 when the
+  // field runs wide and would vanish the hole with a live seed still there.
   float lastHorizonR = 0.0f;  // honest geometric horizon r_h [sim] from the radial profile (1-frame lag)
   float lastHorizonMass = 0.0f; // M(<r_h) [M_sun] — drives the emergent time-lapse disk GM
   // HOW CLOSE THE FIELD IS TO BEING A HOLE, continuously: sup over the radial
@@ -228,8 +240,15 @@ struct Renderer::Impl {
   // R_ENC=0.5 (needs 2.97e5 M_sun there). Measured where it is actually
   // largest, the same formula is live and reachable. (2026-08-03)
   float lastHorizonRatio = 0.0f;
-  float bhDiskGMSmooth = 0.0f;  // eased posed-disk GM so rotation RAMPS in (no snap at hole-formation)
-  float lastHorizonRSmooth = 0.0f; // eased r_h for RENDER keying only (shadow/lens/pose) — the probe steps every few seconds and the hole visibly JUMPED size (2026-07-19); physics keeps the raw value
+  // ⛔ NOT EASED ANY MORE (2026-08-31, his order) — a plain per-frame MIRROR of
+  // cam.bhDiskGM, kept only so poseTimeLapseActive can mirror the kernel's gate.
+  // The name is a leftover; it filters nothing.
+  float bhDiskGMSmooth = 0.0f;  // == cam.bhDiskGM this frame
+  // ⛔ NO LONGER EASED (2026-08-31, his order) — it now tracks lastHorizonR
+  // exactly, see the assignment site. The name is kept ONLY because six call
+  // sites read it; it is not a smoothed quantity any more. If you are adding a
+  // consumer, read lastHorizonR instead and let this one die.
+  float lastHorizonRSmooth = 0.0f; // RENDER keying (shadow/lens/pose), == lastHorizonR
   id<MTLRenderPipelineState> holePipeline = nil; // hole pass: r<r_h particles as black occluders
   // METRIC-NATIVE SHADOW (bit15, 2026-07-24): fullscreen backward geodesic
   // ray-march. Replaces the hole pass's r_h-sized particle silhouette with the
@@ -1810,14 +1829,27 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // stopped tracking r_h ("lensing stays even if black hole disappears...
     // not in scale with the actual event horizon"). Seed-mass keying now only
     // serves the DECLARED posed hole (setBlackHolePose).
-    // SMOOTH HONEST r_h (2026-07-19 18:20): the probe updates r_h every few
-    // seconds, so everything keyed to it JUMPED size at each step ("it just
-    // jumps, doesn't smoothly grow"). Same cure as bhDiskGMSmooth: ease the
-    // RENDER keying (~0.7 s e-fold). Physics keeps the raw honest value.
-    impl_->lastHorizonRSmooth +=
-        (impl_->lastHorizonR - impl_->lastHorizonRSmooth) * 0.03f;
-    if (impl_->lastHorizonRSmooth < 1e-4f && impl_->lastHorizonR == 0.0f)
-      impl_->lastHorizonRSmooth = 0.0f;   // settle the tail to true zero
+    // ⛔ THE ×0.03 EASE IS DEAD — his order 2026-08-31: "kil l the ease . fix
+    // probe rat eisntead obviously !!!"  BOTH HALVES ARE SATISFIED HERE, and the
+    // first one was already satisfied before the order landed:
+    //   FIX THE PROBE RATE — DONE, incidentally, earlier the same day. The ease
+    //   was added 2026-07-19 18:20 because "the probe updates r_h every few
+    //   seconds, so everything keyed to it JUMPED size at each step" ("it just
+    //   jumps, doesn't smoothly grow"). That was true while the drawn radius came
+    //   from the RADIAL PROFILE. It no longer does: killing the bhSeedMassMono
+    //   ratchet re-keyed it to kRsSimPerMsun × gMaxMass (:3452, :3481), and
+    //   gMaxMass comes off the reduce EVERY FRAME (the stats block is ungated
+    //   except by SS_SPH_SKIP=stats). The staircase has no source any more.
+    //   KILL THE EASE — this line. With a per-frame source the chase was not
+    //   smoothing a probe artefact, it was a ~3 s LAG on the truth.
+    // 🚨 WHY IT WAS A LAW VIOLATION, not a look preference: a 3 s render lag means
+    // the DRAWN hole outlives the PHYSICS hole by ~3 s. That is literally "after
+    // play bh formed stays for a bit that cant ever be" — the ease was breaking
+    // his mutual-exclusion law while wearing a cosmetic justification.
+    // ⭐ A JUMP IS NOW HONEST. gMaxMass steps discretely when two seeds MERGE.
+    // That is a real event in the physics, not a probe artefact, and it should
+    // read as one. Do not re-add smoothing to hide a merger.
+    impl_->lastHorizonRSmooth = impl_->lastHorizonR;
     float rsEff = impl_->bhPosed
         ? std::max(impl_->lastHorizonRSmooth,
                    (float)space::units::kRsSimPerMsun *
@@ -1916,7 +1948,18 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
     cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
-  } else if (impl_->lastHorizonR > 0.0f && impl_->lastHorizonMass > 0.5f) {
+  } else if (impl_->lastHorizonR > 0.0f) {
+    // ⛔ GATE NARROWED 2026-08-31 17:35:00, his order ("fix the underlying value").
+    // Was `lastHorizonR > 0 && lastHorizonMass > 0.5`. The second term was the bug:
+    // lastHorizonMass is M(<r_h) from the RADIAL PROFILE, which only exists when the
+    // profile criterion r_s(M(<r)) >= r fires — and at our field mass that needs
+    // 2.97e5 M☉ inside r<0.5, so it essentially never does.
+    // MEASURED 2026-08-31 on two runs: `profile M(<r_h)=0.000e+00` on 38 of 43 samples
+    // in his play run and 667 of 670 in the next. So this branch was DEAD ~99% of the
+    // time and the emergent disk rotation simply did not run.
+    // 🚨 AND WHEN IT DID FIRE IT WAS NOT A RAMP: the value stepped 0 -> gmSim(2.88e5)
+    // in ONE frame, then dropped back. That is a FLICKER, not a formation event, and
+    // it is what the ×0.03 ease below was actually hiding.
     // EMERGENT-HOLE TIME-LAPSE (2026-07-15, Jamal: "rotation means time
     // passes on a trajectory"): the same Keplerian playback clock, keyed to
     // the HONEST hole — GM from the real M(<r_h), disk axis y. Live physics
@@ -1938,7 +1981,13 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     // out of the hole's own mass, so it re-derives as the hole eats instead of
     // drifting. Scaling dtP (not just the accumulator) also scales bhPoseDt,
     // so the per-frame delta the streaks measure grows with it.
-    double gmNow = space::units::gmSim((double)impl_->lastHorizonMass);
+    // ⭐ GM FROM THE HOLE'S OWN MASS, not from the profile's enclosed mass.
+    // bhSeedMassMono is the live seed mass (== gMaxMass, per-frame off the reduce),
+    // so this is CONTINUOUS: small when the hole is small, and it reaches zero exactly
+    // when the hole dies. The rotation now ramps because the MASS ramps — physical —
+    // and stops when the hole stops, which satisfies his mutual-exclusion law by
+    // construction instead of by filtering. ⛔ Do not put a smoother back on top.
+    double gmNow = space::units::gmSim((double)impl_->bhSeedMassMono);
     // c³ FIX (2026-07-25 22:00:00): was kIscoPeriodPerGM * gmNow, the c=1 form
     // applied to the WARPED (per-wall-s²) coupling — 43.4334x too large, so this
     // clock ran x145 the physics instead of the dial's x3.3. See units.h.
@@ -1959,15 +2008,27 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     cam.bhDiskAxisY = 0.0f;
     impl_->bhPoseClock = 0.0;                  // clock re-arms on next hole
   }
-  // ROTATION EASE-IN (2026-07-18 14:40:10): cam.bhDiskGM jumps 0→gmSim(M(<r_h)) the frame
-  // the horizon forms, SNAPPING the posed spin on (Jamal: "snapped into rotation"). Ease it
-  // so Ω=√(GM/r³) ramps in continuously (~30-frame e-fold) instead of a hard switch. Eases
-  // back to 0 the same way when the hole dissolves.
-  impl_->bhDiskGMSmooth += (cam.bhDiskGM - impl_->bhDiskGMSmooth) * 0.03f;
-  cam.bhDiskGM = impl_->bhDiskGMSmooth;
-  cam.horizonR = impl_->lastHorizonRSmooth; // eased honest r_h → hole pass/membrane/pose (0 = no hole; raw value stays in physics)
-  // The star-pass capture cull uses THIS one, not the eased value above: being
-  // behind the horizon is a physics fact, and the easing (×0.03/frame) leaves it
+  // ⛔ THE ×0.03 ROTATION EASE IS DEAD — his order 2026-08-31, "kill that one too, fix
+  // the underlying value". FOURTH of the same class killed today.
+  // It was added 2026-07-18 14:40:10 because cam.bhDiskGM jumped 0 -> gmSim(M(<r_h)) the
+  // frame the horizon formed and the spin SNAPPED on (his words: "snapped into rotation").
+  // That complaint was REAL — but the step was in the GATE, not in the value, and the cure
+  // belonged upstream. Both halves are done: the gate no longer keys on a threshold that
+  // fires intermittently, and the value is now the hole's own continuous mass.
+  // 🚨 ITS OWN COMMENT NAMED THE LAW VIOLATION: it "eases back to 0 the same way when the
+  // hole dissolves" — i.e. the disc kept ROTATING for ~2 s after the hole was gone. That is
+  // "bh formed stays for a bit" wearing a rotation instead of a horizon.
+  // ⚠️ STILL MIRRORED, and it MUST be. bhDiskGMSmooth is no longer a filter — it is
+  // now just "the disk GM the camera was built with this frame". It is kept because
+  // renderer.mm's poseTimeLapseActive gate reads it to MIRROR the kernel's own opening
+  // test (render.metal pose_phase_advance). Deleting the write instead of neutering it
+  // would have pinned it at 0 forever, making the host gate permanently stricter than
+  // the kernel's — which that gate's own comment warns "silently freezes the phase".
+  // Caught before shipping by re-grepping the symbol after removing its only writer.
+  impl_->bhDiskGMSmooth = cam.bhDiskGM;
+  cam.horizonR = impl_->lastHorizonRSmooth; // honest r_h → hole pass/membrane/pose (0 = no hole). ⛔ NO LONGER EASED (2026-08-31)
+  // The star-pass capture cull uses THIS one: being behind the horizon is a
+  // physics fact. ⛔ The ×0.03/frame easing this note described is DELETED, so
   // 6× short for ~2 s after formation. Measured 2026-08-11 03:18: raw 0.0781 vs
   // smooth 0.0130 on the forming frame. See renderer.h (horizonRRaw).
   cam.horizonRRaw = impl_->lastHorizonR;
@@ -3123,7 +3184,7 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           // All three horizon values are printed because they are NOT the same
           // number and only one of them drives the cull:
           //   lastHorizonR       — raw geometric r_h from the radial profile
-          //   lastHorizonRSmooth — eased (×0.03/frame, renderer.mm:1494); THE CULL
+          //   lastHorizonRSmooth — ⛔ NO LONGER EASED (2026-08-31); == lastHorizonR; THE CULL
           //   lastHorizonRatio   — sup r_s(M(<r))/r, the continuous approach
           // r_s is derived from the top cell's own mass via units.h:85
           // (kRsSimPerMsun), not a constant — so "is it a hole" is answered by
@@ -3425,19 +3486,19 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           if (sums[i].maxSpeed > gMaxSpeed) gMaxSpeed = sums[i].maxSpeed;
         }
         // ── THE HOLE'S MASS (2026-08-28) ───────────────────────────────────
-        // One quantity, and it only grows. No-hair: a hole has M and a, so the
+        // One quantity. No-hair: a hole has M and a, so the
         // drawn hole must key off a single M — not the radial profile, which is
         // a WINDOW (particles.metal:405, RADIAL_MAX_R = 5.0 sim) that stops
         // counting mass past 5 sim and was calibrated when the field collapsed
         // to meanR 3.92. The field now runs far wider, so the profile reads 0
         // and the hole vanishes with a 34,280 M_sun seed still sitting there.
-        // Reset ONLY when no seed-class body survives — that is the hole dying,
-        // which must stay reversible; a shrinking gMaxMass is not.
+        // Reset when no seed-class body survives — that is the hole dying, and
+        // it stays reversible. A shrinking gMaxMass now shrinks the hole too.
         {
           // M_BH_SEED, particles.metal:218. Hand-synced: no build-time link.
           constexpr float kMBhSeedMsun = 50.0f;
           if (gMaxMass >= kMBhSeedMsun)
-            bhSeedMassMono = std::max(bhSeedMassMono, gMaxMass);
+            bhSeedMassMono = gMaxMass;   // LIVE, not a running max — see decl
           else
             bhSeedMassMono = 0.0f;  // seed gone → the hole un-forms
         }
@@ -3608,7 +3669,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // greatness"). Ease toward it; once FORMED, a black hole stays a
         // black hole — mass inside doesn't leave. The latch clears only on
         // true dissolution (field reset: Menc < 1% of total).
-        bhStrengthEma += (target - bhStrengthEma) * 0.04f;
+        // ⛔ THE ×0.04 EMA IS DEAD — his order 2026-08-31, "kill that too".
+        // Same class as the ×0.03 horizon ease killed the same day: ~2 s for the
+        // DRAWN strength to follow the physics down = ~2 s of "bh formed stays
+        // for a bit" every time he plays. `target` is already a continuous
+        // quantity (max of the seed/density proxies and the honest ratio), so
+        // this was not de-flickering a stepped probe — it was lagging a smooth one.
+        bhStrengthEma = target;
         // ── FORMED == THE HONEST HORIZON EXISTS (2026-08-03) ─────────────────
         // Was: set on `target >= 1` (the max of the seed-mass and density-
         // concentration PROXIES) and cleared on
@@ -3637,8 +3704,18 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         // The proxies keep driving the sub-1 EMA ramp; they no longer latch.
         if (honestTarget >= 1.0f) bhFormedLatch = true;
         if (lastHorizonR <= 0.0f)  bhFormedLatch = false;
-        bhStrength = bhFormedLatch ? std::max(bhStrengthEma, 1.0f)
-                                   : bhStrengthEma;
+        // ⛔ THE FULL-STRENGTH FLOOR IS DEAD — his order 2026-08-31, "kill that too".
+        // 🚨 THIS WAS NOT A LAG, IT WAS A RATCHET. While the latch was on, the drawn
+        // strength was FLOORED AT 1.0 and could not fall at all, whatever the physics
+        // said — structurally the same defect as the bhSeedMassMono running max.
+        // WHY IT NEVER CLEARED ITSELF: the latch clears on `lastHorizonR <= 0` (just
+        // above). In his 2026-08-31 play run the hole drained 72,471 → 938 M☉ — a
+        // SMALL horizon, not a zero one — so the latch held and this floor pinned the
+        // strength at full the whole way down.
+        // ⭐ CORRECTION TO THE FIRST DIAGNOSIS (§Z1): killing the mass ratchet alone
+        // would NOT have let the drawn hole die. Two independent cannot-go-down rules
+        // were holding it up and only one of them was the ratchet.
+        bhStrength = bhStrengthEma;
         // POSE OVERRIDE: a posed BH is declared formed of bhPoseMass — the posed
         // disk has no central core, so the emergent computation above would
         // un-form it (bhStrength→0, killing the lens + raytracer). Re-pin it.
@@ -3919,8 +3996,8 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // which is every frame before the first hole forms, and every frame of every
   // note after it. The condition below MIRRORS the kernel's opening test
   // (render.metal pose_phase_advance) TERM FOR TERM against the same values the
-  // camera was built from this frame: bit20, the eased bhDiskGM (renderer.mm:1882
-  // writes bhDiskGMSmooth into cam.bhDiskGM), and the smoothed envelope phase
+  // camera was built from this frame: bit20, bhDiskGM (⛔ NO LONGER EASED as of
+  // 2026-08-31 — bhDiskGMSmooth is now a plain mirror of it), and the envelope phase
   // (:1727 writes renderPhaseSmooth into cam.envelopePhase). bhDiskAxisY is
   // omitted deliberately — it is 0.0f at all seven assignment sites, so
   // `< 0.5f` is a constant true; if that ever changes, this gate must gain the

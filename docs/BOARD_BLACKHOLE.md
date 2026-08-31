@@ -8,7 +8,7 @@
 
 **This file is the reference of truth for the hole.** `docs/BOARD.md` stays the whole-project board; everything BH moves here. ⛔ **CITATION BASIS CORRECTED 2026-08-30 23:48:34.** This line used to read *"every row carries a verified `file:line` checked on 2026-08-14 01:41:51 against `SPACE-SYNTH-TUBE-killtube`, branch `kill-the-tube-2026-08-11`"* — **that tree is FROZEN and dead**, so it certified nothing about the live code. `[VERIFIED 2026-08-30 23:48:34 against `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`, sources `d0697d8`]` **all 138 `file:line` citations on this board machine-checked: 136 resolve in range, 2 are DEAD and now labelled inline.** A row with no citation is a claim, not a fact, and is labelled as such. ⭐ **In-range is not the same as true** — the §X rows were additionally content-checked against the source this session.
 
-**Commit at last verification:** `90e9b6c` ⭐ **RE-STAMPED 2026-08-31 19:42:22 — SESSION 2026-08-31 FOLDED IN AS §Z6. 🚨 The BH outcome cap and all FOUR cannot-go-down rules on the drawn hole are DEAD, and he has SEEN it: *"app behaving great :)"* — the first eyes-on verdict any of it has had.** Previously `5b65a97` ⭐ **RE-STAMPED 2026-08-30 23:45:00 — SESSION 2026-08-30 FOLDED IN AS §X (read it FIRST). 🚨 THE HOLE'S FORMATION IS DECIDED BY A 32-PER-CELL BUFFER SIZE — every single-run BH comparison on this board is unreliable. Engine-wide clock law + closures in `docs/BOARD.md` §Y.** Sources end at `d0697d8`; `5b65a97` is the bundle, which carries NO source change. 🌳 **TREE IS `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`.** Previously `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §W (read it FIRST). Engine-wide law + all measurements live in `docs/BOARD.md` §X.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
+**Commit at last verification:** `230e953` ⭐ **RE-STAMPED 2026-08-31 21:39:26 — THE MEASUREMENT SESSION IS FOLDED IN AS §Z7–§Z9 (read those FIRST). 🚨 THE LENS HAS NO COST NUMBER AFTER THREE INSTRUMENTS, all three returning an IMPOSSIBLE NEGATIVE SIGN; the bracket times GPU OCCUPANCY, not the pass. 🚨 EVERY 08-31 MEASUREMENT IS `REST` ONLY — his correction; play returns matter and the sim is DRIVEN. ⭐ ~95% of the field is eaten in 4 IDLE minutes and the rest-rate is HIS verdict, unt aken.** Previously `90e9b6c` — SESSION 2026-08-31 FOLDED IN AS §Z6. 🚨 The BH outcome cap and all FOUR cannot-go-down rules on the drawn hole are DEAD, and he has SEEN it: *"app behaving great :)"* — the first eyes-on verdict any of it has had.** Previously `5b65a97` ⭐ **RE-STAMPED 2026-08-30 23:45:00 — SESSION 2026-08-30 FOLDED IN AS §X (read it FIRST). 🚨 THE HOLE'S FORMATION IS DECIDED BY A 32-PER-CELL BUFFER SIZE — every single-run BH comparison on this board is unreliable. Engine-wide clock law + closures in `docs/BOARD.md` §Y.** Sources end at `d0697d8`; `5b65a97` is the bundle, which carries NO source change. 🌳 **TREE IS `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` @ `true-physics`.** Previously `4847e92` ⭐ **RE-STAMPED 2026-08-29 17:39:00 — SESSION 2026-08-29 FOLDED IN AS §W (read it FIRST). Engine-wide law + all measurements live in `docs/BOARD.md` §X.** Sources at `d0db70b`; `4847e92` is the bundle, which carries NO source change. Previously `01f1048` ⭐ **RE-STAMPED 2026-08-29 10:46:00 — SESSION 2026-08-28/29 FOLDED IN AS §V (read it first; §U is the session before).** Tree is now `/Users/airy/SPACE SYNTH/SPACE-SYNTH-POST-TUBE` @ **`post-tube`** (he named it 2026-08-28; was `SPACE-SYNTH-BH` @ `bh-gargantua-2026-08-26`). 🚨 **BOTH BH RENDERERS WERE DELETED THIS SESSION — every row below that describes the lens or the march is now HISTORY, not state.** §1a, §1b, §2, §5 and §6 in particular describe code that no longer exists. §U is the current state. ⚠️ Only the §U rows were read at this sha; every other row still carries its own older stamp, and many now describe deleted code. Previously `44d1798`.
 
 ---
 
@@ -960,6 +960,65 @@ the same reasoning that points at the AMR box for the squarish slab.
 would mean the `8.0f` radius is too tight, a different one-line change. Remaining suspects for hard
 edges: the depth-only occluder sphere (`render.metal:3028`, `bc = 2.598·rsW`) and the AMR box.
 
+### 🔬 Z7. THE LENS COST IS **NOT MEASURED** — the instrument is the open problem, not the lens
+
+**Built and live:** `SS_LENS_COST=1` puts the lens pass in **its own command buffer** and reads
+`GPUEndTime − GPUStartTime` on it directly — no subtraction anywhere. Default off; the visual path is
+untouched. `[MEASURED n=3313 frames]` one line per frame:
+`[LENSCOST] ms= steps= px= rest_ms= sum_ms= steps_per_px= amp= rs= mass= REST|PLAY`
+
+| gate (design §4) | result |
+|---|---|
+| step accounting | ✅ **PASS** — `steps_per_px = 538.8`, flat frame to frame |
+| sanity sign | ⛔ **FAIL** — fitted `ms = −5.936e−09·S + 7.6449`, **k NEGATIVE** |
+| closure | ⛔ **FAIL** — −23.7% against a ±5% gate |
+| model fit | ⛔ void — residual sd 2.839 ms exceeds the whole spread of the binned data |
+
+⛔ **THE CLOSURE FAILURE IS A BRACKET-DEFINITION ERROR, NOT A LEAK — do not record it as one.**
+`[READ renderer.mm:4947]` `restMs = lastRenderMs` is the RENDER buffer only; `[READ renderer.mm:1786,:1797]`
+`PROFILE Total` is **Compute + Render**. The compute half is outside both brackets, so the gate was
+**mathematically incapable of passing**. Fix the scope, not the instrument.
+
+🚨 **WHY THE NUMBER IS UNOBTAINABLE THIS WAY, and it is the transferable finding.**
+`[MEASURED]` at essentially CONSTANT work (px 165,312–165,880, `steps_per_px` 538.8 flat) the bracket read
+**6.13 / 16.99 / 5.15 / 10.79 ms** — a **3.3× swing, ~10× the ~0.3 ms being measured.** It is timing GPU
+**occupancy**, not the pass. ⭐ And per-bin minima do NOT rescue it: the high-S frames are the LATE-run
+frames, where the collapsing field leaves the GPU least contended, so **contention correlates with S** and
+drags the slope negative.
+⭐⭐ **THREE INDEPENDENT INSTRUMENTS — fps, `PROFILE` render time, and a direct GPU bracket — ALL returned
+the same impossible sign.** That agreement is the result: the lens cost is small compared to everything
+else moving in the frame, and no between-runs design can resolve it.
+🔴 `[HYPOTHESIS — does not close this row]` a Metal **counter sample buffer** (timestamps at encoder
+boundaries INSIDE one command buffer) would measure the encoder without the scheduling envelope. The §3
+double-encode fallback inherits the SAME contention and is **not** obviously better. **Not built.**
+🔴 **NOT DONE:** the mode-1 vs mode-2 A/B quantifying the atomics inflation. Currently pointless — that
+overhead sits far below a 3.3× noise floor.
+
+### ✅ Z8. A REAL CORRECTNESS FIX FOUND WHILE BUILDING — per-frame counters were accumulating
+`[MEASURED]` `steps` ran **1.95e9 → 2.42e9 monotonically** across frames: the counters were summing over
+the whole run, not the frame. **Cause:** a CPU-side `memset` at encode time RACES the previous frame's lens
+command buffer, which may still be executing. **Fix:** a GPU `fillBuffer` blit INSIDE the same command
+buffer, ordered before the draw by construction. Verified per-frame after the fix.
+⭐ **The general rule:** a CPU write to a GPU-visible buffer at encode time is not ordered against work
+already in flight. Clear on the GPU, in the buffer that consumes it.
+
+### ☠️ Z9. FIVE DEAD ROADS IN ONE EVENING — every one voided, every one for a different reason
+**Failures are the highest-value rows. Do not re-walk these.**
+| # | attempt | why it died |
+|---|---|---|
+| 1 | fps A/B | on **BATTERY at 12%**; fps read 41.7 → 51.1 → 84.0, still CLIMBING when read. A rising sequence is not a measurement, and a caveat travels less far than the number. |
+| 2 | fps A/B, free-running hole | the lens-ON arm's hole was **3.2× larger** ⇒ ~10× the covered pixels. It measured "bigger region". `[MEASURED]` two runs at an IDENTICAL `SS_SPAWN_SEED` reached Mmax **14,532 vs 55,390** — the fork is GPU **scheduling order**, not the RNG, so seeding cannot pin it. |
+| 3 | pinned-region A/B | **adapter unplugged mid-run.** A drifting power envelope puts a monotonic trend under the arms. ⭐ `[MEASURED]` a partially-seated cable reads **80W/3990mA "not charging"** while a healthy one reads **100W/4990mA "charging"** — **both say "AC Power"**, so a naive AC check passes on the broken one. |
+| 4 | pinned-region A/B, retry | **he played one note ~2 min in.** Play TERMINATES the hole (§Z law): Mmax 150,578 → 692 → regrew to 57,116 **inside one arm**. A settling discard cannot rescue it — the note lands inside the window you KEEP. |
+| 5 | full gate-green A/B | **fps is not a valid instrument near the refresh cap** — one arm sat on **120.0 exactly**; frame time is FLOORED at vsync. ⭐ The right instrument existed all along: `[PROFILE/120f]` (`renderer.mm:1790`), GPU duration, vsync-independent — **it prints to STDOUT and was missed for a whole evening of grepping stderr.** |
+
+⭐ **`tools/measure_lens_cost.sh` carries six gates that each caught a real fault** — power at start/mid/end,
+charge-state flip, **adapter wattage change**, logging actually working, any `noteOn`/non-zero phase in an
+arm, and a **negative-cost** gate. It also states in its own header that the between-runs method it
+implements is **unsound by design**.
+⛔ **ABBA does NOT rescue a differential design** — `[MEASURED]` `Render+PostFX` swings **3.0–5.0× WITHIN**
+an arm and is **non-monotone** (it humps). ABBA cancels a LINEAR drift only.
+
 ### Z5. ⛔ **REFUTED — "the gravitating field mass is 5× our anchor".** Claim raised 2026-08-31 16:15, dead by 16:20.
 **The claim:** all 10M particles gravitate, so the field is 2.97e6 M☉ and `kMfieldMsun = 5.94276e5` is
 stale by 5×, making spawn `v_circ` √5 too low.
@@ -1038,3 +1097,122 @@ on the 5340 px wall is 0.31 px at 100° FOV but **1.02 px at 30°**, and the sho
 `cam.horizonR <= 0.0f` (`render.metal:2130`, size `pow(Mbh,0.8)` clamped 220 px). **The cap kill raised
 reachable mass, and the horizon measurement is known to read zero when TWO massive bodies exist** — the
 endgame §Z4 unlocks. One-line fix traced 2026-08-10 (`:713-715`), **never built, NOT ordered.**
+
+---
+
+### Z7. 🚨 **THE LENS COST IS UNMEASURED AFTER THREE INSTRUMENTS — ALL THREE RETURN AN IMPOSSIBLE SIGN.** 2026-08-31 21:39:26
+
+**The question:** what does the B2a per-pixel geodesic march cost, i.e. can a lens be afforded at all.
+**The answer tonight: NO NUMBER.** Three independent instruments, three void results, same impossible direction.
+
+| # | instrument | result | why void |
+|---|---|---|---|
+| 1 | `fps`, pooled | OFF 81.39 → ON 102.26 = **−25.6%** | lens ON measured FASTER. Also floored at vsync: B2 sat on 120.0 exactly |
+| 2 | `[PROFILE/120f] Render+PostFX` differential | OFF 7.652 → ON 7.296 = **−0.356 ms** | still negative. Paired B1−A1 −0.326, B2−A2 −0.295 |
+| 3 | direct bracket, lens in its own command buffer | fit `ms = −5.936e−09·S + 7.6449` | **k NEGATIVE.** residual sd 2.839 ms > the entire binned spread |
+
+⭐ **THE COMMON CAUSE, MEASURED not inferred:** at essentially CONSTANT work — `px` 165,312–165,880,
+`steps_per_px` **538.8 flat** — the direct bracket read **6.13 / 16.99 / 5.15 / 10.79 ms**, a **3.3× swing**.
+**The bracket times GPU OCCUPANCY, not the pass.** And per-bin minima do not rescue it: the high-S frames
+are the LATE-run frames, where the collapsed field leaves the GPU least contended, so **contention is
+correlated with S and the slope goes negative by construction**.
+
+🚨 **THE `~0.3 ms` PREMISE THE WHOLE DESIGN WAS SHAPED AROUND IS WRONG BY ~15×.**
+`[MEASURED]` the pass does **89,368,329 geodesic steps** over **165,880 px** at **538.8 steps/px**, and the
+LOWEST reading at constant work was **5.15 ms**. `[HYPOTHESIS — does not close this row]` if the scheduling
+envelope is additive and non-negative then true cost ≤ **5.15 ms**, which against an 8.33 ms budget at
+120 fps is **over half the frame**. ⛔ That is an upper bound resting on one assumption, NOT a measurement,
+and it must not be quoted as one.
+
+⛔ **CLOSURE FAILED FOR A SCOPE ERROR, NOT A LEAK — do not record it as a leak.**
+`[READ renderer.mm:4947]` `restMs = lastRenderMs` — **render only**. `[READ renderer.mm:1786,:1797]`
+`PROFILE Total = Compute + Render`. The compute half is outside BOTH brackets, so the ±5% gate was
+**mathematically incapable of passing**. Measured residual **−23.7%**. ⭐ **The fix is one line and it is a
+DESIGN defect, not a build defect:** `rest_ms` must cover the same scope as whatever it is closed against.
+
+✅ **WHAT DID LAND, and it is real:**
+- The bracket EXISTS: lens pass in its own command buffer, direct `GPUEndTime−GPUStartTime`, **no subtraction
+  anywhere**. `SS_LENS_COST=1`, default off, visual path untouched. `[MEASURED]` 3,313 frames over 70 s.
+- `[LENSCOST]` carries its own domain: `amp=`, `rs=`, `mass=` and an explicit **`REST`/`PLAY`** tag.
+  **All 3,313 rows are `REST`** — the log states its limits rather than implying coverage it never had.
+- 🐛 **A REAL BUG FOUND AND FIXED:** the S and px counters were **accumulating across frames**
+  (steps 1.95e9 → 2.42e9 monotonically). A CPU-side clear at encode time **raced the previous frame's lens
+  buffer, still executing**. Now a GPU blit `fillBuffer` INSIDE the same command buffer, ordered before the
+  draw by construction. Counters verified per-frame after the fix.
+- ✅ Step accounting passes: `steps_per_px` 538.8, flat frame to frame.
+
+⭐ **NEXT INSTRUMENT, named not built, NOT ORDERED:** `MTLCounterSampleBuffer` with timestamps at encoder
+boundaries INSIDE one command buffer — it measures the encoder without the scheduling envelope around it.
+⚠️ **The `SS_LENS_ONLY` double-encode fallback inherits the SAME contention and is not obviously better.**
+
+### Z8. 🚨 **EVERY MEASUREMENT ON THIS BOARD FROM 2026-08-31 IS `REST` ONLY — HIS CORRECTION.**
+
+`[HIS WORDS 2026-08-31]` *"Also all this is once more still only at rest which you don't seem to understand.
+I play it. Particles return. New stuff forms."*
+
+`[MEASURED, 4 arm logs]` **ALL FOUR ARMS 100% SILENT** — 470/470, 472/472, 470/470, 470/470
+`[CLUSTER] SILENCE` lines. Not one note in the entire sequence.
+
+⛔ **THIS RETRACTS "THERE IS NO STEADY STATE" AS A PROPERTY OF THE SIM.** It is a property of REST ONLY.
+`[READ renderer.mm:3781-3793, :3411]` REBIRTH **withdraws from the hole every frame while playing** —
+*"Sustain rebirth now WITHDRAWS mass from the hole"*. Rest is a one-way collapse; **play is the opposing
+process that puts matter back. The system is DRIVEN, and he is the drive.** Describing the undriven system
+and calling it the system was BRAIN's error, corrected by him.
+
+🚨 **THE REST RATE, and it is a SHOW question not a physics one — HIS VERDICT NOT GIVEN:**
+`[MEASURED, `[PROBE-1000] live=`]` a 1000-particle tracer sample over one 240 s idle arm:
+
+| arm | alive start → end | loss | hole |
+|---|---|---|---|
+| A1 | 999 → 199 | **80.1%** | 6% → 100% |
+| B1 | 999 → 41 | **95.9%** | 6% → 100% |
+| A2 | 999 → 43 | **95.7%** | 6% → 100% |
+| B2 | 999 → 53 | **94.7%** | 6% → 100% |
+
+CORE mass **14,813 → 160,727 M☉** in the same window; `Compute avg` collapsed **10.45 / 6.99 / 5.54 / 2.12 ms**
+tracking the particle loss. ⭐ **~95% of the field eaten in 4 IDLE minutes.** §Z says rest grows the hole, so
+this is working as designed — **whether that RATE is what he wants between songs is his verdict, and he can
+only give it once a lens lets him see it.**
+
+🚨 **`[READ render.metal:3171-3173]` THE B2a MARCH TOUCHES NO PARTICLE DATA** — its fragment takes only
+`CameraUniforms`, `LensDebugUniforms` and an atomic counter. It terminates on horizon / escape / winding cap.
+⭐ **So the collapsing field does NOT bias the `ms↔S` relation — it only chooses which S values get visited.**
+⛔ **THAT PROTECTION ENDS AT B2b:** once rays terminate on particles, cost gains a real field dependence and
+**the rest-collapsed field becomes the CHEAP corner.** Tonight's fit must never be quoted for B2b.
+
+⚠️ **`[READ renderer.mm:1907]`** `bool bhLensActive = (totalAmplitude < 0.02f); // lens OFF during play`.
+**The lens is gated OFF during play by a BINARY switch.** F1 produces "lens leaves during play" CONTINUOUSLY
+by physics (region ∝ r_s(M)², play drains M), so **when F1 lands this hard gate is either redundant or
+fighting the law's transition window.** Flagged, NOT ordered.
+
+### Z9. ⛔ **DEAD ROADS FROM THE MEASUREMENT SESSION — five void attempts, each a real fault.**
+
+| # | attempt | killed by |
+|---|---|---|
+| 1 | first A/B | hole **3.2× larger** in the ON arm ⇒ ~10× the covered pixels. Region confound |
+| 2 | fps arms on battery | machine at **12%, discharging**. Reported 41.7 → 51.1 → 84.0, a rising sequence published as data |
+| 3 | AC unplugged mid-sequence | `pmset` still read `AC Power` while wattage fell **100W → 80W** and charging stopped |
+| 4 | note played mid-arm | play TERMINATES the formed hole — regime change, not an outlier |
+| 5 | the instrument itself | see §Z7 |
+
+⭐ **THE TRANSFERABLE ONE:** *"a caveat travels less far than the number does."* Attempt 2 was published WITH
+its correct cause attached and the number still had to be chased down. **Do not report a figure taken in a
+state you already know is invalid.**
+⛔ **`ABBA` is NOT the fix for this drift.** The interleave was `A1 B1 A2 B2`, so B always follows A and lens
+state is perfectly correlated with time order — which is why the paired deltas agreed to 0.03 ms instead of
+scattering. But `[MEASURED]` `Render+PostFX` swings **3.0× / 3.3× / 4.9× / 5.0× WITHIN each arm**, range
+5.48–29.08 ms, **NON-MONOTONE in all four** (B2 humps 13.61 → 26.74 → 6.12). **ABBA cancels a LINEAR term;
+a hump has none.** Fix the order anyway, but never expect it to rescue a differential design here.
+⛔ **"Stop measuring and just build B2b to look at it" — REJECTED BY HIM 2026-08-31.** `[HIS WORDS]`
+*"thsi apporach feels lazy"*. It was BRAIN's recommendation and it abandoned the standard the whole session
+was built on. **Recorded so it is not re-pitched.**
+
+🚨 **SHOW FACT, HIS WORDS 2026-08-31:** *"I will not play it live all the time we will will pre record skit of
+it if not everything."* Parts of Cologne, possibly all, are **PRE-RECORDED**. ⭐ This is **his own
+offline-render item** arriving from his side — `[READ HANDOFF_2026-08-30_HOW_DOES_NASA_DO_THIS.md:47]`
+`[MEASURED n=6]` fullscreen 2M already runs at **0.49–0.86× real time**, *"the same wall behind warp, behind
+the frame rate, and behind his offline-render item."* ⭐ **Offline time buys QUALITY, never shortcuts** — no
+downscale, no fakes; it buys π/1024, wider winding caps, real supersampling. So `ms(S)` becomes a
+**live-vs-recorded SPLIT**, and one fitted curve prices both tiers.
+
+**Last Updated:** 2026-08-31 21:39:26

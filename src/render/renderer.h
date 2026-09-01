@@ -67,10 +67,6 @@ struct RenderConfig {
   float jitterFactor = 0.1f;
 
   // ── BLACK HOLE TUNING dials ──
-  float lensBend = 0.85f;
-  float arcWrap = 2.2f;
-  float arcGain = 5.0f;
-  float trailGain = 1.0f;
   float smearShutter = 24.0f; // motion-smear length multiplier
   float smearHold = 1.0f;     // 1 = solid bands, 0 = fading blur
   float streakLen = 1.0f;
@@ -226,10 +222,6 @@ struct CameraUniforms {
   float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
   float bhStrength;        // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
   // ── BLACK HOLE TUNING dials (UI-driven, defaults = tuned look) ──
-  float tuneLens;          // lens bend blend (0..1, default 0.85)
-  float tuneArcWrap;       // max arc sweep, rad (default 2.2)
-  float tuneArcGain;       // horizon exposure gain (default 5)
-  float tuneTrailGain;     // arc brightness multiplier (default 1)
   float tuneStreakLen;     // motion-streak length multiplier (default 1)
   float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (live tune, was pad)
   float tuneHeatK;         // thermal heat→Kelvin gain (live tune): low = warm/red, high = white
@@ -352,7 +344,7 @@ struct CameraUniforms {
 // strictly BETWEEN two anchors still slips through. This is a guard, not a proof.
 //
 // Precedent: renderer.mm does the same for BHMarchUniforms (grep static_assert).
-static_assert(sizeof(CameraUniforms) == 288,
+static_assert(sizeof(CameraUniforms) == 272,
               "CameraUniforms layout — update the mirrored struct at the top of "
               "src/render/render.metal AND its matching static_asserts");
 // __builtin_offsetof, not offsetof: the macro needs <cstddef>, which this header
@@ -360,11 +352,11 @@ static_assert(sizeof(CameraUniforms) == 288,
 // Using the builtin on both sides keeps the two blocks literally identical.
 static_assert(__builtin_offsetof(CameraUniforms, bhShadowNdcRadius) == 108,
               "CameraUniforms anchor bhShadowNdcRadius — layout drift vs render.metal");
-static_assert(__builtin_offsetof(CameraUniforms, bhX) == 200,
+static_assert(__builtin_offsetof(CameraUniforms, bhX) == 184,
               "CameraUniforms anchor bhX — layout drift vs render.metal");
-static_assert(__builtin_offsetof(CameraUniforms, viewForwardZ) == 268,
+static_assert(__builtin_offsetof(CameraUniforms, viewForwardZ) == 252,
               "CameraUniforms anchor viewForwardZ — layout drift vs render.metal");
-static_assert(__builtin_offsetof(CameraUniforms, horizonRRaw) == 272,
+static_assert(__builtin_offsetof(CameraUniforms, horizonRRaw) == 256,
               "CameraUniforms tail anchor — layout drift vs render.metal");
 
 // Voice data for GPU compute (matches VoiceData in particles.metal)

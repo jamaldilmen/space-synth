@@ -20,6 +20,7 @@
 #include <simd/simd.h>
 #include <mach/mach_time.h>
 #include <mach/mach.h>
+#include <unistd.h>
 
 namespace space {
 
@@ -48,8 +49,12 @@ struct LensDebugUniforms {
   int   maxSteps;
   int   mode;
   float pinRs;
+  float hitRadius;   // B2b/B3 particle footprint, SIM units (SS_LENS_HITR)
+  float emitScale;   // B3 exposure trim on the added light (SS_LENS_EMIT)
+  float jitterX;     // B5 sub-pixel ray jitter, NDC (golden-ratio; 0 outside mode 3)
+  float jitterY;
 };
-static_assert(sizeof(LensDebugUniforms) == 88, "LensDebugUniforms layout");
+static_assert(sizeof(LensDebugUniforms) == 104, "LensDebugUniforms layout");
 
 struct Renderer::Impl {
   id<MTLDevice> device;
@@ -273,8 +278,34 @@ struct Renderer::Impl {
   id<MTLRenderPipelineState> bhBodyPipeline = nil; // hole-as-body, depth only
   id<MTLRenderPipelineState> lensDebugPipeline = nil;   // B2a, SS_LENS_DEBUG only
   id<MTLBuffer> lensDebugUniformBuffer[3] = {nil, nil, nil};
+  // B3 — the lens RENDER pass (SS_LENS_RENDER=1): same fragment in mode 3,
+  // its own pipeline (single color attachment, no depth — it runs in its own
+  // pass after the main encode) and its OWN uniform ring (the debug overlay
+  // may run in the same frame; sharing its ring would clobber uniforms the
+  // GPU has not read yet).
+  id<MTLRenderPipelineState> lensRenderPipeline = nil;
+  id<MTLBuffer> lensRenderUniformBuffer[3] = {nil, nil, nil};
+  id<MTLTexture> lensDummyTex = nil;    // 4×4 stand-in where mode≠3 never samples
+  id<MTLTexture> lensSceneCopy = nil;   // v4: pre-lens scene, warped by escapes
+  // B5 — temporal accumulation of the lensed light: mode 3 writes the EMA
+  // into lensAccumTex[next] while sampling [prev] (ping-pong), and the
+  // composite pass adds [next] onto the scene. ~13-frame exposure (α=0.15).
+  id<MTLTexture> lensAccumTex[2] = {nil, nil};
+  int lensAccumPing = 0;
+  id<MTLRenderPipelineState> lensCompositePipeline = nil;
+  uint32_t lensFrameCount = 0;          // drives the jitter sequence
   id<MTLBuffer> lensStatsBuffer = nil;   // [0]=SIGMA steps, [1]=covered px (cost mode)
   uint32_t lensCostFrame = 0;
+  // ── [LENSCOST4] instrument #4 state — stage-boundary GPU counters ─────────
+  // Spec: docs/PLAN_2026-08-31_INSTRUMENT_4_STAGE_COUNTERS.md (SS_LENS_COST=2).
+  // MEASURED on this device (Apple M5 Max): AtDrawBoundary counter sampling is
+  // NOT supported — only AtStageBoundary. A timestamp can therefore be taken at
+  // an ENCODER boundary and nowhere finer, which is why the lens draw has to
+  // become its own render encoder to be timed at all.
+  id<MTLCounterSampleBuffer> lensCounterSB = nil;  // 4 samples * kMaxInFlightFrames
+  id<MTLCounterSet> lensTimestampSet = nil;
+  double gpuTicksPerNs = 0.0;      // sampled and ASSERTED at init, never hardcoded
+  bool lensCost4Reported = false;  // one UNAVAILABLE line, not one per frame
   id<MTLRenderPipelineState> dustPipeline = nil; // §2b: cold+dense gas as absorbing (reddening) dust splats
   id<MTLBuffer> lensAlphaLUT = nil; // 256×float exact Schwarzschild α(b/r_s), x∈[2.60,200] log-spaced
   // SPECTRAL STARMAP (increment 1, 2026-07-24): the one colour law's tables.
@@ -910,6 +941,36 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
       impl_->lensDebugPipeline =
           [impl_->device newRenderPipelineStateWithDescriptor:ld error:&error];
       if (error) NSLog(@"Lens debug pipeline error: %@", error);
+      // B3 — same functions, own pass shape: one HDR color attachment, no
+      // motion attachment, no depth (it draws after the main pass ends, over
+      // the region only — everything else discards). Opaque overwrite.
+      MTLRenderPipelineDescriptor *lr = [[MTLRenderPipelineDescriptor alloc] init];
+      lr.vertexFunction = lV;
+      lr.fragmentFunction = lF;
+      lr.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+      // B5 (2026-09-01): mode 3 now writes the temporal EMA into the
+      // ACCUMULATION texture — straight write, no blending. The additive
+      // step moved to lensCompositePipeline below.
+      lr.colorAttachments[0].blendingEnabled = NO;
+      impl_->lensRenderPipeline =
+          [impl_->device newRenderPipelineStateWithDescriptor:lr error:&error];
+      if (error) NSLog(@"Lens render pipeline error: %@", error);
+      // B5 composite: adds the accumulated lensed light onto the HDR scene.
+      id<MTLFunction> cF =
+          [impl_->library newFunctionWithName:@"lenscomposite_fragment"];
+      if (cF) {
+        MTLRenderPipelineDescriptor *lc =
+            [[MTLRenderPipelineDescriptor alloc] init];
+        lc.vertexFunction = lV;
+        lc.fragmentFunction = cF;
+        lc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+        // v4 (2026-09-01 01:2x): the region is REPLACED by the ray-truth
+        // image — coverage by discard in the fragment, no blending.
+        lc.colorAttachments[0].blendingEnabled = NO;
+        impl_->lensCompositePipeline =
+            [impl_->device newRenderPipelineStateWithDescriptor:lc error:&error];
+        if (error) NSLog(@"Lens composite pipeline error: %@", error);
+      }
     } else {
       NSLog(@"Missing lensdebug shader functions");
     }
@@ -1281,15 +1342,76 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
     impl_->lensDebugUniformBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(LensDebugUniforms)
                                    options:MTLResourceStorageModeShared];
+    impl_->lensRenderUniformBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(LensDebugUniforms)
+                                   options:MTLResourceStorageModeShared];
     if (!impl_->lensStatsBuffer)
       impl_->lensStatsBuffer =
-          [impl_->device newBufferWithLength:2 * sizeof(uint32_t)
+          [impl_->device newBufferWithLength:16 * sizeof(uint32_t)
                                      options:MTLResourceStorageModeShared];
+    // 16 slots since B2b: [0]/[1] stay the cost instrument's (SIGMA steps /
+    // covered px, cleared by its own fillBuffer); [2..9] are the mode-0 class
+    // counters, MONOTONE by design — the host prints 1 Hz deltas, so there is
+    // no per-frame zeroing and no CPU/GPU clear race. Unsigned deltas stay
+    // exact across uint32 wraparound.
+    // B3: the fragment signature now declares texture(0); the three mode≠3
+    // encode sites never SAMPLE it but must still BIND something — this 4×4
+    // stand-in. (Binding the live render target there would be a read-write
+    // hazard; binding nil a validation error.)
+    if (!impl_->lensDummyTex) {
+      MTLTextureDescriptor *dd = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                       width:4
+                                      height:4
+                                   mipmapped:NO];
+      dd.usage = MTLTextureUsageShaderRead;
+      dd.storageMode = MTLStorageModePrivate;
+      impl_->lensDummyTex = [impl_->device newTextureWithDescriptor:dd];
+    }
 #if HAS_SYPHON
     impl_->postUniformSyphonBuffer[i] =
         [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
                                    options:MTLResourceStorageModeShared];
 #endif
+  }
+
+
+  // ── [LENSCOST4] stage-boundary counter sample buffer (SS_LENS_COST=2) ─────
+  // ONE 4-SAMPLE SLOT PER IN-FLIGHT FRAME, slot = 4 * frameIdx. A single
+  // 4-sample buffer would be overwritten by frame N+1's encoder before frame
+  // N's completed handler resolved it — the same cross-frame hazard that made
+  // the [LENSCOST] counters accumulate across frames (board §Z10).
+  for (id<MTLCounterSet> cs in impl_->device.counterSets)
+    if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp])
+      impl_->lensTimestampSet = cs;
+
+  if (impl_->lensTimestampSet &&
+      [impl_->device
+          supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+    MTLCounterSampleBufferDescriptor *sd =
+        [[MTLCounterSampleBufferDescriptor alloc] init];
+    sd.counterSet = impl_->lensTimestampSet;
+    sd.storageMode = MTLStorageModeShared;  // REQUIRED by resolveCounterRange
+    sd.sampleCount = 4 * Impl::kMaxInFlightFrames;
+    sd.label = @"lensStage";
+    NSError *cerr = nil;
+    impl_->lensCounterSB =
+        [impl_->device newCounterSampleBufferWithDescriptor:sd error:&cerr];
+    if (!impl_->lensCounterSB)
+      NSLog(@"[LENSCOST4] counter sample buffer: %@", cerr);
+  }
+
+  // GPU ticks vs CPU nanoseconds. MEASURED 1.000000 on this device — but a
+  // constant with a comment is not a mechanism. Sample the pair here and let
+  // the instrument ASSERT the ratio at use; a future device that disagrees must
+  // make the instrument say so, not silently report ticks as nanoseconds.
+  {
+    MTLTimestamp cpu0 = 0, gpu0 = 0, cpu1 = 0, gpu1 = 0;
+    [impl_->device sampleTimestamps:&cpu0 gpuTimestamp:&gpu0];
+    usleep(20000);
+    [impl_->device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
+    const double dcpu = (double)(cpu1 - cpu0), dgpu = (double)(gpu1 - gpu0);
+    impl_->gpuTicksPerNs = (dcpu > 0.0) ? (dgpu / dcpu) : 0.0;
   }
 
   // Use layer's drawableSize directly to ensure sync with window backing
@@ -1614,15 +1736,25 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
     // frame rate and delivered LESS real time for 2x the GPU. When the clock
     // outruns the machine the deficit is THROUGHPUT, not the clock — and the
     // cure for that is a cheaper step or an offline render, never more steps.
-    // At max=1 this is >= legacy everywhere: above 60.61 fps it SKIPS steps and
-    // pins the sim at real time (the fix); below it, it behaves exactly like
-    // legacy and reports the shortfall as realtime<1 instead of hiding it.
-    // SS_MAX_STEPS=N re-opens it for the catch-up experiment once a step is
-    // cheap enough to be worth taking.
+    // ⏱️ CATCH-UP OPENED — HIS ORDER 2026-09-01 00:40 ("FIX THE FPS BS
+    // INSTANTLY. TRUE CLOCK."). At max=1 the sim could never take more than
+    // one step per frame, so below 60.61 fps the UNIVERSE RAN SLOWER THAN
+    // WALL TIME — sim-seconds-per-wall-second = fps/60.6 (measured tonight:
+    // realtime 0.32× at 11–20 fps in the drain era). "A second is a second"
+    // held only above 60.6 fps. Default cap is now 4: the clock takes up to
+    // 4 full-pipeline steps per frame to stay on wall time, spiral-bounded
+    // by the cap + the one-step carry below. Every per-step constant is
+    // fps-safe by construction (step SIZE is fixed; only the COUNT varies).
+    // ⚠️ STATED LIMITATION, on the board: PhysicsUniforms uploads once per
+    // frame, so u.frameCounter-seeded RNG repeats across a frame's steps
+    // (rebirth is self-limiting — a revived particle fails the dead-check on
+    // the next step — but per-step uniforms are the real fix and need
+    // static_asserts on PhysicsUniforms first).
+    // SS_MAX_STEPS=N still overrides both ways.
     static int sMaxSteps = -1;
     if (sMaxSteps < 0) {
       const char *e = getenv("SS_MAX_STEPS");
-      sMaxSteps = e ? std::max(1, atoi(e)) : 1;
+      sMaxSteps = e ? std::max(1, atoi(e)) : 4;
     }
     const double kStepWall = 0.0165;  // real seconds one step represents
     // Measured here, NOT taken from the frame callback: window.mm:712 clamps
@@ -2088,10 +2220,6 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // via cam.bhX/Y/Z is re-centring on the origin. Consequence, logged: the P6
   // fix in board §H1 is a no-op — see the note at `rDil` in render.metal.
   cam.bhX = impl_->bhPosX; cam.bhY = impl_->bhPosY; cam.bhZ = impl_->bhPosZ;
-  cam.tuneLens = config.lensBend;
-  cam.tuneArcWrap = config.arcWrap;
-  cam.tuneArcGain = config.arcGain;
-  cam.tuneTrailGain = config.trailGain;
   cam.tuneStreakLen = config.streakLen;
   cam.tuneColorK = config.colorTempK;
   cam.tuneHeatK = config.heatGain;
@@ -2107,6 +2235,10 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   cam.tuneStarSizeCeil = config.starSizeCeil;
   cam.bhToggles = config.bhToggles;
   impl_->bhToggles = config.bhToggles; // → physics gates in runComputePass
+  // B3 note: the first cut set bit22 here to suppress in-region sprites. That
+  // was REMOVED 2026-09-01 (his catch, first B3 frame — the escape sample
+  // needs the full scene in its copy; the lens pass repaints the region
+  // instead). No flag: the vertex path is untouched by the lens now.
   impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
@@ -4303,7 +4435,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   {
     static const char *kLensDbgEnv = getenv("SS_LENS_DEBUG");
     static const int kLensDbg = kLensDbgEnv ? atoi(kLensDbgEnv) : 0;
-    if (kLensDbg > 0 && lensDebugPipeline && lastHorizonR > 0.0f) {
+    if (kLensDbg > 0 && lensDebugPipeline && lastHorizonR > 0.0f &&
+        sortedParticlesBuffer && cellStartsBuffer && cellCountsBuffer &&
+        spatialHashUniformBuffer && posePhaseBuffer) {
       static const char *kBgeoEnv = getenv("SS_LENS_BGEO");
       static const float kBgeo = kBgeoEnv ? (float)atof(kBgeoEnv) : 20.0f;
       static const char *kDivEnv = getenv("SS_LENS_DPHI_DIV");
@@ -4322,13 +4456,49 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       // SS_LENS_PIN_RS — measurement only; see the banner in render.metal.
       static const char *kPinEnv = getenv("SS_LENS_PIN_RS");
       lu.pinRs = kPinEnv ? (float)atof(kPinEnv) : 0.0f;
+      // B2b — particle-footprint radius for the ray test, SIM units. A DEBUG
+      // constant, env-overridable; NOT the sprite radius law (that swap is B3,
+      // gated on the T1 seam test).
+      static const char *kHitREnv = getenv("SS_LENS_HITR");
+      lu.hitRadius = kHitREnv ? (float)atof(kHitREnv) : 0.25f;
       memcpy(lensDebugUniformBuffer[frameIdx].contents, &lu, sizeof(lu));
       [enc setRenderPipelineState:lensDebugPipeline];
       [enc setDepthStencilState:depthState];        // test only, no write
       [enc setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
       [enc setFragmentBuffer:lensDebugUniformBuffer[frameIdx] offset:0 atIndex:1];
       [enc setFragmentBuffer:lensStatsBuffer offset:0 atIndex:2];
+      // B2b termination inputs — the live hash chain + the pose phase, so the
+      // march tests the matter where the sprite pass actually draws it.
+      [enc setFragmentBuffer:sortedParticlesBuffer offset:0 atIndex:3];
+      [enc setFragmentBuffer:cellStartsBuffer offset:0 atIndex:4];
+      [enc setFragmentBuffer:cellCountsBuffer offset:0 atIndex:5];
+      [enc setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:6];
+      [enc setFragmentBuffer:posePhaseBuffer offset:0 atIndex:7];
+      [enc setFragmentBuffer:particleBuffer offset:0 atIndex:8];
+      [enc setFragmentTexture:lensDummyTex atIndex:0];   // mode 0 never samples
+      [enc setFragmentTexture:lensDummyTex atIndex:1];
       [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      // [LENS-B2B] — 1 Hz class-count deltas off the monotone counters.
+      // The read lags the GPU by the frames in flight; this is a
+      // class-EXISTENCE instrument (is pFarOut nonzero? does agg appear?),
+      // not a per-frame measurement, and it must never be quoted as one.
+      if (kLensDbg == 1) {
+        static double b2bLast = 0.0;
+        static uint32_t b2bPrev[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        double now = CACurrentMediaTime();
+        if (now - b2bLast > 1.0) {
+          b2bLast = now;
+          const uint32_t *s = (const uint32_t *)lensStatsBuffer.contents;
+          uint32_t d[8];
+          for (int k = 0; k < 8; ++k) {
+            d[k] = s[2 + k] - b2bPrev[k];
+            b2bPrev[k] = s[2 + k];
+          }
+          printf("[LENS-B2B] hor=%u esc=%u cap=%u unres=%u pNear=%u "
+                 "pFarOut=%u pFarIn=%u agg=%u\n",
+                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+        }
+      }
     }
   }
 
@@ -4478,6 +4648,136 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // depth pass below is its only remaining user.
 
   [enc endEncoding];
+
+  // ── B3 — THE LENS RENDER PASS (SS_LENS_RENDER=1 only) ─────────────────────
+  // docs/DESIGN_BH_2026-08-31_F1_LENS_IMPLEMENTATION.md §5 B3, third cut
+  // (2026-09-01): ADDITIVE LENSED LIGHT ONLY. The sprite picture stays whole
+  // (its shadow is already carved by the b_c cull + the body sphere); this
+  // pass adds the one thing only a real lens makes — far-side starlight bent
+  // around the hole — at the sprites' own photometry. Both repaint cuts were
+  // dead roads (his catches: "the bh is like in front of everything"); the
+  // full story is the mode-3 banner in render.metal. No scene copy any more:
+  // nothing samples it. Runs BEFORE auto-exposure. Default OFF: an unset env
+  // is byte-for-byte the shipping path.
+  {
+    static const char *kLREnv = getenv("SS_LENS_RENDER");
+    static const int kLR = kLREnv ? atoi(kLREnv) : 0;
+    if (kLR > 0 && lensRenderPipeline && lensCompositePipeline &&
+        lastHorizonR > 0.0f &&
+        offscreenTexture && sortedParticlesBuffer && cellStartsBuffer &&
+        cellCountsBuffer && spatialHashUniformBuffer && posePhaseBuffer) {
+      // v4: the escape termination samples the pre-lens scene in its bent
+      // exit direction — copy level 0 before the pass draws over the region.
+      if (!lensSceneCopy ||
+          lensSceneCopy.width != offscreenTexture.width ||
+          lensSceneCopy.height != offscreenTexture.height) {
+        MTLTextureDescriptor *cd = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                         width:offscreenTexture.width
+                                        height:offscreenTexture.height
+                                     mipmapped:NO];
+        cd.usage = MTLTextureUsageShaderRead;
+        cd.storageMode = MTLStorageModePrivate;
+        lensSceneCopy = [device newTextureWithDescriptor:cd];
+      }
+      id<MTLBlitCommandEncoder> cb = [cmdBuf blitCommandEncoder];
+      [cb copyFromTexture:offscreenTexture
+              sourceSlice:0
+              sourceLevel:0
+             sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake(offscreenTexture.width,
+                                      offscreenTexture.height, 1)
+                toTexture:lensSceneCopy
+         destinationSlice:0
+         destinationLevel:0
+        destinationOrigin:MTLOriginMake(0, 0, 0)];
+      [cb endEncoding];
+
+      LensDebugUniforms lu = {};
+      CameraUniforms *camR = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+      invertMatrix4x4(camR->viewProj, lu.inverseViewProj);
+      // Region radius. The old "must equal kLensBGeo" contract died with the
+      // suppression cull (nothing else keys on the constant now); the dial is
+      // live again — his zoom-fps lever: cost scales with (bGeo·r_s)² on
+      // screen, so halving this quarters the march bill.
+      static const char *kBgeoEnvR = getenv("SS_LENS_BGEO");
+      lu.bGeoOverRs = kBgeoEnvR ? (float)atof(kBgeoEnvR) : 20.0f;
+      static const char *kDivEnvR = getenv("SS_LENS_DPHI_DIV");
+      static const int kDivR = kDivEnvR ? std::max(8, atoi(kDivEnvR)) : 512;
+      lu.dphi     = (float)(M_PI / (double)kDivR);
+      lu.phiCap   = (float)(3.0 * M_PI);
+      lu.maxSteps = (int)(3.0 * kDivR) + 8;
+      lu.mode     = 3;
+      lu.pinRs    = 0.0f;   // NEVER pinned: the drawn region IS the mass. §Z law.
+      // Footprint default 0.02 sim ≈ the drawn sprite scale measured 2026-08-31
+      // (3.4–8 px at ~154 px/sim); env-shared with the debug pass.
+      static const char *kHitREnvR = getenv("SS_LENS_HITR");
+      lu.hitRadius = kHitREnvR ? (float)atof(kHitREnvR) : 0.02f;
+      static const char *kEmitEnv = getenv("SS_LENS_EMIT");
+      lu.emitScale = kEmitEnv ? (float)atof(kEmitEnv) : 1.0f;
+      // B5 jitter: golden-ratio / plastic sequence, ±0.75 px in NDC units.
+      lensFrameCount++;
+      float h1 = fmodf((float)lensFrameCount * 0.7548776662f, 1.0f);
+      float h2 = fmodf((float)lensFrameCount * 0.5698402910f, 1.0f);
+      lu.jitterX = (h1 - 0.5f) * 3.0f / (float)offscreenTexture.width;
+      lu.jitterY = (h2 - 0.5f) * 3.0f / (float)offscreenTexture.height;
+      memcpy(lensRenderUniformBuffer[frameIdx].contents, &lu, sizeof(lu));
+
+      // B5 accumulation ping-pong (recreated on drawable resize).
+      if (!lensAccumTex[0] ||
+          lensAccumTex[0].width != offscreenTexture.width ||
+          lensAccumTex[0].height != offscreenTexture.height) {
+        MTLTextureDescriptor *ad = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                         width:offscreenTexture.width
+                                        height:offscreenTexture.height
+                                     mipmapped:NO];
+        ad.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        ad.storageMode = MTLStorageModePrivate;
+        lensAccumTex[0] = [device newTextureWithDescriptor:ad];
+        lensAccumTex[1] = [device newTextureWithDescriptor:ad];
+        lensAccumPing = 0;
+      }
+      id<MTLTexture> accumPrev = lensAccumTex[lensAccumPing];
+      id<MTLTexture> accumNext = lensAccumTex[lensAccumPing ^ 1];
+      lensAccumPing ^= 1;
+
+      // Pass 1 — march + EMA into accumNext. Clear-load: pixels outside the
+      // region discard, so stale light outside the live disc dies each frame;
+      // history lives in accumPrev, sampled by the fragment.
+      MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+      rp.colorAttachments[0].texture = accumNext;
+      rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+      rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+      rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> le = [cmdBuf renderCommandEncoderWithDescriptor:rp];
+      [le setRenderPipelineState:lensRenderPipeline];
+      [le setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
+      [le setFragmentBuffer:lensRenderUniformBuffer[frameIdx] offset:0 atIndex:1];
+      [le setFragmentBuffer:lensStatsBuffer offset:0 atIndex:2];
+      [le setFragmentBuffer:sortedParticlesBuffer offset:0 atIndex:3];
+      [le setFragmentBuffer:cellStartsBuffer offset:0 atIndex:4];
+      [le setFragmentBuffer:cellCountsBuffer offset:0 atIndex:5];
+      [le setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:6];
+      [le setFragmentBuffer:posePhaseBuffer offset:0 atIndex:7];
+      [le setFragmentBuffer:particleBuffer offset:0 atIndex:8];
+      [le setFragmentTexture:accumPrev atIndex:0];
+      [le setFragmentTexture:lensSceneCopy atIndex:1];
+      [le drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [le endEncoding];
+
+      // Pass 2 — add the accumulated lensed light onto the HDR scene.
+      MTLRenderPassDescriptor *cp = [MTLRenderPassDescriptor renderPassDescriptor];
+      cp.colorAttachments[0].texture = offscreenTexture;
+      cp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+      cp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> ce = [cmdBuf renderCommandEncoderWithDescriptor:cp];
+      [ce setRenderPipelineState:lensCompositePipeline];
+      [ce setFragmentTexture:accumNext atIndex:0];
+      [ce drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [ce endEncoding];
+    }
+  }
 
   // AUTO-EXPOSURE mip chain (2026-07-16): reduce the freshly rendered HDR
   // scene to its average (top mip). The tonemap samples it to adapt the iris
@@ -4865,13 +5165,187 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [uiEnc endEncoding];
   }
 
+  // ══ [LENSCOST4] — INSTRUMENT #4, STAGE-BOUNDARY GPU COUNTERS ══════════════
+  // SS_LENS_COST=2 ONLY. Spec: docs/PLAN_2026-08-31_INSTRUMENT_4_STAGE_COUNTERS.md
+  // The [LENSCOST] bracket below (SS_LENS_COST=1) is deliberately LEFT IN PLACE:
+  // two instruments runnable back to back on one build is how the ~15x premise
+  // error in board §Z7 gets adjudicated instead of replaced by a fourth number.
+  //
+  // ⭐ WHY THE PASS IS HERE AND NOT WHERE THE LENS DRAW LIVES. AtDrawBoundary
+  // counter sampling is NOT supported on this GPU (MEASURED: only
+  // AtStageBoundary), so a timestamp can be taken at an ENCODER boundary and
+  // nowhere finer. The lens draw cannot be timed where SS_LENS_DEBUG puts it —
+  // inside the shared main encoder at renderer.mm:4326, alongside particles and
+  // dust. Its own render encoder is the only shape the hardware permits.
+  //
+  // ⭐ WHY THIS SLOT CANNOT REACH THE PICTURE. offscreenTexture is consumed
+  // EARLIER in this same command buffer — mip generation (:4487) and postfx
+  // sampling (:4757) — and encoders within one command buffer execute in
+  // submission order. Next frame the main pass sets colorAttachments[0]
+  // loadAction = MTLLoadActionClear (:4082), so nothing here survives to be
+  // read. depthState has depthWriteEnabled = NO (:1244) and lensDebugPipeline
+  // masks colour attachment 1 off (:906-908): this pass writes attachment 0 and
+  // nothing else — no depth, no motion vectors. The visual path is untouched.
+  //
+  // ⛔ WHAT THIS STILL CANNOT DO — stated now, not after the run. Stage-boundary
+  // sampling strips the command-buffer SCHEDULING ENVELOPE; it does NOT prove
+  // immunity to OCCUPANCY. On a TBDR GPU the vertex/tiling and fragment stages
+  // of ADJACENT encoders can overlap, so enc_ms can still contain wall-clock in
+  // which the GPU was serving a neighbour. gap_ms = cb_ms - enc_ms is what
+  // quantifies the surrounding load, per frame, for free.
+  {
+    static const char *kCost4Env = getenv("SS_LENS_COST");
+    static const int kCost4 = kCost4Env ? atoi(kCost4Env) : 0;
+    if (kCost4 == 2 && lensDebugPipeline && lastHorizonR > 0.0f &&
+        offscreenTexture && sortedParticlesBuffer && cellStartsBuffer &&
+        cellCountsBuffer && spatialHashUniformBuffer && posePhaseBuffer) {
+      // ⛔ NEVER SILENTLY REPORT ZEROS. If the hardware cannot sample, or the
+      // clock is not nanoseconds, say so once and produce no rows at all.
+      const bool haveCounters = (lensCounterSB != nil && lensTimestampSet != nil);
+      const bool clockOK = (gpuTicksPerNs > 0.0 && fabs(gpuTicksPerNs - 1.0) <= 0.01);
+      if (!haveCounters || !clockOK) {
+        if (!lensCost4Reported) {
+          if (!haveCounters)
+            printf("[LENSCOST4] UNAVAILABLE: no timestamp counter set, or no "
+                   "AtStageBoundary sampling on this device. No rows.\n");
+          else
+            printf("[LENSCOST4] UNAVAILABLE: gpu ticks per cpu ns = %.6f, not "
+                   "within 1%% of 1.0 — timestamps are not nanoseconds here. "
+                   "No rows.\n",
+                   gpuTicksPerNs);
+          fflush(stdout);
+          lensCost4Reported = true;
+        }
+      } else {
+        // Uniforms kept BYTE-IDENTICAL to the [LENSCOST] block below so that
+        // instrument #4 and instrument #3 are measuring the same work.
+        CameraUniforms *camL4 = (CameraUniforms *)cameraBuffer[frameIdx].contents;
+        LensDebugUniforms lu4 = {};
+        invertMatrix4x4(camL4->viewProj, lu4.inverseViewProj);
+        static const char *kBgeoEnv4 = getenv("SS_LENS_BGEO");
+        lu4.bGeoOverRs = kBgeoEnv4 ? (float)atof(kBgeoEnv4) : 20.0f;
+        static const char *kDivEnv4 = getenv("SS_LENS_DPHI_DIV");
+        const int div4 = kDivEnv4 ? std::max(8, atoi(kDivEnv4)) : 512;
+        lu4.dphi = (float)(M_PI / (double)div4);
+        lu4.phiCap = (float)(3.0 * M_PI);
+        lu4.maxSteps = (int)(3.0 * div4) + 8;
+        lu4.mode = 2;  // COST: accumulate S (steps) and px
+        static const char *kPinEnv4 = getenv("SS_LENS_PIN_RS");
+        lu4.pinRs = kPinEnv4 ? (float)atof(kPinEnv4) : 0.0f;
+        memcpy(lensDebugUniformBuffer[frameIdx].contents, &lu4, sizeof(lu4));
+
+        // ⛔ THE CLEAR MUST BE ON THE GPU AND IN THIS COMMAND BUFFER, ordered
+        // before the draw (board §Z10). A CPU-side memset at encode time races
+        // work still in flight and the counters accumulate over the whole run.
+        // ⚠️ KNOWN, UNFIXED, AND WHAT ACCEPTANCE TEST 2 IS FOR: lensStatsBuffer
+        // is still ONE buffer shared by up to kMaxInFlightFrames buffers in
+        // flight, so a later frame's fill can in principle land before this
+        // frame's handler reads it. steps_per_px drifting frame to frame is
+        // that race showing itself; flat means it did not bite.
+        id<MTLBlitCommandEncoder> lz4 = [cmdBuf blitCommandEncoder];
+        [lz4 fillBuffer:lensStatsBuffer
+                  range:NSMakeRange(0, 2 * sizeof(uint32_t))
+                  value:0];
+        [lz4 endEncoding];
+
+        MTLRenderPassDescriptor *lp4 =
+            [MTLRenderPassDescriptor renderPassDescriptor];
+        lp4.colorAttachments[0].texture = offscreenTexture;
+        lp4.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        lp4.colorAttachments[0].storeAction = MTLStoreActionStore;
+        lp4.colorAttachments[1].texture = velocityTexture;
+        lp4.colorAttachments[1].loadAction = MTLLoadActionLoad;
+        lp4.colorAttachments[1].storeAction = MTLStoreActionDontCare;
+        lp4.depthAttachment.texture = depthTexture;
+        lp4.depthAttachment.loadAction = MTLLoadActionLoad;
+        lp4.depthAttachment.storeAction = MTLStoreActionDontCare;
+
+        // The four stage boundaries of THIS encoder, in this frame's own slot.
+        const NSUInteger base4 = 4 * (NSUInteger)frameIdx;
+        lp4.sampleBufferAttachments[0].sampleBuffer = lensCounterSB;
+        lp4.sampleBufferAttachments[0].startOfVertexSampleIndex = base4 + 0;
+        lp4.sampleBufferAttachments[0].endOfVertexSampleIndex = base4 + 1;
+        lp4.sampleBufferAttachments[0].startOfFragmentSampleIndex = base4 + 2;
+        lp4.sampleBufferAttachments[0].endOfFragmentSampleIndex = base4 + 3;
+
+        id<MTLRenderCommandEncoder> le4 =
+            [cmdBuf renderCommandEncoderWithDescriptor:lp4];
+        [le4 setRenderPipelineState:lensDebugPipeline];
+        [le4 setDepthStencilState:depthState];  // test only, no write
+        [le4 setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
+        [le4 setFragmentBuffer:lensDebugUniformBuffer[frameIdx] offset:0 atIndex:1];
+        [le4 setFragmentBuffer:lensStatsBuffer offset:0 atIndex:2];
+        // B2b buffers — never READ in this mode (particleTerm requires mode 0)
+        // but the fragment signature declares them, so they must be bound.
+        [le4 setFragmentBuffer:sortedParticlesBuffer offset:0 atIndex:3];
+        [le4 setFragmentBuffer:cellStartsBuffer offset:0 atIndex:4];
+        [le4 setFragmentBuffer:cellCountsBuffer offset:0 atIndex:5];
+        [le4 setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:6];
+        [le4 setFragmentBuffer:posePhaseBuffer offset:0 atIndex:7];
+        [le4 setFragmentBuffer:particleBuffer offset:0 atIndex:8];
+        [le4 setFragmentTexture:lensDummyTex atIndex:0];
+        [le4 setFragmentTexture:lensDummyTex atIndex:1];
+        [le4 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [le4 endEncoding];
+
+        __block id<MTLBuffer> statsBuf4 = lensStatsBuffer;
+        __block id<MTLCounterSampleBuffer> sb4 = lensCounterSB;
+        // Warm-up is enforced IN the instrument, flagged rather than hidden:
+        // a row the reader cannot see is a finding the next reader loses.
+        const int warm4 = (lensCostFrame < 180) ? 1 : 0;
+        const float amp4 = physicsUniforms.totalAmplitude;
+        const float rs4 = lastHorizonR;
+        const float mass4 = bhSeedMass;
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> b) {
+          NSData *d = [sb4 resolveCounterRange:NSMakeRange(base4, 4)];
+          bool bad = (d == nil) ||
+                     (d.length < 4 * sizeof(MTLCounterResultTimestamp));
+          const MTLCounterResultTimestamp *t =
+              bad ? NULL : (const MTLCounterResultTimestamp *)d.bytes;
+          // ⛔ MTLCounterErrorValue is ~0ULL. Two of those subtracted give a
+          // plausible-looking small number, so check explicitly and drop the row.
+          for (int i = 0; i < 4 && !bad; i++)
+            bad = (t[i].timestamp == MTLCounterErrorValue);
+          if (bad) {
+            printf("[LENSCOST4] ERRVAL — counters did not resolve this frame. "
+                   "Row DROPPED, not fitted.\n");
+            fflush(stdout);
+            return;
+          }
+          // start-of-vertex -> end-of-fragment: the encoder's own GPU span.
+          const double encMs = (double)(t[3].timestamp - t[0].timestamp) / 1e6;
+          // The command buffer this encoder is INSIDE. Same two fields
+          // [PROFILE/120f] already trusts at :1784 — read off the same buffer
+          // rather than through lastRenderMs, so it carries no dependence on
+          // the order the completed handlers happen to run in.
+          const double cbMs = (b.GPUEndTime - b.GPUStartTime) * 1000.0;
+          const uint32_t *r = (const uint32_t *)statsBuf4.contents;
+          // CLOSURE — an IDENTITY, not a tolerance to be tuned. This encoder is
+          // inside that command buffer, so its span cannot exceed the buffer's.
+          // A single violating frame falsifies the instrument: wrong slot,
+          // wrong clock domain, or an error value that slipped the check.
+          const char *viol = (encMs <= cbMs) ? "" : " CLOSURE_VIOLATION";
+          printf("[LENSCOST4] enc_ms=%.4f cb_ms=%.4f gap_ms=%.4f steps=%u px=%u "
+                 "steps_per_px=%.1f warm=%d amp=%.4f rs=%.4f mass=%.0f %s%s\n",
+                 encMs, cbMs, cbMs - encMs, r[0], r[1],
+                 r[1] ? (double)r[0] / (double)r[1] : 0.0, warm4, amp4, rs4,
+                 mass4, (amp4 < 0.02f) ? "REST" : "PLAY", viol);
+          fflush(stdout);
+        }];
+        lensCostFrame++;
+      }
+    }
+  }
+
   if (uiDrawable)
     [cmdBuf presentDrawable:uiDrawable];
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
 
   // ══ [LENSCOST] — THE LENS PASS IN ITS OWN COMMAND BUFFER ══════════════════
-  // docs/DESIGN_BH_2026-08-31_LENS_COST_MEASUREMENT.md §2. SS_LENS_COST=1 ONLY.
+  // docs/DESIGN_BH_2026-08-31_LENS_COST_MEASUREMENT.md §2. SS_LENS_COST=1 ONLY —
+  // now an EXACT match, not > 0, so SS_LENS_COST=2 selects instrument #4 above
+  // and the two never encode in the same frame.
   //
   // ⭐ WHY ITS OWN COMMAND BUFFER AND NOT A SUBTRACTION. Metal reports
   // GPUEndTime-GPUStartTime PER COMMAND BUFFER — the same instrument [PROFILE/120f]
@@ -4893,7 +5367,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   {
     static const char *kCostEnv = getenv("SS_LENS_COST");
     static const int kCost = kCostEnv ? atoi(kCostEnv) : 0;
-    if (kCost > 0 && lensDebugPipeline && lastHorizonR > 0.0f && offscreenTexture) {
+    if (kCost == 1 && lensDebugPipeline && lastHorizonR > 0.0f && offscreenTexture &&
+        sortedParticlesBuffer && cellStartsBuffer && cellCountsBuffer &&
+        spatialHashUniformBuffer && posePhaseBuffer) {
       // ⛔ THE CLEAR MUST HAPPEN ON THE GPU, NOT HERE. A CPU-side memset at encode
       // time RACES the previous frame's lens buffer, which may still be executing.
       // MEASURED with the CPU clear: steps ran 1.95e9 -> 2.42e9 MONOTONICALLY across
@@ -4940,6 +5416,16 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       [le setFragmentBuffer:cameraBuffer[frameIdx] offset:0 atIndex:0];
       [le setFragmentBuffer:lensDebugUniformBuffer[frameIdx] offset:0 atIndex:1];
       [le setFragmentBuffer:lensStatsBuffer offset:0 atIndex:2];
+      // B2b buffers — never READ in this mode (particleTerm requires mode 0)
+      // but the fragment signature declares them, so they must be bound.
+      [le setFragmentBuffer:sortedParticlesBuffer offset:0 atIndex:3];
+      [le setFragmentBuffer:cellStartsBuffer offset:0 atIndex:4];
+      [le setFragmentBuffer:cellCountsBuffer offset:0 atIndex:5];
+      [le setFragmentBuffer:spatialHashUniformBuffer offset:0 atIndex:6];
+      [le setFragmentBuffer:posePhaseBuffer offset:0 atIndex:7];
+      [le setFragmentBuffer:particleBuffer offset:0 atIndex:8];
+      [le setFragmentTexture:lensDummyTex atIndex:0];
+      [le setFragmentTexture:lensDummyTex atIndex:1];
       [le drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
       [le endEncoding];
 
@@ -4949,7 +5435,7 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       // sampled. Everything measured tonight was at REST: all four probe arms were
       // 100% [CLUSTER] SILENCE (470/470 etc.). Play is a DIFFERENT regime — REBIRTH
       // returns matter to the field, so particle count and therefore S recover.
-      // ⚠️ ALSO: renderer.mm:1907 gates `bhLensActive` OFF during play
+      // ⚠️ ALSO: renderer.mm:1957 gates `bhLensActive` OFF during play
       // (totalAmplitude < 0.02f). This bracket is gated on lastHorizonR only, so it
       // keeps reporting while he plays — but `amp` below is what tells a reader
       // whether the frame was at rest or driven. A row without it is undated.

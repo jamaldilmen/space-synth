@@ -477,7 +477,7 @@ Secondary placement (`render.metal:1055`): `target = bhWorld + along·dHat − p
 | # | Limit | Evidence |
 |---|---|---|
 | ~~**L1**~~ | ✅ **FIXED 2026-08-20 15:36:28, UNVERIFIED — he has not looked.** The divisor is now the screen half-height **at the hole**: `frustum` in ortho (unchanged, byte for byte), `dHole * 0.414214` in perspective, where 0.414214 = tan(45°/2) and 45° is the fov `main.cpp:776` actually passes. The perspective shadow was **2.897× too small**, exactly the factor the code's own comment predicted before measurement. `dHole` is computed from the real camera and hole vectors, NOT from `cameraRho` — under the origin lock (L5) they are the same number today, and writing `cameraRho` would have baked that lock into the lens. | `renderer.mm:1661-1690` |
-| **L2** | **The lens is OFF during play.** `bhLensActive = (totalAmplitude < 0.02f)`. The hole only lenses at silence. Deliberate (star-map regime) but it means **the mindfuck look is a REST-STATE look** and cannot appear while he plays. | `renderer.mm:1618` |
+| **L2** | **The lens is OFF during play.** `bhLensActive = (totalAmplitude < 0.02f)`. The hole only lenses at silence. Deliberate (star-map regime) but it means **the mindfuck look is a REST-STATE look** and cannot appear while he plays. | ⛔ **`:1618` DEAD — corrected 2026-08-31 22:55:00 to `renderer.mm:1957`** (`:1618` is a fixed-dt comment). |
 | **L3** | **A two-instance sprite scheme cannot produce S3.** n ≥ 2 windings need a per-pixel integrator. This is a representation ceiling, not a bug. | `renderer.mm:3643` |
 | ~~**L4**~~ | ⛔ **MOOT — THE MARCH NO LONGER EXISTS.** *(Was: "the march can only be orange, and can only be 128³.")* `bhmarch_fragment` deleted 2026-08-27 `00741f2`. **A limit on deleted code is not a hard limit.** ⚠️ The header's "describes deleted code" warning listed §1a/§1b/§2/§5/§6 and did NOT list §3 — this row sat in HARD LIMITS unmarked until now. | ⛔ dead: `render.metal:3129` (file is 3106 lines) `[VERIFIED 2026-08-30 23:48:34]` |
 | **L5** | **Origin lock: the renderer's hole centre IS the origin.** `bhPosX/Y/Z` are hard-zeroed by design (the COM is pinned at 0/0/0 and the seed sinks there); the enclosure-COM refinement sits inside `if (false)`. So every "re-centre on the hole" fix is a **NO-OP** — 4 have been logged. Making it honest is real work (A3②), not a vector swap. ⚠️ `render.metal:774-775` cites this as `renderer.mm:3293-3295`; **that citation has drifted** — the live sites are below. | `renderer.mm:3555-3557` (the zeroing), `:3193` (`if (false)` refinement) |
@@ -700,9 +700,9 @@ wins** — they were verified later. Folding them in is the next pass, not done 
 | ~~**A0a**~~ | ~~two camera systems, BH uses the wrong one~~ **WITHDRAWN.** The live path is `render(config, viewProj)` and it `memcpy`s the matrix built in `main.cpp:770-779` — which **does** branch `orthoMatrix` / `perspectiveMatrix(45°)`. The toggle reaches the particle/BH path. | `renderer.mm:1628`, `:1696`; `main.cpp:2533`, `:770-779` |
 | ~~**A0b**~~ | ~~`cameraPos` hardcoded `{0,R,0}`~~ **WITHDRAWN.** That literal is in the dead overload. The live path sets `cam.cameraPos` from `config.cameraPos`, which `main.cpp` fills from the real orbit camera (`camera.getX/Y/Z()`). A comment at `:1697-1699` records that this was already fixed once. | `renderer.mm:1700-1702`; `main.cpp:2162-2164` |
 | **A0c** | **AN ORTHOGRAPHIC PROJECTION CANNOT PRODUCE THE LOOK HE IS ASKING FOR.** Under ortho a tilted ring projects to an *exact ellipse* — near and far sides render at identical scale, so there is no foreshortening and no volume. **"Flat 2D rings with fake depth" is the literal, correct description of an orthographic projection of a ring.** The "thick Sonic-coin ring" he wants requires perspective plus real vertical structure; no post-FX can add it. **Still stands — this is geometry, not a code claim.** | `main.cpp:773` (the live ortho matrix); his screenshot 2026-08-10 09:13:00 |
-| **A0d** ⭐ | **THE HOLE IS HARD-GATED TO ORTHO — this is the real mechanism, and it is one line.** `cam.bhShadowNdcRadius = (config.orthoMode && frustum > 1e-4 && bhLensActive) ? bSim*plateRadius/frustum : 0.0f`. **Turn ortho off → the radius is literally `0.0f`** → every shader gate on it (`> 1e-4`) goes false → no shadow, no lens. The hole does not degrade in perspective, it **ceases to be drawn**. That is "cannot survive non-ortho mode", stated in code. | `renderer.mm:1749-1752`; gates at `render.metal:771`, `:879`, cull at `:671` |
+| **A0d** ⭐ | **THE HOLE IS HARD-GATED TO ORTHO — this is the real mechanism, and it is one line.** `cam.bhShadowNdcRadius = (config.orthoMode && frustum > 1e-4 && bhLensActive) ? bSim*plateRadius/frustum : 0.0f`. **Turn ortho off → the radius is literally `0.0f`** → every shader gate on it (`> 1e-4`) goes false → no shadow, no lens. The hole does not degrade in perspective, it **ceases to be drawn**. That is "cannot survive non-ortho mode", stated in code. | ⛔ **`:1749-1752` DEAD — corrected 2026-08-31 22:55:00: `cam.bhShadowNdcRadius` is at `renderer.mm:1994`, its `bhLensActive` term at `:1995`** (`:1749` is blank). Gates at `render.metal:771`, `:879`, cull at `:671` NOT re-verified in this pass. |
 | **A0e** | **AND IT IS A SCREEN-SPACE CIRCLE, NOT A MARCHED OBJECT.** The quantity passed to the shader is an **NDC radius** — `render.metal:1035` consumes it as `thetaE`, a screen-space deflection angle. Nothing is marched through a world-space metric on this path. **"A black circle with a GoPro on top" is a fair description of what the code draws.** | `renderer.h:177`; `renderer.mm:1749`; `render.metal:1035` |
-| **A0f** | **SECOND GATE: the lens is OFF whenever he is playing.** `bhLensActive = (totalAmplitude < 0.02f)`. Any judgement of the hole made while notes are sounding is a judgement of a hole with no lens. | `renderer.mm:1748` |
+| **A0f** | **SECOND GATE: the lens is OFF whenever he is playing.** `bhLensActive = (totalAmplitude < 0.02f)`. Any judgement of the hole made while notes are sounding is a judgement of a hole with no lens. | ⛔ **`:1748` DEAD — corrected 2026-08-31 22:55:00 to `renderer.mm:1957`** (`:1748` is `prevVoiceHash`). |
 | **A0g** 🪤 | **THE DEAD OVERLOAD IS A NEAR-DUPLICATE, NOT JUST UNUSED — IT IS A STANDING TRAP.** `Renderer::render(const RenderConfig&)` has **zero callers** (verified 2026-08-10 09:55:00: one `.render(`/`->render(` hit in all of `src`). It is not inert: it *near-duplicates the live path*. The `cam.bhShadowNdcRadius` gate exists **twice, identically, four lines each** — the two copies differ only in the trailing comment on the preceding line. An `Edit` on the live gate failed with *"Found 2 matches"*; had it not, the change would have landed in dead code and read as a no-op. **This duplication is the direct cause of the A0a/A0b retraction above**, and it silently shadows the live path in every grep. **Rule: assume any camera/BH uniform assignment exists in BOTH bodies; confirm which one you are editing before you edit it.** The same both-bodies check is owed to the CPU-side feeders for `render.metal:904` and `:1031`. ⚖️ *Camera window's recommendation, and I agree: the dead overload should eventually be **deleted**, not maintained — but that is a deletion during show prep, so it is **Jamal's call and post-BNMW**. Flag it, do not action it.* | `renderer.mm:1401` (dead body), `:1501` (dead gate) vs `:1763` (live gate) — **all three verified 2026-08-10 10:01:00** |
 | **A0h** ⚠️ | **`CameraUniforms` IS HAND-MIRRORED ACROSS CPU/GPU WITH NO LAYOUT GUARD — AND THE GUARD PATTERN ALREADY EXISTS IN THE SAME FILE.** `renderer.h:166-222` and `render.metal:24-74` are mirrored **positionally**, ~40 float fields, kept in sync by nothing but a comment (`renderer.h:166`: *"matches the struct in render.metal"*). **But `renderer.mm:36` already does this correctly for a different struct:** `static_assert(sizeof(BHMarchUniforms) == 88, "BHMarchUniforms layout")`. So the project knows the technique and `CameraUniforms` was simply left out. A mid-struct insert on one side shifts **every field after it** — `bhShadowNdcRadius`, `horizonR`, `bhX/Y/Z`, the whole `tune*` block — and would present as a *physics* bug, chased in the wrong file for a day. **Agreed working rule (both sessions): new fields are APPENDED AT THE END of both structs, never inserted.** Appending degrades a mismatch from "everything after the insert is garbage" to "the one new field is garbage" — local and obvious instead of global and misleading. ⚠️ Note when the assert is added: `sizeof` catches drift but **not transposition** — two structs can agree on size and disagree on layout. `offsetof` anchors bind only the fields anchored; a swap strictly between two anchors still slips through. A green build is an improvement, not a proof. | `renderer.h:166-222` vs `render.metal:24-74`; precedent at `renderer.mm:36` — **verified 2026-08-10 10:01:00** |
 | **A0h′** ✅ | **THE GUARD FOR A0h IS FULLY SPECIFIED AND TESTED — not designed, tested.** Both sessions compiled standalone `.metal` files (scratchpad only, nothing in the repo). Compiler: *Apple metal version 32023.850, target air64-apple-darwin27.0.0*. Results: **(1)** MSL supports `static_assert` + `sizeof` and **it fires** — wrong value → `error: static_assert failed … 1 error generated`; the *failing* case was checked deliberately, since a clean compile alone only proves the assert was ignored. **(2)** `offsetof` **does NOT exist in MSL** (no `<cstddef>`) — writing the anchors the obvious way would have broken the shader build and looked like a struct bug. **(3)** `__builtin_offsetof` **works** in MSL and fires. **(4)** ⭐ **It catches TRANSPOSITION**: two adjacent floats swapped, `sizeof` unchanged, anchor caught it — the exact gap `sizeof` alone leaves, reproduced rather than argued. **Final shape:** same shared numbers in both files — `sizeof` + `__builtin_offsetof` anchors on `bhShadowNdcRadius`, `bhX`, and the tail field (the three that exist under the same name in BOTH files; `cameraPos`/`cameraPad` does **not** qualify — Metal declares `float4 cameraPos` and has no `cameraPad`). Use `__builtin_offsetof` on the C++ side too, so both blocks read identically and nobody "fixes" the Metal one back. Since the Metal compile runs as the `MetalShaders` target inside `package_macos.sh`, **the guard breaks the normal build loop** — it has teeth. ⚠️ **Honest limit, to be stated in the code comment:** three anchors across ~40 fields catch size drift, tail-append mismatch, and transposition *across* an anchor. A transposition strictly *between* two anchors still slips through. **Better than the comment that guards it today; not a proof.** | verified **2026-08-10 10:06:00** (sizeof, this window) and **2026-08-10 ~10:10** (offsetof/transposition, camera window); precedent `renderer.mm:36` |
@@ -844,7 +844,7 @@ It also rested on `gMaxMass` being monotone — **retracted 2026-08-28**
 - `[HORIZON] DRAWN r_h` stayed frozen at **0.1220** across that entire 77× collapse.
 - `[BH-POP]` kept printing **`LATCH`** at 938 M☉.
 
-**The fix, one line** (`renderer.mm:3452`): `bhSeedMassMono = gMaxMass` — LIVE, not a running max.
+**The fix, one line** (`renderer.mm:3599` ⛔ *(was `:3452`, corrected 2026-08-31 23:01:08, 147-line drift; the line reads `bhSeedMassMono = gMaxMass;   // LIVE, not a running max`)*): `bhSeedMassMono = gMaxMass` — LIVE, not a running max.
 🚨 **The OTHER half of the old rationale SURVIVES and must not be undone:** the drawn hole keys off the
 **SEED MASS**, never the radial profile, because the profile is a 5.0-sim window (`particles.metal:405`)
 that reads 0 when the field runs wide and would vanish a hole with a live seed still in it.
@@ -1017,7 +1017,7 @@ of the default state. **Not fixed; nobody has been ordered to.**
 | 4 | `×0.03` disk-rotation ease | was `:1995` | *"kill that one too, fix the underlying value"* |
 
 🚨 **#4 IS THE ONE Z2's SWEEP MISSED, and it was not an ease at all.** Flagged by FABLE, traced by BRAIN:
-`bhDiskGM` is **0-or-full across a boolean gate** (`renderer.mm:1948` / `:1986`), so the ease was a
+`bhDiskGM` is **0-or-full across a boolean gate** (`renderer.mm:2045` ⛔ *(was `:1948`)* / `:2096` ⛔ *(was `:1986`; zeroed at `:2105`, corrected 2026-08-31 23:01:08)*), so the ease was a
 blanket over a **STEP FUNCTION**, not a smoother of a rough value. ⭐ **His cure, and it generalises:
 fix the underlying value, never smooth the render.** Z2's sweep looked for `max`/floor patterns and
 found none — it was looking for the wrong shape.
@@ -1053,6 +1053,172 @@ endgame §Z4 unlocks. One-line fix traced 2026-08-10 (`:713-715`), **never built
 
 ---
 
+### Z14. 🚨🌀 **THE PHYSICS ORBITS ABOUT +Y. THE RENDERER ORBITS ABOUT +Z. 4th SIGHTING OF THE PLANE TRAP, AND THE BIGGEST.** 2026-09-01 01:40:15
+
+⭐ **Found by FABLE while grounding the disk design; every line below RE-VERIFIED IN SOURCE BY BRAIN before
+boarding.** ⛔ **This must be settled BEFORE any disk code is written**, or the disk is built in the wrong
+plane and reads fake — which is the exact failure this project has now hit four times.
+
+**It is not one site. It is a systematic, whole-file convention split.**
+
+| file | convention | evidence |
+|---|---|---|
+| `particles.metal` — **THE PHYSICS** | **orbits about +Y** (the XZ plane) | `:2380` `float3 tdir = float3(-pz, 0.0f, px) / rXYt;  // orbit about +Y` · `:1210` *"Re-enter ON ORBIT (Kepler about +Y, same as spawn)"* · `:2371` *"the TANGENTIAL (orbital, about +Y…"* · `:3290` *"Slow rigid rotation of the whole star map about +Y"* |
+| `render.metal` — **THE RENDERER** | **orbits about +Z** (the XY plane) | `:1445` `float3 tang = float3(-spinPos.y, spinPos.x, 0.0f) / rXY; // prograde about Z` · `:3203` *"pose rotation about +Z"* · `:761` *"Playback and the sprite path now agree on +Z"* |
+
+🚨 **THE CONSEQUENCE, AND IT IS THE WHOLE REASON A DISK WOULD LOOK FAKE:** the circularization at `:2350-2383`
+settles matter into a disk **in the XZ plane**. The renderer's Doppler beaming — the Kerr Ω at
+`render.metal:1428`, which uses `rXY` and the XY tangent — would apply the approaching/receding brightness
+asymmetry **90° away from the actual orbital motion**. ⭐ **Doppler beaming is the one reference feature we
+already own** (§Z12c item 2); applied on the wrong axis it does not merely fail, **it actively makes real
+physics look wrong.**
+
+⚠️ **AND THERE IS A THIRD AXIS.** `[READ render.metal:755-762]`, stated not hidden by its own author:
+*"STILL SPLIT… the ray-march at `:3463` keeps `poseAxis()`. Playback and the sprite path now agree on +Z;
+the march does not."* `poseAxis` is defined at `:570`. **So: physics +Y, sprite/playback +Z, march
+`poseAxis()`.** That is board row **BH2**, which `TODO.md` had already re-scoped to *"ONE law with a
+hardcoded global +Z tangent"* — ⛔ **that re-scope is now INCOMPLETE: it counted the two RENDER-side laws
+and missed that the PHYSICS runs on a third convention.**
+
+⚖️ **SETTLE IT BY MEASUREMENT, NOT BY ARGUMENT — and settle it FIRST.** Which convention is right is a
+question about what is on screen, not about which comment is better written.
+⭐ **Cross-ref:** [[space_synth_plane_bug_makes_real_physics_look_fake]] — *"check the plane before
+condemning any azimuthal effect."* Three prior sightings; this is the fourth and the only one that spans
+whole files rather than a single expression.
+
+### Z15. ✅ **THE EAT RATE IS ALREADY THE HONEST DISC RATE — THE DEFECT IS THAT THE QUEUE IS INVISIBLE.** 2026-09-01 01:40:15
+
+`[FABLE, grounding the disk design]` `MDOT_MSUN_PER_WALLSEC` (`particles.metal:254-260`) is consumed as a
+**CAS budget in the seed-merge path** (`:1484-1505`) at ≈ **2517 M☉/wall-second**, and its own comment
+computes *"the whole field in ≈3.9 minutes"* — which **matches §Z8's measured ~95%-in-4-idle-minutes exactly.**
+
+⭐ **THIS REFRAMES §Z8 AND IT IS GOOD NEWS.** The hole is not eating too fast by accident; it is eating at
+the Shakura–Sunyaev viscous rate the code deliberately derives. **The defect is that mass goes field → ledger
+with NO SHINING STAGE IN BETWEEN.** There is no bright, thin, orbiting queue — which is precisely the
+accretion disk, and precisely what his reference image is a picture of.
+
+✅ **So the consumption RATE does not need to change to get the picture.** The disk stages the wait on screen.
+⭐ **`SS_ALPHA` (`particles.metal:244`, currently 0.1) becomes the ONE honest dial for his rest-rate verdict**
+— α = 0.01 gives ≈ 40 minutes. That is the §Z8 open question finally getting a single physical knob instead
+of a clamp.
+
+### Z11. 🚨 **HIS VERDICT ON THE v4 LENS — AND THE STRUCTURAL BIND UNDER IT.** 2026-09-01 01:28:02
+
+`[HIS WORDS 2026-09-01 01:26]`, verbatim, reported on his order:
+- ✅ THE ONLY CREDIT: *"i mean it kidna does warp chill.. it deos"* — **real, visible bending for the first
+  time.** `[MEASURED]` bundle `01:22:26`, newer than every source, so the build he judged is the live one.
+- ⛔ *"its still an overlay... really blurry all of it, so low res"*
+- ⛔ **NEW REGRESSION, his own flag:** *"its really now an overlay agian which is new i used to soemwhat be
+  in the actual middl eof he space"* — v4's replace-composite flattened the depth feel the additive cut had.
+- ⛔ *"the black hoel is still treateda s a black circle. its not giving 3d... its still a cicle were not an
+  inch closer to a bh"*
+- ⛔ *"nothing is inne ror outer rig or photon ring or fucking disk or shaodw.. its a black fukcing ball"*
+- 🚨 **THE ONE THAT BELONGS ON THE RECORD:** *"even the firts version of th ebh lense we had mooooonths ago
+  looked better than this"*
+
+⭐ **FOUR CUTS TONIGHT ALL DIED ON ONE AXIS:** repaint-with-suppression, repaint-from-fates, far-side
+thick-cell surface emission (WHITE CUBES — the cube-watch fired exactly as written), and v4 replace-composite.
+**Screen-space compositing reads as an OVERLAY against a 3D point cloud.** That is not four bugs, it is one
+property of the approach.
+
+### Z12. ⛔ **RETRACTED 2026-09-01 01:33:59 — I SOLVED FOR A BACKDROP THAT DOES NOT EXIST. HIS CORRECTION.**
+
+`[HIS WORDS 2026-09-01]` *"do u see it. do you see the black background... its not that tehres nothing
+behind the bh ok"* — with the two NASA reference images (`~/Downloads/BH_labeled.jpg`,
+`BH_optics_explained.jpg`).
+
+🚨 **THE ERROR, PLAINLY: I diagnosed "the field gets eaten so the lens has nothing to bend." THE REFERENCE
+IMAGE HAS A BLACK BACKGROUND. There is nothing behind the hole and there is not supposed to be.** Every
+feature in it — the far-side arch over the top, the underside below, the photon ring, the shadow — is the
+**DISK ITSELF, lensed**. The subject of the lensing is the disk, not a backdrop.
+⛔ **This also retires B3's "additive far-side STARLIGHT" as the survivor cut: it was solving the wrong
+problem.** The far-side image is the far side of THE DISK, not stars.
+
+⭐ **The old Z12 "triple bind" text is withdrawn in full.** Its three legs were individually true and jointly
+beside the point. Kept only as the record of the wrong turn.
+
+### Z12b. 🎯 **WHAT HE ACTUALLY WANTS, IN HIS THREE CLAUSES — AND THE MECHANISM MISSING UNDER EACH.**
+
+`[HIS WORDS]` *"nothing even movres aorund the bh as in the picture. nothing turns into that state of
+matter. nothing holds that state and doenst just eat everything up."*
+
+**Three requirements, and they are SIM-STATE requirements, not render requirements:**
+
+| # | His clause | What is missing | Verified |
+|---|---|---|---|
+| 1 | *"nothing moves around the bh"* | **No persistent ORBITING population.** Matter is not held in circular orbit long enough to read as rotation. | ⭐ `[MEASURED §Z8]` field goes 999 → 41 in one idle arm |
+| 2 | *"nothing turns into that state of matter"* | **No transition INTO a thin, hot, rotating disk.** The machinery partly exists — viscous accretion rate limit (`particles.metal:220-255`, `SS_ALPHA`, `DISK_H_OVER_R`, `V_ISCO_C = 0.40825`) and circularization (`:2353`, `:2389` *"the disk circularizes and BINDS at the core instead of bouncing"*) — but nothing drives a POPULATION into that state and keeps it there. | `[READ]` cites at left |
+| 3 | *"nothing holds that state and doesnt just eat everything up"* | 🚨 **THE MECHANISM: eaten matter is TELEPORTED AWAY, not accumulated into a disk.** `[READ particles.metal:1238-1245]` a corpse is parked at `4000 + id%1024` (**r ≈ 6928**) and the next frame ESCAPER RECYCLE teleports it to its star-map home **at mass 0**. **So consumption EMPTIES the neighbourhood** — the hole grows while the region that should hold the disk is evacuated. | `[READ particles.metal:1238-1245]`, and [[space_synth_hole_has_no_intake_2026-08-22]] — the hole has NO INTAKE |
+
+⭐ **THE ONE-LINE STATEMENT: our hole CONSUMES; a real one ACCRETES.** Consumption removes matter from the
+neighbourhood. Accretion parks it in a bright, thin, differentially-rotating ring that persists and is the
+thing you see. **Until a population enters and HOLDS the disk state, no renderer produces this image** — and
+that is true no matter how good the geodesic transport is.
+
+### Z12c. 📐 **THE TARGET, READ OFF THE REFERENCE — the feature list any candidate must produce.**
+
+From `BH_labeled.jpg`, in the order they are hardest:
+1. **Accretion disk** — hot, thin, rotating, PERSISTENT. Prerequisite for everything below.
+2. **Doppler beaming** — approaching side brighter, receding side fainter. ⭐ We already have the machinery:
+   the Kerr Ω Doppler at `render.metal:1428` (BH2's row). **It has never had a disk to act on.**
+3. **Image of the disk's far side** — arches OVER the top. Needs n ≥ 1 winding.
+4. **Image of the disk's underside** — the ring BELOW. Rays from beneath the far side, > 180°.
+5. **Photon ring** — thin, at `b_c`; light that orbited 2–3× before escaping. Needs n ≥ 2.
+6. **Shadow** — ~2× the horizon, formed by capture. ⭐ **This we arguably already have** — it is the "black
+   ball" he is complaining about, and it is the ONLY one of the six that is present.
+
+🚨 **THAT IS WHY IT READS AS "a black fukcing ball": we shipped feature 6 alone.** 1–5 all require a disk,
+and 3–5 additionally require winding the marcher already supports but has nothing to wind light from.
+
+⚖️ **HIS RULING NEEDED — the ONE question everything else waits on:** what puts and KEEPS a population of
+matter in a thin rotating disk around the hole? ⛔ **No renderer cut, no lens variant, and no fifth
+instrument is worth an hour until that is answered.**
+
+### Z12-OLD. 🧱 ~~THE TRIPLE BIND~~ — ⛔ **RETRACTED, see Z12 above. Kept for provenance only.**
+
+⭐ **This is BRAIN's synthesis, NOT his ruling and NOT a measurement.** But all three legs are verified in
+source, and together they say the picture he wants is **unreachable by construction**, not merely unbuilt.
+
+| leg | mechanism | verified |
+|---|---|---|
+| 1 | **At REST the hole grows by EATING the field.** By the time the hole is big, there is almost nothing left to bend. | §Z8 `[MEASURED]` ~95% of the field eaten in 4 idle minutes; hole 6% → 100% |
+| 2 | **At PLAY the hole SHRINKS** — REBIRTH withdraws mass from it every frame and the field returns. Maximum lensable matter coincides with the SMALLEST hole. | `[READ renderer.mm:3543]` *"Sustain rebirth now WITHDRAWS mass from the hole"*; withdrawal block `:3913` |
+| 3 | **And the lens is switched OFF during play anyway.** | `[READ renderer.mm:2039]` `bhLensActive = (totalAmplitude < 0.02f)` |
+
+🚨 **THE CONSEQUENCE:** the state a real black hole image REQUIRES — **a large horizon with a full field of
+matter around it to image** — **is never entered.** Big hole implies bare field; full field implies small
+hole *and* the lens gated off. **No amount of renderer work reaches a photon ring, a disc arch or a shadow
+if there is no matter at the radii that form them.**
+
+⭐ **This reframes *"we're not an inch closer to a bh"* from a RENDERING failure to a SIM-STATE failure**, and
+it explains why four visually different cuts all failed the same way. ⛔ It does NOT excuse the overlay
+reading — leg 1 of that is real and separate (see Z13).
+
+⚖️ **HIS RULING NEEDED, and it is a design question, not a bug:** what produces a state with a BIG hole AND
+matter still around it? That is upstream of every renderer decision and nothing should be built until it is
+answered.
+
+### Z13. ⚖️ **THE SYNTHESIS FABLE PROPOSED — AND THE STANDING IN-SOURCE PROHIBITION AGAINST IT.**
+
+**The proposal:** geodesic-DERIVED per-sprite displacement — real α(b) from the validated B1 marcher, applied
+to sprite positions in WORLD space. Honest physics driving embedded-looking transport. The rationale: the
+months-ago lens he says looked better was per-SPRITE displacement — world-space, depth-correct, **crisp** —
+and it looked embedded because it moved the actual sprites, not a resampled patch of screen.
+
+🚨 **BUT THERE IS AN EXPLICIT BANNER FORBIDDING IT** `[READ render.metal:1090-1093]`:
+> *"⛔ DO NOT REBUILD THIS. The deflection LUT in renderer.mm is real physics and stays — the march can use
+> it. **The forward sprite displacement does not come back.**"* — followed by
+> `if (isSecondary) cullThis = true;   // no second image without a lens`
+
+⭐ **The scaffolding IS still present and recoverable** — `isSecondary` survives at `render.metal:794`, `:850`,
+`:1000`, `:1093`, `:1551`, `:1801`, `:2314`. FABLE's own build order lists deleting it as **B6**, not done.
+
+⚖️ **THE DISTINCTION THAT IS HIS TO RULE, stated plainly rather than argued:** the banner's objection was
+that forward sprite displacement **is not real physics**. FABLE's proposal keeps the FORM FACTOR (move the
+sprites) but replaces the FAKE with the validated marcher's α(b). Whether that is *"the forward sprite
+displacement coming back"* or a different thing wearing its shape is **his call and only his.**
+⛔ **Nobody builds this on a reading of the banner. It is a standing prohibition until he lifts it.**
+
 ### Z7. 🚨 **THE LENS COST IS UNMEASURED AFTER THREE INSTRUMENTS — ALL THREE RETURN AN IMPOSSIBLE SIGN.** 2026-08-31 21:39:26
 
 **The question:** what does the B2a per-pixel geodesic march cost, i.e. can a lens be afforded at all.
@@ -1078,7 +1244,7 @@ envelope is additive and non-negative then true cost ≤ **5.15 ms**, which agai
 and it must not be quoted as one.
 
 ⛔ **CLOSURE FAILED FOR A SCOPE ERROR, NOT A LEAK — do not record it as a leak.**
-`[READ renderer.mm:4947]` `restMs = lastRenderMs` — **render only**. `[READ renderer.mm:1786,:1797]`
+`[READ renderer.mm:5160 — was `:4947`, corrected 2026-08-31 23:01:08, 213-line drift after instrument #4 was inserted above it]` `restMs = lastRenderMs` — **render only**. `[READ renderer.mm:1846 — was `:1786,:1797`, corrected 2026-08-31 23:01:08]`
 `PROFILE Total = Compute + Render`. The compute half is outside BOTH brackets, so the ±5% gate was
 **mathematically incapable of passing**. Measured residual **−23.7%**. ⭐ **The fix is one line and it is a
 DESIGN defect, not a build defect:** `rest_ms` must cover the same scope as whatever it is closed against.
@@ -1107,7 +1273,7 @@ I play it. Particles return. New stuff forms."*
 `[CLUSTER] SILENCE` lines. Not one note in the entire sequence.
 
 ⛔ **THIS RETRACTS "THERE IS NO STEADY STATE" AS A PROPERTY OF THE SIM.** It is a property of REST ONLY.
-`[READ renderer.mm:3781-3793, :3411]` REBIRTH **withdraws from the hole every frame while playing** —
+`[READ renderer.mm:3461-3462 (the comment) + :3843 (the `[REBIRTH] withdraw=` printf) — was `:3781-3793, :3411`, corrected 2026-08-31 23:01:08]` REBIRTH **withdraws from the hole every frame while playing** —
 *"Sustain rebirth now WITHDRAWS mass from the hole"*. Rest is a one-way collapse; **play is the opposing
 process that puts matter back. The system is DRIVEN, and he is the drive.** Describing the undriven system
 and calling it the system was BRAIN's error, corrected by him.
@@ -1133,7 +1299,7 @@ only give it once a lens lets him see it.**
 ⛔ **THAT PROTECTION ENDS AT B2b:** once rays terminate on particles, cost gains a real field dependence and
 **the rest-collapsed field becomes the CHEAP corner.** Tonight's fit must never be quoted for B2b.
 
-⚠️ **`[READ renderer.mm:1907]`** `bool bhLensActive = (totalAmplitude < 0.02f); // lens OFF during play`.
+⚠️ **`[READ renderer.mm:1957 — CORRECTED 2026-08-31 22:52:54, this said :1907]`** `bool bhLensActive = (totalAmplitude < 0.02f); // lens OFF during play`.
 **The lens is gated OFF during play by a BINARY switch.** F1 produces "lens leaves during play" CONTINUOUSLY
 by physics (region ∝ r_s(M)², play drains M), so **when F1 lands this hard gate is either redundant or
 fighting the law's transition window.** Flagged, NOT ordered.
@@ -1168,4 +1334,6 @@ the frame rate, and behind his offline-render item."* ⭐ **Offline time buys QU
 downscale, no fakes; it buys π/1024, wider winding caps, real supersampling. So `ms(S)` becomes a
 **live-vs-recorded SPLIT**, and one fitted curve prices both tiers.
 
-**Last Updated:** 2026-08-31 21:39:26
+**Last Updated:** 2026-09-01 13:28:00  *(HANDOFF `docs/HANDOFF_2026-09-01_THE_DISK.md`. 🚨 **§Z12 RETRACTED — HIS CORRECTION: the reference image has a BLACK BACKGROUND. We are lensing THE DISK, not a backdrop.** §Z12b = his three clauses (matter FORMS it, HOLDS it, ORBITS) with the missing mechanism under each; §Z12c = the six-feature target read off the reference, of which **we ship the SHADOW ALONE**. §Z14 = **THE PLANE SPLIT** — physics +Y (4 sites) vs renderer +Z (3 sites) vs `poseAxis()` in the march; 4th sighting; **GATES ALL DISK WORK** and needs a RUN, not a grep. §Z15 = the eat rate is the honest Shakura-Sunyaev derivation, the defect is the MISSING SHINING STAGE, and `SS_ALPHA` is the one honest dial for his rest-rate verdict. ⚖️ **FABLE's disk design is written and UNRULED — 5 decisions, plane first.**)*
+**Previously:** 2026-08-31 23:02:19  *(CITATION CORRECTIONS ONLY, no rows re-judged, no code touched. §Z6 `renderer.mm:3452`->`:3599` (147-line drift; the line says `LIVE, not a running max`) and `:1948`/`:1986`->`:2045`/`:2096`; §Z7 `:4947`->`:5160` (213-line drift, instrument #4 was inserted above it) and `:1786,:1797`->`:1846`; §Z8 `:3781-3793,:3411`->`:3461-3462`+`:3843`, and its `bhLensActive` `:1907`->`:1957`. Also L2 `:1618` and A0f `:1748` -> `:1957`, A0d `:1749-1752` -> `:1994`. 🚨 **His order 22:29 stopped the lens measurement track; instrument #4 is VOID** — its own zero-work control read 18.48 ms median against 12.92 ms for frames doing 6785x the work. Not yet folded into a section.)*
+**Previously:** 2026-08-31 21:39:26

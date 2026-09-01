@@ -1567,39 +1567,7 @@ int main() {
                               "so the centre goes DARK (the shadow). 0 = fill the core;\n"
                               "~2.6 = photon-capture shadow; 3 = ISCO gap.");
 
-          // ── THE FOUR DIALS COME BACK (2026-08-14 17:59:46) ──────────────────
-          // His question: "where is that slider supposed to be". Answer: it was
-          // not anywhere. uiLensBend / uiArcWrap / uiArcGain / uiTrailGain have
-          // been pinned constants in app_state.h with NO widget since the dials
-          // were pulled on 2026-06-26 (see :1555 — "BH Size / Lens Bend / Arc
-          // Wrap / Horizon Exposure / Trail Gain"). All four still reach the
-          // shader through config -> cam.tune*, so they were live but unreachable.
-          // 🚨 docs/BOARD_BLACKHOLE.md §4f says of these "Live dials on this look
-          // (all already wired)" — WIRED, yes; DIALS, no. Board corrected.
-          // The 06-26 removal is not a standing veto: it was aimed at the FAKE
-          // lens/shadow/analytic-arc layers those dials drove. The arc pass is
-          // real since plane fix No.3 and he wants to steer it.
           ImGui::SeparatorText("LENS + LIGHT TRAILS");
-          UiSliderFloat("Lens bend", &app.uiLensBend, 0.0f, 1.0f, "%.2f");
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("cam.tuneLens. Blends the sprite lens between unbent and\n"
-                              "the full alpha(b) solve, AND (2026-08-14) scales the\n"
-                              "second image's brightness, so 0 now genuinely removes\n"
-                              "the fold-over arc instead of leaving it at full strength.\n"
-                              "Default 0.85. This is the honest lens A/B.");
-          UiSliderFloat("Arc exposure gain", &app.uiArcGain, 0.0f, 30.0f, "%.2f");
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("cam.tuneArcGain. The shutter time of the long exposure:\n"
-                              "arc length = Omega(r)*exposure, Omega = 1/(r^1.5+a) (real\n"
-                              "Kepler). HIGHER = longer light trails everywhere, with the\n"
-                              "inner-fast falloff intact. 0 = points. Default 5.");
-          UiSliderFloat("Arc wrap (rad)", &app.uiArcWrap, 0.0f, 6.2832f, "%.2f");
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("cam.tuneArcWrap. Hard cap on the sweep, so the inner\n"
-                              "arcs cannot lap. Default 2.2 rad. Past ~3 the inner\n"
-                              "orbits close into per-particle CIRCLES and the hole\n"
-                              "reads as concentric rings, not flowing matter.");
-          UiSliderFloat("Trail brightness", &app.uiTrailGain, 0.0f, 4.0f, "%.2f");
           UiSliderFloat("Smear length", &app.uiSmearShutter, 0.0f, 60.0f, "%.1f");
           UiSliderFloat("Smear hold", &app.uiSmearHold, 0.0f, 1.0f, "%.2f");
           if (ImGui::IsItemHovered())
@@ -1613,10 +1581,6 @@ int main() {
                               "The star pass measures 0.05 s of REAL travel; this\n"
                               "multiplies it. 0 = no smear. Works on the picture,\n"
                               "not per star, so it cannot make hair.");
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("cam.tuneTrailGain. Per-segment gain on the arcs only —\n"
-                              "the star sprites are untouched. Raise it to pull the\n"
-                              "trails up out of the dot field. Default 1.");
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("bit17: near-hole splat softening (size x3, lum /9,\n"
                               "falloff 5.0 -> 1.2) inside 4 r_h. OFF = sharp,\n"
@@ -2390,10 +2354,6 @@ int main() {
     config.phaseViz = app.uiPhaseViz;
     config.phaseVizAmount = app.uiPhaseVizAmount;
     config.shadowRadius = app.uiShadowRadius;
-    config.lensBend = app.uiLensBend;
-    config.arcWrap = app.uiArcWrap;
-    config.arcGain = app.uiArcGain;
-    config.trailGain = app.uiTrailGain;
     config.smearShutter = app.uiSmearShutter;
     config.smearHold = app.uiSmearHold;
     config.streakLen = app.uiStreakLen;

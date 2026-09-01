@@ -141,10 +141,6 @@ struct AppState {
   bool  uiBlackHoles = false;
 
   // ── BLACK HOLE TUNING dials (defaults = the tuned 2026-06-12 look) ──
-  float uiLensBend = 0.85f;    // spacetime bend strength (0..1)
-  float uiArcWrap = 2.2f;      // max trail arc sweep (rad)
-  float uiArcGain = 5.0f;      // horizon exposure gain
-  float uiTrailGain = 1.0f;    // trail brightness x
   float uiSmearShutter = 24.0f; // motion-smear length (2026-08-20)
   float uiSmearHold = 1.0f;     // 1 = solid bands, 0 = fading blur
   float uiStreakLen = 1.0f;    // motion streak length x

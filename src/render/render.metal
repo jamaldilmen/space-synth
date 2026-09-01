@@ -41,10 +41,6 @@ struct CameraUniforms {
     float spinAngleX;        // accumulated spin angle X (rad) — rigid render spin
     float spinAngleY;        // accumulated spin angle Y (rad) — rigid render spin
     float bhStrength;        // emergent-hole signal r_s(M_enc)/R_ENC (0..1, Step 3)
-    float tuneLens;          // lens bend blend (UI dial)
-    float tuneArcWrap;       // max arc sweep, rad (UI dial)
-    float tuneArcGain;       // horizon exposure gain (UI dial)
-    float tuneTrailGain;     // arc brightness multiplier (UI dial)
     float tuneStreakLen;     // motion-streak length multiplier (UI dial)
     float tuneColorK;        // colour spectrum: |v|²→Kelvin gain (UI dial, was pad)
     float tuneHeatK;         // thermal heat→Kelvin gain (UI dial): low = warm/red, high = white plasma
@@ -106,15 +102,15 @@ struct CameraUniforms {
 // readable side by side. Do not "fix" this back to offsetof.
 //
 // APPEND-ONLY: new fields at the END of BOTH structs, never inserted.
-static_assert(sizeof(CameraUniforms) == 288,
+static_assert(sizeof(CameraUniforms) == 272,
               "CameraUniforms layout — update src/render/renderer.h AND its static_asserts");
 static_assert(__builtin_offsetof(CameraUniforms, bhShadowNdcRadius) == 108,
               "CameraUniforms anchor bhShadowNdcRadius — layout drift vs renderer.h");
-static_assert(__builtin_offsetof(CameraUniforms, bhX) == 200,
+static_assert(__builtin_offsetof(CameraUniforms, bhX) == 184,
               "CameraUniforms anchor bhX — layout drift vs renderer.h");
-static_assert(__builtin_offsetof(CameraUniforms, viewForwardZ) == 268,
+static_assert(__builtin_offsetof(CameraUniforms, viewForwardZ) == 252,
               "CameraUniforms anchor viewForwardZ — layout drift vs renderer.h");
-static_assert(__builtin_offsetof(CameraUniforms, horizonRRaw) == 272,
+static_assert(__builtin_offsetof(CameraUniforms, horizonRRaw) == 256,
               "CameraUniforms tail anchor — layout drift vs renderer.h");
 
 // Rigid-body spin: rotate a sim-space position by the accumulated spin angle
@@ -342,6 +338,13 @@ constant float STREAK_GAIN     = 3.0f;  // screen-space streak amplification (lo
 // 2.600–2.645 in ONE interval (23.6% error) and saturated everything below
 // 2.60 to a constant. See the measurement table in renderer.mm.
 constant float kLensBc   = 2.5980762f;      // 3√3/2, capture radius in r_s
+// B3 — the lens REGION radius, in r_s. The render pass marches and REPAINTS
+// the disc b < kLensBGeo (sprites are NOT suppressed there — see the repaint
+// note at the capture cull; the escape termination needs the full scene in
+// its copy). 20 = the strong-field leg bound of the B1 validation gate: what
+// is drawn is exactly the range the marcher was validated to 1e-3 over. The
+// host encode (renderer.mm, SS_LENS_RENDER) writes the same 20.0.
+constant float kLensBGeo = 20.0f;
 constant float kLensDMin = 1e-5f;
 constant float kLensDMax = 197.4019238f;    // 200 − b_c
 static float lensAlphaSample(device const float* lut, float x) {
@@ -1011,6 +1014,19 @@ vertex VertexOut particle_vertex(
             // exception carved a straight-edged band across the shadow region
             // (Jamal: "it looks like a pokeball"). With the lens on, the lens
             // + membrane are the ONLY transport — no straight-line culls.
+            // ── B3 HANDOVER IS A REPAINT, NOT A SUPPRESSION — 2026-09-01, his
+            // catch on the first B3 frame: "the bh is like in front of
+            // everything". The first cut culled every sprite with b < kLensBGeo
+            // (bit22). That starved the ESCAPE termination: a weakly-bent ray
+            // reprojects almost straight — INTO the region — and sampled the
+            // copy exactly where the sprites had just been deleted, so the
+            // outer region painted itself black-on-black and the hole read as
+            // a cardboard disc in front of the field. Sprites now draw
+            // normally everywhere; the lens pass OVERWRITES every region
+            // pixel from its ray fates (hit / thick / escape-sample /
+            // capture-black), so there is no double exposure and the scene
+            // copy keeps the light the escapes need. The cull below stays
+            // exactly what it always was: the b_c capture cull.
             if (along > 0.0f && length(perp) < bCapt) {
                 out.position = float4(0, 0, -2, 1);     // captured: no light arrives
                 out.pointSize = 0.0f;
@@ -3153,13 +3169,99 @@ struct LensDebugUniforms {
     float dphi;         // step in phi (baseline pi/512 — FABLE's ruling 18:50:14)
     float phiCap;       // winding cap (3*pi): n = 1 territory, per the P1 verdict
     int   maxSteps;     // hard loop bound, so a bad frame cannot hang the GPU
-    int   mode;         // 0 = class, 1 = step heat, 2 = COST (accumulate S and px)
+    int   mode;         // 0 = class, 1 = step heat, 2 = COST (accumulate S and
+                        // px), 3 = RENDER (B3: real emission, the one he sees)
     float pinRs;        // >0: OVERRIDE r_s for this pass only. MEASUREMENT ONLY.
+    float hitRadius;    // B2b/B3: particle footprint for the ray test, SIM
+                        // units (SS_LENS_HITR). ⚠️ NOT the sprite radius law —
+                        // matching it is the T1 seam work, stated openly.
+    float emitScale;    // B3 exposure trim on the ADDED lensed light only
+                        // (SS_LENS_EMIT, default 1.0).
+    float jitterX;      // B5/A8 sub-pixel ray jitter, NDC units, per frame
+    float jitterY;      // (golden-ratio sequence host-side; 0 in modes 0-2)
 };
+static_assert(sizeof(LensDebugUniforms) == 104,
+              "LensDebugUniforms must match renderer.mm exactly");
 
 // ⭐ A SEPARATE struct on purpose. BHMarchUniforms is hand-synced with a
 // static_assert(sizeof == 88) in renderer.mm; widening it would shift ~7 fields
 // and still compile. New pass, new struct, nothing guarded is touched.
+
+// ── B2b — particle + opaque-cell termination (2026-08-31, FABLE) ────────────
+// The sorted-hash record, mirrored from particles.metal:25 (scatter_particles
+// writes it, spatial_hash.metal:326). Hand-synced across files; the
+// static_assert pins the size so a drifted layout fails the build, not the eye.
+struct SortedHotL {
+    float4 posW;         // physics position, .w = mass (M_sun)
+    float4 prevW;
+    uint4  entanglement; // .y = origin particle id → posePhase index
+};
+static_assert(sizeof(SortedHotL) == 48, "SortedHotL must match SortedHot (48B)");
+
+// Test one hash cell's ≤32 scattered members against the chord [segA, segB]
+// (both in DRAWN plate space). Members are transformed to where the SPRITE
+// PASS draws them — pose rotation about +Z by the member's own posePhase
+// (mirrors the gate at particle_vertex, bit20 + GM>0 + !axisY + silence +
+// r > horizon), then the tDilate shear (same law as render.metal's sprite
+// path; exactly invertible, see the 2026-07-26 shear note). One field, one
+// frame: the march must see the matter where the sprites put it, or we redraw
+// the "hole in front of the ring" bug (3rd-sighting trap).
+// ⚠️ STATED LIMITATION (B2b): the CANDIDATE CELL is chosen by inverting only
+// the shear at the sample point — the per-particle pose rotation is not
+// invertible ray-side (each member carries its own integrated phase). Members
+// posed INTO the line of sight from another cell can be missed; members of the
+// looked-up cell are tested at their true drawn positions. Azimuthal-only
+// error, judged at B3's T1 seam test on frozen state.
+static bool lensdebug_testCell(uint cid, float3 segA, float3 segB,
+                               device const SortedHotL* sortedP,
+                               device const uint* cellStarts,
+                               device const uint* cellCounts,
+                               device const float* posePhase,
+                               constant SpatialHashUniforms& su,
+                               constant CameraUniforms& cam,
+                               bool poseOn, float aHit, uint nThick,
+                               thread bool& aggOut, thread float3& hitPosOut,
+                               thread uint& hitIdOut, thread float& meanMassOut)
+{
+    aggOut = false;
+    uint cnt = cellCounts[cid];
+    if (cnt == 0u) return false;
+    uint n     = min(cnt, 32u);           // scatter writes ≤32 per cell (:352)
+    uint start = cellStarts[cid];
+    float3 d  = segB - segA;
+    float  dd = max(dot(d, d), 1e-12f);
+    float bestT = 2.0f;
+    bool  hit   = false;
+    float massSum = 0.0f;
+    for (uint i = 0u; i < n; ++i) {
+        SortedHotL h = sortedP[start + i];
+        massSum += h.posW.w;
+        float3 mp = h.posW.xyz;
+        if (poseOn) {
+            float rm = length(mp);
+            if (rm > max(1e-3f, cam.horizonR))
+                mp = rotAboutAxis(mp, float3(0.0f, 0.0f, 1.0f),
+                                  posePhase[h.entanglement.y]);
+        }
+        float rDil = length(mp);
+        float tD = sqrt(max(0.4f,
+            1.0f - BH_R_IN_SIM / max(rDil, BH_R_IN_SIM + 1e-3f)));
+        mp = applySpin(mp, cam.spinAngleX * tD, cam.spinAngleY * tD,
+                       cam.spinAngleZ * tD);
+        float t  = clamp(dot(mp - segA, d) / dd, 0.0f, 1.0f);
+        float3 c = segA + d * t;
+        if (length_squared(mp - c) < aHit * aHit && t < bestT) {
+            bestT = t; hit = true; hitPosOut = mp;
+            hitIdOut = h.entanglement.y;   // origin id → full Particle record
+        }
+    }
+    meanMassOut = massSum / (float)n;      // the sample's mean star (B3 agg)
+    // Optically-thick fallback — his "1. yes" scope: ONE termination on ONE
+    // cell, never accumulation along the ray. Fires only when the 32-sample
+    // missed AND the UNCAPPED count says untested matter should have been hit.
+    if (!hit && cnt >= nThick) aggOut = true;
+    return hit;
+}
 
 // lensStats (mode 2 only): [0] = SIGMA STEPS over the frame, [1] = covered pixels.
 // ⚠️ THE ATOMICS ARE INSIDE THE BRACKET AND THEREFORE INFLATE THE MEASURED COST.
@@ -3170,7 +3272,15 @@ struct LensDebugUniforms {
 fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
                                    constant CameraUniforms& cam [[buffer(0)]],
                                    constant LensDebugUniforms& lu [[buffer(1)]],
-                                   device atomic_uint* lensStats [[buffer(2)]])
+                                   device atomic_uint* lensStats [[buffer(2)]],
+                                   device const SortedHotL* sortedP [[buffer(3)]],
+                                   device const uint* cellStarts [[buffer(4)]],
+                                   device const uint* cellCounts [[buffer(5)]],
+                                   constant SpatialHashUniforms& su [[buffer(6)]],
+                                   device const float* posePhase [[buffer(7)]],
+                                   device const Particle* particlesIn [[buffer(8)]],
+                                   texture2d<float> sceneCopy [[texture(0)]],
+                                   texture2d<float> sceneTex [[texture(1)]])
 {
     if (cam.horizonR <= 0.0f) { discard_fragment(); return float4(0); }
 
@@ -3193,8 +3303,13 @@ fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
     if (lu.pinRs > 0.0f) rsW = lu.pinRs * cam.plateRadius;
     if (rsW <= 1e-6f) { discard_fragment(); return float4(0); }
 
-    float4 pn = mulM4(lu.inverseViewProj, float4(in.ndc, 0.0f, 1.0f));
-    float4 pf = mulM4(lu.inverseViewProj, float4(in.ndc, 1.0f, 1.0f));
+    // B5/A8: sub-pixel jitter on the RAY only (host feeds a golden-ratio
+    // sequence in mode 3, zeros elsewhere). The accumulation EMA at the tail
+    // integrates ~13 jittered frames into one exposure — the cure for "one
+    // hard unfiltered ray" (his "chunky"/"low res" verdict, 2026-09-01).
+    float2 ndcJ = in.ndc + float2(lu.jitterX, lu.jitterY);
+    float4 pn = mulM4(lu.inverseViewProj, float4(ndcJ, 0.0f, 1.0f));
+    float4 pf = mulM4(lu.inverseViewProj, float4(ndcJ, 1.0f, 1.0f));
     float3 ro = pn.xyz / pn.w;
     float3 rd = normalize(pf.xyz / pf.w - ro);
 
@@ -3221,6 +3336,40 @@ fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
     // Sign from the actual geometry: approaching => u increasing => v > 0.
     float v = (tClose > 0.0f) ? sqrt(g0) : -sqrt(g0);
 
+    // ── B2b SETUP (mode 0 only) — the march-plane basis and the hash walk. ──
+    // p(φ) = bh + (r_s/u)·(cosφ·ê1 + sinφ·ê2): ê1 is hole→camera, ê2 the
+    // ray's in-plane transverse component, so φ=0 lands exactly on the camera
+    // and φ grows along the ray's real angular motion about the hole.
+    // Everything below runs in DRAWN PLATE space (world / plateRadius): sim
+    // lengths are preserved there, so aHit and cellSize compare directly.
+    // Modes 1/2 skip all of it — OPUS's cost instrument marches byte-identical.
+    bool particleTerm = (lu.mode == 0 || lu.mode == 3) && (su.gridSize > 0);
+    float invR   = 1.0f / max(cam.plateRadius, 1e-9f);
+    float3 bhSim = bhWorld * invR;
+    float3 e1 = oc / max(length(oc), 1e-9f);
+    float3 e2 = rd - e1 * dot(rd, e1);
+    float  e2l = length(e2);
+    if (e2l > 1e-6f) { e2 = e2 / e2l; } else { particleTerm = false; } // b≈0
+    // Pose gate — MUST mirror particle_vertex's apply condition exactly
+    // (bit20 + GM>0 + legacy axis + silence); the per-member r>horizon
+    // membrane check lives in lensdebug_testCell.
+    bool poseOn = (cam.bhToggles & 0x100000u) && cam.bhDiskGM > 0.0f &&
+                  cam.bhDiskAxisY < 0.5f && cam.envelopePhase < 0.5f;
+    float aHit = max(lu.hitRadius, 1e-4f);
+    // Optically-thick bound, DERIVED not tuned: the aggregate stands in ONLY
+    // for the matter the 32-sample cannot see. Expected untested intersections
+    // along a full-cell chord: (N−32)·π·a²/L² ≥ 1  ⟹  N ≥ 32 + L²/(π·a²).
+    float Lc = max(su.cellSize, 1e-6f);
+    uint nThick = 32u + (uint)ceil((Lc * Lc) / (3.14159265f * aHit * aHit));
+    uint  curCell  = 0xFFFFFFFFu;
+    bool  haveCell = false;
+    float3 segA  = float3(0.0f);
+    float3 qPrev = ro * invR;             // the φ=0 sample IS the camera
+    int   hitClass = -1;                  // 4 near hit, 5 far hit, 6 aggregate
+    uint  hitId    = 0u;                  // origin id of the hit member (B3)
+    float aggMass  = 0.3f;                // sample-mean mass of the agg cell
+    float3 aggMid  = float3(0.0f);        // chord midpoint of the agg cell (drawn space)
+
     // ── THE MARCH ──
     int   cls   = 3;              // 0 horizon, 1 escape, 2 cap, 3 unresolved
     float phi   = 0.0f;
@@ -3239,12 +3388,81 @@ fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
         phi += lu.dphi;
         steps++;
 
+        // ── B2b: hash-cell walk along the trajectory (mode 0 only). ──
+        // The cell is chosen at the SHEAR-INVERTED sample (tDilate from |q|,
+        // which applySpin preserves — the exactly-invertible half); the chord
+        // [segA, qPrev] accumulates the path across the cell and is tested
+        // against the cell's members at their DRAWN positions when the ray
+        // leaves the cell. Chord-vs-curve sagitta at these radii is ≤ ~0.07
+        // sim ≪ aHit=0.25 (r·Δφ²/8 at r ≤ 7 sim, Δφ ≤ 0.5 rad per cell);
+        // the innermost cell is worst and is noted, not hidden.
+        if (particleTerm && u > 1e-6f) {
+            // Sample radius in SIM units: rsW already carries the pinRs
+            // override, so the walk and the march agree on r_s by construction.
+            float3 q = bhSim + ((rsW * invR) / u) *
+                       (cos(phi) * e1 + sin(phi) * e2);
+            float tDq = sqrt(max(0.4f,
+                1.0f - BH_R_IN_SIM / max(length(q), BH_R_IN_SIM + 1e-3f)));
+            float3 qPhys = applyInverseSpin(q, cam.spinAngleX * tDq,
+                                            cam.spinAngleY * tDq,
+                                            cam.spinAngleZ * tDq);
+            uint cid = 0xFFFFFFFFu;
+            if (all(fabs(qPhys) < float3(su.halfExtent))) {
+                int cx = clamp(int((qPhys.x + su.halfExtent) * su.invCellSize),
+                               0, su.gridSize - 1);
+                int cy = clamp(int((qPhys.y + su.halfExtent) * su.invCellSize),
+                               0, su.gridSize - 1);
+                int cz = clamp(int((qPhys.z + su.halfExtent) * su.invCellSize),
+                               0, su.gridSize - 1);
+                cid = uint((cz * su.gridSize + cy) * su.gridSize + cx);
+            }
+            if (cid != curCell) {
+                if (haveCell) {
+                    bool agg = false; float3 hp = float3(0.0f);
+                    uint hid = 0u; float mm = 0.3f;
+                    if (lensdebug_testCell(curCell, segA, qPrev, sortedP,
+                                           cellStarts, cellCounts, posePhase,
+                                           su, cam, poseOn, aHit, nThick,
+                                           agg, hp, hid, mm)) {
+                        hitClass = (dot(hp - bhSim, e1) < 0.0f) ? 5 : 4;
+                        hitId = hid;
+                        break;
+                    } else if (agg) {
+                        hitClass = 6; aggMass = mm;
+                        aggMid = 0.5f * (segA + qPrev);
+                        break;
+                    }
+                }
+                curCell  = cid;
+                haveCell = (cid != 0xFFFFFFFFu);
+                segA     = qPrev;
+            }
+            qPrev = q;
+        }
+
         uMax = max(uMax, u);
         // HORIZON — shadow by ABSENCE. The ray simply ends; b_c is never stamped.
         if (u >= 1.0f) { cls = 0; break; }
         // ESCAPE — back out past the camera radius, still travelling outward.
         if (v < 0.0f && u <= 1.0f / rCam) { cls = 1; break; }
         if (u <= 0.0f) { cls = 1; break; }
+    }
+
+    // ── B2b: the current cell's partial segment, tested at ANY termination —
+    // matter between the cell entry and the horizon/escape/cap point sits
+    // EARLIER on the path than the geometric fate, so a hit here wins.
+    if (particleTerm && hitClass < 0 && haveCell) {
+        bool agg = false; float3 hp = float3(0.0f);
+        uint hid = 0u; float mm = 0.3f;
+        if (lensdebug_testCell(curCell, segA, qPrev, sortedP, cellStarts,
+                               cellCounts, posePhase, su, cam, poseOn, aHit,
+                               nThick, agg, hp, hid, mm)) {
+            hitClass = (dot(hp - bhSim, e1) < 0.0f) ? 5 : 4;
+            hitId = hid;
+        } else if (agg) {
+            hitClass = 6; aggMass = mm;
+            aggMid = 0.5f * (segA + qPrev);
+        }
     }
 
     // ── COST MODE: accumulate the frame's total geodesic work. ──
@@ -3263,8 +3481,142 @@ fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
         float t = float(steps) / float(max(lu.maxSteps, 1));
         return float4(t, t * 0.35f, 1.0f - t, 1.0f);
     }
+    // ── B3 — RENDER MODE (lu.mode == 3): ADDITIVE LENSED LIGHT ONLY.
+    // Two dead roads on 2026-09-01, both his catches within minutes, both the
+    // same lesson: the sprite field's glow is the ADDITIVE SUM of thousands
+    // of dim stars per beam, and any single-termination REPAINT of the region
+    // (v1: suppress sprites, v2: overwrite from ray fates) renders at the
+    // brightness of ONE star — a dark ball pasted over the glow ("the bh is
+    // like in front of everything"). So the pass no longer replaces anything:
+    //   • sprites draw normally everywhere; the shadow stays carved by the
+    //     mechanisms he already accepted (the b_c capture cull + the
+    //     depth-only body sphere, 2026-08-14);
+    //   • this pass ADDS the light lensing adds and nothing else — a star hit
+    //     along the BENT ray, at the sprite pass's own photometry
+    //     (starLum = min(L(M)·tuneStarLumGain, tuneStarLumCeil), same kelvin
+    //     law, same dials), the far-side hits being the resurrection light a
+    //     fake lens cannot make;
+    //   • a thick cell adds its photosphere (sample-mean star, same law);
+    //   • escape and capture contribute ZERO — the straight image of escaping
+    //     light is already on screen as sprites (weak-field displacement
+    //     deferred, stated), and captured beams add no light by definition.
+    // The pipeline blends ONE,ONE (renderer.mm lensRenderPipeline) so a zero
+    // return is a no-op: no ball, no seam, no repaint. emitScale trims the
+    // added light only (SS_LENS_EMIT, default 1).
+    // Of the fates, ONLY the far-side hit (class 5) adds light: it is the one
+    // image the sprite picture cannot contain — a star whose straight line is
+    // blocked or displaced, seen because its light bent AROUND the hole. A
+    // near-side hit (4) is a star already drawn straight by the sprite pass —
+    // adding it again is a double exposure (it still TERMINATES the ray: an
+    // opaque star occludes the bent light behind it). A thick cell (6) is the
+    // drawn core — it occludes, adds nothing (and a per-cell glow is a CUBE
+    // in the picture, his oldest complaint).
+    if (lu.mode == 3) {
+        // ── THE REGION IS RAY-TRUTH NOW — v4, his verdict 2026-09-01 01:17
+        // ("light is not really bent here right now"). The additive-only cut
+        // left ESCAPE rays — the whole backdrop, the majority of the region —
+        // contributing nothing, so the background passed through the strong
+        // field dead straight. The warped backdrop IS the "bending spacetime
+        // vibe" of his reference pics. Every region pixel now shows what its
+        // BENT ray actually sees:
+        //   escape    → sample the pre-lens scene in the exit direction — the
+        //               backdrop, displaced by the real deflection. Cut 2's
+        //               two diseases are both gone: the copy is UNSUPPRESSED
+        //               (full scene, sprites draw everywhere) and hit pixels
+        //               keep the full underlying pixel, not one star.
+        //   near hit / thick cell → the matter the ray ends on is what the
+        //               sprites already drew here: keep the pixel (copy@self).
+        //   far hit   → copy@self + the wrapped star's light (sprite
+        //               photometry) — light only a real lens can deliver.
+        //   capture / cap → BLACK. Absence, never painted.
+        // The EMA (α=0.15, ~13-frame exposure with sub-pixel jitter) rides on
+        // top; a fast camera move ghosts the warped backdrop ≤ ~0.3 s —
+        // stated, judged by his eyes, and his rides are slow by design.
+        // ⛔ DEAD ROAD kept on record: the far-side THICK-CELL SURFACE
+        // (00:19 → 00:24, "white cubes in the middle") — a cell face is a
+        // cube; never re-emit per-cell aggregates as surfaces at 128³.
+        (void)aggMid;
+        constexpr sampler sAcc(filter::linear, address::clamp_to_edge);
+        float2 uvSelf = float2(in.ndc.x * 0.5f + 0.5f,
+                               1.0f - (in.ndc.y * 0.5f + 0.5f));
+        float3 cur = float3(0.0f);
+        if (hitClass == 4 || hitClass == 6) {
+            cur = sceneTex.sample(sAcc, uvSelf).rgb;
+        } else if (hitClass == 5) {
+            Particle hp = particlesIn[hitId];
+            float ke     = dot(hp.velW.xyz, hp.velW.xyz);
+            float kelvin = unifiedKelvin(hp.posW.w, hp.prevW.w, ke,
+                                         cam.tuneStarKelvinA, cam.tuneStarKelvinP,
+                                         cam.tuneHeatK, cam.tuneColorK);
+            float3 col   = blackbodyRGB(kelvin);
+            float Lstar  = pow(clamp(hp.posW.w, 0.08f, 500.0f),
+                               cam.tuneStarLumExp);
+            float lum    = min(Lstar * cam.tuneStarLumGain,
+                               cam.tuneStarLumCeil);
+            cur = sceneTex.sample(sAcc, uvSelf).rgb +
+                  col * lum * lu.emitScale;
+        } else if (cls == 1) {
+            // ESCAPE — the bend made visible. Exit tangent in the orbit
+            // plane: dr/dφ = −v/u², transverse r = 1/u; parallax to the far
+            // scene neglected (§2 rule 4's stated approximation).
+            float3 rHat = cos(phi) * e1 + sin(phi) * e2;
+            float3 pHat = -sin(phi) * e1 + cos(phi) * e2;
+            float3 T = normalize(rHat * (-v / max(u * u, 1e-12f)) +
+                                 pHat * (1.0f / max(u, 1e-9f)));
+            float4 clip = cam.viewProjection * float4(ro + T * 1.0e6f, 1.0f);
+            if (clip.w > 1e-6f) {
+                float2 ndcE = clip.xy / clip.w;
+                if (all(fabs(ndcE) <= 1.0f)) {
+                    float2 uvE = float2(ndcE.x * 0.5f + 0.5f,
+                                        1.0f - (ndcE.y * 0.5f + 0.5f));
+                    cur = sceneTex.sample(sAcc, uvE).rgb;
+                }
+            }
+        }
+        // Seed the EMA from the SCENE where history has no coverage yet
+        // (accumPrev.a=0: first frames, or the region just grew) — otherwise
+        // newly covered pixels fade in from black as a dark fringe.
+        float4 prev4 = sceneCopy.sample(sAcc, uvSelf);
+        float3 prev = (prev4.a < 0.5f) ? sceneTex.sample(sAcc, uvSelf).rgb
+                                       : prev4.rgb;
+        return float4(mix(prev, cur, 0.15f), 1.0f);
+    }
+
+    // ── B2b CLASS COUNTERS (mode 0; lensStats[2..9], monotone — host prints
+    // 1 Hz deltas). Slot map: [2]=horizon [3]=escape [4]=cap [5]=unresolved
+    // [6]=particle near [7]=particle FAR at b>b_c [8]=particle FAR at b≤b_c
+    // [9]=aggregate. [7] is the B2b gate: light from BEHIND the hole arriving
+    // outside the capture radius — T4 in debug form.
+    {
+        int slot;
+        if      (hitClass == 6) slot = 9;
+        else if (hitClass == 5) slot = (b > kLensBc) ? 7 : 8;
+        else if (hitClass == 4) slot = 6;
+        else                    slot = 2 + cls;
+        atomic_fetch_add_explicit(&lensStats[slot], 1u, memory_order_relaxed);
+    }
+    if (hitClass == 4) return float4(0.10f, 0.80f, 0.15f, 1.0f); // particle, near — green
+    if (hitClass == 5) return float4(0.10f, 0.95f, 0.95f, 1.0f); // particle, FAR (wrapped) — cyan
+    if (hitClass == 6) return float4(1.00f, 0.45f, 0.05f, 1.0f); // thick-cell aggregate — orange
     if (cls == 0) return float4(0.02f, 0.00f, 0.05f, 1.0f);  // horizon — near black
     if (cls == 1) return float4(0.10f, 0.35f, 0.90f, 1.0f);  // escape  — blue
     if (cls == 2) return float4(0.90f, 0.10f, 0.70f, 1.0f);  // cap     — magenta
     return float4(1.0f, 0.85f, 0.0f, 1.0f);                  // unresolved — yellow
+}
+
+// ── B5 COMPOSITE — the region is REPLACED by the ray-truth image (v4). ──────
+// The mode-3 pass writes the full lensed pixel (warped backdrop / kept matter
+// / far-side light / capture black) into the accumulation texture with a=1
+// inside the region, a=0 outside (clear-load). This pass REPLACES exactly the
+// covered pixels — blending OFF, coverage by discard — so outside the region
+// the sprite picture is untouched and the seam closes at zero deflection.
+fragment float4 lenscomposite_fragment(BHMarchOut in [[stage_in]],
+                                       texture2d<float> accum [[texture(0)]])
+{
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = float2(in.ndc.x * 0.5f + 0.5f,
+                       1.0f - (in.ndc.y * 0.5f + 0.5f));
+    float4 a = accum.sample(s, uv);
+    if (a.a < 0.5f) discard_fragment();
+    return float4(a.rgb, 1.0f);
 }

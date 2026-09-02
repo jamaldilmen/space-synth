@@ -5,8 +5,8 @@ struct Particle {
     float4 posW;   // x, y, z, mass  (normalized plate coords)
     float4 velW;   // vx, vy, vz, phase
     float4 prevW;  // prevX, prevY, prevZ, temperature
-    float4 spinW;  // spinX, spinY, spinZ, charge
-    uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
+    float4 spinW;  // x: r_home, y: DISK-BOUND flag (2026-09-01), z: spin (debug), w: charge
+    uint4 entanglement; // x: entangledIndex, y: hardness bits, z: home theta / bond, w: home aphi — NO free pads
 };
 
 // MUST match src/render/particles.metal exactly (same buffer, same layout).
@@ -1388,6 +1388,28 @@ vertex VertexOut particle_vertex(
     if (rawSize > drawn) {
         float ratio = rawSize / drawn;
         fluxComp = min(ratio * ratio, 16.0f);   // area → brightness, capped
+    }
+    // ── PLAY = POINT-SOURCE RENDER (2026-09-01, his task: "chladni patterns
+    // are way too dark in relation to the starfield... dont exposure it up.
+    // make them smaller if need.") His named mechanism, made physical: during
+    // play every sprite collapses toward the point-source limit (the existing
+    // 1px floor — this file's own far-field physics above) and the lost AREA
+    // is poured into luminance through the SAME fluxComp term (16x cap
+    // unchanged). Same photons in fewer pixels → surface brightness now
+    // scales with LOCAL DENSITY, so the dense Chladni bars gain the most and
+    // the sparse starfield the least: shapes brighten RELATIVE to the field
+    // with ZERO exposure change and ZERO new constants (the play ramp is
+    // starMix's own smoothstep(0,0.5,envelopePhase); floor and cap exist).
+    // FADER LAW: the size dial stays live during play THROUGH the flux term —
+    // more size = more photons onto the same pixel — until the 16x comp cap
+    // (a big field giant past the cap loses excess flux and dims relative,
+    // which is the requested direction). At rest playness=0: exact no-op.
+    float playness = smoothstep(0.0f, 0.5f, cam.envelopePhase);
+    if (playness > 0.001f) {
+        float playDrawn = max(mix(drawn, 1.0f, playness), 1.0f);
+        float pr = drawn / playDrawn;
+        fluxComp = min(fluxComp * pr * pr, 16.0f);
+        drawn = playDrawn;
     }
     out.pointSize = drawn;
 

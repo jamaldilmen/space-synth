@@ -77,8 +77,7 @@ public:
   void setDrive(float d) { drive_ = std::max(1.0f, d); }
   float drive() const { return drive_; }
 
-  void setJitter(float j) { jitter_ = std::max(0.0f, j); }
-  float jitter() const { return jitter_; }
+  // setJitter/jitter() DELETED 2026-09-01 with the Jitter dial (his order)
 
   void setWaveform(Waveform w) { waveform_ = w; }
   Waveform waveform() const { return waveform_; }
@@ -147,7 +146,11 @@ public:
   bool keyboardMode_ = false;
   int octaveShift_ = 0;
   float drive_ = 1.6f;  // Default analog drive (Moog overdriven)
-  float jitter_ = 1.0f; // Heisenberg physics jitter
+  float jitter_ = 0.1f; // AUDIO pitch-drift RESTORED 2026-09-01, his reversal:
+                        // "leave jitter in then for audio." Fixed default, no
+                        // dial: 0.1 is what the deleted feed delivered at boot
+                        // (app_state uiJitter default 0.1 × multiplier 1.0) —
+                        // the sound every launch had. VISUAL jitter stays dead.
 
   static constexpr int BASE_OCTAVE = 3;
   int keyboardStart() const { return (BASE_OCTAVE + octaveShift_) * 12 + 12; }

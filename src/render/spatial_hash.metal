@@ -9,8 +9,8 @@ struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
     float4 prevW;  // prevX, prevY, prevZ, temperature
-    float4 spinW;  // spinX, spinY, spinZ, charge
-    uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
+    float4 spinW;  // x: r_home, y: DISK-BOUND flag (2026-09-01), z: spin (debug), w: charge
+    uint4 entanglement; // x: entangledIndex, y: hardness bits, z: home theta / bond, w: home aphi — NO free pads
 };
 
 // HOT SORTED RECORD (fps sprint 2026-07-07): every neighbour consumer reads

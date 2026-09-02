@@ -64,7 +64,6 @@ struct RenderConfig {
   float rotationX = 0.0f;
   float rotationY = 0.0f;
   float rotationZ = 0.0f;
-  float jitterFactor = 0.1f;
 
   // ── BLACK HOLE TUNING dials ──
   float smearShutter = 24.0f; // motion-smear length multiplier
@@ -118,7 +117,7 @@ enum DebugFlag : uint32_t {
   DEBUG_B_FIELD = 1 << 1,
   DEBUG_GRAVITY = 1 << 2,
   DEBUG_STRINGS = 1 << 3,
-  DEBUG_JITTER = 1 << 4,
+  // bit 4 free — was DEBUG_JITTER (jitter KILLED 2026-09-01, his order)
   DEBUG_COLLISIONS = 1 << 5,
   DEBUG_FIXED_DT = 1 << 6,
   DEBUG_ODS01 = 1 << 7, // Telepathy (Phase 9)
@@ -383,7 +382,11 @@ struct PhysicsUniforms {
   int particleCount;
   float maxWaveDepth;
   float plateRadius;
-  float jitterFactor;
+  float deadJitterPad;        // was jitterFactor — jitter KILLED 2026-09-01 (his
+                              // order). Field kept as a pad: PhysicsUniforms has
+                              // NO static_asserts and removing one scalar shifts
+                              // ~38 fields while still compiling. Keep in sync
+                              // with particles.metal.
   float speedCap;
   uint32_t frameCounter;      // For temporal noise
   float symmetryBreakImpulse; // >0 on mode change (Noether)
@@ -485,7 +488,7 @@ public:
   void setBlackHolePose(bool on, float bhMassMsun);
   // Compute physics step (runs async)
   void computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
-                   float totalAmplitude, float maxWaveDepth, float jitterFactor,
+                   float totalAmplitude, float maxWaveDepth,
                    float speedCap, float eFieldStiffness,
                    float bFieldCirculation, float gravityConstant,
                    float stringStiffness, float restLength,

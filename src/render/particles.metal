@@ -50,7 +50,7 @@ struct PhysicsUniforms {
     int particleCount;          // 12
     float maxWaveDepth;         // 16
     float plateRadius;          // 20
-    float jitterFactor;         // 24
+    float deadJitterPad;        // 24 — was jitterFactor; jitter KILLED 2026-09-01 (his order). KEEP IN SYNC with renderer.h
     float speedCap;             // 28
     uint frameCounter;          // 32
     float symmetryBreakImpulse; // 36
@@ -3298,20 +3298,9 @@ kernel void compute_physics(
                                                       // writes currentTemp → prevW.w
     }
 
-    // Jitter (UI slider — now wired). Per-particle Brownian shimmer added as a
-    // small position delta. u.jitterFactor was uploaded all along but never read.
-    if (u.jitterFactor > 0.0001f && !(u.debugFlags & (1u << 21))) { // TEMP-DIAG SS_PLAY_SKIP=jitter
-        float3 jit = float3(noise(id, u.frameCounter + 11u),
-                            noise(id + 7919u, u.frameCounter + 23u),
-                            noise(id + 104729u, u.frameCounter + 37u));
-        // Amplitude-gated: jitter feeds finalV, which IS next frame's Verlet
-        // velocity — at rest (no damping since the rest state went
-        // conservative for orbits) it was a free velocity random walk that
-        // blew the star map up to 4× its radius within seconds (measured).
-        // Shimmer belongs to play, where fricPlay contains it.
-        float jitterGate = clamp(u.totalAmplitude * 4.0f, 0.0f, 1.0f);
-        finalV += jit * (u.jitterFactor * 0.02f * jitterGate) * (1.0f - hardness); // crystallized matter stops shimmering
-    }
+    // Jitter DELETED 2026-09-01 (his order: "its from v1 it never brought
+    // anything good") — the Brownian shimmer block that lived here is gone;
+    // its uniform survives only as deadJitterPad (layout safety, see :53).
 
     // Final position integration
     float3 nextPos = float3(px, py, pz) + finalV;

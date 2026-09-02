@@ -978,7 +978,6 @@ int main() {
           if (PresetManager::loadPreset(path,
                                         currentPreset)) {
             app.uiParticleSize = currentPreset.particleSize;
-            app.uiJitter = currentPreset.jitterScale;
             synth.setDrive(currentPreset.speedCap);
           }
           break;
@@ -1438,7 +1437,6 @@ int main() {
               if (PresetManager::loadPreset(path,
                                             currentPreset)) {
                 app.uiParticleSize = currentPreset.particleSize;
-                app.uiJitter = currentPreset.jitterScale;
                 synth.setDrive(currentPreset.speedCap);
                 app.uiEField = currentPreset.eField;
                 app.uiBField = currentPreset.bField;
@@ -1456,7 +1454,6 @@ int main() {
         ImGui::SameLine();
         if (ImGui::Button("Save") && selectedPresetIdx >= 0) {
           currentPreset.particleSize = app.uiParticleSize;
-          currentPreset.jitterScale = app.uiJitter;
           currentPreset.speedCap = synth.drive();
           currentPreset.eField = app.uiEField;
           currentPreset.bField = app.uiBField;
@@ -1994,17 +1991,11 @@ int main() {
 
       if (false && ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) { // removed 2026-06-26 (jitter unlinked, wave depth dead)
         ImGui::Indent();
-        UiSliderFloat("Jitter", &app.uiJitter, 0.0f, 5.0f, "%.2f");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-          app.uiJitter = 1.0f;
-        ImGui::SetItemTooltip("WARNING: not properly linked yet — no reliable "
-                              "visible effect. Kept for re-wiring later.");
-
         ImGui::Separator();
         ImGui::Text("GLOBAL LFO");
         UiSliderFloat("LFO Rate", &app.uiLFORate, 0.01f, 10.0f, "%.2f Hz");
         UiSliderFloat("LFO Depth", &app.uiLFODepth, 0.0f, 1.0f, "%.2f");
-        ImGui::SetItemTooltip("Modulates Jitter, Size, and Scale over time");
+        ImGui::SetItemTooltip("Modulates Size and Scale over time");
 
         ImGui::Unindent();
       }
@@ -2287,7 +2278,6 @@ int main() {
       UiSliderInt("Amount##mp", &app.uiParticleCount, 0, 10000000);
       UiSliderFloat("Sharpness##mp", &app.uiSharpness, 1.0f, 40.0f, "%.1f");
       UiSliderFloat("Grain##mp", &app.uiGrainAlpha, 0.01f, 1.0f, "%.3f");
-      UiSliderFloat("Jitter##mp", &app.uiJitter, 0.0f, 5.0f, "%.2f");
 
       // BH Size / Disk Thickness dials REMOVED (2026-06-26) — fake lens/disk.
 
@@ -2306,11 +2296,11 @@ int main() {
 
       ImGui::Separator();
       if (ImGui::Button("Print Values to Log")) {
-        printf("[PATCH] size=%.2f count=%d sharp=%.1f grain=%.3f jitter=%.2f "
+        printf("[PATCH] size=%.2f count=%d sharp=%.1f grain=%.3f "
                "bhSize=%.2f disk=%.3f scale=%.0f wave=%.1f lfoRate=%.2f "
                "lfoDepth=%.2f bloom=%.2f fluidity=%.2f chroma=%.3f vign=%.2f\n",
                app.uiParticleSize, app.uiParticleCount, app.uiSharpness,
-               app.uiGrainAlpha, app.uiJitter, app.uiShadowRadius,
+               app.uiGrainAlpha, app.uiShadowRadius,
                app.uiDiskThickness, app.uiScale, app.uiWaveDepth, app.uiLFORate,
                app.uiLFODepth, app.uiBloom, app.uiTrailDecay, app.uiChromatic,
                app.uiVignette);
@@ -2325,10 +2315,10 @@ int main() {
     // Calculate effective values
     float effectiveSize = app.uiParticleSize;
     float effectiveDrive = synth.drive();
-    float effectiveJitterMultiplier = 1.0f;
-
     // Push volatile settings back into synth
-    synth.setJitter(app.uiJitter * effectiveJitterMultiplier);
+    // Jitter KILLED 2026-09-01 (his order: "its from v1 it never brought
+    // anything good") — dial deleted, synth pitch-drift pinned 0 (synth.h),
+    // GPU shimmer consumer deleted (particles.metal).
     synth.setDrive(effectiveDrive);
 
     // Update Global LFO
@@ -2348,8 +2338,6 @@ int main() {
     // visual NO-OP by construction. That is the verification: if the picture
     // moves, the plumbing is wrong.
     camera.getForward(config.cameraForward);
-    config.jitterFactor =
-        app.uiJitter * effectiveJitterMultiplier * (1.0f + lfoVal * 0.5f);
     config.orthoMode = app.uiOrthoMode;
     config.phaseViz = app.uiPhaseViz;
     config.phaseVizAmount = app.uiPhaseVizAmount;
@@ -2488,8 +2476,6 @@ int main() {
       debugFlags |= DEBUG_GRAVITY;
     if (app.uiSoloStrings)
       debugFlags |= DEBUG_STRINGS;
-    if (app.uiSoloJitter)
-      debugFlags |= DEBUG_JITTER;
     if (app.uiSoloCollisions)
       debugFlags |= DEBUG_COLLISIONS;
     if (app.uiFixedTimestep)
@@ -2514,7 +2500,6 @@ int main() {
           // deleted after the rationalization sweep proved zero shape effect.
           if (strstr(sk, "impulse"))   playSkipBits |= (1u << 18); // point-source impulse/shockwave
           if (strstr(sk, "web"))       playSkipBits |= (1u << 20); // chord webbing (inter-harmonic)
-          if (strstr(sk, "jitter"))    playSkipBits |= (1u << 21); // Brownian shimmer
           if (strstr(sk, "symbreak"))  playSkipBits |= (1u << 22); // Noether symmetry-break impulse
           // 🔬 BUG_lines_2026-07-12: "dynfric" gates the UNGATED Chandrasekhar
           // dynamical-friction block (particles.metal ~1277) — a REST force,
@@ -2748,7 +2733,7 @@ int main() {
     if (!simPaused) {
       renderer.computeStep(simDt, voiceData.data(), (int)voiceData.size(),
                            smoothedAmp, app.uiWaveDepth,
-                           app.uiJitter * effectiveJitterMultiplier, effectiveDrive,
+                           effectiveDrive,
                            app.uiEField, app.uiBField, app.uiGravity, app.uiStringStiffness,
                            app.uiRestLength, debugFlags);
       // ⏱️ TRUE TIME — E2, 2026-08-30. Tick the universe clock by the sim time

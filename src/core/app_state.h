@@ -15,7 +15,6 @@ struct AppState {
   float uiGrainAlpha = 0.08f;  // per-particle base alpha (live render dial)
   float uiShadowRadius = 1.0f; // x multiplier on the PHYSICAL lens radius // BH shadow radius (sim coords)
   float uiDiskThickness = 0.15f; // accretion-disk vertical thickness
-  float uiJitter = 0.1f;       // not properly linked yet (kept, flagged in UI)
   float uiScale = 100.0f;      // shared: Space Scale + audio Drive
   float uiWaveDepth = 20.0f;
   float uiEField = 0.5f;
@@ -134,7 +133,6 @@ struct AppState {
   // Mergers (US2 eating) replace what contact "gravity" was faking.
   bool  uiSoloGravity = false;
   bool  uiSoloStrings = true;
-  bool  uiSoloJitter = true;
   bool  uiSoloCollisions = true;
   bool  uiAutoMode = true;
   bool  uiQuantumEntangle = false;

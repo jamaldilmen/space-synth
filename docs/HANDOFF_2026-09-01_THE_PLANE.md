@@ -52,7 +52,40 @@
 ## 4. 🔬 PREFLIGHT
 
 ```
-PREFLIGHT_PLACEHOLDER
+PREFLIGHT 2026-09-02 09:42:31  —  .
+
+1. git
+  ok    branch true-physics, HEAD 19acdb4
+  ok    working tree clean — committed
+  WARN  35 commit(s) not pushed
+
+2. board vs HEAD
+  ok    docs/BOARD_BLACKHOLE.md current at f7973c0 — 5 docs-only commit(s) since, no source change
+  WARN  docs/BOARD_BLACKHOLE.md is 179423B — split closed rows into BOARD_CLOSED.md
+  ok    docs/BOARD_CLOSED.md archive, 90810B — exempt (not read at cold start)
+  WARN  docs/BOARD.md has no 'Commit at last verification: `<sha>`' line — add one
+  WARN  docs/BOARD.md is 164451B — split closed rows into BOARD_CLOSED.md
+
+3. deployed artifact
+  ok    SpaceSynth newer than newest source
+  ok    default.metallib newer than newest source
+
+4. referenced paths (live docs only)
+  ok    45 referenced path(s) in live docs all resolve
+
+5. orbital-plane convention — READ THESE, do not skip
+  ?     src/render/render.metal:576:    return (m > 1e-12f) ? (L / m) : float3(0.0f, 0.0f, 1.0f);
+  ?     src/render/render.metal:763:            float3 axis = float3(0.0f, 0.0f, 1.0f);
+  ?     src/render/render.metal:1144:            float2 tang = float2(-rel.y, rel.x) / rxy;  // +Ω about z, matches
+  ?     src/render/render.metal:1464:        float rXY = length(spinPos.xy);
+  ?     src/render/render.metal:1467:            float3 tang = float3(-spinPos.y, spinPos.x, 0.0f) / rXY; // prograde about Z
+  ?     src/render/render.metal:2558:    float2 perp   = float2(-dir.y, dir.x);
+  ?     src/render/render.metal:3265:                mp = rotAboutAxis(mp, float3(0.0f, 0.0f, 1.0f),
+  ?     src/render/postfx.metal:66:    float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+  WARN  8 site(s) carry a plane assumption — confirm each is right HERE, not elsewhere
+
+────────────────────────────────────────────────────────
+PREFLIGHT: no failures.
 ```
 
 ## 5. ↩️ RETRACTED THIS SESSION

@@ -1654,7 +1654,7 @@ void Renderer::resetParticles() {
 
 void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                            float totalAmplitude, float maxWaveDepth,
-                           float jitterFactor, float speedCap,
+                           float speedCap,
                            float eFieldStiffness, float bFieldCirculation,
                            float gravityConstant, float stringStiffness,
                            float restLength, uint32_t debugFlags) {
@@ -1805,7 +1805,7 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   impl_->physicsUniforms.particleCount = impl_->particleCount;
   impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;
   impl_->physicsUniforms.plateRadius = 1.0f; // Normalized
-  impl_->physicsUniforms.jitterFactor = jitterFactor;
+  impl_->physicsUniforms.deadJitterPad = 0.0f; // jitter KILLED 2026-09-01
   // FULLY PHYSICAL (Phase A1): the speed cap IS the speed of light, not a tuned
   // value. Stored as sim/(on-screen s); the kernel caps |v| = |finalV|/dt at it
   // so it's frame-rate-correct. (The UI 'speedCap'/'drive' still drives audio.)
@@ -4881,14 +4881,14 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     struct BrightU {
       float threshold;
       float softKnee;
-      float pad0;
-      float pad1;
+      float srcTexelW; // was pad0 — Karis 4-tap needs source texel size
+      float srcTexelH; // was pad1   (postfx.metal bright_fragment, 2026-09-01)
     };
     BrightU bru;
     bru.threshold = 1.0f; // glow only past SDR white (HDR cores: disk/particles)
     bru.softKnee = 0.5f;
-    bru.pad0 = 0.0f;
-    bru.pad1 = 0.0f;
+    bru.srcTexelW = 1.0f / (float)postSource.width;
+    bru.srcTexelH = 1.0f / (float)postSource.height;
     {
       MTLRenderPassDescriptor *brp =
           [MTLRenderPassDescriptor renderPassDescriptor];

@@ -602,8 +602,8 @@ fragment float4 blur_fragment(
 struct BrightUniforms {
     float threshold; // HDR knee (≈1.0 = only values past SDR white glow)
     float softKnee;  // width of the smooth ramp below threshold
-    float pad0;
-    float pad1;
+    float srcTexelW; // 1 / source width  (was pad0 — same size, same layout)
+    float srcTexelH; // 1 / source height (was pad1)
 };
 
 fragment float4 bright_fragment(
@@ -613,8 +613,31 @@ fragment float4 bright_fragment(
 {
     constexpr sampler s(mag_filter::linear, min_filter::linear,
                         address::clamp_to_edge);
-    float3 c = src.sample(s, in.uv).rgb;
-    float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+    // ── KARIS-WEIGHTED FIRST DOWNSAMPLE (2026-09-01, his "glow doesnt do
+    // shit during chladni"). This half-res pass IS the pyramid's first
+    // downsample of the scene, and Jimenez does firefly suppression HERE, as
+    // a weighted AVERAGE across the 2x2 quad — not as the scalar 1/(1+luma)
+    // multiply this shader used to apply after the fact. The difference is
+    // the whole fix: for a UNIFORM bright region (a dense Chladni bar) the
+    // four weights are equal, cancel in the normalisation, and the bar
+    // passes at FULL energy — the old scalar clamp suppressed exactly those
+    // pixels x1/(1+L). A lone hot texel (the firefly the clamp existed for)
+    // is averaged against its three dim neighbours and suppressed HARDER
+    // than before. Same photons where light is real, better rejection where
+    // it is noise, zero new constants (threshold/knee untouched).
+    float2 t = float2(u.srcTexelW, u.srcTexelH);
+    float3 c00 = src.sample(s, in.uv + float2(-0.5, -0.5) * t).rgb;
+    float3 c10 = src.sample(s, in.uv + float2( 0.5, -0.5) * t).rgb;
+    float3 c01 = src.sample(s, in.uv + float2(-0.5,  0.5) * t).rgb;
+    float3 c11 = src.sample(s, in.uv + float2( 0.5,  0.5) * t).rgb;
+    const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+    float w00 = 1.0 / (1.0 + dot(c00, kLuma));
+    float w10 = 1.0 / (1.0 + dot(c10, kLuma));
+    float w01 = 1.0 / (1.0 + dot(c01, kLuma));
+    float w11 = 1.0 / (1.0 + dot(c11, kLuma));
+    float3 c = (c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11) /
+               (w00 + w10 + w01 + w11);
+    float luma = dot(c, kLuma);
 
     // Soft-knee curve around the threshold (Jimenez): smooth ramp in [t-k, t+k]
     float knee = max(u.softKnee, 0.0001);
@@ -622,10 +645,7 @@ fragment float4 bright_fragment(
     soft = (soft * soft) / (4.0 * knee + 0.0001);
     float contrib = max(soft, luma - u.threshold) / max(luma, 0.0001);
 
-    float3 bright = c * contrib;
-    // Firefly clamp: down-weight tiny ultra-bright spikes so the blur is stable
-    bright *= 1.0 / (1.0 + luma);
-    return float4(bright, 1.0);
+    return float4(c * contrib, 1.0);
 }
 
 // ── Bloom mip pyramid: downsample + upsample ────────────────────────────────

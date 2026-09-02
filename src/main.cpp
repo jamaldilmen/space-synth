@@ -3074,12 +3074,28 @@ int main() {
           std::vector<GPUParticle> all((size_t)n);
           renderer.readbackParticles(all.data(), n);
           if (FILE *f = fopen(dumpPath, "wb")) {
+            // SS_DUMP_H=1 (2026-09-01, diagnostic only): append per-particle
+            // crystallization hardness H (entanglement.y float bits, CPU name
+            // pad1) as a 4th float — measures whether the US2 freeze ever
+            // integrates during a sustain. Off = the original 3-float format.
+            const bool dumpH = getenv("SS_DUMP_H") != nullptr;
             for (int i = 0; i < n; i++) {
               float xyz[3] = {all[i].x, all[i].y, all[i].z};
               fwrite(xyz, sizeof(float), 3, f);
+              if (dumpH) {
+                float h;
+                memcpy(&h, &all[i].pad1, sizeof(float));
+                // + Verlet per-frame displacement (pos − prev): names the
+                // live transport term directly. 7 floats/particle total.
+                float dxyz[4] = {h, all[i].x - all[i].prevX,
+                                 all[i].y - all[i].prevY,
+                                 all[i].z - all[i].prevZ};
+                fwrite(dxyz, sizeof(float), 4, f);
+              }
             }
             fclose(f);
-            printf("  [DUMP] wrote %d particles (x,y,z float32) -> %s\n", n, dumpPath);
+            printf("  [DUMP] wrote %d particles (%s float32) -> %s\n", n,
+                   dumpH ? "x,y,z,H" : "x,y,z", dumpPath);
           } else {
             printf("  [DUMP] FAILED to open %s\n", dumpPath);
           }

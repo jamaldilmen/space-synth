@@ -3723,11 +3723,23 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
           lastHorizonMass = (float)mEncRh; // → emergent time-lapse disk GM
           lastHorizonRatio = (float)maxRatio; // continuous approach signal → formation ramp
           if ((physicsUniforms.frameCounter % 120u) == 0u) {
-            fprintf(stderr,
-                    "[HORIZON] profile r_h=%.4f M(<r_h)=%.3e | DRAWN r_h=%.4f "
-                    "from seed M=%.0f (raw seed %.0f)\n",
-                    r_h, mEncRh, (double)lastHorizonR,
-                    (double)bhSeedMassMono, (double)gMaxMass);
+            // infl = the influence-law multiplier b/r_s = M_live/(4·KE_live)
+            // (the lens region site derives the same number; printed here so a
+            // log shows the law's value next to the horizon it scales).
+            {
+              float inflDbg = 0.0f;
+              if (latestStats.kineticEnergy > 0.0f &&
+                  latestStats.fieldMassMsun > 0.0f)
+                inflDbg = latestStats.fieldMassMsun /
+                          (4.0f * latestStats.kineticEnergy);
+              fprintf(stderr,
+                      "[HORIZON] profile r_h=%.4f M(<r_h)=%.3e | DRAWN r_h=%.4f "
+                      "from seed M=%.0f (raw seed %.0f) | infl=%.1f r_infl=%.3f\n",
+                      r_h, mEncRh, (double)lastHorizonR,
+                      (double)bhSeedMassMono, (double)gMaxMass,
+                      (double)inflDbg,
+                      (double)(inflDbg * lastHorizonR));
+            }
             // ── SLICE 0 (2026-07-11): MEASURE THE WALL — how tightly does the
             // core actually concentrate at rest? Baseline for the AMR before/after.
             // Second pass over the SAME radial profile (mass binned 0..5 sim, 256
@@ -4708,12 +4720,30 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       LensDebugUniforms lu = {};
       CameraUniforms *camR = (CameraUniforms *)cameraBuffer[frameIdx].contents;
       invertMatrix4x4(camR->viewProj, lu.inverseViewProj);
-      // Region radius. The old "must equal kLensBGeo" contract died with the
-      // suppression cull (nothing else keys on the constant now); the dial is
-      // live again — his zoom-fps lever: cost scales with (bGeo·r_s)² on
-      // screen, so halving this quarters the march bill.
+      // Region radius — THE INFLUENCE LAW (his order 2026-09-02 17:30: "all of
+      // these values need to be unified... its not a guess. the answer should
+      // be clear"). The hole owns the region where its gravity beats the
+      // field's motion: r_infl = G·M/σ², i.e. b/r_s = c²/(2σ²) with c ≡ 1 in
+      // sim units (particles.metal:246). σ² = mass-weighted mean-square speed
+      // of LIVE matter = 2·KE/M — both halves already reduced every stats pass
+      // (ke = ½·m·v² at particles.metal:4363; dead matter carries m = 0 and
+      // self-excludes). So b/r_s = M/(4·KE), LIVE: the lens region grows
+      // exactly as fast as the hole's dynamical ownership does, and the old
+      // frozen 20.0f is retired (at today's rest σ ≈ 0.14 the law lands ≈ 25).
+      // Cost note stays true: march bill scales with (b·r_s)² on screen.
+      // SS_LENS_BGEO (TEMP-DIAG) overrides for experiments; unset = the law.
+      // The 20.0f seed lives only until the first stats reduce — the lens
+      // cannot draw before then (lastHorizonR = 0 gates this whole block).
       static const char *kBgeoEnvR = getenv("SS_LENS_BGEO");
-      lu.bGeoOverRs = kBgeoEnvR ? (float)atof(kBgeoEnvR) : 20.0f;
+      static float bInflLive = 20.0f;
+      {
+        const float keL = latestStats.kineticEnergy;
+        const float smL = latestStats.fieldMassMsun;
+        if (keL > 0.0f && smL > 0.0f && std::isfinite(keL) &&
+            std::isfinite(smL))
+          bInflLive = smL / (4.0f * keL);
+      }
+      lu.bGeoOverRs = kBgeoEnvR ? (float)atof(kBgeoEnvR) : bInflLive;
       static const char *kDivEnvR = getenv("SS_LENS_DPHI_DIV");
       static const int kDivR = kDivEnvR ? std::max(8, atoi(kDivEnvR)) : 512;
       lu.dphi     = (float)(M_PI / (double)kDivR);

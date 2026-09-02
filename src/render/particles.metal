@@ -2117,6 +2117,16 @@ kernel void compute_physics(
             // continuous at the SOURCE, so the plain trilinear read is now
             // alias-free. Ladder re-verified on removal (inert ×4 stack at the
             // realization floor, full bed t12 clean).
+            // Home cell for the self-ρ subtraction below. MUST use the SAME
+            // index formula as count_cells (spatial_hash.metal:79-82) or the
+            // subtraction lands on the wrong cell: clamp(int((p+half)*invCell)).
+            uint selfCellID;
+            {
+                int scx = clamp(int((px + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+                int scy = clamp(int((py + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+                int scz = clamp(int((pz + su.halfExtent) * su.invCellSize), 0, su.gridSize - 1);
+                selfCellID = uint((scz * su.gridSize + scy) * su.gridSize + scx);
+            }
             float3 gcc = (float3(px, py, pz) + su.halfExtent) * su.invCellSize - 0.5f;
             int3 b0 = int3(floor(gcc));
             float3 fw = clamp(gcc - float3(b0), 0.0f, 1.0f);
@@ -2130,7 +2140,22 @@ kernel void compute_physics(
                 float wt = (dx2 ? fw.x : 1.0f - fw.x) *
                            (dy2 ? fw.y : 1.0f - fw.y) *
                            (dz2 ? fw.z : 1.0f - fw.z);
-                rhoSum += float(cellMass[cID2]) * wt;             // mass field: plain trilinear
+                // ── A BODY CANNOT DRAG AGAINST ITSELF (2026-09-02 15:44:18) ──
+                // Chandrasekhar drag is against the BACKGROUND the body moves
+                // through; ρ must exclude the test body. count_cells deposits a
+                // particle's WHOLE mass into one nearest-grid-point cell
+                // (spatial_hash.metal:79-101), so the self-contribution here is
+                // exactly `mass × MASS_FP` in the home cell — subtract it.
+                // Was: a merged body's ρ was its OWN mass, and coef ∝ ρ·mass, so
+                // coef ∝ M² was entirely self-generated. MEASURED on his run
+                // (play.log): the 236,232 M☉ body alone in cell (69,63,62) held
+                // that cell for 70 [DENSPROBE] prints ≥ 70 s while free gravity
+                // predicts 36 sim of travel — coef sat 9-12 orders over the 0.1
+                // cap, pinning it at maximum drag. A 0.3 M☉ star in the diffuse
+                // field is 0.3 of a cell mass in the thousands: unchanged.
+                float cmFP = float(cellMass[cID2]);
+                if (cID2 == selfCellID) cmFP = max(cmFP - mass * 64.0f, 0.0f);
+                rhoSum += cmFP * wt;                              // mass field: plain trilinear
                 float cw = float(min(cellCounts[cID2], 32u));      // moments: weight by sample size
                 if (cw < 0.5f) continue;
                 float4 cv2 = cellVelocities[cID2];

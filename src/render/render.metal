@@ -3608,9 +3608,28 @@ fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
             if (clip.w > 1e-6f) {
                 float2 ndcE = clip.xy / clip.w;
                 if (all(fabs(ndcE) <= 1.0f)) {
-                    float2 uvE = float2(ndcE.x * 0.5f + 0.5f,
-                                        1.0f - (ndcE.y * 0.5f + 0.5f));
-                    cur = sceneTex.sample(sAcc, uvE).rgb;
+                    // HIS CATCH 2026-09-02 19:09 ("it goes through itself in
+                    // reality... here its like two circles on top of each
+                    // other opposed to reality"): sceneTex is the whole
+                    // pre-lens IMAGE, foreground disk included — a strongly
+                    // bent ray that fetches it from ACROSS the hole paints
+                    // the near disk back over itself as mirrored closed
+                    // rings. That is the plate-lens disease on record since
+                    // 2026-08-13 (bends the IMAGE, not the light). The
+                    // parameter-free cut: only sample when the exit lands on
+                    // the SAME side of the hole as this pixel (the honest
+                    // weak-field warp of the local backdrop). Opposite-side
+                    // light exists in reality — it is the far side of the
+                    // DISK, and it arrives honestly via the particle-hit
+                    // class above. Excluded exits stay BLACK: absence, never
+                    // a duplicated foreground.
+                    float4 clipC = cam.viewProjection * float4(bhWorld, 1.0f);
+                    float2 ndcC = clipC.xy / max(clipC.w, 1e-6f);
+                    if (dot(ndcE - ndcC, in.ndc - ndcC) > 0.0f) {
+                        float2 uvE = float2(ndcE.x * 0.5f + 0.5f,
+                                            1.0f - (ndcE.y * 0.5f + 0.5f));
+                        cur = sceneTex.sample(sAcc, uvE).rgb;
+                    }
                 }
             }
         }

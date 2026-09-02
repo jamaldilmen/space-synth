@@ -242,7 +242,13 @@ constant float M_BH_SEED = 50.0f;
 //   SCALE CHECK, independent: measured orbV max = 0.4092c vs the theoretical
 //   ISCO speed √(1/6) = 0.4082c — 0.23%. We are exactly at scale.
 constant float SS_ALPHA      = 0.1f;      // Shakura–Sunyaev viscosity parameter
-constant float DISK_H_OVER_R = 0.746f;    // MEASURED (above), not chosen
+// h/r RULED 2026-09-01 14:03 ("the ring lives bro. longer than now at least",
+// DESIGN_BH_2026-09-01_DISK_STATE.md §5 #2): thin-disc TARGET, no longer the
+// measured 0.746 above — that measurement stays valid as what the thick disc
+// IS; this constant is now what the eat rate must PRICE. MDOT ∝ (h/r)², so
+// 0.746→0.1 slows consumption ×55.7: ring window ≈3 min → ≈2.8 h. α unchanged
+// (he did not spend that dial).
+constant float DISK_H_OVER_R = 0.1f;
 constant float V_ISCO_C      = 0.40825f;  // √(1/6), c ≡ 1 in sim units
 constant float KRS_SIM_PER_MSUN = 1.6825e-6f; // KEEP IN SYNC with units.h
 constant float KTLAPSE_SIM_PER_WALLSEC = 3.51513f; // units.h kTLapse

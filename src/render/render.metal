@@ -2796,7 +2796,14 @@ constant float TRAIL_SHUTTER_ORBITS = 0.35f;
 // every wrap. The arc's angle is bounded by tuneArcWrap and measured from the
 // head, so it has no such discontinuity.
 constant float SS_ALPHA_R      = 0.1f;      // = particles.metal SS_ALPHA
-constant float DISK_H_OVER_R_R = 0.746f;    // = particles.metal DISK_H_OVER_R
+constant float DISK_H_OVER_R_R = 0.1f;      // = particles.metal DISK_H_OVER_R
+// SYNCED on his ruling 2026-09-02 ("everything should follow the physics why
+// wouldnt i want that"): render follows physics, they are ONE quantity. The
+// 0.746→0.1 sync tightens SPIRAL_PITCH ×55.7 — an on-screen consequence
+// SEPARATE from the eat-rate change; the two get verdicted apart. The measured
+// thick-disc 0.746 survives in particles.metal's derivation comment. That this
+// desync was representable at all = two hand-copies of one constant (same
+// class as the hand-synced PhysicsUniforms fields) — flagged, not fixed.
 constant float SPIRAL_PITCH    = SS_ALPHA_R * DISK_H_OVER_R_R * DISK_H_OVER_R_R;
 
 // ── THE ARC / RIBBON PASS — DELETED 2026-08-20 ──────────────────────────────

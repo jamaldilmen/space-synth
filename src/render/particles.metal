@@ -359,6 +359,24 @@ constant float STAR_MAP_CAP    = 100.0f; // silence: NO cap (the star map has no
 // makes it a HONEST constant, it does not decide whether it should be that big.
 constant float CHLADNI_VCAP_PER_SEC = 72.7273f; // sim/SECOND (= the old 1.2/frame at dt=0.0165)
 
+// ── THE BUFFER (2026-09-02 10:57:xx — his ruling 2026-09-01 16:36) ────────
+// HIS WORDS (16:26): "maybe we can just dampen it the closer we get to the
+// sphere u get me like.. a buffer. that slows it down super hard and like
+// freezes the shape.. hardens it. turns it into MATTTTTTTER".
+// WHY IT ACTS ON THE CAP AND NOT ON VELOCITY: [MEASURED 2026-09-01, SS_DUMP_H]
+// during a held chord the ENTIRE field moves at |d| = 1.1969 sim/frame — this
+// cap — at every radius 25-70. The sculpt force exceeds the cap ~an order, so
+// it re-saturates the clamp every frame: the crystallization freeze is ARMED
+// (H = 1.0000 for 100% of the field mid-hold) and OVERPOWERED, and a velocity
+// drag would simply be re-saturated too. The outward drift is SECANT ERROR of
+// cap-speed circular churn (dr/frame ~ d^2/2r, 1/r-verified) — geometry, not
+// a force — which is why it scales with fps and warp.
+// BUFFER_R_IN  = 18 = R_DISK, the existing disk edge (src/core/particles.cpp:107).
+// BUFFER_R_OUT = 34 = the p90 of the figure's own measured edge [MEASURED n=4].
+// ⚠️ NAMED FAILURE MODE, not yet seen: a dead crust rim at r ~ 34 on long holds.
+constant float BUFFER_R_IN  = 18.0f;
+constant float BUFFER_R_OUT = 34.0f;
+
 // NOTE (2026-07-22): a "play-collapse" experiment (keep a fraction of self-gravity
 // during play to fill the cavity) was tried and REVERTED — gravity is directional
 // (toward COM), so it warped every shape to one side ("one-sided distortion, doesn't
@@ -3274,7 +3292,16 @@ kernel void compute_physics(
     // displacement. Previously this mixed c*dt (per-second, dt-scaled) with a
     // bare per-FRAME constant — mixing units, which is why the play cap moved
     // with the warp dial while the rest cap did not.
-    float vCapFrame = mix(u.speedCap, CHLADNI_VCAP_PER_SEC, playGate) * dt;
+    // THE BUFFER (2026-09-02): ramp the PLAY boost out between BUFFER_R_IN and
+    // BUFFER_R_OUT, so past the figure's measured edge the cap falls back to
+    // u.speedCap*dt (= c*dt, the rest cap, ~41x slower) instead of the cymatics
+    // cap. It multiplies playGate, so it is IDENTICALLY INERT at rest and the
+    // c floor is never removed — nothing is frozen absolutely, reversibility
+    // costs nothing. Radius is taken HERE, not from r_curr (:947): px/py/pz are
+    // shifted at :2987-2989 after that, so r_curr is a frame-start radius.
+    float rBuf = length(float3(px, py, pz));
+    float bufferGate = 1.0f - smoothstep(BUFFER_R_IN, BUFFER_R_OUT, rBuf);
+    float vCapFrame = mix(u.speedCap, CHLADNI_VCAP_PER_SEC, playGate * bufferGate) * dt;
     float speed = length(finalV);
     if (speed > vCapFrame) {
         finalV = (finalV / max(speed, 0.0001f)) * vCapFrame;

@@ -53,8 +53,13 @@ struct LensDebugUniforms {
   float emitScale;   // B3 exposure trim on the added light (SS_LENS_EMIT)
   float jitterX;     // B5 sub-pixel ray jitter, NDC (golden-ratio; 0 outside mode 3)
   float jitterY;
+  float prevViewProj[16]; // B5 world-anchored history: last frame's viewProj
+                          // (his ruling 2026-09-02 — streaks belong to the
+                          // matter, not the camera). Zero in modes 0-2.
+  float emaAlpha;         // B5 wall-time exposure: α from real frame dt so the
+                          // exposure is 0.11 s at ANY fps (frame ≠ time, #11).
 };
-static_assert(sizeof(LensDebugUniforms) == 104, "LensDebugUniforms layout");
+static_assert(sizeof(LensDebugUniforms) == 172, "LensDebugUniforms layout");
 
 struct Renderer::Impl {
   id<MTLDevice> device;
@@ -294,6 +299,8 @@ struct Renderer::Impl {
   int lensAccumPing = 0;
   id<MTLRenderPipelineState> lensCompositePipeline = nil;
   uint32_t lensFrameCount = 0;          // drives the jitter sequence
+  float lensPrevViewProj[16] = {0};     // last frame's world→NDC for the
+  bool  lensPrevVPValid = false;        // world-anchored history reprojection
   id<MTLBuffer> lensStatsBuffer = nil;   // [0]=SIGMA steps, [1]=covered px (cost mode)
   uint32_t lensCostFrame = 0;
   // ── [LENSCOST4] instrument #4 state — stage-boundary GPU counters ─────────
@@ -4771,6 +4778,30 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       float h2 = fmodf((float)lensFrameCount * 0.5698402910f, 1.0f);
       lu.jitterX = (h1 - 0.5f) * 3.0f / (float)offscreenTexture.width;
       lu.jitterY = (h2 - 0.5f) * 3.0f / (float)offscreenTexture.height;
+      // World-anchored history (his ruling 2026-09-02): hand the shader LAST
+      // frame's world→NDC so the EMA reprojects its streaks onto the matter.
+      // First lens frame: prev = current, an exact identity reprojection.
+      if (!lensPrevVPValid) {
+        memcpy(lensPrevViewProj, camR->viewProj, sizeof(lensPrevViewProj));
+        lensPrevVPValid = true;
+      }
+      memcpy(lu.prevViewProj, lensPrevViewProj, sizeof(lu.prevViewProj));
+      memcpy(lensPrevViewProj, camR->viewProj, sizeof(lensPrevViewProj));
+      // Wall-time exposure (dress #11: a frame is not a unit of time). The
+      // design point is α=0.15 per frame AT 120 fps = a 0.11 s exposure;
+      // derive the per-frame α that keeps that SAME wall-time exposure at
+      // the actual frame rate: α = 1 − (1−0.15)^(dt·120). At 120 fps this
+      // is exactly 0.15; at the 12 fps the whole-screen march runs at it
+      // rises so streak LENGTH stays what was designed, and fps swings
+      // (camera-motion-induced ones included) stop re-entering the look.
+      {
+        static double lensLastT = 0.0;
+        double nowT = CACurrentMediaTime();
+        float dtF = (lensLastT > 0.0) ? (float)(nowT - lensLastT)
+                                      : (1.0f / 120.0f);
+        lensLastT = nowT;
+        lu.emaAlpha = 1.0f - powf(0.85f, fmaxf(dtF, 0.0f) * 120.0f);
+      }
       memcpy(lensRenderUniformBuffer[frameIdx].contents, &lu, sizeof(lu));
 
       // B5 accumulation ping-pong (recreated on drawable resize).

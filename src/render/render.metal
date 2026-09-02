@@ -3208,8 +3208,20 @@ struct LensDebugUniforms {
                         // (SS_LENS_EMIT, default 1.0).
     float jitterX;      // B5/A8 sub-pixel ray jitter, NDC units, per frame
     float jitterY;      // (golden-ratio sequence host-side; 0 in modes 0-2)
+    float prevViewProj[16]; // B5 world-anchored history (2026-09-02): LAST
+                        // frame's world→NDC, so the EMA's streaks stay on the
+                        // MATTER when the camera turns (his ruling: "its not
+                        // supposed to be driven by camera motion"). All-zero
+                        // in modes 0-2 (never read there).
+    float emaAlpha;     // B5 WALL-TIME exposure (2026-09-02, dress #11 of the
+                        // frame-is-not-time bug): host derives α from real
+                        // frame dt so the exposure is 0.11 s of WALL time at
+                        // any fps — the hardcoded 0.15 was a 13-FRAME window,
+                        // 10× longer at the 12 fps the whole-screen march
+                        // runs at, and fps swings re-entered the look as
+                        // camera-coupled smear-length changes.
 };
-static_assert(sizeof(LensDebugUniforms) == 104,
+static_assert(sizeof(LensDebugUniforms) == 172,
               "LensDebugUniforms must match renderer.mm exactly");
 
 // ⭐ A SEPARATE struct on purpose. BHMarchUniforms is hand-synced with a
@@ -3605,10 +3617,50 @@ fragment float4 lensdebug_fragment(BHMarchOut in [[stage_in]],
         // Seed the EMA from the SCENE where history has no coverage yet
         // (accumPrev.a=0: first frames, or the region just grew) — otherwise
         // newly covered pixels fade in from black as a dark fringe.
-        float4 prev4 = sceneCopy.sample(sAcc, uvSelf);
+        // ── WORLD-ANCHORED HISTORY (his ruling 2026-09-02: "its not supposed
+        // to be driven by camera motion... its moving that creates the smear").
+        // The streaks belong to the MATTER: sample history where this pixel's
+        // world anchor — the ray's hit on the disk plane z=0 (matter is XY
+        // about +Z, board §AA1) — projected in the PREVIOUS frame's camera.
+        // Still camera ⇒ uvPrev == uvSelf exactly; a turn leaves the streaks
+        // on the matter instead of dragging them across the screen. Rays that
+        // miss the plane, or anchors that left the frame, fall back to uvSelf
+        // and the a<0.5 scene seed below absorbs any stale history there.
+        // Anchor at the ray's CLOSEST APPROACH to the hole (2026-09-02,
+        // second cut): the z=0-plane anchor was view-asymmetric under tilt —
+        // the plane cuts the screen at an angle, so reprojection quality
+        // varied across the frame and read as residual camera drag. tClose
+        // is already computed for the impact parameter, is defined for every
+        // ray, and centres the anchor where the lensed light actually lives.
+        // ⚠️ Anchor from the UNJITTERED pixel centre (2026-09-02, his catch:
+        // "even at pause the thingy jiggles a bit"). ro/rd carry the B5
+        // anti-alias jitter — correct for the marched ray, WRONG for the
+        // history anchor: a ±0.75 px wobble re-sampled the accumulation at a
+        // new sub-pixel offset every frame, a visible jiggle on a paused,
+        // still-camera scene. With prev == current camera this now reduces
+        // to uvPrev == uvSelf exactly, bit for bit.
+        float2 uvPrev = uvSelf;
+        {
+            float4 pnU = mulM4(lu.inverseViewProj, float4(in.ndc, 0.0f, 1.0f));
+            float4 pfU = mulM4(lu.inverseViewProj, float4(in.ndc, 1.0f, 1.0f));
+            float3 roU = pnU.xyz / pnU.w;
+            float3 rdU = normalize(pfU.xyz / pfU.w - roU);
+            float  tCU = -dot(roU - bhWorld, rdU);
+            float3 anchorW = roU + rdU * max(tCU, 0.0f);
+            float4 pp = mulM4(lu.prevViewProj, float4(anchorW, 1.0f));
+            if (fabs(pp.w) > 1e-6f) {
+                float2 pn2 = pp.xy / pp.w;
+                float2 uvP = float2(pn2.x * 0.5f + 0.5f,
+                                    1.0f - (pn2.y * 0.5f + 0.5f));
+                if (uvP.x >= 0.0f && uvP.x <= 1.0f &&
+                    uvP.y >= 0.0f && uvP.y <= 1.0f)
+                    uvPrev = uvP;
+            }
+        }
+        float4 prev4 = sceneCopy.sample(sAcc, uvPrev);
         float3 prev = (prev4.a < 0.5f) ? sceneTex.sample(sAcc, uvSelf).rgb
                                        : prev4.rgb;
-        return float4(mix(prev, cur, 0.15f), 1.0f);
+        return float4(mix(prev, cur, clamp(lu.emaAlpha, 0.0f, 1.0f)), 1.0f);
     }
 
     // ── B2b CLASS COUNTERS (mode 0; lensStats[2..9], monotone — host prints

@@ -17,8 +17,8 @@ struct Particle {
     float4 posW;   // x, y, z, mass
     float4 velW;   // vx, vy, vz, phase
     float4 prevW;  // prevX, prevY, prevZ, temperature
-    float4 spinW;  // spinX, spinY, spinZ, charge
-    uint4 entanglement; // x: entangledIndex, y: pad1, z: pad2, w: pad3
+    float4 spinW;  // x: r_home, y: DISK-BOUND flag (2026-09-01; was debug-only spin), z: spin (debug), w: charge
+    uint4 entanglement; // x: entangledIndex, y: hardness bits, z: home theta / bond, w: home aphi — NO free pads
 };
 
 // HOT SORTED RECORD — must match spatial_hash.metal (scatter writes it).
@@ -1221,6 +1221,7 @@ kernel void compute_physics(
         p.prevW = float4(home - vK, 0.0f);
         p.posW  = float4(home, mass);
         p.velW  = float4(0.0f);
+        p.spinW.y = 0.0f; // fresh cold infall is not disk-bound
         return;
     }
     pvec = float3(px, py, pz);
@@ -1479,6 +1480,37 @@ kernel void compute_physics(
                         rt2 = min(rt2, reach * reach);
                     }
                     if (dS2 >= rt2) continue;
+                    // ── DISK-BOUND (2026-09-01, his ruling: "the ring lives") ──
+                    // A star the relaxation OWNS is disk matter — immune to
+                    // growth-regime capture; its only death is the formed-hole
+                    // plunge zone (≈ISCO, the mS>5000 branch above, which this
+                    // block deliberately does NOT exempt). Bind test = the
+                    // design's relaxation-bind radius made literal: the :2357
+                    // circularization rate — its OWN constants, min(cnt/128,1)
+                    // saturation and the 6/s retention rate; the Chandrasekhar
+                    // mass boost is EXCLUDED (it models sinking, not binding) —
+                    // beats the rate this seed's gravity turns the orbit,
+                    // Ω = √(G1·mS/r³), with the same G1 the focusing term uses.
+                    // ZERO new tuned constants (his law 2026-09-01: nothing
+                    // inherited from another context). Flag lives in spinW.y —
+                    // NOT entanglement.z, whose "pad" is a lie (.z = star-map
+                    // theta at :1206/:3286/:3540): spawn writes spinW.y = 0
+                    // (particles.cpp:342) and only the bit-1 Biot-Savart debug
+                    // ever read it. Cleared on death/recycle below so corpses
+                    // never inherit immunity.
+                    if (mS <= 5000.0f) {                  // growth regime only (same split as above)
+                        if (p.spinW.y > 0.5f) continue;   // already bound: immune
+                        uint bindCID = uint((kcz * su.gridSize + kcy) * su.gridSize + kcx);
+                        float cntB = float(cellCounts[bindCID]);
+                        float relaxRate = min(cntB * (1.0f / 128.0f), 1.0f) * 6.0f *
+                                          ((u.bhToggles & 0x20u) ? 1.0f : 0.0f); // bit5: same gate as :2358
+                        float G1b = u.gravGM / max(u.massTotal, 1.0f);
+                        float om2 = G1b * mS / max(dS2 * sqrt(dS2), 1e-12f); // Ω² = GM/r³
+                        if (relaxRate * relaxRate >= om2) {
+                            p.spinW.y = 1.0f;             // becomes DISK-BOUND
+                            continue;                     // and is not eaten
+                        }
+                    }
                     // ── VISCOUS RATE LIMIT (2026-08-08) ─────────────────────
                     // The hole cannot swallow faster than its own viscous
                     // timescale allows. Budget = MDOT · dt for THIS frame.
@@ -1543,6 +1575,7 @@ kernel void compute_physics(
                             memory_order_relaxed);
                     }
                     float park = 4000.0f + float(id % 1024);
+                    p.spinW.y = 0.0f; // dead matter is not disk-bound — recycle must not inherit immunity
                     p.posW = float4(park, park, park, 0.0f);
                     p.prevW = float4(park, park, park, p.prevW.w);
                     return;
@@ -1682,6 +1715,7 @@ kernel void compute_physics(
                             memory_order_relaxed);
                     }
                     float park = 4000.0f + float(id % 1024);
+                    p.spinW.y = 0.0f; // dead matter is not disk-bound — recycle must not inherit immunity
                     p.posW = float4(park, park, park, 0.0f);
                     p.prevW = float4(park, park, park, p.prevW.w);
                     return;
@@ -4120,6 +4154,22 @@ kernel void seed_feed(
                     float reach = 1.4f * su.cellSize;
                     rt2 = min(rt2, reach * reach);
                     if (d2 >= rt2) continue;
+                    // ── DISK-BOUND exemption (2026-09-01) — mirror of the
+                    // compute_physics bind test, same derivation, same
+                    // constants (:2357's own rate, this loop's own G1). A
+                    // bound star is disk matter: seed_feed never eats it; its
+                    // only death is the plunge zone in compute_physics. The
+                    // per-frame re-test also covers matter whose flag hasn't
+                    // been set yet by its own thread (closes the same-frame
+                    // race between the two eat paths).
+                    if (particles[vOrig].spinW.y > 0.5f) continue;
+                    {
+                        float cntV = float(cellCounts[cID]);
+                        float relaxRateV = min(cntV * (1.0f / 128.0f), 1.0f) * 6.0f *
+                                           ((u.bhToggles & 0x20u) ? 1.0f : 0.0f);
+                        float om2V = G1 * mNow / max(d2 * sqrt(d2), 1e-12f);
+                        if (relaxRateV * relaxRateV >= om2V) continue; // bound: not eaten
+                    }
                     // CLAIM: atomically swap the victim's mass word with 0.
                     // Particle = 80B = 20 uints; posW.w is uint index id·20+3.
                     uint old = atomic_exchange_explicit(&particlesA[vOrig * 20u + 3u],

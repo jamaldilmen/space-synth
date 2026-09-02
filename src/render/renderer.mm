@@ -4686,8 +4686,16 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   {
     static const char *kLREnv = getenv("SS_LENS_RENDER");
     static const int kLR = kLREnv ? atoi(kLREnv) : 0;
+    // HIS 100% LAW, applied to the lens (2026-09-02, his report: "sometimes
+    // when bh formed was at 3% lense was there... when i play lense stays a
+    // bit"). Same gate, same variable, same shape as the emergent time-lapse
+    // pose at :2138 — "100% bh means timelapse in engine. otherwise gate it."
+    // lastHorizonR alone is true the moment ANY 50 M☉ seed exists, and under
+    // the influence-law region even a seed's lens is visible now. Formed hole
+    // = lens + time-lapse; anything less = neither. Play drains strength
+    // below 1.0 → the pass stops the same frame the pose playback does.
     if (kLR > 0 && lensRenderPipeline && lensCompositePipeline &&
-        lastHorizonR > 0.0f &&
+        lastHorizonR > 0.0f && bhStrength >= 1.0f &&
         offscreenTexture && sortedParticlesBuffer && cellStartsBuffer &&
         cellCountsBuffer && spatialHashUniformBuffer && posePhaseBuffer) {
       // v4: the escape termination samples the pre-lens scene in its bent

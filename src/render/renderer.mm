@@ -2128,7 +2128,19 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     cam.bhPoseTime = (float)impl_->bhPoseTime;
     cam.bhPoseDt   = (float)dtP;
     cam.bhDiskAxisY = 0.0f;                    // legacy posed disk lives in x–y
-  } else if (impl_->lastHorizonR > 0.0f) {
+  } else if (impl_->lastHorizonR > 0.0f && impl_->bhStrength >= 1.0f) {
+    // ── 100% GATE (2026-09-02, his law: "100% bh means timelapse in engine.
+    // otherwise gate it") — RING-SNAP root cause, A/B-confirmed today: the
+    // frame the first ≥50 M_sun seed formed, bhDiskGM stepped 0 → gmSim(seed)
+    // and the bit20 Keplerian sweep sheared the whole post-play rest field
+    // into concentric rings (bhStrength was 0.01–0.17 at his called snap —
+    // a PARTIAL hole). bit20-off control run stayed clean through three
+    // cascades. The time-lapse now engages only while the drawn hole is at
+    // FULL strength (bhStrength is the live formation fraction, raw since
+    // the 08-31 ease/floor kills — deliberately no smoother re-added here).
+    // Below 100% this falls to the else: GM=0, pose clock re-arms.
+    // NOT the latch: bhFormedLatch survives play transients at strength 0.00
+    // (seen live 11:44 today), which is exactly "3%, not 100%".
     // ⛔ GATE NARROWED 2026-08-31 17:35:00, his order ("fix the underlying value").
     // Was `lastHorizonR > 0 && lastHorizonMass > 0.5`. The second term was the bug:
     // lastHorizonMass is M(<r_h) from the RADIAL PROFILE, which only exists when the

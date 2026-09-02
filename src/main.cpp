@@ -300,6 +300,12 @@ int main() {
     fprintf(stderr, "[SUBSTEPS] pinned to %d by SS_SUBSTEPS\n", app.uiPhysicsSubsteps);
   }
 
+  // SS_NO_ANALYTIC_SPIN=1 → bit20 time-lapse orbit playback OFF at launch
+  // (ring-snap A/B, 2026-09-02: does the post-play field still snap into
+  // concentric rings when the first seed-class body forms, with the Keplerian
+  // pose sweep disabled?). Same variable the mod-menu checkbox writes.
+  if (getenv("SS_NO_ANALYTIC_SPIN")) app.uiTogAnalyticSpin = false;
+
   // 🔬 TEMP-DIAG isolation ladder (docs/BUG_lines_2026-07-12.md): SS_INERT=1
   // turns EVERY optional force OFF (all bhToggles force bits cleared, legacy
   // grid pressure retired; renderer.mm skips the ungated merge_stars pass under

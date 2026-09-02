@@ -636,7 +636,19 @@ constant float EIGEN_L = 2.0f * EIGEN_R;  // proportionate cavity: depth = diame
 // and it is bounded, not tuned. The old S=30 gave K = 30·6.77² = 1376, i.e. 344×
 // past the stability limit: particles were flung across their nodal sheet every
 // frame. That was the drift, the heating, and the blur (measured 2026-07-09).
-constant float EIGEN_KAPPA = 0.25f;      // K ≤ 0.25 ⇒ well inside K < 2(1+f)
+// 0.25 → 1.0 (2026-09-01, his verdict on the shapes: "not razor sharp like we
+// need it"). f MEASURED, not assumed: finalV = v·dynamicFric·coolMul·soften
+// (:3245); in play dynamicFric = 0.9^dt (:883), coolMul = 1 (cooling is
+// ×(1−playGate)), soften ≈ 1 ⇒ f = 0.998 @60fps, ceiling 2(1+f) = 3.99.
+// Worst-case polyphonic stack ×(1/√n)(1+0.35(n−1)) ≤ 1.40 (12 voices) ⇒ hard
+// safe limit K ≈ 2.8. 1.0 is 4× the old stiffness at 2.8× margin. Width note:
+// the warm-trap noise is DEAD CODE (main.cpp:2555 — bit27 SET by default
+// disables it), so the cloud width comes from live jitter (:3291, slider-
+// gated), ballistic arrival ringing (amp v/√K, e-fold ~19 s: damping is f's,
+// not K's), and cross-voice tugs — each scales ∝ 1/√K, so ~2× tighter is the
+// prediction; his eyes are the measurement. Watch ERUPT_DENSITY (:372):
+// tighter rays ⇒ denser node cells may start erupting.
+constant float EIGEN_KAPPA = 1.0f;       // K = 1.0 ⇒ inside K < 2(1+f) ≈ 3.99, ≤2.8 worst-case
 
 // ── Compute kernel: Störmer-Verlet particle physics ─────────────────────────
 

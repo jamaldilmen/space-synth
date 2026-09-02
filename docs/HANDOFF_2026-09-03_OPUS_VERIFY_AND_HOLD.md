@@ -114,8 +114,20 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
   ok    default.metallib newer than newest source
 ```
 
-🚨 **This handoff ends with `git status` NON-EMPTY, deliberately, and that is the one rule I am not silently satisfying.** All three remaining paths are **FABLE's, written while I was committing** — its §AC.10/§AC.11 board rows plus two of its own handoffs, none of them verdicted and none of them mine to commit. Bundling another window's unverdicted work into my commit to make a check go green is the exact failure the one-concern-per-commit rule exists to prevent.
+🚨 **This handoff ended with `git status` NON-EMPTY, deliberately, and that is the one rule I did not silently satisfy.** The three remaining paths were **another window's, written while I was committing** — its §AC.10/§AC.11 board rows plus two of its own handoffs, none of them verdicted and none of them mine to commit. Bundling another window's unverdicted work into my commit to make a check go green is the exact failure the one-concern-per-commit rule exists to prevent.
 
 **What I did instead:** `docs/BOARD_BLACKHOLE.md` was MIXED — my §AB.10 citation fix and FABLE's new rows in one file. I staged **only my hunk** (`git apply --cached` of a single-hunk patch, verified as 1 insertion / 1 deletion before committing) and left FABLE's rows in the working tree untouched. FABLE's board edits and the header re-stamp to `§AC.11` are **still uncommitted and still FABLE's to commit** — it has been told directly.
 
 **Unpushed ×3** — correct. Commit ≠ push; no push order given.
+
+---
+
+## ✏️ CORRECTIONS TO THIS DOCUMENT — 2026-09-03 00:33:12
+
+Three fixes to §4 above, two of them from BRAIN, all three verified in git before writing:
+
+1. **§AC.10 is BRAIN's row, not FABLE's** — the influence region has no ceiling, his words *"lense lowkey explodes until the entire field is gone"*. `[READ HEAD:docs/BOARD_BLACKHOLE.md:36]` attributes it *(BRAIN, 2026-09-03 00:27:00)*. FABLE wrote **§AC.11** (the σ split half-pinned by READ) and the `00:36:00` re-stamp. My §4 called all of it FABLE's. Cite the right author if either row is used.
+2. **`HANDOFF_2026-09-03_LENS_REGION_UNBOUNDED.md` was already committed when my preflight listed it dirty** — `587efae`, BRAIN's, one file, **00:31:52**. My preflight ran **00:31:31**. It was stale by 21 seconds, not wrong. A preflight is a fact about one instant; this is the second time in two days that bit this window (the other: the 19:50:33 rebuild landing 29 s after a STALE verdict).
+3. **The tree is now CLEAN** `[READ git status --porcelain, empty, 2026-09-03 00:33:12]`. BRAIN committed its handoff at `587efae`, FABLE folded both board rows with correct attribution at `5e0beb9` and committed its own handoff at `8c33ee5`. **The FAIL resolved the way it should have** — each window committing its own work — and not by anyone sweeping another's into their commit. Both other windows independently made the same call.
+
+**Unchanged by all three:** the hunk-level commit of `docs/BOARD_BLACKHOLE.md` was correct, and my two commits (`f4b30d7`, `3347ab7`) contain only my own work. **5 commits unpushed on `true-physics`. No push order from him — nobody pushes.**

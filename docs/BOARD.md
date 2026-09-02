@@ -1,5 +1,7 @@
 # BOARD — THE REFERENCE OF TRUTH
 
+> ⚠️ **UNFOLDED, 2026-09-02 09:55:00 — `docs/HANDOFF_2026-09-02_DEAD_CODE_SWEEP_AND_MIDI.md` holds 10 dead-uniform / orphaned-code findings and the CoreMIDI parser audit that are NOT on this board.** They are tagged and re-grepped but were filed after this board's last fold, and SONNET deliberately did not write to the boards (two live write-collisions were caught that session). 🚨 **The MIDI one is a stage risk: `status & 0xF0` collapses 0xF0–0xFF, so 1-byte System Real-Time (Clock 0xF8, Active Sensing 0xFE) eats 3 bytes and corrupts the next message in the same packet — and his rig is Ableton-synced, 24 clock bytes/quarter-note.** ⛔ Also still OPEN and untracked: SONNET's per-particle/per-pixel + per-frame-CPU-alloc sub-sweep never returned, and the render-side dead-pass sweep was never started.
+
 🎯 **COLD START = `docs/TODO.md`** (⚠️ **70.5 KB, ~18k tokens — re-measured 2026-08-26. The “12 KB, ~3k tokens” this line carried was stale by ~5×** and understated what a cold start actually costs) — the whole open list in four buckets, every `file:line` re-read against the code 2026-08-20 14:08:59. **Open this file only for the detail of a row you are actually working.**
 
 **This is a LIVE document, not a handoff.** Handoffs are dated snapshots of a session.

@@ -44,12 +44,12 @@ by him — nothing here jumps the lens.
 ## 1. THE ROOT CAUSE, restated in one line each — all verified in tree today
 
 - **A body has a mass but no radius.** No `R` field exists anywhere in `src/`; the
-  comment at `particles.metal:3712` names `R_star` in a formula the code cannot evaluate.
+  comment at `particles.metal:3747` names `R_star` in a formula the code cannot evaluate.
   Nothing can be TORN — torn means one side pulled harder than the other, and our stars
   have no sides.
-- **The honest tidal radius is computed and thrown away**: `particles.metal:1477`
+- **The honest tidal radius is computed and thrown away**: `particles.metal:1490`
   computes `rt2` from mass and relative velocity; `:1479` clamps it to
-  `1.4·cellSize` — and the SAME pattern repeats at `:4119`–`:4121`. 🚨 **Both sites must
+  `1.4·cellSize` — and the SAME pattern repeats at `:4153`–`:4155`. 🚨 **Both sites must
   move together** (the audit's clamp-and-scan warning, plus this second clamp the earlier
   docs did not list).
 - **Contact adds the whole star to the hole and deletes the victim**
@@ -94,7 +94,7 @@ constraint by construction.
 
 ### 2.2 The disruption event — replaces capture-delete inside r_t
 At pericentre passage inside `r_t = R·(M_BH/M_star)^(1/3)` (the formula the comment at
-`particles.metal:3712` already states and the code now gets the R to evaluate):
+`particles.metal:3747` already states and the code now gets the R to evaluate):
 
 1. The victim CONVERTS, it does not die. Its id becomes the most-bound debris element
    (state = DEBRIS, mass × f_bound / N_b share).
@@ -132,16 +132,16 @@ matter and the frame is the Chladni state — same zero-area limit as the lens r
 
 | what | where | why |
 |---|---|---|
-| the grid clamp on reach | `particles.metal:1479` AND `:4121`, with the scan width derived per body | the drain, mechanically (audit N3); both sites or the change plateaus |
+| the grid clamp on reach | `particles.metal:1491` AND `:4155`, with the scan width derived per body | the drain, mechanically (audit N3); both sites or the change plateaus |
 
 🚨 **DO-NOT-FOLD GUARD (BRAIN's find, verified here 18:40:49):** there is a THIRD use of
-the same constant — `particles.metal:1575`, `mergeReach = 1.4f * su.cellSize` — and it is
+the same constant — `particles.metal:1620`, `mergeReach = 1.4f * su.cellSize` — and it is
 NOT this design's. That one bounds the seed-seed BH MERGE scan, a different mechanism.
 Whether it too should derive from something physical is a separate finding for whoever
 owns the merge path. **Anyone who greps the constant and "fixes" all three has broken the
 merge path in an S3 commit.**
 | whole-mass-on-contact accrual | the capture path the clamp feeds | wrong by a factor of a few AND deletes the visible event (science §2.2) |
-| the tearing that never renders | comment block at `particles.metal:3712` | its formula becomes real code with a real R; the comment stops being fiction |
+| the tearing that never renders | comment block at `particles.metal:3747` | its formula becomes real code with a real R; the comment stops being fiction |
 
 ## 4. THE KILL TABLE — a real disruption vs. a sprite that fades and respawns
 
@@ -195,9 +195,23 @@ ONE change, never two.
 6. **What shrinks R** (collapse law) stays SEED_CONTINUUM's open item — this design
    needs R to EXIST and to be strippable; the collapse continuum is the next tenant of
    the same field, not this job.
+7. 🚨 **NEW 2026-09-01 14:02:48 — §2.2 is now REQUIRED, and the r_t compression is the
+   open trade.** His disk ruling (*"join the ring as stars and then get torn into gas"*,
+   2026-09-01 14:03 via BRAIN) makes the disruption event a requirement of the disk
+   design, not a parallel track. AND a correction to §1's first line: a mass-FORMULA
+   radius DOES exist and is live (`MERGE_RSUN_SIM·M^0.8`, five sites) — compressed
+   39.7× from honest (0.01 vs 0.397 sim/R☉, the 2026-07-08 merge-storm calibration);
+   what §1 correctly names as missing is CARRIED, strippable R (the ruled option-B
+   buffer). Whether the TEAR uses honest R while star-star merge keeps the calibrated
+   compression is put to him in `DESIGN_BH_2026-09-01_DISK_STATE.md` §6.2
+   (recommendation there: honest r_t for DISK-BOUND matter only — drift-fed, no
+   stochastic rate to storm). Unruled.
 
 ---
-**Last Updated:** 2026-08-31 18:40:49 — folded his ruling (R carrier = option B) and
+**Last Updated:** 2026-09-01 14:02:48 — §6.7 added: his disk ruling makes §2.2 REQUIRED;
+§1's "no radius" line corrected (mass-formula radius exists, carried R does not); the
+r_t compression trade recorded as unruled, put to him in DISK_STATE §6.2.
+Previous: 2026-08-31 18:40:49 — folded his ruling (R carrier = option B) and
 BRAIN's confirmations: f_bound 0.5 accepted as an UPPER BOUND, disc dial accepted, the
 THIRD 1.4·cellSize site (`:1575` mergeReach, NOT this design's) guarded, the 10M-spawn
 allocation note added, S2 sequencing recorded (prerequisite stands; nothing interrupts

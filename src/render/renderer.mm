@@ -4049,6 +4049,75 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
                   accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[3] : 0u,
                   accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[4] : 0u);
         }
+        // ── [SEEDPROBE] (2026-09-03, HIS ORDER "fix the merger issue"; change 1,
+        // his yes 02:4x) — WHERE ARE THE SEEDS? Four runs tonight: mrg refused=0,
+        // pairs never REACH the 1.4·cellSize merge radius, seeds "don't move".
+        // Nothing printed their positions. One line per registered seed every
+        // 240 frames: id, mass, pos, per-step displacement, hash cell, nearest
+        // other seed (distance, whether it shares the cell), plus how many cells
+        // hold ≥2 seeds (the one-slot cellSeedMap collision precondition) and how
+        // many pairs sit inside 1.4 sim (reach met yet unmerged). Read-only:
+        // seedIds/seedMeta + the shared particle buffer, 1-frame lag like every
+        // readback here. Env-gated SS_SEED_PROBE=1. Decides the fix; is not one.
+        {
+          static const bool kSeedProbeOn = getenv("SS_SEED_PROBE") != nullptr;
+          if (kSeedProbeOn && seedCountBuffer && seedIdsBuffer && particleBuffer &&
+              (physicsUniforms.frameCounter % 240u) == 0u) {
+            const uint32_t *sm = (const uint32_t *)seedCountBuffer.contents;
+            const uint32_t *ids = (const uint32_t *)seedIdsBuffer.contents;
+            const GPUParticle *pp = (const GPUParticle *)particleBuffer.contents;
+            uint32_t n = std::min(sm[4], 1024u);
+            const float half = 64.0f, invCs = (float)Impl::kGridSize / (2.0f * half);
+            struct SeedRow { uint32_t id; float m, x, y, z, dx, dy, dz; int cx, cy, cz; };
+            std::vector<SeedRow> rows;
+            for (uint32_t i = 0; i < n; i++) {
+              uint32_t sid = ids[i];
+              if (sid >= (uint32_t)particleCount) continue;
+              const GPUParticle &q = pp[sid];
+              if (!(q.mass >= 50.0f) || q.mass >= 1e8f) continue;   // M_BH_SEED, hand-synced
+              if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) continue;
+              SeedRow r{sid, q.mass, q.x, q.y, q.z, q.x - q.prevX, q.y - q.prevY, q.z - q.prevZ,
+                        std::clamp((int)((q.x + half) * invCs), 0, Impl::kGridSize - 1),
+                        std::clamp((int)((q.y + half) * invCs), 0, Impl::kGridSize - 1),
+                        std::clamp((int)((q.z + half) * invCs), 0, Impl::kGridSize - 1)};
+              rows.push_back(r);
+            }
+            int sharedCells = 0, pairsIn14 = 0;
+            {
+              std::vector<long> cells;
+              for (auto &r : rows) cells.push_back(((long)r.cz * Impl::kGridSize + r.cy) * Impl::kGridSize + r.cx);
+              std::sort(cells.begin(), cells.end());
+              for (size_t i = 1; i < cells.size(); i++)
+                if (cells[i] == cells[i - 1] && (i == 1 || cells[i - 1] != cells[i - 2])) sharedCells++;
+              const float reach = 1.4f * (2.0f * half / (float)Impl::kGridSize);
+              for (size_t i = 0; i < rows.size(); i++)
+                for (size_t j = i + 1; j < rows.size(); j++) {
+                  float ddx = rows[i].x - rows[j].x, ddy = rows[i].y - rows[j].y, ddz = rows[i].z - rows[j].z;
+                  if (ddx * ddx + ddy * ddy + ddz * ddz < reach * reach) pairsIn14++;
+                }
+            }
+            fprintf(stderr, "[SEEDPROBE] f=%u n=%zu cellsWith2+=%d pairsWithin1.4sim=%d bhStrength=%.2f\n",
+                    physicsUniforms.frameCounter, rows.size(), sharedCells, pairsIn14, bhStrength);
+            for (size_t i = 0; i < rows.size(); i++) {
+              const SeedRow &r = rows[i];
+              float best = 1e30f; size_t bj = i; bool sameCell = false;
+              for (size_t j = 0; j < rows.size(); j++) {
+                if (j == i) continue;
+                float ddx = r.x - rows[j].x, ddy = r.y - rows[j].y, ddz = r.z - rows[j].z;
+                float d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+                if (d2 < best) { best = d2; bj = j; }
+              }
+              if (bj != i) sameCell = (rows[bj].cx == r.cx && rows[bj].cy == r.cy && rows[bj].cz == r.cz);
+              float sp = std::sqrt(r.dx * r.dx + r.dy * r.dy + r.dz * r.dz);
+              float rr = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z);
+              fprintf(stderr,
+                      "[SEEDPROBE]  id=%u m=%.0f pos=(%.3f %.3f %.3f) r=%.3f cell=(%d %d %d) |d|=%.5f sim/step "
+                      "nearest: id=%u dist=%.3f sameCell=%d\n",
+                      r.id, r.m, r.x, r.y, r.z, rr, r.cx, r.cy, r.cz, sp,
+                      (bj != i) ? rows[bj].id : 0u, (bj != i) ? std::sqrt(best) : -1.0f, sameCell ? 1 : 0);
+            }
+          }
+        }
         // TEMP-SLICE3 [SPH] conservation watchdog (remove after slice-3 verdict):
         // sampled momentum / KE / internal energy from the live particle buffer
         // (shared memory, 1-frame lag like every readback here). Viscosity must

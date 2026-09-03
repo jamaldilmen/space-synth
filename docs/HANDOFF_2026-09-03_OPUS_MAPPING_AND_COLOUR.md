@@ -275,3 +275,5 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 **Last Updated:** 2026-09-03 22:23:30
 **Folded into board:** ⛔ **nothing to fold — this window changed no source.** The one new finding (§2.3, `preflight.sh` brace globs) is **tooling, not code**, and is routed to BRAIN rather than written into a board this window does not own.
+
+**OUTCOME OF THE §1 FAIL — 2026-09-03 22:24:43, one minute after the disposition above:** FABLE committed its own S8 work at **22:23:42**, split by concern — `c6cad75` (offscreen final target, three ProRes 422 HQ wall slices) and `3e085d7` (two stale log strings). **The FAIL was a fact about 22:22:35 and did not survive the minute**, exactly as at 15:26:31. Refusing to sweep it was right and is now confirmed by the author clearing it. **The only path still dirty is `docs/BOARD.md` — BRAIN's live fold, BRAIN `[5d8bf1]` is busy in it. Not mine either.**

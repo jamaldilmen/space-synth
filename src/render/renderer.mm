@@ -5308,6 +5308,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // byte, so the A/B is one relaunch and needs no rebuild.
   static const bool kNoCoverage = (getenv("SS_NO_COVERAGE") != nullptr);
   post.coverageResolve = kNoCoverage ? 0.0f : 1.0f;
+  // BLEACH DIAL (2026-09-03, his NASA order): SS_BLEACH=<0..1>, default 0 = off.
+  static const char *kBleachEnv = getenv("SS_BLEACH");
+  post.postPad0 = kBleachEnv ? (float)atof(kBleachEnv) : 0.0f;
   post.smearShutter = config.smearShutter;
   post.smearHold = config.smearHold;
   // EDR headroom: how far above SDR white this display can currently go

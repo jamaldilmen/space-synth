@@ -406,8 +406,16 @@ fragment float4 postfx_fragment(
     float bleach = smoothstep(3.0f, 8.0f, log2(max(over, 1.0f)));
     // N-key isolation (2026-07-23): mode 2 disables the bleach so the
     // traveling cream "yellow zone" can be attributed on screen.
+    // BLEACH IS A DIAL NOW (2026-09-03, HIS ORDER: "from afar its just light
+    // stacked on top of each other and whitens out. how does nasa do it with the
+    // space telescopes?"). NASA/SDSS (Lupton 2004): stretch the INTENSITY with
+    // asinh, preserve the hue, never bleach — only true detector saturation goes
+    // white, and that is tiny cores, not stacked fields. The asinh stage above
+    // already does the stretch; this bleach was the whitening. u.postPad0 =
+    // bleach amount (CPU: SS_BLEACH, default 0 = off = the telescope look;
+    // 1 = the 07-19 sensor bleach exactly).
     if (abs(u.debugBypass - 2.0f) > 0.25f)
-        color.rgb = mix(color.rgb, float3(tonedMax), bleach);
+        color.rgb = mix(color.rgb, float3(tonedMax), bleach * saturate(u.postPad0));
 
     // (HDR glow composite moved ABOVE the tonemap — scene-referred, Checkpoint
     // A4. It must never be added post-bleach again: that repaints the

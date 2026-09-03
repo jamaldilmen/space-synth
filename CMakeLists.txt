@@ -21,6 +21,7 @@ set(SOURCES
     src/core/modes.cpp
     src/core/midi_input.mm
     src/core/take_recorder.cpp
+    src/core/take_replay.cpp
     src/core/particles.cpp
     src/core/envelope.cpp
     src/core/preset_manager.cpp

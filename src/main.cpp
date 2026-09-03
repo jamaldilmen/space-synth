@@ -5,6 +5,7 @@
 #include "core/midi_input.h"
 #include "core/take_recorder.h"
 #include "core/offline_clock.h"
+#include "core/take_replay.h"
 #include "core/modes.h"
 #include "core/particles.h"
 #include "core/preset_manager.h"
@@ -222,7 +223,9 @@ int main() {
   // the mapping apply (S6) attaches HERE, not to a second callback. `t` is
   // absolute seconds (CACurrentMediaTime timebase), `stamped` says whether it
   // came from the packet or from callback entry.
-  midiInput.start([&](const space::MidiEvent &ev) {
+  // Named so S4's replay calls the SAME callable from the frame callback —
+  // one code path for a live event and a replayed one, by construction.
+  std::function<void(const space::MidiEvent &)> onMidi = [&](const space::MidiEvent &ev) {
     takeRec.push(ev);
     switch (ev.kind) {
     case space::MidiKind::NoteOn: {
@@ -241,7 +244,12 @@ int main() {
              ev.t, ev.stamped ? "" : " (unstamped)");
       break;
     }
-  });
+  };
+  midiInput.start(onMidi);
+  // S4: replay of an S2 take by output frame index (SS_REPLAY, needs
+  // SS_RENDER_FPS). Refuses loudly without the offline clock, without a
+  // marker, or with drops. Ticked at the top of every frame, before physics.
+  space::TakeReplay takeReplay(space::OfflineClock::get().enabled ? space::OfflineClock::get().fps : 0);
 
   // ── Keyboard mapping ────────────────────────────────────────────────
   // macOS keyCodes → semitone offsets (matches SOUND ARCHITECT.html)
@@ -661,6 +669,13 @@ int main() {
 
   // ── Frame callback ──────────────────────────────────────────────────
   window.setFrameCallback([&](float dt) {
+    // S4: the OUTPUT frame index — one per frame callback, counted here so
+    // replay, and later capture, share one number. Replayed events apply at
+    // the top of their frame, before the sequencer and before the physics
+    // step, through the same `onMidi` a live packet uses.
+    static uint32_t outFrame = 0;
+    takeReplay.tick(outFrame, onMidi);
+    outFrame++;
     // ── Run sequencer logic (Phase 12 stability) ───────────────────
     if (seqRunning) {
       seqTime += dt;

@@ -1,4 +1,5 @@
 #include "ui/window.h"
+#include "core/offline_clock.h"   // S3: SS_RENDER_FPS — unset ⇒ wall-clock dt untouched
 #include "backends/imgui_impl_metal.h"
 #include "backends/imgui_impl_osx.h"
 #include "imgui.h"
@@ -709,6 +710,10 @@ void Window::run() {
     double nanos =
         (double)elapsed * impl_->timebaseInfo.numer / impl_->timebaseInfo.denom;
     float dt = (float)(nanos / 1.0e9);
+    // S3 OFFLINE: this dt drives the sequencer, camera rides and the VJ
+    // crossfade in main.cpp. Offline they must advance in the same frame time
+    // as physics (1/fps), not in wall time. Unset ⇒ the wall dt above.
+    if (space::OfflineClock::get().enabled) dt = (float)space::OfflineClock::get().frameDt;
     // ⏱️ 2026-08-30 — WAS clamped to 0.033 s, i.e. THE WALL CLOCK LIED BELOW
     // 30 fps. This delta is the real-time anchor for everything that is
     // legitimately real-time: the sequencer (main.cpp:638 `seqTime += dt`), the

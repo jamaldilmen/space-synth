@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "core/imf.h"
+#include "core/offline_clock.h"   // S3: SS_RENDER_FPS — unset ⇒ every live path untouched
 #include "core/units.h"
 #include "spacetime/spacetime.h"  // thermodynamics: kUFloorSim (SPH internal energy floor)
 #include "spectral_lut.h"          // spectral starmap: Planck band-flux bake (one colour law)
@@ -1710,7 +1711,27 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   // scaled by the time-control multiplier so x2/x4/x8 and pause actually move the
   // physics clock again. Constant warp ⇒ dt still constant ⇒ tcv=1 ⇒ stability
   // intact; only a warp CHANGE causes a one-frame tcv blip (a deliberate action).
-  dt = 0.0165f * impl_->timeWarpVal;
+  // ── S3 OFFLINE (SS_RENDER_FPS set): dt = 1/60 EXACTLY, warp PINNED to 1.0 —
+  // logged before the first step with the incoming value, both directions
+  // (setTimeWarp clamps only to 1e-3, so a leftover 0.5 would give a
+  // half-length video silently). Unset ⇒ the line below is the live path.
+  {
+    const space::OfflineClock &oc = space::OfflineClock::get();
+    if (oc.enabled) {
+      static bool sPinned = false;
+      if (!sPinned) {
+        sPinned = true;
+        const float incoming = impl_->timeWarpVal;
+        printf("[OFFLINE] warp incoming=%.4f -> PINNED 1.0 before the first step\n", incoming);
+        if (std::fabs(incoming - 1.0f) > 1e-6f)
+          fprintf(stderr, "[OFFLINE] 🚨 warp was %.4f at render start (dial or preset) — forced to 1.0. "
+                          "Video length would have been wrong by that factor.\n", incoming);
+      }
+      impl_->timeWarpVal = 1.0f;
+    }
+  }
+  dt = space::OfflineClock::get().enabled ? (float)space::OfflineClock::get().dt
+                                          : 0.0165f * impl_->timeWarpVal;
   impl_->physicsUniforms.dt = dt;
   impl_->physicsUniforms.dtPrev = dt; // tcv = dt/dtPrev = 1 exactly (fixed step)
   impl_->lastDt = dt;
@@ -1781,7 +1802,12 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
                                               : kStepWall;  // first frame
     impl_->trueTimeLast = nowTT;
     if (wall > 0.25) wall = 0.25;   // stall, or the far side of a SPACE pause
-    if (!sTrueTime) {
+    if (space::OfflineClock::get().enabled) {
+      // S3 OFFLINE: the step COUNT is a constant per output frame (2 at 30 fps,
+      // 1 at 60). No wall time, no 0.25 s guard, no sMaxSteps, no debt — the
+      // frame IS the clock. Sim time per output frame = steps × dt = 1/fps.
+      impl_->pendingSteps = space::OfflineClock::get().stepsPerFrame;
+    } else if (!sTrueTime) {
       impl_->pendingSteps = 1;      // byte-for-byte the old behaviour
     } else {
       impl_->trueTimeAcc += wall;
@@ -1921,6 +1947,18 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   // the sim time this frame actually integrates — dt per STEP, not dt per FRAME.
   accumulatedTime += dt * (float)impl_->pendingSteps;
   impl_->physicsUniforms.time = accumulatedTime;
+  // S3 OFFLINE verification print: the sim clock the SHADER reads
+  // (accumulatedTime, summed through the real step path) against the clock
+  // the OUTPUT expects (frame / fps). Once per output-second. Unset ⇒ silent.
+  {
+    const space::OfflineClock &oc = space::OfflineClock::get();
+    if (oc.enabled && (impl_->frameCount % (uint32_t)oc.fps) == 0u) {
+      const double expect = (double)impl_->frameCount * oc.frameDt;
+      printf("[OFFLINE] frame=%u simTime=%.6f expected=%.6f diff=%.3e steps/frame=%d warp=%.3f sub=%d\n",
+             impl_->frameCount, (double)accumulatedTime, expect, (double)accumulatedTime - expect,
+             impl_->pendingSteps, (double)impl_->timeWarpVal, impl_->physicsSubsteps);
+    }
+  }
 
   impl_->hasCompute = true;
 }
@@ -2176,6 +2214,9 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     double dtP = (impl_->bhPoseClock > 0.0) ? (now - impl_->bhPoseClock) : 0.0;
     impl_->bhPoseClock = now;
     dtP = std::min(std::max(dtP, 0.0), 0.1);   // guard stalls
+    // S3 OFFLINE: this is a RENDER clock that shapes the posed disk's spin
+    // from wall time; offline the frame IS the clock, so it advances 1/fps.
+    if (space::OfflineClock::get().enabled) dtP = space::OfflineClock::get().frameDt;
     // DECLARED TIME-LAPSE, DERIVED FROM THE HOLE (2026-07-24). Physical Omega
     // at our GM gives 38 s per ISCO orbit and 12.5 min at R_DISK=18 — visually
     // static, and far below the screen-space speed the streak path needs
@@ -2324,6 +2365,10 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // needs the full scene in its copy; the lens pass repaints the region
   // instead). No flag: the vertex path is untouched by the lens now.
   impl_->physicsSubsteps = config.physicsSubsteps; // → substep loop in runComputePass
+  // S3 OFFLINE: the inner ssub loop integrates against FROZEN forces; offline
+  // every step recomputes forces (the outer loop runs stepsPerFrame times), so
+  // the frozen-force substep is forced to 1. Unset ⇒ the UI value above.
+  if (space::OfflineClock::get().enabled) impl_->physicsSubsteps = 1;
   memcpy(impl_->cameraBuffer[frameIdx].contents, &cam, sizeof(cam));
 
   impl_->renderWithCamera(drawable, renderCmdBuf, frameIdx, config);
@@ -5039,6 +5084,9 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
         float dtF = (lensLastT > 0.0) ? (float)(nowT - lensLastT)
                                       : (1.0f / 120.0f);
         lensLastT = nowT;
+        // S3 OFFLINE: the EMA alpha is a function of frame time so fps swings
+        // do not re-enter the look; offline the frame time is 1/fps by definition.
+        if (space::OfflineClock::get().enabled) dtF = (float)space::OfflineClock::get().frameDt;
         lu.emaAlpha = 1.0f - powf(0.85f, fmaxf(dtF, 0.0f) * 120.0f);
       }
       memcpy(lensRenderUniformBuffer[frameIdx].contents, &lu, sizeof(lu));

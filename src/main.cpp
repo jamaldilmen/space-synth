@@ -4,6 +4,7 @@
 #include "core/emitter.h"
 #include "core/midi_input.h"
 #include "core/take_recorder.h"
+#include "core/offline_clock.h"
 #include "core/modes.h"
 #include "core/particles.h"
 #include "core/preset_manager.h"
@@ -2761,8 +2762,26 @@ int main() {
     // Physics uses a PINNED base dt (0.0165) scaled by timeWarp inside the
     // renderer (fixed step = stable; scaled = time controls work). The clock
     // advances by that same physics dt so the readout matches what the sim does.
+    // S3 OFFLINE: warp pinned to 1 and the SECOND dt copy (the one :2753
+    // confesses) taken from the same source as the renderer's. Unset ⇒ the
+    // two lines below are exactly the live path.
+    if (space::OfflineClock::get().enabled) {
+      // The dial lives HERE, so the loud line lives here: a leftover ×2 (or a
+      // 0.5 — setTimeWarp clamps only to 1e-3) would render a video of the
+      // wrong length with nothing on screen to show it. Printed once, before
+      // the renderer ever sees the value; the renderer pins again after us.
+      static bool sWarned = false;
+      if (!sWarned && std::fabs(timeWarp - 1.0f) > 1e-6f) {
+        sWarned = true;
+        fprintf(stderr, "[OFFLINE] 🚨 warp dial was %.4f at render start (SS_TIME_WARP, slider or preset) — "
+                        "FORCED to 1.0. Unpinned, the video would be %.2fx the wrong length.\n",
+                timeWarp, timeWarp);
+      }
+      timeWarp = 1.0f;
+    }
     renderer.setTimeWarp(timeWarp);
-    float simDt = 0.0165f * timeWarp;
+    float simDt = space::OfflineClock::get().enabled ? (float)space::OfflineClock::get().dt
+                                                     : 0.0165f * timeWarp;
     if (!simPaused) {
       renderer.computeStep(simDt, voiceData.data(), (int)voiceData.size(),
                            smoothedAmp, app.uiWaveDepth,

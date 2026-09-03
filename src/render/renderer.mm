@@ -202,6 +202,9 @@ struct Renderer::Impl {
 
   // Stats readback (partial sums from GPU reduction)
   id<MTLBuffer> partialSumsBuffer = nil;
+  // σ-PIN PROBE (2026-09-03): 8 floats shared with reduce_stats buffer(4).
+  // Layout in particles.metal at the kernel signature. Instrument only.
+  id<MTLBuffer> sigmaProbeBuffer = nil;
   id<MTLBuffer> radialMassBuffer = nil;  // 256-shell enclosed-mass profile → honest horizon r_h
   // STABLE MIRROR (2026-07-15, readback-flicker fix): radialMassBuffer is blit-
   // zeroed EVERY frame, and the CPU stats read is async vs frames in flight —
@@ -211,6 +214,7 @@ struct Renderer::Impl {
   // profile here (never cleared); the CPU only ever reads complete profiles.
   id<MTLBuffer> radialMassStableBuffer = nil;
   int numThreadgroups = 0;
+  uint32_t sigmaProbeIdx = 0;   // σ-PIN PROBE: particle index being probed
   PhysicsStats latestStats = {};
 
   // Live-galaxy aggregates from the stats reduce (1-frame lag): centre of
@@ -1590,6 +1594,7 @@ void Renderer::uploadParticles(const GPUParticle *data, int count) {
   // 80 bytes = 20 floats per threadgroup, must match PartialStats in
   // particles.metal (8 stats + COM/live-count + radius + BH-enclosure).
   allocIfNeeded(impl_->partialSumsBuffer, impl_->numThreadgroups * 80);
+  allocIfNeeded(impl_->sigmaProbeBuffer, 8 * sizeof(float));   // σ-PIN PROBE
   allocIfNeeded(impl_->radialMassBuffer, 256 * sizeof(uint32_t)); // 256-shell horizon profile
   allocIfNeeded(impl_->radialMassStableBuffer, 256 * sizeof(uint32_t)); // flicker-free CPU mirror
 }
@@ -3609,6 +3614,22 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
       [comp setBuffer:partialSumsBuffer offset:0 atIndex:1];
       [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:2];
       [comp setBuffer:radialMassBuffer offset:0 atIndex:3];
+      // σ-PIN PROBE: choose ONE particle index for this dispatch. Starts at
+      // SS_SIGMA_PROBE_IDX (default 0); the readback advances it when the
+      // probed particle is dead (m ≤ 0.001) so a run never probes a corpse.
+      {
+        static const char *kSpEnv = getenv("SS_SIGMA_PROBE_IDX");
+        static bool sigmaProbeInit = false;
+        if (!sigmaProbeInit) {
+          sigmaProbeIdx = kSpEnv ? (uint32_t)std::max(0, atoi(kSpEnv)) : 0u;
+          sigmaProbeInit = true;
+        }
+        if (sigmaProbeBuffer) {
+          float *sp = (float *)sigmaProbeBuffer.contents;
+          sp[0] = (float)sigmaProbeIdx;
+          [comp setBuffer:sigmaProbeBuffer offset:0 atIndex:4];
+        }
+      }
 
       NSUInteger tg = std::min(
           (NSUInteger)256, reduceStatsPipeline.maxTotalThreadsPerThreadgroup);
@@ -4125,6 +4146,45 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         float invN = (particleCount > 0) ? 1.0f / (float)particleCount : 0.0f;
         latestStats.avgTemp = totalSumTemp * invN;
         latestStats.avgSpeed = totalSumSpeed * invN;
+        // ── σ-PIN PROBE READBACK (2026-09-03, his spec §AC.8 #4) ─────────────
+        // One particle's v² against BOTH aggregates from the SAME reduce
+        // dispatch (the probe slots and the partial sums are written by the
+        // same kernel launch and read here together). Prints once per 120
+        // frames when SS_SIGMA_PROBE=1. Nothing downstream reads any of it.
+        {
+          static const bool kSigmaProbeOn = getenv("SS_SIGMA_PROBE") != nullptr;
+          if (kSigmaProbeOn && sigmaProbeBuffer) {
+            const float *sp = (const float *)sigmaProbeBuffer.contents;
+            const float pm = sp[1], pvx = sp[2], pvy = sp[3], pvz = sp[4];
+            const float cFrame = sp[5], gdt = sp[6];
+            const float pv2 = pvx * pvx + pvy * pvy + pvz * pvz;   // (sim/frame)²
+            const float pvc = (cFrame > 0.0f) ? std::sqrt(pv2) / cFrame : 0.0f;
+            const float pke = 0.5f * pm * pv2;
+            // aggregate 1: Σ(v/c) over live, as the shader sums it
+            const double avgN    = (particleCount > 0) ? totalSumSpeed / (double)particleCount : 0.0;
+            const double avgLive = (totalCT > 0.0) ? totalSumSpeed / totalCT : 0.0;
+            // aggregate 2: mass-weighted RMS from the KE reduce, (sim/frame) → v/c
+            const double vrms    = (totalSM > 0.0 && totalKE > 0.0f) ? std::sqrt(2.0 * (double)totalKE / totalSM) : 0.0;
+            const double vrmsVc  = (cFrame > 0.0f) ? vrms / (double)cFrame : 0.0;
+            const double W       = (avgLive > 0.0) ? vrmsVc / avgLive : 0.0;   // weighting gap
+            const double bCoded  = (totalKE > 0.0f) ? totalSM / (4.0 * (double)totalKE) : 0.0;
+            const double bHonest = (totalKE > 0.0f) ? totalSM * (double)cFrame * (double)cFrame / (4.0 * (double)totalKE) : 0.0;
+            if ((physicsUniforms.frameCounter % 120u) == 0u) {
+              fprintf(stderr,
+                      "[SIGMA] gpuF=%.0f idx=%u m=%.4g v2=%.4g(sim/f)2 vc=%.4g ke=%.4g | "
+                      "sumVc=%.4g N=%d live=%.0f avg/N=%.4g avg/live=%.4g | "
+                      "KE=%.4g M=%.4g vrms=%.4g(sim/f)=%.4g c | W=vrms_c/avg_live=%.3f | "
+                      "cFrame=%.5g dt=%.5g | bInfl coded=%.4g honest=%.4g\n",
+                      sp[7], sigmaProbeIdx, pm, pv2, pvc, pke,
+                      totalSumSpeed, particleCount, totalCT, avgN, avgLive,
+                      totalKE, totalSM, vrms, vrmsVc, W,
+                      cFrame, gdt, bCoded, bHonest);
+            }
+            // never probe a corpse twice: step to the next index
+            if (pm <= 0.001f && particleCount > 0)
+              sigmaProbeIdx = (sigmaProbeIdx + 1u) % (uint32_t)particleCount;
+          }
+        }
         latestStats.maxTemp = gMaxTemp;
         latestStats.maxSpeed = gMaxSpeed;
         latestStats.coreMassMsun = bhMassEnc;

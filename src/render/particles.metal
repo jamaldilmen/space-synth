@@ -4322,6 +4322,13 @@ kernel void reduce_stats(
     device PartialStats* partialSums [[buffer(1)]],
     constant PhysicsUniforms& u [[buffer(2)]],
     device atomic_uint* radialMass [[buffer(3)]],
+    // σ-PIN PROBE (2026-09-03, his order "pin the sigma split first"): 8 floats.
+    // [0] = probe index (CPU writes), [1] mass, [2..4] velW, [5] cFrame =
+    // speedCap·dt, [6] dt, [7] frameCounter. Written by the ONE thread whose
+    // id == [0], in the SAME dispatch that reduces KE and Σ(v/c) — so the CPU
+    // reads one particle against both aggregates from one frame. Instrument
+    // only; no physics reads it.
+    device float* sigmaProbe [[buffer(4)]],
     uint id [[thread_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
     uint tgSize [[threads_per_threadgroup]],
@@ -4363,6 +4370,15 @@ kernel void reduce_stats(
         ke = 0.5f * mass * (vx * vx + vy * vy + vz * vz);
         mx = mass * vx;
         my = mass * vy;
+        if (id == uint(sigmaProbe[0])) {     // σ-PIN PROBE: this one particle
+            sigmaProbe[1] = mass;
+            sigmaProbe[2] = vx;
+            sigmaProbe[3] = vy;
+            sigmaProbe[4] = vz;
+            sigmaProbe[5] = u.speedCap * max(u.dt, 1e-6f);   // == cFrame below
+            sigmaProbe[6] = u.dt;
+            sigmaProbe[7] = float(u.frameCounter);
+        }
         if (mass > 0.001f) {                 // skip wall particles
             float px = particles[id].posW.x;
             float py = particles[id].posW.y;

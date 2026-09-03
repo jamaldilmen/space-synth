@@ -67,9 +67,9 @@ Notes: the uncommitted `docs/BOARD.md` is BRAIN's live edit (his order: BRAIN ow
 
 | Claim I made | Why it was wrong |
 |---|---|
-| none this pass | — |
+| Eight `file:line` citations in the first version of THIS file (`d348a02`): `renderer.mm:5975`/`:5893`, `main.cpp:204/213/296/1057`, `show_capture.mm:139/184` | Derived from `git diff` hunk offsets by arithmetic instead of grepping — the exact method the board's §AA9 bans. All eight re-read from the file and corrected in `78df11e`; the eleven others were verified line-by-line. Lesson kept in memory: a citation is written from a grep hit, never from an offset. |
 
 ---
 
-**Last Updated:** 2026-09-03 22:25:14
-**Folded into board:** NOT by me — `docs/BOARD.md` §AA is BRAIN's (his order); BRAIN [5d8bf1] has both shas (`c6cad75`, `3e085d7`) and this file. S8 is not on the board at this stamp.
+**Last Updated:** 2026-09-03 22:26:57
+**Folded into board:** by BRAIN — `docs/BOARD.md` §AA10–AA15, both boards re-stamped to `3e085d7` at `a538be3` (2026-09-03 ~22:25).

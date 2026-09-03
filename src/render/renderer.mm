@@ -92,14 +92,15 @@ struct Renderer::Impl {
   // Dedicated buffers so the glow never collides with the user-facing blur
   // slider's ping-pong pool. bloomMip[0] IS bloomTexture (half-res, the
   // bright-pass target and the finished glow bound at texture(2)); levels 1..n
-  // halve from there. 8 slots covers any display down to the 8 px floor.
-  static constexpr int kBloomMaxLevels = 8;
+  // halve from there. 16 slots: the count is governed by the LONGER side (see
+  // resize), so a 19,644-wide pinned render needs 11 levels; 8 slots capped it
+  // at 7 and the glow lost its horizontal reach (2026-09-03, his eye).
+  static constexpr int kBloomMaxLevels = 16;
   id<MTLRenderPipelineState> brightPipeline = nil;
   id<MTLRenderPipelineState> bloomDownPipeline = nil; // 13-tap partial box
   id<MTLRenderPipelineState> bloomUpPipeline = nil;   // 3x3 tent, additive
   id<MTLTexture> bloomTexture = nil;  // finished glow, bound at texture(2)
-  id<MTLTexture> bloomMip[kBloomMaxLevels] = {nil, nil, nil, nil,
-                                              nil, nil, nil, nil};
+  id<MTLTexture> bloomMip[kBloomMaxLevels] = {}; // value-init: all nil
   int bloomLevels = 0;                // derived from resolution, not hardcoded
   // Display grade LUT: 33^3 RGBA16F 3D texture, hardware trilinear = exactly
   // the interpolation a .cube grade needs. Resolution-independent, so it is
@@ -6055,33 +6056,50 @@ void Renderer::resize(int width, int height) {
   // screen distance for free); each level halves again.
   //
   // The LEVEL COUNT IS DERIVED FROM THE RESOLUTION, never hardcoded: keep
-  // halving while the smaller dimension stays >= 8 px. Below 8 px the 13-tap
+  // halving while the LONGER dimension stays >= 8 px. Below 8 px the 13-tap
   // downsample kernel (±2 texels) is mostly clamped against the edges, so the
   // level stops carrying real information — that 8 is the kernel's own reach,
   // not a taste choice. At 2560x1440 this yields 7 levels, the widest spanning
   // the full frame; the pyramid therefore covers every scale the display has.
+  //
+  // LONGER side, not shorter (2026-09-03): at the pinned 19,644x1680 the old
+  // rule stopped at 7 levels because the HEIGHT hit the floor — coarsest
+  // 153x13, i.e. the widest glow scale was 1/13 of the height but only 1/153
+  // of the width. Every level halves BOTH axes, so a level's texel is square in
+  // screen pixels and the glow stays isotropic; once the short side reaches one
+  // row it simply stays one row (clamp_to_edge), which is a point-spread
+  // function cropped by the frame — exactly what a glow wider than the frame
+  // is tall does. 19,644x1680 now builds 11 levels, coarsest 9x1.
   {
     int bw = width / 2 > 0 ? width / 2 : 1;
     int bh = height / 2 > 0 ? height / 2 : 1;
     impl_->bloomLevels = 0;
+    int coarseW = bw, coarseH = bh;
     for (int k = 0; k < Impl::kBloomMaxLevels; k++) {
       int lw = bw >> k;
       int lh = bh >> k;
-      if (k > 0 && (lw < 8 || lh < 8))
+      if (k > 0 && (lw < 8 && lh < 8))
         break;
+      lw = lw > 0 ? lw : 1;
+      lh = lh > 0 ? lh : 1;
       MTLTextureDescriptor *bloomDesc = [MTLTextureDescriptor
           texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
-                                       width:(NSUInteger)(lw > 0 ? lw : 1)
-                                      height:(NSUInteger)(lh > 0 ? lh : 1)
+                                       width:(NSUInteger)lw
+                                      height:(NSUInteger)lh
                                    mipmapped:NO];
       bloomDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
       impl_->bloomMip[k] = [impl_->device newTextureWithDescriptor:bloomDesc];
       impl_->bloomLevels = k + 1;
+      coarseW = lw;
+      coarseH = lh;
     }
+    // Slots past the count hold nothing from a previous, larger size.
+    for (int k = impl_->bloomLevels; k < Impl::kBloomMaxLevels; k++)
+      impl_->bloomMip[k] = nil;
     // Level 0 stays the texture bound at texture(2) by the composite passes.
     impl_->bloomTexture = impl_->bloomMip[0];
-    NSLog(@"[BLOOM-PYRAMID] %d levels from %dx%d (floor 8px)",
-          impl_->bloomLevels, bw, bh);
+    NSLog(@"[BLOOM-PYRAMID] %d levels from %dx%d down to %dx%d (floor 8px on the longer side)",
+          impl_->bloomLevels, bw, bh, coarseW, coarseH);
   }
 
   // Feedback texture must match the EDR drawable (RGBA16Float) — it's a

@@ -4150,6 +4150,41 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
             }
           }
         }
+        // ── [MASSCENSUS] (2026-09-03, his eyes on v6: "all these larger seeds with the
+        // strongest gravity have 0 movement" while the registry held TWO seeds). What
+        // ARE the bright stuck bodies? Bins by mass over the whole live buffer: count,
+        // mean |d| per step, mean hardness (entanglement.y bits, CPU pad1), mean r.
+        // ≥5.54 M☉ is the luminance rail (everything above looks like a merger);
+        // 30 is his pull gate; 50 is M_BH_SEED. Read-only, SS_SEED_PROBE-gated.
+        {
+          static const bool kCensusOn = getenv("SS_SEED_PROBE") != nullptr;
+          if (kCensusOn && particleBuffer && (physicsUniforms.frameCounter % 240u) == 0u) {
+            const GPUParticle *pp = (const GPUParticle *)particleBuffer.contents;
+            const float lo[4] = {5.54f, 30.0f, 50.0f, 1000.0f};
+            const float hi[4] = {30.0f, 50.0f, 1000.0f, 1e8f};
+            long   cnt[4] = {0, 0, 0, 0}; double sd[4] = {0, 0, 0, 0}, sh[4] = {0, 0, 0, 0}, sr[4] = {0, 0, 0, 0};
+            long   still[4] = {0, 0, 0, 0};   // |d| < 1e-4 sim/step
+            for (int i = 0; i < particleCount; i++) {
+              const GPUParticle &q = pp[i];
+              float m = q.mass;
+              if (!(m >= lo[0]) || m >= 1e8f) continue;
+              int b = (m < hi[0]) ? 0 : (m < hi[1]) ? 1 : (m < hi[2]) ? 2 : 3;
+              float dx = q.x - q.prevX, dy = q.y - q.prevY, dz = q.z - q.prevZ;
+              float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+              float h; std::memcpy(&h, &q.pad1, sizeof(float));
+              if (!std::isfinite(h)) h = 0.0f;
+              cnt[b]++; sd[b] += d; sh[b] += h; sr[b] += std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+              if (d < 1e-4f) still[b]++;
+            }
+            fprintf(stderr, "[MASSCENSUS] f=%u pull=%.2f |", physicsUniforms.frameCounter, physicsUniforms.returnPull);
+            for (int b = 0; b < 4; b++) {
+              if (cnt[b] == 0) { fprintf(stderr, " [%g,%g): n=0 |", lo[b], hi[b]); continue; }
+              fprintf(stderr, " [%g,%g): n=%ld mean|d|=%.5f still(<1e-4)=%ld meanH=%.3f meanR=%.2f |",
+                      lo[b], hi[b], cnt[b], sd[b] / cnt[b], still[b], sh[b] / cnt[b], sr[b] / cnt[b]);
+            }
+            fprintf(stderr, "\n");
+          }
+        }
         // TEMP-SLICE3 [SPH] conservation watchdog (remove after slice-3 verdict):
         // sampled momentum / KE / internal energy from the live particle buffer
         // (shared memory, 1-frame lag like every readback here). Viscosity must

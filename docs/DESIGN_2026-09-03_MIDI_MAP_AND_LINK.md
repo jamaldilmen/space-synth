@@ -32,6 +32,19 @@
 > to twelve `renderer.mm` citations that were all off by exactly +22.
 > ⇒ **A `file:line` is only true against a stated tree state. Re-grep, never re-derive, never renumber by arithmetic alone.**
 
+> ## 🚨🚨 SCOPE CHANGED 2026-09-03 16:14:13 — THIS IS NOW THE HIGHEST-PRIORITY BUILD, AND THE REQUIREMENT MOVED
+> **His order, verbatim, relayed by BRAIN:**
+> *"The midi cc mist work so well that i can compose rides and fades accurately"*
+> *"Set both melodies and chords and the midi cc as automations in ableton. Have the app 'read' the midi and render accordingly."*
+> *"This is the most improtant build of the project. Highest prio."*
+>
+> ⚠️ **THIS IS A DIFFERENT PROBLEM FROM THE ONE §1-§8 SOLVE, AND THE DIFFERENCE IS NOT SIZE — IT IS THE CLOCK.**
+> §1-§8 solve *"every UI parameter is mappable from a controller"*: a message arrives, you apply it, **his hand
+> is the clock** and frame-accuracy is meaningless. His order needs *"CC automation authored on a timeline,
+> applied accurately against that timeline"* — **each event belongs at a known OUTPUT FRAME.**
+> ⭐ **The structure below SURVIVES: `Mapping`, the three target kinds (§1.2), apply-outside-`showHUD` (§1.5),
+> the registry (§3.3). What changes is the SOURCE and the CLOCK — see §10.**
+
 > **Cold start:** this file is a design, not state. State is `docs/BOARD_BLACKHOLE.md` §AD → §AC.12.
 > Every claim below is tagged `[READ file:line]`, `[MEASURED]` or `[HYPOTHESIS]`. Untagged = my reasoning over tagged facts.
 
@@ -603,6 +616,131 @@ one frame. **If that reads to him as moving something, it needs his word.**
 
 ⚠️ And one that is **BRAIN's**, unchanged: literal *"every parameter"* still needs **24 checkbox +
 2 combo renames**. The 61 wrapped faders need none.
+
+---
+
+## 10. 🚨 TIMELINE-ACCURATE AUTOMATION — the revision his order forces
+
+### 10.1 ↩️ CORRECTING THE INBOX — and correcting the REASON, because the reason decides the fix
+
+§3.3's `std::atomic<uint16_t> inbox[2048]` is a **latest-value slot per CC**. The note that reached me says a
+slot *"cannot express a fade, only its endpoint."* **That is too strong, and the precise version is what tells
+you when you need something else:**
+
+- ⭕ **Rendering in REAL TIME, a latest-value slot traces a fade correctly.** It is re-sampled every frame, so
+  60 samples/second of a moving CC **is** the fade. Coalescing intermediate values is not a loss — for a
+  continuous parameter, *"the newest value at frame time"* is exactly the right sample.
+- 🚨 **The moment the render clock is DECOUPLED from the wall clock, the slot is wrong — and that is precisely
+  the case his order asks for.** A slot has **no timestamp**: it can only answer *"what is the value NOW"*,
+  never *"what was the value at output frame N"*. Consequences, worst first:
+  1. **A heavy frame silently speeds the fade UP.** The slot advances at wall rate while the render falls
+     behind, so an authored 4-second fade completes in fewer frames and reads FASTER than composed. Invisible
+     on one frame; across five minutes it is a ride ending in the wrong musical place.
+  2. **The render cannot be repeated.** Two renders of one timeline give different frames. *"Accurately"*
+     implies reproducibly and a slot cannot supply it.
+  3. **The render can never run slower or faster than real time** — which forecloses the offline tier entirely.
+
+⇒ **THE FIX: the source becomes a TIME-ORDERED EVENT LIST consumed against the render clock.**
+```
+struct CcEvent { double t;               // seconds on the TIMELINE, not arrival time
+                 uint8_t cc, ch, value; };
+// live   : t = arrival wall-clock, appended by the MIDI thread (still wait-free, a ring)
+// render : t = tick -> seconds via the file's tempo map; the whole list is known BEFORE frame 0
+```
+Per output frame, advance a cursor to `t <= frameTime` and take the last value per `(ch,cc)` — **the slot's
+behaviour, evaluated at the FRAME's time instead of at now.** ⭐ **That is the entire change.** `Mapping`, the
+curve, the range, the three target kinds (§1.2) and §3.4's apply order are untouched, and the live path
+degenerates to exactly today's behaviour when `frameTime == now`.
+
+### 10.2 🔴 THE FORK HIS WORDS DO NOT SETTLE — *"have the app 'read' the midi"*
+
+**Two architectures, not one build. I am not guessing which he means.**
+
+| | **A — LIVE STREAM** | **B — FILE READ** |
+|---|---|---|
+| Source | Ableton plays; CC arrives over IAC | the app parses a `.mid` **file** (notes + CC at ticks) |
+| Clock master | **Ableton** | **the app** |
+| Accuracy | ±1 frame + CoreMIDI jitter | **exact and reproducible** |
+| Render speed | real time only | **any speed — this unlocks the offline tier** |
+| New code | **none beyond §10.1** — rides the parser shipped as `9fbe0ba` | a Standard-MIDI-File reader + tempo map |
+| Cologne-ready | **yes** | not without his word on scope |
+
+**RECOMMENDATION, one not a menu: BUILD A, DESIGN B, SHARE EVERYTHING BELOW `Mapping`.** A is reachable now
+on the parser already in, and is what he can rehearse with. B is the only thing that makes *"accurately"*
+literally true and is the natural partner to the pre-recorded show and to SONNET's offline design. **They
+differ ONLY in how `CcEvent.t` is produced** — so A costs nothing toward B and forecloses nothing.
+🔴 **HIS CALL: does "read the midi" mean the live stream, or a file the app opens?**
+
+### 10.3 ✅ THE CLOCK — HIS RULING SOLVES THIS EXACTLY, AND I HAD IT BOARDED AS AN OPEN RISK
+
+**What I was going to flag, and it was real:** `[READ renderer.mm:1775]` `kStepWall = 0.0165` demands
+**60.606 steps/s**, while `[READ renderer.mm:1809-1813]` the carry is bounded to one step — its own comment
+says *"steps == frames"* below 60.61 fps. At a 60 fps render that feeds 60 steps against 60.606 demanded ⇒
+**sim time 1.0% slow, 3.0 s over a five-minute piece**, with the excess discarded rather than carried.
+
+✅ **HIS RULING 2026-09-03 REMOVES IT: offline `dt = 1/60`, TWO steps per output frame ⇒ one frame = exactly
+1/30 s = 30.000 fps, ZERO drift.** *(Live `dt` stays `0.0165`.)* His words: *"I def wanna deliver straight 30 or
+60 fps. I guess it's gonna be 30 fps."*
+⭐ **This is the number the timeline design needed, and it is now FIXED, not assumed.** A CC event's tick maps
+to an output frame with **no accumulator and no rounding** — `frameIndex = round(t * 30)` is exact, and §10.1's
+cursor walk becomes trivially correct. **Every accuracy claim in this section rests on that ruling.**
+✅ **AND WARP IS RULED OUT OF THE RENDER — so the timing is EXACT, unconditionally.** His words
+2026-09-03: *"Warp won't be during rendering no worries."* ⇒ no caveat: **one output frame = exactly 1/30 s =
+exactly 2 sim steps, full stop.** `frameIndex = round(t * 30)` is exact, no accumulator, no rounding, no drift.
+⚠️ **BUT THE EXACTNESS IS ENFORCED BY A PIN, NOT BY HOPE — and this is the one line to keep.**
+`[READ renderer.mm:1713]` `dt = 0.0165f * impl_->timeWarpVal` is the **only** thing between the render and
+silent length drift. A stale dial from a previous session, or a preset, arrives as whatever it was — and
+`[READ renderer.mm:2333]` `setTimeWarp` clamps only to `1.0e-3f`, so **warp can be BELOW 1 as well as above**:
+a leftover 0.5 yields a half-length video **with nothing on screen to indicate it**. ⇒ offline mode must
+**FORCE `timeWarpVal` to 1 and log it before frame 0** if it arrives as anything else. **The timing is exact
+BECAUSE of that pin; without it every claim in this section is only probably true.** (BRAIN has relayed the
+pin requirement to FABLE; it is FABLE's to build, not mine.)
+
+🚨 **A CONSEQUENCE OF HIS OWN RULING THAT NOBODY HAS FLAGGED — offline will not be bit-identical to live, and
+the reason is in MY §1 lane.** `[READ particles.metal:362]` *"IDENTITY AT WARP 1 BY CONSTRUCTION:
+72.7273 * 0.0165 = 1.2 sim/frame exactly"*. With offline `dt = 1/60`:
+`72.7273 × 0.0166667 = 1.21212` — **the Chladni speed cap per frame rises 1.01%.**
+Per §1's finding the cap sets the hue-scatter rate (phase advances `speed*dt`), so **the offline render's
+Chladni colour and cap-limited motion are ~1% different from live.** Small, and I am not calling it a
+blocker — but it means (a) an offline A/B against a live capture is **not** an exact comparison, and (b) the
+`[PERF]` real-time ratio that memory earmarks as the offline regression check will read a **different
+constant**, not a broken one. **Say it now rather than discover it in a verdict run.** ⛔ FABLE's lane and his
+ruling; recorded here because it is a consequence of the clock this section depends on.
+⭐ **One camera, one timeline** (his ruling: *"it's one image as it already is"*, 19644×1680 cropped into
+7152/5340/7152) ⇒ **no per-slice automation state to keep in sync.** One `CcEvent` list serves the whole wall.
+
+### 10.4 ⛔ PICKUP MUST BE STRUCTURALLY REFUSED FOR A TIMELINE SOURCE, not merely defaulted away
+
+§3.5's three modes were designed for a hand on hardware. **On a timeline there is no hand:**
+- **`JUMP` is the only correct mode** — automation is an absolute value at a time.
+- 🚨 **`PICKUP` does not merely misbehave, it produces SILENCE.** It waits for the incoming value to cross the
+  parameter's current value, and nothing will ever move that parameter to be crossed. The dial sits still
+  through an entire authored ride **with no error, no warning and no log line.**
+- **`RELATIVE`** is meaningless — an automation lane has no deltas.
+⇒ **Make it impossible, not improbable:** a `Mapping` whose source is a timeline **rejects** `PICKUP` and
+`RELATIVE` at load with a named error rather than accepting them and going quiet. **A silent no-op is the
+failure mode this design has been avoiding since §1.5**, and it would be indistinguishable from "the mapping
+didn't load".
+
+### 10.5 ⭐ WHAT *"ACCURATELY"* COSTS — 7 bits is not enough for a slow ride, and the answer already exists
+
+**A ride is a slow continuous move, which is the worst case for 7-bit CC.** 128 steps is all a CC has.
+`[READ memory space_synth_camera_overhaul_2026-08-10:112-119]` the prior art already measured it against the
+camera: *"across rho 50→2000 that's ~15 units/step = visible stair-stepping on a slow zoom."* A 30-second zoom
+ride crosses a step every ~0.23 s — **that reads as broken, not as a ride.** At 30 fps it is worse per frame,
+not better: one step every ~7 output frames, held flat in between.
+
+**The answer is already written down and it is the right one:** *"CC writes the TARGET, the spring outputs the
+smooth value."* A slew / critically-damped filter between the event stream and the parameter turns 128 discrete
+steps into a continuous curve, **needs nothing from Ableton, no file format and no controller support**, and it
+is the same second-order form `camera.h` already ships (`kSettleConst`, `camera.h:104`).
+⚠️ **One conflict to state rather than discover:** a slew filter is **state that persists across frames**, so
+in a deterministic render it must be advanced by the same frame-indexed clock as everything else (§10.3) — or
+**the smoothing itself becomes the thing that differs between two renders.**
+⚠️ **14-bit CC (MSB/LSB on `cc` and `cc+32`) is the textbook alternative and I am NOT recommending it:** it is
+real in the MIDI spec, but **whether Ableton emits 14-bit for an automation lane is `[UNVERIFIED]`** and I will
+not design around a host feature I have not confirmed. **The slew answer needs nothing from the host**, so it
+is the one to build first regardless of how that check comes out.
 
 ## 9. ✅ WHAT THIS WINDOW VERIFIED ITSELF (vs. inherited)
 

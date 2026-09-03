@@ -48,7 +48,14 @@ PREFLIGHT 2026-09-03 18:30:39  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHY
          FAIL docs/BOARD.md is 6 code commit(s) behind HEAD                                    ← same
 3. artifact ok SpaceSynth newer than newest source · ok default.metallib newer   (built 18:30:36, NOT launched)
 ```
-Re-run after the handoff commit: appended at the bottom of this file.
+Re-run after the handoff commit (`075f3df`, 2026-09-03 18:35:53):
+```
+1. git   ok HEAD 075f3df · FAIL 1 uncommitted: M docs/HANDOFF_2026-09-03_OPUS_MAPPING_AND_COLOUR.md ← OPUS's, being written in its window; not mine to sweep
+         WARN 44 commit(s) not pushed — no push order
+2. board ok docs/BOARD_BLACKHOLE.md (BRAIN re-stamped meanwhile) · FAIL docs/BOARD.md 7 code commits behind (verified at 74bee76) ← BRAIN's
+3. artifact ok binary + metallib (18:30:36) newer than every source — NOT launched
+4. paths ok 49 referenced path(s) resolve
+```
 
 ## 5. ↩️ RETRACTED THIS SESSION
 

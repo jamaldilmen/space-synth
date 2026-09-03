@@ -100,7 +100,23 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 | "14 sightings of *a comment is not a mechanism*" | Index said 14, the file said 12. Resynced to **14** after two real sightings tonight (the dead instrument; the false comment at `particles.metal:3834-3836`). Trust the FILE. |
 | Memory timestamps 01:10–02:30 | Taken from FABLE's reported times, which ran **~30 min ahead** of the machine clock. Findings verified; **times are not.** His order since: *"stamp from the real clock from now on."* |
 
+
+## 6. 🔄 AFTER THE HANDOFF COMMIT — post-`9fa4191` work, boarded as §AD.13-16
+
+Everything below landed AFTER §1-5 were written. **Board rows are §AD.13-16; this is the diff.**
+
+- **`docs/BOARD.md` still has NO machine-readable `Commit at last verification:` sha, and BOTH boards need their closed rows split into `BOARD_CLOSED.md`** (239KB / 167KB). Preflight WARNs on all three. **Real debt, not commissioned.**
+- **AD.13 — my frame≠time retraction was nearly an over-correction.** Two true statements about DIFFERENT code: the **engine clock is healthy** (step COUNT from wall seconds, `renderer.mm:1787-1814`, clamp 4 — the cure), while **§AC.11's 1/dt² is in the LENS INFLUENCE LAW's units and is still true — it is the basis of the σ pin.** Discarding both would have lost the pin. A relay of mine merged them; neither window was wrong.
+- **AD.15 — THE ROTATION SUBSYSTEM IS DEAD: 9 symbols, and NO rotation widget exists anywhere in the UI.** `RenderConfig` is passed by const reference and never blitted, so a named read is the only possible consumer and there is none. `uiAutoRotateBlackHole` defaults **true**, so two `ImGui::GetTime()` terms are evaluated **every frame and discarded** — a consumer was removed and left its supply chain standing. ✅ **NO STAGE RISK** — nothing at the desk is wired to it. **Cleanup; must NOT compete with the MIDI parser.** HIS CALL, not built. (SONNET found it, OPUS scoped it, BRAIN widened it to three fields, OPUS widened it to the subsystem.)
+- **AD.16 — 🚨 POLICY GAP: AN ELABORATE PRODUCER IS NOT EVIDENCE OF A CONSUMER.** Three victims in one night — SONNET (a slider that does not exist), OPUS twice (a clamp in an undispatched kernel; then `rotationX` held up as live by describing what WRITES it), and me (a header read as a mechanism). **The check is one line — grep for a READ — and nobody ran it unprompted. It belongs in `preflight.sh`, not another memory file.** `[MEASURED n=3 in one session]`
+- **`struct Preset` saves 15 fields against 60+ live dials** — Kelvin, star size, smear, ISCO, SPH cooling, mirror mode all silently dropped. Known gap, wider than boarded.
+- **OFFLINE RENDERING — a real two-tier choice, and NEITHER window recommended a tier.** OPUS verified the premise rather than trusting it: the fixed-dt debt accumulator **already exists**, so tier 1 is a bolt-on, not a re-architecture. **MVP `[HYPOTHESIS — no estimate verified]`:** MIDI+tick logger, audio feature logger, **real-time** replay through the live app captured by an off-the-shelf Syphon recorder, live/pre-rendered crossfade **downstream in the existing VJ mixer** — zero new in-app code, and it buys redoing a take without him replaying it. ⛔ **DO NOT ATTEMPT before Cologne:** decoupled-clock non-realtime renderer, temporal-sample motion blur, ProRes/AVAssetWriter capture, Alembic/VDB, in-app crossfade, sim checkpointing. ⭐ The existing `[PERF]` real-time ratio is a **free regression check** for offline mode — it should read FIXED, not fluctuate.
+- 🚨 **THE MIDI PARSER IS ON THE CRITICAL PATH FOR ABLETON CC.** `src/core/midi_input.mm:26-53` is still **unruled**, and OPUS's Ableton/MIDI-CC design names it as its stated dependency. **If he wants CC control at Cologne, that parser must be ruled on first.** Cologne 2026-09-05.
+- **Window state at this stamp:** OPUS on Job 2 (Ableton Link / MIDI CC / macros — design only, every UI param mappable, **no fader moved**); SONNET's offline subagents delivered; FABLE holds the build token and is the ONLY window that builds.
+
+⚠️ **BRAIN's own process fault this session:** I boarded AD.13-16 and reported them to him as if the handoff were finished — *"stop this is not post handoff yet chill"* (2026-09-03 05:21). The work is sound; the timing was mine, not his.
+
 ---
 
-**Last Updated:** 2026-09-03 05:20:00
+**Last Updated:** 2026-09-03 05:23:00
 **Folded into board:** `docs/BOARD_BLACKHOLE.md` §AD @ 2026-09-03 05:20:00

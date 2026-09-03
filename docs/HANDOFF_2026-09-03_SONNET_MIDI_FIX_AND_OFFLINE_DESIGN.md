@@ -8,6 +8,35 @@
 
 ---
 
+## 0. 🔄 UPDATE 2026-09-03 18:38:12 — WRITTEN BY BRAIN, NOT BY THIS WINDOW
+
+**This window has been idle since 15:28:27.** §1–§5 below are still true *as of that stamp* and were not re-verified. What follows is what moved underneath them, verified by BRAIN against the tree at `52f6d68` (clean, 43 unpushed) unless a line says otherwise.
+
+**⭐ THE HEADLINE: `docs/DESIGN_2026-09-03_OFFLINE_RENDERING.md` IS BEING BUILT — and the schedule you wrote is not the schedule he took.** His order ~16:00, via BRAIN: *"I want 60 fps and 30 fps. Full res … 3 slices, front wall 5340 x 1680, 2x side walls 7152 x 1680 … Have the app 'read' the midi and render accordingly. This is the most important build of the project."* `[HIS WORDS]`. Seven commits landed 17:40–18:32 — `d4cf127` `7ff7158` `5fd6cbb` `7d2e0d8` `3e4ac40` `d6cbb7c` `52f6d68`, all FABLE's, all one concern each. Cold start for the whole build: memory `space_synth_show_renderer_2026-09-03`.
+
+🚨 **Your design named the virtual clock, offline audio, the capture pipeline and resolution decoupling as explicitly POST-Cologne, with only steps A and B pre-Cologne buildable.** He took all of it, now. **Do not quote your own scoping line back at him** ([[feedback_starting_work_means_he_changed_his_mind]]).
+
+### What CLOSED under you
+
+| # | Row in this file | Now | Where | Proof |
+|---|---|---|---|---|
+| A | **§2.2 — the System Common residual (0xF1 MTC, 0xF3 Song Select, 0xF6 Tune Request still eat a note), held pending his yes/no** | **CLOSED, and the HOLD is superseded.** Sizes are now the spec's own table: `0xF2`→3, `0xF1`/`0xF3`→2, the rest of System Common →1, SysEx scans to `0xF7`, `>=0xF8` still 1 (your `9fbe0ba` guarantee, unchanged). The fix shape you wrote up in messages is what shipped | `src/core/midi_input.mm:59-64` @ `d4cf127` | `[READ]` by BRAIN 18:31 |
+| B | **§1a of the design — the wall-clock step accumulator** (`n = floor(trueTimeAcc / kStepWall)`) | **BYPASSED offline, untouched live.** `SS_RENDER_FPS=30\|60` ⇒ `dt = 1/60` exactly, step count a *constant* 2 per output frame at 30, warp pinned to 1 and logged. One env read behind one gate; unset and every consumer takes its original line | `src/core/offline_clock.h` @ `5fd6cbb` | `[READ]` by BRAIN 18:33; `[MEASURED]` `simTime=10.000020 expected=10.000000` at frame 300 (FABLE, relayed) |
+| C | **§1e — "a second, independent real-time clock at the window level feeds the sequencer, camera and VJ crossfade; decoupling 1a alone reintroduces wall-clock coupling one layer up"** | **CORRECT, AND IT WAS ACTED ON.** The window frame `dt` is gated too — `window.mm:716` in the S3 commit, alongside the posed-disk clock and the lens EMA. Your §1e is the reason the offline sim does not desync one layer up | `src/ui/window.mm` @ `5fd6cbb` | `[READ]` gate present, BRAIN 18:33 |
+| D | Determinism, which your design flagged as a risk | Two replays of one take: `[REPLAY]` output byte-identical, all 466 envelope frame rows byte-identical | `src/core/take_replay.{h,cpp}` @ `7d2e0d8`+`d6cbb7c` | `[MEASURED n=2 identical runs]` FABLE, relayed |
+| E | §1 tree-not-clean caveat ("the remainder is each other window's own commit to make") | **Resolved** — tree clean at `52f6d68`, every window's work committed under its own name | `git status --porcelain` empty | `[MEASURED]` preflight 18:32:50, §4 addendum |
+
+### Two corrections to carry — one to your spec, one you must not inherit
+
+1. **`frameCounter` counts FRAMES, not steps** — FABLE's stated correction to the offline spec. `impl_->physicsUniforms.frameCounter = impl_->frameCount++` is one increment per frame, so offline at 30 fps it reads **N, not 2N**; the step count lives in `[OFFLINE] steps/frame=2` and `[PERF] steps=480 per n=240`. `[READ renderer.mm:1907]` — **against the working tree at 18:31:26, which then had `renderer.mm` +16/−1 uncommitted; re-grep against `52f6d68`.** Anything in the design that infers a step count from `frameCounter` is wrong.
+2. ⛔ **"a replayed event is never early, at most one frame late"** was published to this team at 18:13 and is **WRONG for `floor(t·fps)`** — measured, the replay *led* the live take by 11–31 ms on every envelope transition. Fixed to `ceil(t·fps)` in `d6cbb7c`. The claim allowed today: **each event lands 0–33 ms AFTER its recorded time, never before, deterministic to the frame** — on a synthetic take. Ableton's own stamping is **unmeasured** until his first real take.
+
+### The open blocker your design did not have
+
+🚨 **19,644 px can never be the on-screen drawable.** Every offscreen texture type allocates and rasterizes at 19,644×1680 and the ProRes writers open at that size, but the presenting `CAMetalLayer` refuses any drawable above **16,384** — `nextDrawable` nil, `drawableSize` 0×0, and the final blit `copyFromTexture:drawable.texture` dereferenced it ⇒ SIGSEGV (his words: *"it crashed lol"*, crash report 18:22:51). `[MEASURED 18:22–18:25]` FABLE, relayed. ⇒ **S8 must render the final post pass into an OFFSCREEN target of the pinned size and present a ≤16,384 preview.** Half res (9822×840) runs end to end today at 21.6 fps, 0.71× real time.
+
+---
+
 ## 1. ✅ CLOSED THIS SESSION
 
 | # | Fault | Was | Now | Where | Proof |
@@ -73,6 +102,25 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 §5 orbital-plane WARN is boilerplate, unrelated to this session — no orbital/rotational code was touched or read.
 
+**PREFLIGHT ADDENDUM — re-run by BRAIN 2026-09-03 18:32:50, unedited:**
+
+```
+1. git
+  ok    branch true-physics, HEAD 52f6d68
+  ok    working tree clean — committed
+  WARN  43 commit(s) not pushed
+2. board vs HEAD
+  FAIL  docs/BOARD_BLACKHOLE.md is 7 code commit(s) behind HEAD (verified at 74bee76)
+  FAIL  docs/BOARD.md is 7 code commit(s) behind HEAD (verified at 74bee76)
+  WARN  BOARD_BLACKHOLE.md 250771B / BOARD.md 168191B — split closed rows out
+  ok    docs/BOARD_CLOSED.md archive, 104965B — exempt
+3. deployed artifact   ok  SpaceSynth + default.metallib newer than newest source
+4. referenced paths    ok  49 referenced path(s) in live docs all resolve
+5. orbital-plane       WARN 8 site(s) — unchanged boilerplate, no orbital code touched
+```
+
+**Disposition (BRAIN, 2026-09-03 18:32:50):** §1 is **clean** — the 15:2x FAIL in this window's own preflight above is gone; every window committed its own work. The two §2 FAILs are the **seven show-renderer commits** (`d4cf127`…`52f6d68`), and **the board is BRAIN's, not this window's** — the fold and re-stamp are owed by BRAIN and named as such by FABLE at 18:33. **Do not fold them from here.**
+
 ## 5. ↩️ RETRACTED THIS SESSION
 
 | Claim I made | Why it was wrong |
@@ -84,5 +132,5 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 ---
 
-**Last Updated:** 2026-09-03 15:28:27
+**Last Updated:** 2026-09-03 15:28:27 · **§0 + §4 addendum by BRAIN 2026-09-03 18:38:12**
 **Folded into board:** NOT YET — flagged to BRAIN. This session's MIDI-fix commit put `docs/BOARD_BLACKHOLE.md` one code commit behind HEAD (see PREFLIGHT FAIL above); per established practice this session, BRAIN folds windows' findings into the board rather than each window editing the shared file directly.

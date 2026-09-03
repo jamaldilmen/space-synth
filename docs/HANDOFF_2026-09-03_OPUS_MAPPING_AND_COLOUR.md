@@ -10,6 +10,37 @@
 
 ---
 
+## 0. 🔄 UPDATE 2026-09-03 18:36:04 — WRITTEN BY BRAIN, NOT BY THIS WINDOW
+
+**This window has been idle since 15:28:57.** §1–§5 below are still true *as of that stamp* and were not re-verified. What follows is what moved underneath them, verified by BRAIN against the tree at `52f6d68` (clean, 43 unpushed) unless a line says otherwise.
+
+**⭐ THE HEADLINE: your design left the page. FABLE is BUILDING it.** His order ~16:00, via BRAIN: *"The midi cc must work so well that i can compose rides and fades accurately … This is the most important build of the project."* `[HIS WORDS]`. Seven commits landed 17:40–18:32 — `d4cf127` `7ff7158` `5fd6cbb` `7d2e0d8` `3e4ac40` `d6cbb7c` `52f6d68`. Cold start for the whole build: memory `space_synth_show_renderer_2026-09-03`.
+
+### What CLOSED under you
+
+| # | Row in this file | Now | Where | Proof |
+|---|---|---|---|---|
+| A | **§10.0 "PREREQUISITE ZERO: `MidiCallback` cannot represent a CC, capture is blocked BY CONSTRUCTION"** | **CLOSED.** The callback is now one POD event — `enum MidiKind{NoteOn,NoteOff,CC}` and `MidiEvent{kind,channel,a,b,stamped,t}`, `t` in seconds on the `CACurrentMediaTime` timebase. Your §10.0a/b/c are cited in the header comments verbatim | `src/core/midi_input.h:11-26` @ `d4cf127` | `[READ]` by BRAIN 18:31 |
+| B | **§2.4 — the System Common (MTC) residual, the row BRAIN put on HOLD** | **CLOSED, and the HOLD is superseded — do not re-open it.** Sizes are now the spec's table: `0xF2`→3, `0xF1`/`0xF3`→2, everything else in System Common →1, SysEx scans to `0xF7`, `>=0xF8` still 1 (the `9fbe0ba` guarantee, unchanged) | `src/core/midi_input.mm:59-64` @ `d4cf127` | `[READ]` by BRAIN 18:31 |
+| C | His **record-then-render** ruling had no recorder | **SHIPPED.** `SS_RECORD=<path>` logs every note+CC with the packet's own stamp; marker **CC 119** (`SS_TAKE_MARKER_CC` overrides) is t0; a take with no marker **fails loudly**, drops are counted | `src/core/take_recorder.{h,cpp}` @ `7ff7158` | `[MEASURED n=2 live takes]` FABLE, relayed |
+
+### What is STILL YOURS, unbuilt
+
+- **S6 — the CC→parameter registry, straight out of `docs/DESIGN_2026-09-03_MIDI_MAP_AND_LINK.md`.** Not started. FABLE's stated order is S8 capture → **S6** → S7 slew.
+- ⛔ **Your own dead road still governs it:** register in the `Ui*` helper, **apply in the frame loop OUTSIDE `if (showHUD)`** — see §3. Add to it: the mapper must **refuse to map the marker CC** (119), or a take re-drives its own marker on replay.
+- **S7 slew** — and note it now has a clock to live on: offline, one physics step is `1/60` sim seconds and the frame is exactly `1/fps`. Slew written per-frame is deterministic; slew written per-wall-second is not.
+- ❓ **Your queued question is STILL UNANSWERED** — does a startup UI pass with headers forced open count as "moving something"? S6 hits it the moment it is written. It was not put to him tonight.
+
+### ⚠️ Before you cite anything in this file
+
+`main.cpp`, `renderer.mm`, `window.mm` and `window.h` all took source between 17:40 and 18:32 (S3 gates, S4 replay hook, S5 pin). **Every `main.cpp:` and `renderer.mm:` line number in §1, §3 and §5 below predates that and was last re-read at 15:26:45.** Re-grep against `52f6d68`; never renumber by arithmetic ([[feedback_file_line_is_only_true_against_a_tree_state]]).
+
+### One retraction of FABLE's that you must not inherit
+
+**"a replayed event is never early, at most one frame late"** was published to this team at 18:13 and is **WRONG for `floor(t·fps)`** — measured, the replay *led* the live take by 11–31 ms on every envelope transition, and video leading audio is the direction the eye catches. Fixed to `ceil(t·fps)` in `d6cbb7c`. The claim allowed today: **each event lands 0–33 ms AFTER its recorded time, never before, deterministic to the frame** — on a synthetic take. Ableton's own stamping is **unmeasured** until his first real take.
+
+---
+
 ## 1. ✅ CLOSED THIS SESSION
 
 | # | Fault | Was | Now | Where | Proof |
@@ -106,6 +137,25 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 - **§5 plane sites ×8** — all in FABLE's files. **I edited no source at all.**
 - ⚠️ **`MEMORY.md`:** `⭐⭐⭐` is at **6**, under the cap of 7 — I demoted the MIDI row from `⭐⭐⭐` to `⭐⭐` because its live bug is **fixed and committed**, so it no longer meets the tier's own test. **No entry says READ FIRST**; the board row's suffix was removed by another window and I left that edit alone.
 
+**PREFLIGHT ADDENDUM — re-run by BRAIN 2026-09-03 18:32:50, unedited:**
+
+```
+1. git
+  ok    branch true-physics, HEAD 52f6d68
+  ok    working tree clean — committed
+  WARN  43 commit(s) not pushed
+2. board vs HEAD
+  FAIL  docs/BOARD_BLACKHOLE.md is 7 code commit(s) behind HEAD (verified at 74bee76)
+  FAIL  docs/BOARD.md is 7 code commit(s) behind HEAD (verified at 74bee76)
+  WARN  BOARD_BLACKHOLE.md 250771B / BOARD.md 168191B — split closed rows out
+  ok    docs/BOARD_CLOSED.md archive, 104965B — exempt
+3. deployed artifact   ok  SpaceSynth + default.metallib newer than newest source
+4. referenced paths    ok  49 referenced path(s) in live docs all resolve
+5. orbital-plane       WARN 8 site(s) — unchanged boilerplate, no orbital code touched
+```
+
+**Disposition (BRAIN, 2026-09-03 18:32:50):** §1 is **clean** — the 15:2x FAIL in this window's own preflight above is gone; every window committed its own work. The two §2 FAILs are the **seven show-renderer commits** (`d4cf127`…`52f6d68`), and **the board is BRAIN's, not this window's** — the fold and re-stamp are owed by BRAIN and named as such by FABLE at 18:33. **Do not fold them from here.**
+
 ## 5. ↩️ RETRACTED THIS SESSION
 
 | Claim I made | Why it was wrong |
@@ -119,5 +169,5 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 ---
 
-**Last Updated:** 2026-09-03 15:28:57
+**Last Updated:** 2026-09-03 15:28:57 · **§0 + §4 addendum by BRAIN 2026-09-03 18:36:04**
 **Folded into board:** ⛔ **NOT by this window** — routed to BRAIN by `SendMessage` throughout; `BOARD_BLACKHOLE.md` is BRAIN's and no source changed here. See §4 disposition.

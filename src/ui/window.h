@@ -78,6 +78,11 @@ public:
   // When pinned, the WINDOW is only a scaled preview; the buffer is exact.
   // 0,0 = follow the window, the historical behaviour.
   void pinDrawableSize(int pixelW, int pixelH);
+  // S5 (2026-09-03): can THIS GPU hold a render target of exactly this size?
+  // Measured by allocating one on the system device, not read from a table —
+  // the old 16384 cap was a typed constant that refused his 19,644-wide wall
+  // while the M5 Max rasterizes it. Usable before create().
+  static bool canAllocateDrawable(int pixelW, int pixelH);
 
   // Drawable size in PIXELS. width()/height() stay in POINTS because ImGui
   // lays out in points (main.cpp:857, :934) — two different quantities, and

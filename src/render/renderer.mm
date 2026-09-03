@@ -332,6 +332,7 @@ struct Renderer::Impl {
   id<MTLBuffer> spectralLinesLUT = nil;     // 128×float4 line weight per band vs g
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
   float timeWarpVal = 1.0f;     // physics-clock multiplier (x2/x4/x8 time controls); scales the pinned dt
+  float sizeRefHeight = 2260.0f; // S5: reference height for sizeResScale; 2260 live, delivery height when pinned
   float lastParticleSize = 2.0f; // Size slider (1-frame lag) → scales the cluster's mass/gravity
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
@@ -2191,7 +2192,18 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // S2: 2260 = his fullscreen drawable height, MEASURED 2026-08-21 21:28:59
   // ([DEPTHPREPASS] target 3600x2260). Fullscreen therefore lands on exactly
   // 1.0 and is unchanged; every other resolution is normalised to it.
-  cam.sizeResScale = (float)impl_->height / 2260.0f;
+  // S5 (2026-09-03): the reference is a SETTING, default 2260 (live path
+  // unchanged); a pinned render sets it to the delivery height (1680) via
+  // setSizeReferenceHeight — see renderer.h.
+  cam.sizeResScale = (float)impl_->height / impl_->sizeRefHeight;
+  {
+    static float sLastPrinted = -1.0f;
+    if (std::fabs(cam.sizeResScale - sLastPrinted) > 1e-6f) {
+      sLastPrinted = cam.sizeResScale;
+      printf("[SIZE] drawable %dx%d, reference height %.0f -> sizeResScale %.4f\n",
+             impl_->width, impl_->height, (double)impl_->sizeRefHeight, (double)cam.sizeResScale);
+    }
+  }
   }
   cam.sharpness = config.sharpness;
   cam.grainAlpha = config.grainAlpha;
@@ -2376,6 +2388,9 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
 
 void Renderer::setScale(float s) { impl_->physicsUniforms.plateRadius = s; }
 void Renderer::setTimeWarp(float w) { impl_->timeWarpVal = std::max(w, 1.0e-3f); }
+void Renderer::setSizeReferenceHeight(float pixels) {
+  impl_->sizeRefHeight = std::max(pixels, 1.0f);
+}
 double Renderer::simSecondsLastStep() const { return impl_->simSecExecLast; }
 
 // Internal helper for compute

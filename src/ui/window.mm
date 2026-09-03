@@ -517,6 +517,53 @@ void *Window::metalLayer() const { return (__bridge void *)impl_->layer; }
 void *Window::metalDevice() const { return (__bridge void *)impl_->device; }
 int Window::width() const { return impl_->width; }
 int Window::height() const { return impl_->height; }
+bool Window::canAllocateDrawable(int pixelW, int pixelH) {
+  if (pixelW <= 0 || pixelH <= 0) return false;
+  // Metal's own descriptor validation ABORTS (it does not return nil) above
+  // the device ceiling — MEASURED 2026-09-03 18:24:10 on the M5 Max:
+  // "MTLTextureDescriptor has width (200000) greater than the maximum allowed
+  // size of 32768." So the ceiling is checked here, before any descriptor
+  // exists. 32768 is that message's number for this GPU family, not a guess.
+  const int kMetalMaxDim = 32768;
+  if (pixelW > kMetalMaxDim || pixelH > kMetalMaxDim) return false;
+  @autoreleasepool {
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return false;
+    // The drawable's own format (see the layer setup below) so the probe asks
+    // the exact question the render will.
+    MTLTextureDescriptor *td = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                     width:(NSUInteger)pixelW
+                                    height:(NSUInteger)pixelH
+                                 mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> t = nil;
+    @try { t = [dev newTextureWithDescriptor:td]; } @catch (NSException *e) { t = nil; }
+    if (!t) return false;
+    // MEASURED 2026-09-03 18:22:51 (crash) + probe: every offscreen texture
+    // allocates at 19,644 wide, but the CAMetalLayer that PRESENTS refuses a
+    // drawable above 16,384 — nextDrawable returns nil and drawableSize reads
+    // 0x0 — and the final blit then copies from a nil drawable (SIGSEGV in
+    // renderWithCamera). Until the capture stage renders the final frame into
+    // an offscreen target, the pinned size must also be presentable, so the
+    // layer is asked directly rather than a number typed here.
+    CAMetalLayer *probe = [CAMetalLayer layer];
+    probe.device = dev;
+    probe.pixelFormat = MTLPixelFormatRGBA16Float;
+    probe.drawableSize = CGSizeMake(pixelW, pixelH);
+    id<CAMetalDrawable> dr = [probe nextDrawable];
+    if (!dr) {
+      fprintf(stderr, "[S1] the display layer cannot present a %dx%d drawable (nextDrawable nil, layer reports "
+                      "%.0fx%.0f). Offscreen textures allocate at this size; the on-screen drawable does not. "
+                      "A wall-size render needs the offscreen capture target (S8).\n",
+              pixelW, pixelH, probe.drawableSize.width, probe.drawableSize.height);
+      return false;
+    }
+    return true;
+  }
+}
+
 void Window::pinDrawableSize(int pixelW, int pixelH) {
   impl_->pinnedW = pixelW;
   impl_->pinnedH = pixelH;

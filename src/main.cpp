@@ -123,15 +123,26 @@ int main() {
   // Same env-var idiom as SS_FULLSCREEN / SS_SOR_SWEEPS. Example:
   //   open -n SpaceSynth.app --env SS_WIDTH=2560 --env SS_HEIGHT=1024
   int winW = 1280, winH = 800;
+  // S5 (2026-09-03): the upper bound is MEASURED on the GPU, not typed. The
+  // old 16384 refused his 19,644-wide wall (5340 + 2×7152) while the M5 Max
+  // rasterizes it (probe: clear + readback exact at 19644×1680 and 32768 wide).
+  // A size the device cannot allocate is refused LOUDLY, never silently
+  // rendered at 1280x800 — that was the failure the constant produced.
   if (const char *ew = getenv("SS_WIDTH")) {
     int v = atoi(ew);
-    if (v >= 320 && v <= 16384) winW = v;
-    else fprintf(stderr, "[S1] SS_WIDTH=%s out of range 320..16384, ignored\n", ew);
+    if (v >= 320) winW = v;
+    else fprintf(stderr, "[S1] SS_WIDTH=%s below 320, ignored\n", ew);
   }
   if (const char *eh = getenv("SS_HEIGHT")) {
     int v = atoi(eh);
-    if (v >= 240 && v <= 16384) winH = v;
-    else fprintf(stderr, "[S1] SS_HEIGHT=%s out of range 240..16384, ignored\n", eh);
+    if (v >= 240) winH = v;
+    else fprintf(stderr, "[S1] SS_HEIGHT=%s below 240, ignored\n", eh);
+  }
+  if ((getenv("SS_WIDTH") || getenv("SS_HEIGHT")) && !Window::canAllocateDrawable(winW, winH)) {
+    fprintf(stderr, "[S1] 🚨 SS_WIDTH/SS_HEIGHT %dx%d REFUSED: this GPU cannot allocate or present a drawable of "
+                    "that size (see the line above). Not pinning; the window follows the screen.\n", winW, winH);
+    winW = 1280; winH = 800;
+    unsetenv("SS_WIDTH"); unsetenv("SS_HEIGHT");
   }
   // PIN the render buffer to exactly this many pixels. Without the pin macOS
   // clamps the WINDOW to the screen and the drawable follows it — measured
@@ -155,6 +166,22 @@ int main() {
                      window.height())) {
     fprintf(stderr, "Failed to init Metal renderer\n");
     return 1;
+  }
+  // S5 (2026-09-03, his ruling): when the drawable is PINNED for a render,
+  // the sprite-size reference is the DELIVERY height — 1680, his wall — so
+  // full res is 1.0 and half res 0.5: the same picture, smaller; the 840
+  // preview he composes against IS the render. SS_REF_HEIGHT overrides.
+  // Not pinned ⇒ the renderer keeps its live reference (2260) untouched.
+  if (getenv("SS_WIDTH") || getenv("SS_HEIGHT")) {
+    float ref = 1680.0f;
+    if (const char *r = getenv("SS_REF_HEIGHT")) {
+      float v = (float)atof(r);
+      if (v >= 1.0f) ref = v;
+      else fprintf(stderr, "[SIZE] SS_REF_HEIGHT=%s invalid, keeping %.0f\n", r, ref);
+    }
+    renderer.setSizeReferenceHeight(ref);
+    printf("[SIZE] pinned render: sprite-size reference height = %.0f (delivery height; SS_REF_HEIGHT overrides). "
+           "Full res %dx%d -> scale %.4f\n", ref, winW, winH, (double)winH / ref);
   }
 
   // ── TWO-WINDOW MODE (2026-08-23, his order) ───────────────────────────────

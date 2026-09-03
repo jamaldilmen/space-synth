@@ -526,6 +526,13 @@ public:
 
   void setScale(float s);
   void setTimeWarp(float w); // x2/x4/x8 time controls — scales the pinned physics dt
+  // S5 (2026-09-03, his ruling): every sprite-size law is in REFERENCE pixels
+  // and becomes device pixels by drawableHeight / referenceHeight. Live the
+  // reference is 2260 (his laptop, unchanged). When the drawable is PINNED for
+  // a render, main sets the reference to the DELIVERY height (1680, his wall)
+  // so full res is 1.0 and half res 0.5: the same picture, smaller — the 840
+  // preview he composes against IS the render.
+  void setSizeReferenceHeight(float pixels);
   // ⏱️ TRUE TIME (E2, 2026-08-30): the sim SECONDS the last computeStep actually
   // integrated = dt x the steps the wall clock owed. The host must tick the
   // universe clock by THIS, never by a dt it recomputed itself — see main.cpp.

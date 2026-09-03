@@ -28,11 +28,11 @@
 
 2. **"i dont want ay faders moved from this. they should just be mappable."** (2026-09-03, via BRAIN)
    `MEASURE:` none — this is a design job, no code ordered.
-   State: **JOB 2, activated this session, NOT STARTED.** Every UI parameter mappable; nothing in the existing UI moves, is renamed, regrouped or re-scaled. Ableton **Link** (clock/tempo) and **MIDI CC** (parameter control) are two separate problems and must be answered separately. ⚠️ Any CC design rides on `src/core/midi_input.mm`, where SONNET has an **unruled** parser fault (System Real-Time 0xF8-0xFF misclassified, over-consuming 2 bytes each). Coordinate with SONNET; **do not duplicate and do not apply its fix.**
+   State: 🔴 **JOB 2 NOT STARTED — zero design work produced.** It was activated 05:09 and every window since went to the handoff, the Job-1 collation and the rotation verification. **Nothing exists for the next window to build on.** Every UI parameter mappable; nothing in the existing UI moves, is renamed, regrouped or re-scaled. Ableton **Link** (clock/tempo) and **MIDI CC** (parameter control) are two separate problems and must be answered separately. ⚠️ Any CC design rides on `src/core/midi_input.mm`, where SONNET has an **unruled** parser fault (System Real-Time 0xF8-0xFF misclassified, over-consuming 2 bytes each). Coordinate with SONNET; **do not duplicate and do not apply its fix.**
 
 3. **"opus will collect the report that sonnet makes and deliver it to you"** (2026-09-03, via BRAIN)
    `MEASURE:` hold every incoming report to the tag bar — `[MEASURED n≥3]` / `[READ file:line]` with live callers / `[HYPOTHESIS]`.
-   State: **JOB 1, activated this session, NOT STARTED.** SONNET's imgui loose-ends hunt, its time-derived-from-fps sweep, and two subagent reports on offline rendering. Deliver conclusions and contradictions to BRAIN, not four raw dumps.
+   State: ✅ **JOB 1 DELIVERED 2026-09-03 05:17** — all four SONNET reports collated to BRAIN. See the amendment below and board **§AD.13-16**.
 
 4. **The merger stand-off's ≥50 M☉ holder** — **UNIDENTIFIED, 9 candidates eliminated.**
    State: he said **NO GO** on the force-decomposition probe (relayed by BRAIN; that probe is not from this window's context, recorded as relayed). Open, unowned.
@@ -112,9 +112,32 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 | "`feed=0/0.0` is a REAL READING, not an artifact" | Too strong. `seed_apply` genuinely never clears the plate, but the CPU `.contents` read is **unsynchronised** against GPU completion, so the value is racy. Correct record is **"undetermined by read, sub-sampled"**. |
 | "FABLE's 1.06–2.56 M☉/substep exceeds the summed ceiling ⇒ possible third path" | The ceiling I used omitted the file's own documented ≤50 M☉ overshoot bound (`:1566-1567`). Withdrawn as a third-path signal; the accounting stays open for other reasons. |
 | "The `cellSeedMap` collision is not the nucleus blocker post-fix" | Demoted on `seeds = 9/1/1` runs that were `hole=1.00` **latched** — the wrong regime. In the plateau (`seeds 8–15`) it can act. Reinstated as a LIVE CANDIDATE, untested. |
+| "`rotationX` is real, fed from three summed sources" (to BRAIN, 05:17) | Describes what WRITES it, not what READS it. **Nothing reads `config.rotationX` either** — all three are dead, and there is no rotation widget in the UI at all. BRAIN caught it; I confirmed and widened it to 9 symbols. The producer/consumer trap, my second of the night. |
 | "The dead `s0[cnt=` probe would answer the `cellSeedMap` precondition" (implied to FABLE) | It stores `cellCounts[myCell]` (`:4332`) — the **particle** population of a seed's cell, per its own comment *"decodes the starvation"*. That is star-capture starvation, **not** how many *seeds* share a cell. Two separate unanswered questions; corrected before it became load-bearing. |
 
 ---
 
-**Last Updated:** 2026-09-03 05:12:00
+## 6. ➕ AMENDMENT 2026-09-03 05:23:00 — WORK AFTER THE COMMIT (his order: *"update the handoffs accordingly then ill clear ocntext"*)
+
+Everything below happened AFTER `65c30be`. **All of it is boarded in `docs/BOARD_BLACKHOLE.md` §AD.13-16 — that is the state; this is only the diff.**
+
+**JOB 1 — SONNET's four reports, collated to BRAIN 05:17.** I re-read the sites myself for every claim that could lead to a code change; **SONNET was right on all three I checked**, including one I expected to be wrong (I suspected the Wave Depth slider at `main.cpp:2022` sat inside the `if (false && …)` DYNAMICS block — that block closes before `:2009` and the slider is in the live GEOMETRY header; SONNET's read held, my guess did not). Actionable, all `[READ]`, all HIS call, none built: **(a)** the rotation subsystem below; **(b)** `struct Preset` captures 15 fields against ~60+ live dials — known gap, wider scope than catalogued; **(c)** toggle bitmask **bit 19** unused, nothing reads it — a gap, not a bug.
+
+**THE ROTATION SUBSYSTEM IS DEAD — 9 SYMBOLS, NO WIDGET ANYWHERE.** `[READ, verified at 9fa4191]` `uiRotationX/Y/Z`, `uiAutoRotateScene`, `uiBlackHoleRotationX`, `uiAutoRotateBlackHole` (`app_state.h:25-28, 113-114`) → summed at `main.cpp:963-968` → `rotationX/Y/Z` (`renderer.h:64-66`) → **read by nothing**. `RenderConfig` is passed **by const reference** (`renderer.h:507`, `renderer.mm:1920`), never memcpy'd or blitted into a GPU buffer, so **a named read is the only possible consumer** — that closes the hole a name-grep would leave. No widget writes any of them: a grep for a rotation slider/checkbox/toggle in `main.cpp` returns **EMPTY**. ⭐ `uiAutoRotateBlackHole` defaults **true**, so two `ImGui::GetTime()` terms are evaluated **every frame and discarded**. 🚨 **NO STAGE RISK, and this must be said in the same breath: because nothing writes them from the UI, there is NO dial he can touch that does nothing.** It is invisible at the desk. **This is cleanup and must not compete with the MIDI parser for his attention two days out.**
+
+**⚠️ THE PRODUCER/CONSUMER GAP IS A POLICY HOLE, NOT THREE LAPSES — THREE VICTIMS IN ONE NIGHT.** (1) SONNET inferred a live rotation slider from an elaborate producer expression — no such widget exists. (2) OPUS cited a `1.4·cellSize` clamp site inside a kernel nothing dispatches. (3) OPUS told BRAIN `rotationX` was alive "fed from three summed sources" — which describes the WRITE, not the READ. **All three mistook an elaborate producer for evidence of a consumer.** The check is one line — *does anything READ it?* — and in all three cases nobody ran it unprompted. **RECOMMENDATION (mine, not ordered): add it to `preflight.sh`**, per the skill's own rule that a law which has broken twice becomes a check rather than more prose. It has now broken three times in one session.
+
+**OFFLINE RENDERING — TWO TIERS, NO RECOMMENDATION FROM EITHER WINDOW. HIS CHOICE.** `[READ, verified by me]` the premise is real code, not a proposal: the fixed-dt debt accumulator already exists (`trueTimeAcc`, `kStepWall`, `pendingSteps`, anti-spiral clamp default 4 per his 09-01 00:40 order), so tier 2 is a **bolt-on, not a re-architecture** — that verification is what makes this a real choice rather than a research pile.
+- **MVP `[HYPOTHESIS — no estimate verified]`:** MIDI+tick logger, audio-feature logger, **real-time** replay through the live app captured by an off-the-shelf Syphon recorder, live/pre-rendered crossfade **downstream in the existing VJ mixer**. **Zero new in-app code**, and it never touches the physics clock. Buys *"redo a take without him replaying it"*.
+- ⛔ **DO NOT ATTEMPT BEFORE COLOGNE:** the non-realtime decoupled-clock renderer, temporal-sample motion blur, ProRes/AVAssetWriter capture, Alembic/VDB export, in-app crossfade, sim checkpointing.
+- ⭐ Free instrument: the existing `[PERF]` real-time ratio becomes the offline regression check — it should read a FIXED ratio, not fluctuate.
+- ⚠️ The research itself (UE MRQ / TouchDesigner prior art, IOSurface zero-copy, replay determinism) is `[HYPOTHESIS]` against our tree — I verified only the accumulator premise.
+
+**THE §AC.11-vs-ENGINE-CLOCK DISTINCTION — BOTH SURVIVE, THEY ARE DIFFERENT CODE.** SONNET's refutation of the "two fresh sightings" is correct and I verified it: step **COUNT** comes from wall seconds (`renderer.mm:1787-1814`), which is the CURE for frame≠time, not an instance. **§AC.11's 1/dt² is in the LENS INFLUENCE LAW's units and is still true** — it is the basis of the σ pin. **Merging them, or discarding both, loses the pin.** BRAIN is boarding the distinction.
+
+**🚨 STILL THE TOP STAGE RISK:** `src/core/midi_input.mm:26-53` — System Real-Time 0xF8-0xFF misclassified, over-consuming 2 bytes each. **Unruled, untouched.** Every MIDI CC design rides on it, so **if he wants CC control at Cologne that parser is on the critical path.** SONNET found it; not mine to fix.
+
+---
+
+**Last Updated:** 2026-09-03 05:23:00 (amended; originally 05:12:00)
 **Folded into board:** `docs/BOARD_BLACKHOLE.md` **§AC.12** @ 2026-09-03 05:10:00 (stamp deliberately left at `9f61c66` — no source changed by this window)

@@ -97,6 +97,8 @@ struct PhysicsUniforms {
     float fieldMassMsun;         // 164: Σ stellar mass, UNSCALED M_sun. massTotal
                                  //  above is the GRAVITY anchor (×massScale from
                                  //  the Size slider) — never use it as the books.
+    float returnPull;            // 168: RETURN PULL ramp 0..1 (his show fix 2026-09-03).
+                                 //  APPENDED LAST, in lockstep with renderer.h.
 };
 
 struct SpatialHashUniforms {
@@ -1440,6 +1442,73 @@ kernel void compute_physics(
         shiftVx += (kick.x - vpx * vdamp) * seedGate;
         shiftVy += (kick.y - vpy * vdamp) * seedGate;
         shiftVz += (kick.z - vpz * vdamp) * seedGate;
+    }
+
+    // ── RETURN PULL — HIS SHOW FIX (2026-09-03), A CINEMATIC FORCE, NOT PHYSICS ──
+    // Measured 2026-09-03 (3 runs, 39 plateau samples): after a chord the seeds
+    // sit 3–37 sim apart and do not move for minutes; no pair ever reaches the
+    // merge radius; the hole never forms. His words: "the energy we put into the
+    // sim through play gets handed back to it through the inward pull to the
+    // center… cinematically speeded… pulling the particles furthest away from
+    // the center (THE RIM) strongest… not so strong that it totally outpaces
+    // every other orbit but strong enough that large mergers fall to it".
+    // Shape: bounded spring to the ORIGIN (the same shape as the bit4 seed pin
+    // above, applied to EVERYTHING that has mass), ∝ r so the rim is pulled
+    // hardest, capped per step, plus damping of OUTWARD radial motion only.
+    // u.returnPull is the CPU ramp (0 while playing; delay → ramp → hold until
+    // the hole forms). Dials (his eyes set them): the three constants below
+    // and the CPU-side SS_RETURN_DELAY / SS_RETURN_RAMP / SS_RETURN_STRENGTH.
+    // v4 (his order 03:2x, verbatim: "only mergers should be affected by it bro.
+    // thats the key"): seed-class bodies ONLY (mass ≥ M_BH_SEED). Stars are never
+    // steered — exactly the shape of dynamical friction, which sinks the heavy
+    // bodies through the sea of stars and leaves the sea alone.
+    // v6 (his orders 03:3x): the bright "mergers" he sees are 5–50 M☉ bodies at the
+    // luminance rail, below the 50 M☉ seed line — the registry held ONE seed while
+    // his screen showed dozens stuck. His threshold for "merger": 30 M☉ ("lets say
+    // for now.. 30 solarmasses"). VMAX stays 0.02 = a third of c·dt (his call);
+    // full speed now by r 5 (was 10).
+    const float RETURN_MIN_MASS = 50.0f;    // M☉ = M_BH_SEED. His 04:3x ruling: "it was always basically just supposed to apply to the bigger seeds not the small ones" — 5 made the small ones drift and "looks fake like our sim start". History: 50→30→15→5→50.
+    if (u.returnPull > 0.0f && mass >= RETURN_MIN_MASS && mass < 1e8f && playGate < 0.5f) {
+        // v2 (03:1x, after his eyes: v1 capped the KICK, so inward speed grew every
+        // step to the light cap and the field was eaten in seconds). Now a bounded
+        // inward DRIFT: target radial speed v_in(r) = VMAX·min(1, r/R0) (rim fastest,
+        // inner orbits barely touched), relaxed toward with GAIN per step; only the
+        // RADIAL component is steered — tangential (orbital) motion is untouched.
+        // Derived: a merger at r 37 arriving ≈30 sim-s ⇒ 37/30 sim per sim-s =
+        // 1.23·dt ≈ 0.02 sim/step ≈ 0.35 c·dt at dt 0.0165.
+        // v3 (his orders 03:1x): (1) ONE-SIDED — only ever speeds infall up, never
+        // brakes a particle already falling faster (v2 capped real free fall near
+        // the centre); (2) ramp enters ONCE (v2 was quadratic, the [RETURN] print
+        // lied about half-strength); (3) MASS-WEIGHTED, his "mergers should be
+        // affected the most": the natural analogue is Chandrasekhar dynamical
+        // friction, whose sinking rate ∝ M (t_df ∝ 1/M — mass segregation, the
+        // heaviest bodies reach the centre first). Stars keep W_STAR of the drift
+        // so the rim still comes home; seed-class bodies (≥ M_BH_SEED) get full.
+        // (4) The CPU ramp fades with (1 − bhStrength): the pull hands over to the
+        // hole as it forms instead of cutting at a threshold.
+        // v5 (his eyes on v4: "seeds and mergers still locked into place"): READ at
+        // HEAD — at rest every particle's velocity is multiplied per step by
+        // coolMul = 1 − (2 + 6·dens)·dt (:2093, 3–13 %/step), then dynfric removes
+        // ≤10 %/step (:2188), then soften = 1 − hardness. Velocity e-folds in
+        // < 1 s; a 5 %/step nudge settles at ~1/5 of its target. So the steer
+        // now SETS the inward radial speed (gain 1) and reaches full speed by
+        // r = 10 so inner mergers walk too. VMAX unchanged.
+        const float RETURN_VMAX = 0.02f;    // sim/step, inward, at r ≥ R0, for a seed-class body
+        const float RETURN_R0   = 5.0f;     // sim — where the drift reaches VMAX (v4: 37, v5: 10)
+        const float RETURN_GAIN = 1.0f;     // v5: set the radial speed each step (v4: 0.05 nudge)
+        const float RETURN_W_STAR = 0.3f;   // (v3 relic: stars no longer enter this block at all)
+        float3 toO = -float3(px, py, pz);
+        float  r   = length(toO);
+        if (r > 1e-4f) {
+            float3 inward = toO / r;
+            float wMass   = mix(RETURN_W_STAR, 1.0f, min(1.0f, mass / M_BH_SEED));   // 30 M☉ → 0.72, ≥50 → 1
+            float vIn     = RETURN_VMAX * min(1.0f, r / RETURN_R0) * wMass * u.returnPull;
+            float vRadIn  = dot(float3(vpx, vpy, vpz), inward);      // current inward radial speed
+            float dv      = max(0.0f, vIn - vRadIn) * RETURN_GAIN;   // one-sided: never brakes infall
+            shiftVx += inward.x * dv;
+            shiftVy += inward.y * dv;
+            shiftVz += inward.z * dv;
+        }
     }
 
     // ── BLACK-HOLE CAPTURE — victim-initiated accretion (step 3 v2) ──────────

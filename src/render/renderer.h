@@ -428,6 +428,13 @@ struct PhysicsUniforms {
   unsigned int bhToggles = 0x7Fu; // BH-mechanism on/off bitmask (UI toggles); default all-on
   float uAmbient = 6e-3f;   // live mass-weighted mean u (SPH ledger, ~2 s lag) → display ambient
   float fieldMassMsun = 0.0f; // Σ stellar mass, UNSCALED M_sun — the mass books
+  // ── RETURN PULL (2026-09-03, HIS SHOW FIX: "the energy we put in through play
+  // gets handed back through the inward pull to the center… cinematically
+  // speeded"). 0 = off. Ramps 0→1 after silence (CPU: delay, ramp), holds until
+  // the hole forms, resets on any note. The kernel only multiplies by it.
+  // A CINEMATIC FORCE, not physics — labelled so at both ends.
+  // APPENDED LAST on BOTH sides (particles.metal PhysicsUniforms, offset 168).
+  float returnPull = 0.0f;
 };
 
 // Spatial hash uniforms for collision grid

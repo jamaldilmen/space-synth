@@ -15,6 +15,10 @@
 #import <Syphon/SyphonMetalServer.h>
 #endif
 #include <algorithm>
+// PhysicsUniforms is hand-synced with particles.metal and had NO size guard.
+// 43 × 4 B = 172 after returnPull (2026-09-03). If this fires, the Metal side
+// was not updated in lockstep — fix BOTH, never one.
+static_assert(sizeof(space::PhysicsUniforms) == 172, "PhysicsUniforms drifted from particles.metal");
 #include <cstdlib>
 #include <cstring>
 #include <simd/simd.h>
@@ -1813,6 +1817,34 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
   }
   impl_->physicsUniforms.totalAmplitude =
       totalAmplitude; // Phase 17: Pass real synth amplitude for ADSR dynamics
+  // ── RETURN PULL ramp (his show fix 2026-09-03; kernel block in particles.metal
+  // next to the bit4 seed pin). Sim-time clock: silence accumulates Σdt while
+  // amplitude < 0.02; any note resets it. ramp = clamp((silence − delay)/ramp).
+  // Held at 0 once the hole is formed (bhStrength ≥ 1) — the time-lapse owns it
+  // from there. Defaults derived 2026-09-03: delay 5 sim-s, ramp 10 sim-s,
+  // strength 1 → a 25k M☉ merger at r 37 arrives ≈30 sim-s after full ramp.
+  {
+    static const float kRetDelay = getenv("SS_RETURN_DELAY") ? (float)atof(getenv("SS_RETURN_DELAY")) : 5.0f;
+    static const float kRetRamp  = getenv("SS_RETURN_RAMP")  ? (float)atof(getenv("SS_RETURN_RAMP"))  : 10.0f;
+    static const float kRetStr   = getenv("SS_RETURN_STRENGTH") ? (float)atof(getenv("SS_RETURN_STRENGTH")) : 1.0f;
+    static const bool  kRetOff   = getenv("SS_NO_RETURN_PULL") != nullptr;
+    static double silenceSimT = 0.0;
+    static float  lastPrinted = -1.0f;
+    static bool   everPlayed  = false;   // v2: ARMED ONLY AFTER THE FIRST NOTE — launch untouched
+    if (totalAmplitude >= 0.02f) { silenceSimT = 0.0; everPlayed = true; }
+    else if (everPlayed) silenceSimT += (double)impl_->physicsUniforms.dt * (double)impl_->pendingSteps;
+    float ramp = (float)std::clamp((silenceSimT - (double)kRetDelay) / std::max((double)kRetRamp, 1e-3), 0.0, 1.0);
+    // v3: NATURAL END — fade with the hole's own formation signal instead of a
+    // hard cut; at bhStrength 1 the pull is exactly zero and the time-lapse owns it.
+    ramp *= std::clamp(1.0f - impl_->bhStrength, 0.0f, 1.0f);
+    if (kRetOff) ramp = 0.0f;
+    impl_->physicsUniforms.returnPull = ramp * kRetStr;
+    if (std::fabs(ramp - lastPrinted) >= 0.25f || (ramp == 0.0f && lastPrinted > 0.0f)) {
+      fprintf(stderr, "[RETURN] pull=%.2f silenceSim=%.1fs delay=%.1f ramp=%.1f strength=%.2f bhStrength=%.2f\n",
+              ramp * kRetStr, silenceSimT, kRetDelay, kRetRamp, kRetStr, impl_->bhStrength);
+      lastPrinted = ramp;
+    }
+  }
   impl_->physicsUniforms.voiceCount = voiceCount; // Bug fix: Don't force 1 if 0
   impl_->physicsUniforms.particleCount = impl_->particleCount;
   impl_->physicsUniforms.maxWaveDepth = maxWaveDepth;

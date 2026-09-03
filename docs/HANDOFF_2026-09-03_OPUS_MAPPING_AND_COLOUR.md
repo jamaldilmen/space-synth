@@ -171,3 +171,107 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 **Last Updated:** 2026-09-03 15:28:57 · **§0 + §4 addendum by BRAIN 2026-09-03 18:36:04**
 **Folded into board:** ⛔ **NOT by this window** — routed to BRAIN by `SendMessage` throughout; `BOARD_BLACKHOLE.md` is BRAIN's and no source changed here. See §4 disposition.
+
+---
+
+# 🔄 SESSION ADDENDUM — 2026-09-03 22:23:30, OPUS (`/handoff`)
+
+> **His verdict on this state:** none. He gave this window no task and no verdict between 18:45:32 and 22:23:30.
+> **Cold start is unchanged:** `docs/BOARD_BLACKHOLE.md` **§AD → §AC.12**, then `docs/BOARD.md` **§AA** for the show renderer.
+
+**Tree:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` branch `true-physics` @ `057b8b4`
+**Build + launch:** `bash package_macos.sh` then `pkill -x SpaceSynth; open -n SpaceSynth.app --env SS_FULLSCREEN=1` — ⛔ **not run by this window; FABLE holds the build token.**
+
+⚠️ **This window wrote ZERO source, ran NO build, launched NOTHING, and took no thread.** It read its handoff, verified tree state, sat idle on his allocation, and ran preflight. The addendum exists because `/handoff` was ordered, not because work landed.
+
+## 1. ✅ CLOSED THIS SESSION
+
+| # | Fault | Was | Now | Where | Proof |
+|---|---|---|---|---|---|
+| 1 | Restart state unverified from this window | BRAIN's relay only | **Confirmed independently.** HEAD `057b8b4` (18:42:06), tree clean at 18:45:32, 49 unpushed, app down | `git log -1`, `git status --porcelain`, `pgrep -x SpaceSynth` | `[READ]` run here 18:45:32 |
+| 2 | **Preflight §4 "referenced paths" FAILs on the S2/S4 board rows** — read as the board citing deleted files, the exact 2026-08-17 fault the check was built for | Reported `FAIL … missing path: src/core/take_recorder.{h,cpp}` and `take_replay.{h,cpp}` | **BOTH ARE FALSE POSITIVES. All four files exist.** `preflight.sh` does not expand brace notation, so it stats the literal string `take_recorder.{h,cpp}`. The board rows `AA2`/`AA4` are correct as written | `src/core/take_{recorder,replay}.{h,cpp}` all present (`ls`, 22:22:5x); rows at `docs/BOARD.md:81`, `:83` | `[READ]` all four files stat'd + both board lines read |
+| 3 | The tracked-binary trap, for this repo | Unchecked this cycle | **Does not apply.** Neither the bundle binary nor `default.metallib` is tracked — `git ls-files` returns nothing for either. The only tracked thing under `SpaceSynth.app/` is the **vendored Syphon framework**, a dependency, not a build output | `git ls-files --error-unmatch SpaceSynth.app/Contents/MacOS/SpaceSynth` → *did not match* | `[READ]` |
+
+## 2. 🚨 OPEN — carried, not re-opened
+
+1. **"this include sveery parameter in the ui. i dont want ay faders moved from this. they should just be mappable."** `[HIS WORDS]` 2026-09-03, via BRAIN.
+   State: **design done (`docs/DESIGN_2026-09-03_MIDI_MAP_AND_LINK.md`), being BUILT BY FABLE as S6.** ⛔ Not this window's. Constraints already relayed: apply **outside** `if (showHUD)`; **refuse to map marker CC 119**.
+2. **THE ONE QUESTION STILL QUEUED FOR HIM (mine).** Does a **startup UI pass with headers forced open and rendering suppressed** count as "moving something"? **Still unanswered — it was not put to him tonight either.** Not a blocker: **YES** = ~10 lines, mappings live from launch; **NO** = mappings arm per panel ⇒ one menu sweep at soundcheck.
+3. 🆕 **`preflight.sh` cannot expand brace globs (§1.2 above).** It will emit these two FAILs on **every** window's handoff until fixed, and a check that cries wolf is a check that gets skipped — which is how the 2026-08-17 `src/core/lut.cpp` finding would be missed next time.
+   `MEASURE:` re-run `bash ~/.claude/skills/handoff/preflight.sh` after any change; §4 must drop to 0 FAILs with the board untouched.
+   State: ⛔ **NOT FIXED BY THIS WINDOW — recommendation only.** `preflight.sh` is shared tooling all four windows depend on; patching it two days before Cologne without his word is the unasked change. **The board is NOT wrong and must not be "corrected" to satisfy the checker.**
+
+## 3. ⛔ DEAD ROADS — recorded so they are not retried
+
+- **CLEARING PREFLIGHT §1 BY COMMITTING THE 9 UNCOMMITTED PATHS — REFUSED 2026-09-03 22:2x, MINE.** `CMakeLists.txt`, `src/main.cpp`, `src/render/renderer.{h,mm}`, `src/ui/window.mm`, `src/core/take_replay.cpp` and the two new `src/render/show_capture.{h,mm}` are **FABLE's live S8 offscreen-ProRes work** — `[READ]` the `CMakeLists` diff adds `show_capture.mm` + CoreMedia "S8: CMTime for the ProRes writer", and `show_capture.h`'s header states the 16,384 drawable limit measured at 18:22. **FABLE `[50f12e]` is BUSY, editing those files right now** (`ListAgents`, 22:2x). Committing them here would sweep another window's mid-flight, possibly non-compiling work into my commit and destroy the one record of what caused what. **Same call as 15:28:57, 05:10:00 and 00:28:05; BRAIN agreed each time. Each window commits its own.**
+- **"FIX" THE §4 FAILs BY REWRITING THE BOARD ROWS — REFUSED, same stamp.** The rows are true; the checker is wrong. Editing `docs/BOARD.md` (BRAIN's) to make a broken check go green is the "make it green" failure the ownership rule exists to stop.
+
+## 4. 🔬 PREFLIGHT
+
+```
+PREFLIGHT 2026-09-03 22:22:35  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS
+
+1. git
+  ok    branch true-physics, HEAD 057b8b4
+  FAIL  9 uncommitted path(s) — COMMIT THEM. Step 6 is mandatory; /handoff IS the order.
+           M CMakeLists.txt
+           M imgui.ini
+           M src/core/take_replay.cpp
+           M src/main.cpp
+           M src/render/renderer.h
+           M src/render/renderer.mm
+           M src/ui/window.mm
+          ?? src/render/show_capture.h
+          ?? src/render/show_capture.mm
+  WARN  49 commit(s) not pushed
+
+2. board vs HEAD
+  ok    docs/BOARD_BLACKHOLE.md current at 52f6d68 — 6 docs-only commit(s) since, no source change
+  WARN  docs/BOARD_BLACKHOLE.md is 251812B — split closed rows into BOARD_CLOSED.md
+  ok    docs/BOARD_CLOSED.md archive, 104965B — exempt (not read at cold start)
+  ok    docs/BOARD.md current at 52f6d68 — 6 docs-only commit(s) since, no source change
+  WARN  docs/BOARD.md is 176116B — split closed rows into BOARD_CLOSED.md
+
+3. deployed artifact
+  ok    SpaceSynth newer than newest source
+  ok    default.metallib newer than newest source
+
+4. referenced paths (live docs only)
+  FAIL  docs/BOARD.md references missing path: src/core/take_recorder.{h,cpp}
+  FAIL  docs/BOARD.md references missing path: src/core/take_replay.{h,cpp}
+
+5. orbital-plane convention — READ THESE, do not skip
+  ?     src/render/render.metal:577:    return (m > 1e-12f) ? (L / m) : float3(0.0f, 0.0f, 1.0f);
+  ?     src/render/render.metal:765:            float3 axis = float3(0.0f, 0.0f, 1.0f);
+  ?     src/render/render.metal:1146:            float2 tang = float2(-rel.y, rel.x) / rxy;  // +Ω about z, matches
+  ?     src/render/render.metal:1466:        float rXY = length(spinPos.xy);
+  ?     src/render/render.metal:1469:            float3 tang = float3(-spinPos.y, spinPos.x, 0.0f) / rXY; // prograde about Z
+  ?     src/render/render.metal:2585:    float2 perp   = float2(-dir.y, dir.x);
+  ?     src/render/render.metal:3329:                mp = rotAboutAxis(mp, float3(0.0f, 0.0f, 1.0f),
+  ?     src/render/postfx.metal:66:    float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+  WARN  8 site(s) carry a plane assumption — confirm each is right HERE, not elsewhere
+
+────────────────────────────────────────────────────────
+PREFLIGHT: FAILURES ABOVE — fix before handing off.
+```
+
+**Disposition, 2026-09-03 22:23:30:**
+- **§1 FAIL — NOT MINE, NOT CLEARED BY ME.** All 9 paths are FABLE's live S8 work; FABLE is **busy** in them right now. See §3. **This window's own path is the only thing it commits.** `imgui.ini` is app-rewritten and is FABLE's to revert at ITS commit time, not before.
+- **§2 both boards `ok`** at `52f6d68`, 6 docs-only commits since — **nothing of mine to fold; no source changed here.** The two size WARNs are pre-existing and splitting a 250 KB board two days before Cologne is not an unasked change.
+- **§3 both artifacts `ok` — but that is FABLE's build, not mine. Re-`stat` before quoting it.** ⚠️ It will go stale the moment FABLE's 9 paths compile.
+- **§4 both FAILs are FALSE POSITIVES** — see §1.2 and §2.3. **The board is right.**
+- **§5 plane sites ×8 — unchanged, all in FABLE's files. I edited no source at all.**
+- **`MEMORY.md`:** `⭐⭐⭐` at **6**, under the cap of 7. No entry says READ FIRST. Untouched this session.
+
+## 5. ↩️ RETRACTED THIS SESSION
+
+| Claim I made | Why it was wrong |
+|---|---|
+| **none** | This window made no new claims — it verified three and inherited the rest. |
+
+**One inherited retraction re-stated so it is not picked back up:** FABLE's *"a replayed event is never early, at most one frame late"* (published to the team 18:13) is **WRONG for `floor(t·fps)`** and was fixed to `ceil` in `d6cbb7c`. The claim allowed today: **each event lands 0–33 ms AFTER its recorded time, never before, deterministic to the frame — on a SYNTHETIC take.** Ableton's own stamping is **unmeasured** until his first real take.
+
+---
+
+**Last Updated:** 2026-09-03 22:23:30
+**Folded into board:** ⛔ **nothing to fold — this window changed no source.** The one new finding (§2.3, `preflight.sh` brace globs) is **tooling, not code**, and is routed to BRAIN rather than written into a board this window does not own.

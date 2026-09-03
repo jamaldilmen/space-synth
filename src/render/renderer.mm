@@ -2026,6 +2026,12 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
   // single source of truth, which is what it should have been from the start.
   // ⚠️ 1-frame lag (every readback here is), invisible for a size cue.
   cam.fieldHalfDepth = std::max(impl_->measuredMeanR, 0.5f);
+  // DIFFRACTION SPIKE VARIANT (2026-09-03, his order: "the cross sprite thingies
+  // — two variants from two telescopes"): SS_SPIKES=hubble (4-arm cross, the
+  // baseline) | jwst (six bright arms from the hexagonal segments + the faint
+  // horizontal strut pair). Carried in the spare horizonRPad2 (0 = hubble, 1 = jwst).
+  static const char *kSpikesEnv = getenv("SS_SPIKES");
+  cam.horizonRPad2 = (kSpikesEnv && strstr(kSpikesEnv, "jwst")) ? 1.0f : 0.0f;
   cam.envelopeProgress = config.envelopeProgress;
   cam.orthoMode = config.orthoMode ? 1.0f : 0.0f;
   impl_->lastOrtho = config.orthoMode ? 1 : 0;   // recorded so [PERF] says which mode it measured

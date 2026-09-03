@@ -155,6 +155,7 @@ struct VertexOut {
     float sharpness;   // live render control (Gaussian falloff exponent)
     float grainAlpha;  // live render control (per-particle base alpha)
     float streakLen;   // arc length in QUAD-HALF units (1 = round dot). Flux-conserving.
+    float spikeMode [[flat]]; // 0 = Hubble 4-arm cross, 1 = JWST (cam.horizonRPad2), 2026-09-03
 };
 
 // Decode packed phase + band ID from velW.w
@@ -669,6 +670,7 @@ vertex VertexOut particle_vertex(
     device atomic_uint* kProbe [[buffer(9)]])           // [KPROBE] Kelvin histogram — MEASUREMENT ONLY, never read back into the picture
 {
     VertexOut out;
+    out.spikeMode = cam.horizonRPad2;   // telescope spike variant (2026-09-03)
     Particle in = particlesIn[vid];
     // PHYSICS position, captured BEFORE the Keplerian pose playback mutates
     // in.posW below. The hash-grid density lives at physics coordinates —
@@ -2536,6 +2538,17 @@ struct ParticleFragOut {
     float2 velocity [[color(1)]];   // screen motion in UV, per streak exposure
 };
 
+// Diffraction-spike arm: Gaussian across a line through the centre, power fall-off
+// along it — the 4-arm cross's own formula, factored so it can be evaluated on a
+// rotated frame per arm (two telescopes, 2026-09-03).
+static inline float spikeArm(float2 q) {
+    return exp(-q.y * q.y * 90.0f) * pow(max(0.0f, 1.0f - abs(q.x)), 1.5f);
+}
+static inline float2 rot2(float2 q, float a) {
+    float c = cos(a), sn = sin(a);
+    return float2(q.x * c + q.y * sn, -q.x * sn + q.y * c);
+}
+
 fragment ParticleFragOut particle_fragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]])
@@ -2706,9 +2719,27 @@ fragment ParticleFragOut particle_fragment(
     // hardcoded constant, so each experiment costs a rebuild and none of them
     // can be A/B'd live. Build the dials first, then tune.
     float2 ps = pc * sL;
-    float spikeX = exp(-ps.y * ps.y * 90.0f) * pow(max(0.0f, 1.0f - abs(ps.x)), 1.5f);
-    float spikeY = exp(-ps.x * ps.x * 90.0f) * pow(max(0.0f, 1.0f - abs(ps.y)), 1.5f);
-    float spike  = max(spikeX, spikeY) * starness;
+    // TWO TELESCOPES (2026-09-03, his order). An arm is a line through the centre:
+    // Gaussian across it, power fall-off along it — the same formula the 4-arm
+    // cross always used, now evaluated on a rotated frame per arm.
+    //   cam.horizonRPad2 = 0 → HUBBLE: 2 lines (0°, 90°) = the 4-arm cross, the
+    //                          secondary-mirror spider. Bit-identical to before.
+    //   cam.horizonRPad2 = 1 → JWST: 3 bright lines at 30°/90°/150° = the six
+    //                          spikes of the hexagonal segments, plus the faint
+    //                          horizontal strut pair at 0° (0.35 weight).
+    float spike;
+    if (in.spikeMode > 0.5f) {                                    // JWST
+        const float d30 = 0.52359878f;                            // 30°
+        float s1 = spikeArm(rot2(ps, d30));                       // 30°
+        float s2 = spikeArm(rot2(ps, 3.0f * d30));                // 90°
+        float s3 = spikeArm(rot2(ps, 5.0f * d30));                // 150°
+        float sh = spikeArm(ps) * 0.35f;                          // faint horizontal strut pair
+        spike = max(max(s1, s2), max(s3, sh)) * starness;
+    } else {                                                      // HUBBLE — bit-identical to before
+        float spikeX = spikeArm(ps);
+        float spikeY = spikeArm(float2(ps.y, ps.x));
+        spike = max(spikeX, spikeY) * starness;
+    }
     // DIAGNOSTIC REMOVED 2026-07-28 09:12:44. `spike = 0.0f` sat here from
     // 21:48 to answer one question and it did: with it forced off Jamal saw
     // "fewer diamonds but just the shape changed not the brightness or color".

@@ -50,9 +50,9 @@ PREFLIGHT 2026-09-03 18:30:39  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHY
 ```
 Re-run after the handoff commit (`075f3df`, 2026-09-03 18:35:53):
 ```
-1. git   ok HEAD 075f3df · FAIL 1 uncommitted: M docs/HANDOFF_2026-09-03_OPUS_MAPPING_AND_COLOUR.md ← OPUS's, being written in its window; not mine to sweep
+1. git   ok HEAD 075f3df · FAIL 1 uncommitted: M docs/HANDOFF_2026-09-03_OPUS_MAPPING_AND_COLOUR.md ← BRAIN's edit (his order: BRAIN updates the idle OPUS/SONNET handoffs; OPUS idle since 15:28). I first wrote "OPUS writing live" — inferred from the filename, wrong.
          WARN 44 commit(s) not pushed — no push order
-2. board ok docs/BOARD_BLACKHOLE.md (BRAIN re-stamped meanwhile) · FAIL docs/BOARD.md 7 code commits behind (verified at 74bee76) ← BRAIN's
+2. board FAIL docs/BOARD_BLACKHOLE.md 7 code commits behind · FAIL docs/BOARD.md 7 behind (both verified at 74bee76) ← BRAIN's. I first wrote the BLACKHOLE board "ok": my print skipped that line (a sed range), and I reported the gap as a pass. Folded by BRAIN at 200c370 (18:40:11): docs/BOARD.md §AA holds the seven renderer commits; both boards re-stamped to 52f6d68.
 3. artifact ok binary + metallib (18:30:36) newer than every source — NOT launched
 4. paths ok 49 referenced path(s) resolve
 ```
@@ -64,6 +64,8 @@ Re-run after the handoff commit (`075f3df`, 2026-09-03 18:35:53):
 | S4: "`floor(t·fps)` applied at the top of that frame — never early, at most one frame late" | Backwards. The top of the frame that CONTAINS t is up to 1/fps BEFORE t; measured 11–31 ms early on every envelope transition (S9). Fixed to `ceil` in `d6cbb7c`; now 0–33 ms late, never early. |
 | "19,644 wide rasterizes, so the full-res pin will work" | True of textures, false of the presenting layer; the pin at 19,644 crashed in the first frame. Measured both halves; S8 must render offscreen. |
 | S3 spec relayed as "`frameCounter` == 2N offline" | `frameCounter` counts frames (one computeStep per frame); the step count is `[OFFLINE] steps/frame=2` / `[PERF] steps=`. |
+| "BOARD_BLACKHOLE.md is now ok — your re-stamp landed" (18:36 to BRAIN) | It had not; my preflight print used a line range that skipped the FAIL line and I reported the hole as a pass. A truncated print is not a preflight. |
+| "`M docs/HANDOFF_…_OPUS_…` = OPUS writing live" | Attribution inferred from the filename. It was BRAIN, on his order; OPUS was idle since 15:28. Say who from `ListAgents`/git, never from a name. |
 | Estimated stamps | none — all from `date`. |
 
 ---

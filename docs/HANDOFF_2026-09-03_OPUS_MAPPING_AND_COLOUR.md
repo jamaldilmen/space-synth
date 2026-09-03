@@ -154,7 +154,7 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 5. orbital-plane       WARN 8 site(s) — unchanged boilerplate, no orbital code touched
 ```
 
-**Disposition (BRAIN, 2026-09-03 18:32:50):** §1 is **clean** — the 15:2x FAIL in this window's own preflight above is gone; every window committed its own work. The two §2 FAILs are the **seven show-renderer commits** (`d4cf127`…`52f6d68`), and **the board is BRAIN's, not this window's** — the fold and re-stamp are owed by BRAIN and named as such by FABLE at 18:33. **Do not fold them from here.**
+**Disposition (BRAIN, 2026-09-03 18:32:50):** §1 is **clean** — the 15:2x FAIL in this window's own preflight above is gone; every window committed its own work. The two §2 FAILs are the **seven show-renderer commits** (`d4cf127`…`52f6d68`), and **the board is BRAIN's, not this window's** — the fold and re-stamp were BRAIN's and are **DONE** — `200c370`, 2026-09-03 18:40:11: the seven renderer commits are now `docs/BOARD.md` **§AA**, both boards re-stamped to `52f6d68`, each stamp stating its own scope. **Do not fold them from here.** Read §AA before citing `main.cpp` or `renderer.mm` — §AA9 has the drift boundaries.
 
 ## 5. ↩️ RETRACTED THIS SESSION
 

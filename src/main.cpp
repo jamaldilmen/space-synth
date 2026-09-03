@@ -204,7 +204,19 @@ int main() {
   Synth synth;
   AudioEngine audio;
   audio.setSynth(&synth);
-  if (!audio.start(0, 48000)) {
+  // S9 OFFLINE: the envelope (attack/decay/sustain/release, totalAmplitude —
+  // 12 render branches gate on them) advances INSIDE Synth::processBlock,
+  // which CoreAudio pulls in REAL time. A render slower than real time would
+  // let a note release while the frame clock is still in its attack. So
+  // offline the engine is NOT started and the frame callback steps the synth
+  // itself, sampleRate/fps samples per output frame (48000/30 = 1600 exactly),
+  // into a scratch buffer — the video carries no audio, Ableton has it.
+  const bool kOfflineAudio = space::OfflineClock::get().enabled;
+  if (kOfflineAudio) {
+    printf("[OFFLINE] audio engine NOT started; synth stepped %d samples per output frame on the frame clock "
+           "(envelope advances exactly 1/%d s per frame)\n",
+           48000 / space::OfflineClock::get().fps, space::OfflineClock::get().fps);
+  } else if (!audio.start(0, 48000)) {
     fprintf(stderr, "[FATAL ERROR] Audio Engine failed to start! Check your "
                     "hardware permissions.\n");
   } else {
@@ -676,6 +688,15 @@ int main() {
     static uint32_t outFrame = 0;
     takeReplay.tick(outFrame, onMidi);
     outFrame++;
+    // S9 OFFLINE: advance the synth (and every envelope) by exactly one output
+    // frame of samples, AFTER this frame's replayed notes are queued and BEFORE
+    // the envelope is read below. Sample offsets are 0, so a note lands at the
+    // start of its frame. Unset ⇒ CoreAudio pulls processBlock as always.
+    if (kOfflineAudio) {
+      static float scratchL[48000 / 30], scratchR[48000 / 30];   // largest case (30 fps)
+      const int n = 48000 / space::OfflineClock::get().fps;
+      synth.processBlock(48000.0f, scratchL, scratchR, n);
+    }
     // ── Run sequencer logic (Phase 12 stability) ───────────────────
     if (seqRunning) {
       seqTime += dt;
@@ -2690,8 +2711,13 @@ int main() {
     // and append this frame's envelope ground truth (what S9's frame-clocked
     // envelope is verified against). No-ops unless SS_RECORD is set.
     takeRec.drain();
-    takeRec.frame(space::TakeRecorder::nowSeconds(), envState.phase,
-                  envState.progress, synth.totalAmplitude());
+    // Offline the frame IS the clock: the row's t is this frame's time so it
+    // lines up with replayed events (which carry frame/fps) and with a live
+    // take's wall-time rows for the S9 comparison.
+    takeRec.frame(space::OfflineClock::get().enabled
+                      ? (double)(outFrame - 1) / (double)space::OfflineClock::get().fps
+                      : space::TakeRecorder::nowSeconds(),
+                  envState.phase, envState.progress, synth.totalAmplitude());
     renderer.setDiskThickness(app.uiDiskThickness);
 
     // ── STAR-MAP LIFECYCLE: hold the BLACK HOLE after release ────────────────

@@ -79,7 +79,12 @@ int TakeReplay::tick(uint32_t frameIndex, const std::function<void(const MidiEve
     const Scheduled &s = events_[next_];
     printf("[REPLAY] frame=%u t=%.6f kind=%d ch=%d a=%d b=%d\n", frameIndex, s.ev.t,
            (int)s.ev.kind, s.ev.channel, s.ev.a, s.ev.b);
-    apply(s.ev);
+    // The applied event carries ITS FRAME's time: in a replay the frame is the
+    // clock, so a re-recording of this replay (SS_RECORD during SS_REPLAY)
+    // logs t = frame/fps, comparable row-for-row with the frame log.
+    MidiEvent applied = s.ev;
+    applied.t = (double)s.frame / (double)fps_;
+    apply(applied);
     ++next_; ++n;
   }
   if (next_ >= events_.size() && !completeAnnounced_) {

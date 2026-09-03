@@ -1834,15 +1834,37 @@ void Renderer::computeStep(float dt, const VoiceGPUData *voices, int voiceCount,
     if (totalAmplitude >= 0.02f) { silenceSimT = 0.0; everPlayed = true; }
     else if (everPlayed) silenceSimT += (double)impl_->physicsUniforms.dt * (double)impl_->pendingSteps;
     float ramp = (float)std::clamp((silenceSimT - (double)kRetDelay) / std::max((double)kRetRamp, 1e-3), 0.0, 1.0);
-    // v3: NATURAL END — fade with the hole's own formation signal instead of a
-    // hard cut; at bhStrength 1 the pull is exactly zero and the time-lapse owns it.
-    ramp *= std::clamp(1.0f - impl_->bhStrength, 0.0f, 1.0f);
+    // v3 (SUPERSEDED 2026-09-03 by v4 below, kept as history): NATURAL END —
+    // fade with the hole's own formation signal instead of a hard cut; at
+    // bhStrength 1 the pull is exactly zero and the time-lapse owns it.
+    // Why it was not enough [HIS WORDS 04:3x]: "even with bh formed pull
+    // inwards remains" — after play bhStrength falls to 0.3-0.7 while the seed
+    // survives, and a PROPORTIONAL fade hands the pull back at 70%.
+    // ── v4: HIS RULING 2026-09-03 — "Soon as the bh is there return pull must
+    // go cause bh has its own gravity taking over." A latch with a REAL
+    // consumer (this ramp) built from the codebase's own two laws, no new
+    // threshold: "there" = his 100% law, bhStrength >= 1.0 (the lens/time-lapse
+    // gate, renderer.mm ~:2181); "gone" = the seed class dies, lastHorizonR <= 0
+    // (:3761/:3788 — r_h is r_s of the live seed mass, 0 when no >=50 M☉ body
+    // survives). ⚠️ NOT `lastHorizonR > 0` alone: that is true whenever ANY
+    // >=50 M☉ body exists, which is exactly the set the pull acts on
+    // (RETURN_MIN_MASS = 50), so it would zero the pull by construction.
+    // Below formation, before the hole has been seen, the v3 fade still runs.
+    // Clears ONLY when the hole un-forms. Visible in the [RETURN] line (hold=).
+    static bool holeSeen = false;
+    if (impl_->lastHorizonR <= 0.0f)       holeSeen = false;   // the hole un-forms
+    else if (impl_->bhStrength >= 1.0f)    holeSeen = true;    // his 100% law: it is there
+    if (holeSeen) ramp = 0.0f;
+    else          ramp *= std::clamp(1.0f - impl_->bhStrength, 0.0f, 1.0f);
     if (kRetOff) ramp = 0.0f;
     impl_->physicsUniforms.returnPull = ramp * kRetStr;
-    if (std::fabs(ramp - lastPrinted) >= 0.25f || (ramp == 0.0f && lastPrinted > 0.0f)) {
-      fprintf(stderr, "[RETURN] pull=%.2f silenceSim=%.1fs delay=%.1f ramp=%.1f strength=%.2f bhStrength=%.2f\n",
-              ramp * kRetStr, silenceSimT, kRetDelay, kRetRamp, kRetStr, impl_->bhStrength);
+    static bool lastHold = false;
+    if (std::fabs(ramp - lastPrinted) >= 0.25f || (ramp == 0.0f && lastPrinted > 0.0f) || holeSeen != lastHold) {
+      fprintf(stderr, "[RETURN] pull=%.2f silenceSim=%.1fs delay=%.1f ramp=%.1f strength=%.2f bhStrength=%.2f r_h=%.4f hold=%d\n",
+              ramp * kRetStr, silenceSimT, kRetDelay, kRetRamp, kRetStr, impl_->bhStrength,
+              impl_->lastHorizonR, holeSeen ? 1 : 0);
       lastPrinted = ramp;
+      lastHold = holeSeen;
     }
   }
   impl_->physicsUniforms.voiceCount = voiceCount; // Bug fix: Don't force 1 if 0

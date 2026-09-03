@@ -4143,7 +4143,13 @@ void Renderer::Impl::runComputePass(id<MTLCommandBuffer> cmdBuf, int frameIdx) {
         latestStats.momentumX = totalMX;
         latestStats.momentumY = totalMY;
         latestStats.collisionCount = 0;
-        float invN = (particleCount > 0) ? 1.0f / (float)particleCount : 0.0f;
+        // LIVE-COUNT FIX (2026-09-03, his order "fix the avg too"): the kernel
+        // adds speed/temp ONLY for live particles (mass > 0.001, `real`), but
+        // this divided by particleCount — the WHOLE buffer, dead and wall
+        // included. As matter died the numerator shrank and the denominator
+        // did not, so `[CLUSTER] speed avg` fell with no particle slowing.
+        // totalCT is the kernel's own live count (sumCount), reduced above.
+        float invN = (totalCT > 0.0) ? (float)(1.0 / totalCT) : 0.0f;
         latestStats.avgTemp = totalSumTemp * invN;
         latestStats.avgSpeed = totalSumSpeed * invN;
         // ── σ-PIN PROBE READBACK (2026-09-03, his spec §AC.8 #4) ─────────────

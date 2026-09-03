@@ -77,9 +77,11 @@ PREFLIGHT 2026-09-03 15:46:44
 3. deployed artifact
          FAIL STALE: SpaceSynth predates src/main.cpp — run the packaging script, do not test this
          FAIL STALE: default.metallib predates src/main.cpp
-         ← TRUE AND LEFT STANDING: `git restore src/main.cpp` stamped the file after the 06:08:22 build, and that build
-           contains the stripped SS_PHASE_AMOUNT hook. BRAIN's order: no rebuild without his build order; app is down;
-           nobody tests this bundle. FIRST ACTION OF THE NEXT BUILD WINDOW: `bash package_macos.sh`, verify stamps.
+         ← WAS true at 15:46 (the 06:08:22 bundle carried the stripped hook). CLEARED 2026-09-03 17:15:33: rebuilt after
+           the Metal toolchain was reinstalled (Xcode 26.6 + the separate MetalToolchain component; the 15:50 build failed
+           on missing libc++ headers because the Downloads Xcode had been deleted — toolchain, not code). Verified:
+           main.cpp.o recompiled, linked, `strings` shows 0 hits for SS_PHASE_AMOUNT in the bundle binary, both artifacts
+           17:15:33 > every source. NOT launched — his eyes own the floor and hold verdicts.
 4. paths ok 46 referenced path(s) resolve
 ```
 

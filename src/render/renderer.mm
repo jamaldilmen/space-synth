@@ -4820,6 +4820,15 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
       {
         const float keL = latestStats.kineticEnergy;
         const float smL = latestStats.fieldMassMsun;
+        // σ UNITS — MEASURED, NOT FIXED (2026-09-03, the same-frame probe,
+        // 30/30 samples): KE is ½·m·|velW|² with velW in sim/FRAME, so this
+        // M/(4·KE) is c²/(2σ²) × 1/cFrame² (cFrame = speedCap·dt ≈ 0.058 →
+        // ×297; ×1160 at a 120 Hz dt). The honest law (×cFrame²) was built and
+        // shipped 01:16:37 and gave NO VISIBLE LENS: a ~9.5k M☉ seed owns
+        // ~5 r_s ≈ 0.08 sim while the matter sits at meanR ≈ 5.8 sim (≈360
+        // r_s). His order 01:2x: REVERT — the visible region IS this ×1/cFrame²
+        // scale, kept knowingly until the matter/r_s scale (§AB.8) is solved.
+        // Not a law of physics: a scale knob, and now labelled as one.
         if (keL > 0.0f && smL > 0.0f && std::isfinite(keL) &&
             std::isfinite(smL))
           bInflLive = smL / (4.0f * keL);

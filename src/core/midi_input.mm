@@ -25,6 +25,11 @@ static void midiReadCallback(const MIDIPacketList *list, void *refCon, void *) {
     // Parse MIDI bytes
     for (UInt16 j = 0; j < packet->length;) {
       uint8_t status = packet->data[j];
+      if (status >= 0xF8) {
+        // System Real-Time: always 1 byte, no channel nibble to mask
+        j++;
+        continue;
+      }
       uint8_t type = status & 0xF0;
 
       if (type == 0x90 && j + 2 < packet->length) {

@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "core/imf.h"
 #include "core/offline_clock.h"   // S3: SS_RENDER_FPS — unset ⇒ every live path untouched
+#include "show_capture.h"         // S8: the ProRes writer reads captureTexture
 #include "core/units.h"
 #include "spacetime/spacetime.h"  // thermodynamics: kUFloorSim (SPH internal energy floor)
 #include "spectral_lut.h"          // spectral starmap: Planck band-flux bake (one colour law)
@@ -333,6 +334,11 @@ struct Renderer::Impl {
   float lastDt = 1.0f / 120.0f; // previous frame's dt for time-corrected Verlet (init = spawn kDt → frame-1 correct)
   float timeWarpVal = 1.0f;     // physics-clock multiplier (x2/x4/x8 time controls); scales the pinned dt
   float sizeRefHeight = 2260.0f; // S5: reference height for sizeResScale; 2260 live, delivery height when pinned
+  // S8: render size pinned apart from the layer (0 = live: targets follow the drawable)
+  int renderPinW = 0, renderPinH = 0;
+  id<MTLTexture> finalTexture = nil;    // S8: the EDR final frame (was the drawable); feeds prevFrameTexture
+  id<MTLTexture> captureTexture = nil;  // S8: the SDR (headroom 1) final frame the writer + preview read
+  ShowCapture *capture = nullptr;       // S8: writer, owned by main
   float lastParticleSize = 2.0f; // Size slider (1-frame lag) → scales the cluster's mass/gravity
   float bhStrength = 0.0f;    // collapse-fraction signal, smoothed+latched
   float bhStrengthEma = 0.0f; // eased raw signal (anti-flicker)
@@ -444,6 +450,8 @@ struct Renderer::Impl {
   id<MTLBuffer> uniformBuffer[kMaxInFlightFrames];
   id<MTLBuffer> cameraBuffer[kMaxInFlightFrames];
   id<MTLBuffer> postUniformBuffer[kMaxInFlightFrames];
+  id<MTLBuffer> postUniformCaptureBuffer[kMaxInFlightFrames]; // S8: SDR uniform (headroom=1), render size
+  id<MTLBuffer> postUniformPreviewBuffer[kMaxInFlightFrames]; // S8: SDR uniform, DRAWABLE size (preview)
   id<MTLBuffer> bhMarchUniformBuffer[kMaxInFlightFrames]; // metric ray-march (per-frame)
 #if HAS_SYPHON
   id<MTLBuffer> postUniformSyphonBuffer[kMaxInFlightFrames]; // SDR uniform (headroom=1)
@@ -1390,6 +1398,12 @@ bool Renderer::init(void *metalDevice, void *metalLayer, int width,
         [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
                                    options:MTLResourceStorageModeShared];
 #endif
+    impl_->postUniformCaptureBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
+                                   options:MTLResourceStorageModeShared];
+    impl_->postUniformPreviewBuffer[i] =
+        [impl_->device newBufferWithLength:sizeof(PostFXUniforms)
+                                   options:MTLResourceStorageModeShared];
   }
 
 
@@ -5356,7 +5370,11 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   // ── Second Pass: Post-FX to drawable ──────────────────────────────
   MTLRenderPassDescriptor *finalPass =
       [MTLRenderPassDescriptor renderPassDescriptor];
-  finalPass.colorAttachments[0].texture = drawable.texture;
+  // S8: pinned render ⇒ the final frame goes to an offscreen target of the
+  // render size; the drawable (a ≤16,384 preview) is filled further down.
+  const bool pinnedFinal = (renderPinW > 0 && finalTexture != nil && captureTexture != nil);
+  id<MTLTexture> finalTarget = pinnedFinal ? finalTexture : drawable.texture;
+  finalPass.colorAttachments[0].texture = finalTarget;
   finalPass.colorAttachments[0].loadAction = MTLLoadActionClear;
   finalPass.colorAttachments[0].storeAction = MTLStoreActionStore;
   finalPass.colorAttachments[0].clearColor =
@@ -5485,10 +5503,72 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
   }
 #endif
 
+  // ── S8: the SDR CAPTURE pass (pinned render only) ─────────────────────────
+  // Re-run the screen pass — same bindings — with the headroom forced to 1.0
+  // into captureTexture: what a projector / ProRes sees, the Syphon reasoning
+  // above. The writer reads THIS; the drawable shows a preview of it. Reads
+  // last frame's prevFrameTexture like the screen pass → BEFORE the blit.
+  if (pinnedFinal && postPipeline) {
+    PostFXUniforms postCap = post;
+    postCap.edrHeadroom = 1.0f;
+    memcpy(postUniformCaptureBuffer[frameIdx].contents, &postCap, sizeof(postCap));
+    MTLRenderPassDescriptor *capPass = [MTLRenderPassDescriptor renderPassDescriptor];
+    capPass.colorAttachments[0].texture = captureTexture;
+    capPass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    capPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    capPass.colorAttachments[0].clearColor = MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
+    id<MTLRenderCommandEncoder> capEnc = [cmdBuf renderCommandEncoderWithDescriptor:capPass];
+    [capEnc setRenderPipelineState:postPipeline];
+    [capEnc setFragmentTexture:postSource atIndex:0];
+    [capEnc setFragmentTexture:prevFrameTexture atIndex:1];
+    [capEnc setFragmentTexture:bloomTexture atIndex:2];
+    [capEnc setFragmentTexture:offscreenTexture atIndex:3];
+    [capEnc setFragmentTexture:gradeLutTexture atIndex:4];
+    [capEnc setFragmentTexture:velocityTexture atIndex:5];
+    [capEnc setFragmentBuffer:postUniformCaptureBuffer[frameIdx] offset:0 atIndex:0];
+    [capEnc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [capEnc endEncoding];
+  }
+
   // ── Copy the CLEAN render (no UI) to prevFrameTexture for trails ───
+  // S8: from the EDR final target — the drawable live, finalTexture pinned —
+  // so the trail feedback is the same picture at the same size either way.
   id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
-  [blit copyFromTexture:drawable.texture toTexture:prevFrameTexture];
+  [blit copyFromTexture:finalTarget toTexture:prevFrameTexture];
   [blit endEncoding];
+
+  if (pinnedFinal) {
+    // S8 PREVIEW: the same post pass a third time, at the DRAWABLE's size,
+    // headroom 1.0 — the drawable shows what is being written. The UV comes
+    // from the vertex stage (postfx.metal:112), so only `resolution` changes.
+    if (postPipeline) {
+      PostFXUniforms postPrev = post;
+      postPrev.edrHeadroom = 1.0f;
+      postPrev.resolution[0] = (float)drawable.texture.width;
+      postPrev.resolution[1] = (float)drawable.texture.height;
+      memcpy(postUniformPreviewBuffer[frameIdx].contents, &postPrev, sizeof(postPrev));
+      MTLRenderPassDescriptor *pvPass = [MTLRenderPassDescriptor renderPassDescriptor];
+      pvPass.colorAttachments[0].texture = drawable.texture;
+      pvPass.colorAttachments[0].loadAction = MTLLoadActionClear;
+      pvPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+      pvPass.colorAttachments[0].clearColor = MTLClearColorMake(0.04, 0.04, 0.06, 1.0);
+      id<MTLRenderCommandEncoder> pvEnc = [cmdBuf renderCommandEncoderWithDescriptor:pvPass];
+      [pvEnc setRenderPipelineState:postPipeline];
+      [pvEnc setFragmentTexture:postSource atIndex:0];
+      [pvEnc setFragmentTexture:prevFrameTexture atIndex:1];
+      [pvEnc setFragmentTexture:bloomTexture atIndex:2];
+      [pvEnc setFragmentTexture:offscreenTexture atIndex:3];
+      [pvEnc setFragmentTexture:gradeLutTexture atIndex:4];
+      [pvEnc setFragmentTexture:velocityTexture atIndex:5];
+      [pvEnc setFragmentBuffer:postUniformPreviewBuffer[frameIdx] offset:0 atIndex:0];
+      [pvEnc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [pvEnc endEncoding];
+    }
+    // S8 WRITER: one blit per wall slice into this frame's pixel buffers;
+    // appended after the command buffer completes (below the commit).
+    if (capture && capture->active())
+      capture->encodeBlits((__bridge void *)cmdBuf, (__bridge void *)captureTexture);
+  }
 
 #if HAS_SYPHON
   // Publish the dedicated SDR feed (vibrant, alpha-keyed, no UI) to Syphon.
@@ -5727,6 +5807,13 @@ void Renderer::Impl::renderWithCamera(id<CAMetalDrawable> drawable,
     [cmdBuf presentDrawable:uiDrawable];
   [cmdBuf presentDrawable:drawable];
   [cmdBuf commit];
+  // S8: the writer needs the slice blits FINISHED before it appends, and one
+  // frame per output tick — so wait here (offline only: capture is armed only
+  // with the offline clock) and append on this thread. Back-pressure inside.
+  if (pinnedFinal && capture && capture->active()) {
+    [cmdBuf waitUntilCompleted];
+    capture->appendFrame();
+  }
 
   // ══ [LENSCOST] — THE LENS PASS IN ITS OWN COMMAND BUFFER ══════════════════
   // docs/DESIGN_BH_2026-08-31_LENS_COST_MEASUREMENT.md §2. SS_LENS_COST=1 ONLY —
@@ -5885,6 +5972,12 @@ void Renderer::resize(int width, int height) {
   // width/height MUST BE physical (backing) pixels
   if (width <= 0 || height <= 0)
     return;
+  // S8: the RENDER size is pinned apart from the layer; the argument is the
+  // drawable (preview) size and is ignored. See pinRenderSize().
+  if (impl_->renderPinW > 0 && impl_->renderPinH > 0) {
+    width = impl_->renderPinW;
+    height = impl_->renderPinH;
+  }
 
   impl_->width = width;
   impl_->height = height;
@@ -6001,7 +6094,29 @@ void Renderer::resize(int width, int height) {
   colorDesc.storageMode = MTLStorageModePrivate;
   colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   impl_->prevFrameTexture = [impl_->device newTextureWithDescriptor:colorDesc];
+  // S8: pinned render ⇒ the final post pass cannot target the drawable (the
+  // layer is a preview of another size), so the EDR final frame and the SDR
+  // capture frame get targets of the RENDER size. Live: nil, nothing allocated.
+  if (impl_->renderPinW > 0) {
+    impl_->finalTexture = [impl_->device newTextureWithDescriptor:colorDesc];
+    impl_->captureTexture = [impl_->device newTextureWithDescriptor:colorDesc];
+  } else {
+    impl_->finalTexture = nil;
+    impl_->captureTexture = nil;
+  }
 }
+
+void Renderer::pinRenderSize(int width, int height) {
+  impl_->renderPinW = width > 0 ? width : 0;
+  impl_->renderPinH = height > 0 ? height : 0;
+  if (impl_->renderPinW > 0 && impl_->renderPinH > 0) {
+    printf("[S8] render size PINNED to %dx%d (the drawable is a preview; final pass offscreen)\n",
+           impl_->renderPinW, impl_->renderPinH);
+    resize(impl_->renderPinW, impl_->renderPinH);
+  }
+}
+
+void Renderer::setCapture(ShowCapture *capture) { impl_->capture = capture; }
 
 void Renderer::setCollisionsEnabled(bool enabled) {
   impl_->collisionsEnabled = enabled;

@@ -5,6 +5,7 @@
 #include "core/midi_input.h"
 #include "core/take_recorder.h"
 #include "core/offline_clock.h"
+#include "render/show_capture.h"   // S8: ProRes writer, armed by SS_CAPTURE
 #include "core/take_replay.h"
 #include "core/modes.h"
 #include "core/particles.h"
@@ -138,11 +139,30 @@ int main() {
     if (v >= 240) winH = v;
     else fprintf(stderr, "[S1] SS_HEIGHT=%s below 240, ignored\n", eh);
   }
-  if ((getenv("SS_WIDTH") || getenv("SS_HEIGHT")) && !Window::canAllocateDrawable(winW, winH)) {
-    fprintf(stderr, "[S1] 🚨 SS_WIDTH/SS_HEIGHT %dx%d REFUSED: this GPU cannot allocate or present a drawable of "
-                    "that size (see the line above). Not pinning; the window follows the screen.\n", winW, winH);
-    winW = 1280; winH = 800;
-    unsetenv("SS_WIDTH"); unsetenv("SS_HEIGHT");
+  // S8 (2026-09-03): the RENDER size and the PRESENTED size are two numbers.
+  // MEASURED 18:22: the layer refuses a drawable above 16,384 wide while every
+  // offscreen texture allocates at 19,644. So the pinned size is the RENDER
+  // size (renderer.pinRenderSize below); the drawable is the largest exact
+  // half (1/2, 1/4, 1/8) the layer will present — same aspect by construction,
+  // which matters because the camera aspect reads the drawable. Presentable
+  // as-is ⇒ preview == render, exactly as S5 had it.
+  int renderW = 0, renderH = 0;
+  if (getenv("SS_WIDTH") || getenv("SS_HEIGHT")) {
+    renderW = winW; renderH = winH;
+    int div = 1;
+    while (div <= 8 && !Window::canAllocateDrawable(renderW / div, renderH / div)) div *= 2;
+    if (div > 8) {
+      fprintf(stderr, "[S1] 🚨 SS_WIDTH/SS_HEIGHT %dx%d REFUSED: this GPU cannot allocate or present a drawable of "
+                      "that size or any half of it down to 1/8 (see the lines above). Not pinning; the window "
+                      "follows the screen.\n", renderW, renderH);
+      winW = 1280; winH = 800; renderW = 0; renderH = 0;
+      unsetenv("SS_WIDTH"); unsetenv("SS_HEIGHT");
+    } else {
+      winW = renderW / div; winH = renderH / div;
+      if (div > 1)
+        printf("[S8] render %dx%d exceeds what the layer presents: drawable pinned to the 1/%d preview %dx%d\n",
+               renderW, renderH, div, winW, winH);
+    }
   }
   // PIN the render buffer to exactly this many pixels. Without the pin macOS
   // clamps the WINDOW to the screen and the drawable follows it — measured
@@ -181,7 +201,20 @@ int main() {
     }
     renderer.setSizeReferenceHeight(ref);
     printf("[SIZE] pinned render: sprite-size reference height = %.0f (delivery height; SS_REF_HEIGHT overrides). "
-           "Full res %dx%d -> scale %.4f\n", ref, winW, winH, (double)winH / ref);
+           "Full res %dx%d -> scale %.4f\n", ref, renderW, renderH, (double)renderH / ref);
+    // S8: every target at the RENDER size, final pass offscreen, drawable = preview.
+    renderer.pinRenderSize(renderW, renderH);
+  }
+  // S8: the writer. Armed only by SS_CAPTURE + a pinned render + the offline
+  // clock; reads the renderer's offscreen SDR frame, one frame per output tick.
+  space::ShowCapture showCap;
+  if (getenv("SS_CAPTURE")) {
+    if (renderW <= 0)
+      fprintf(stderr, "[CAPTURE] SS_CAPTURE refused: no pinned render (set SS_WIDTH/SS_HEIGHT).\n");
+    else if (showCap.open(renderW, renderH,
+                          space::OfflineClock::get().enabled ? space::OfflineClock::get().fps : 0,
+                          renderer.getMetalDevice()))
+      renderer.setCapture(&showCap);
   }
 
   // ── TWO-WINDOW MODE (2026-08-23, his order) ───────────────────────────────
@@ -713,6 +746,18 @@ int main() {
     // the top of their frame, before the sequencer and before the physics
     // step, through the same `onMidi` a live packet uses.
     static uint32_t outFrame = 0;
+    // S8: SS_CAPTURE_FRAMES reached ⇒ close the files and END the run, before
+    // anything of this frame begins.
+    if (showCap.done()) {
+      static bool ended = false;
+      if (!ended) {
+        ended = true;
+        printf("[CAPTURE] %u frames written — ending the run.\n", showCap.framesWritten());
+        showCap.finish();
+        window.close();
+      }
+      return;
+    }
     takeReplay.tick(outFrame, onMidi);
     outFrame++;
     // S9 OFFLINE: advance the synth (and every envelope) by exactly one output
@@ -3230,6 +3275,7 @@ int main() {
   window.run();
 
   takeRec.finish();   // S2: write the take (main thread, after the run loop)
+  showCap.finish();   // S8: close the ProRes files (no-op if already finished / not armed)
   Logger::log("Application Session End");
   Logger::exportToDownloads();
 

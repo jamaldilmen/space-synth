@@ -31,6 +31,7 @@ set(SOURCES
     src/audio/synth.cpp
     src/audio/chorus.cpp
     src/render/renderer.mm
+    src/render/show_capture.mm
     src/ui/window.mm
 )
 
@@ -125,6 +126,7 @@ find_library(AVFOUNDATION_FRAMEWORK AVFoundation REQUIRED)
 find_library(VIDEOTOOLBOX_FRAMEWORK VideoToolbox REQUIRED)
 find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
 find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
+find_library(COREMEDIA_FRAMEWORK CoreMedia REQUIRED)   # S8: CMTime for the ProRes writer
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${METAL_FRAMEWORK}
@@ -140,6 +142,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${VIDEOTOOLBOX_FRAMEWORK}
     ${GAMECONTROLLER_FRAMEWORK}
     ${COREVIDEO_FRAMEWORK}
+    ${COREMEDIA_FRAMEWORK}
 )
 
 # ── Syphon (optional, enable when framework is available) ────────────────────

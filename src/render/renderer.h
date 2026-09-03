@@ -478,6 +478,8 @@ struct PhysicsStats {
                        // required accurate sub-steps ≈ ceil(4·ratio).
 };
 
+class ShowCapture; // S8 writer, src/render/show_capture.h
+
 class Renderer {
 public:
   Renderer();
@@ -533,6 +535,15 @@ public:
   // so full res is 1.0 and half res 0.5: the same picture, smaller — the 840
   // preview he composes against IS the render.
   void setSizeReferenceHeight(float pixels);
+  // S8 (2026-09-03): pin the RENDER size apart from the presenting layer.
+  // MEASURED 18:22: the CAMetalLayer refuses any drawable above 16,384 wide,
+  // every offscreen texture allocates at 19,644. So every target is sized
+  // from THIS, the final post pass renders into an offscreen target, the
+  // drawable gets a scaled preview (headroom 1.0 = what the projector sees),
+  // and setCapture()'s writer reads the offscreen SDR frame. Unpinned = live,
+  // byte for byte. Call after init(); resize() then ignores its arguments.
+  void pinRenderSize(int width, int height);
+  void setCapture(ShowCapture *capture);   // nullptr = no writer (owned by main)
   // ⏱️ TRUE TIME (E2, 2026-08-30): the sim SECONDS the last computeStep actually
   // integrated = dt x the steps the wall clock owed. The host must tick the
   // universe clock by THIS, never by a dt it recomputed itself — see main.cpp.

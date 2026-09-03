@@ -810,6 +810,23 @@ void Window::run() {
   }
 }
 
-void Window::close() { impl_->shouldClose = true; }
+// S8: an unattended render must be able to END. Before 2026-09-03 this only
+// raised the flag (frame callbacks stop; the NSApp loop kept running) and had
+// no callers. Now it does what the close button does (windowShouldClose:).
+void Window::close() {
+  impl_->shouldClose = true;
+  if (impl_->displayLink) CVDisplayLinkStop(impl_->displayLink);
+  [NSApp stop:nil];
+  [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:0
+                                       context:nil
+                                       subtype:0
+                                         data1:0
+                                         data2:0]
+           atStart:YES];
+}
 
 } // namespace space

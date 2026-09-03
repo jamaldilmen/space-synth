@@ -72,7 +72,7 @@ TakeReplay::TakeReplay(int fps) : fps_(fps) {
   active_ = true;
   int64_t lastFrame = events_.empty() ? 0 : events_.back().frame;
   printf("[REPLAY] ARMED %s: %zu events, fps=%d, t=0 at output frame %d, last event at frame %lld "
-         "(%.3f s), pre-roll replayed %zu, pre-roll skipped %zu. Events apply at frame = %d + floor(t*%d).\n",
+         "(%.3f s), pre-roll replayed %zu, pre-roll skipped %zu. Events apply at frame = %d + ceil(t*%d).\n",
          path_.c_str(), events_.size(), fps_, startFrame_, (long long)lastFrame,
          (double)lastFrame / fps_, preRollKept, preRollSkipped, startFrame_, fps_);
 }

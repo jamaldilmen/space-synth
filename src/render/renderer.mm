@@ -2214,7 +2214,7 @@ void Renderer::render(const RenderConfig &config, const float *viewProj) {
     static float sLastPrinted = -1.0f;
     if (std::fabs(cam.sizeResScale - sLastPrinted) > 1e-6f) {
       sLastPrinted = cam.sizeResScale;
-      printf("[SIZE] drawable %dx%d, reference height %.0f -> sizeResScale %.4f\n",
+      printf("[SIZE] render %dx%d (= the drawable live; the pinned render size under S8), reference height %.0f -> sizeResScale %.4f\n",
              impl_->width, impl_->height, (double)impl_->sizeRefHeight, (double)cam.sizeResScale);
     }
   }

@@ -210,14 +210,28 @@ int main() {
 
   // ── MIDI Input ──────────────────────────────────────────────────────
   MidiInput midiInput;
-  midiInput.start([&](int note, float velocity, bool isNoteOn) {
-    if (isNoteOn) {
-      synth.noteOn(note, velocity);
-      printf("[MIDI] noteOn  note=%d vel=%.2f voices=%d\n", note, velocity,
-             synth.activeVoiceCount());
-    } else {
-      synth.noteOff(note);
-      printf("[MIDI] noteOff note=%d\n", note);
+  // The ONE consumer of MidiEvent (S1, 2026-09-03). Notes reach the synth
+  // exactly as before; CC is delivered and printed but has no consumer yet —
+  // the take log (S2) and the mapping apply (S6) attach HERE, not to a second
+  // callback. `t` is absolute seconds (CACurrentMediaTime timebase), `stamped`
+  // says whether it came from the packet or from callback entry.
+  midiInput.start([&](const space::MidiEvent &ev) {
+    switch (ev.kind) {
+    case space::MidiKind::NoteOn: {
+      float velocity = ev.b / 127.0f;
+      synth.noteOn(ev.a, velocity);
+      printf("[MIDI] noteOn  note=%d vel=%.2f ch=%d voices=%d\n", ev.a, velocity,
+             ev.channel, synth.activeVoiceCount());
+      break;
+    }
+    case space::MidiKind::NoteOff:
+      synth.noteOff(ev.a);
+      printf("[MIDI] noteOff note=%d ch=%d\n", ev.a, ev.channel);
+      break;
+    case space::MidiKind::CC:
+      printf("[MIDI] cc num=%d val=%d ch=%d t=%.6f%s\n", ev.a, ev.b, ev.channel,
+             ev.t, ev.stamped ? "" : " (unstamped)");
+      break;
     }
   });
 

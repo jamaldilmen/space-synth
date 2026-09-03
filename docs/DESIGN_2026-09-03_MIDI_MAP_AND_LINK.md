@@ -640,8 +640,117 @@ using MidiCallback = std::function<void(int note, float velocity, bool isNoteOn)
 ⇒ **His step 1 — "play it in once and log it" — is blocked by construction.** You cannot record an event the
 callback cannot represent. Every other section of this design, and the whole record-then-render build, sits
 behind this one interface change.
-⭐ **It is cheap: ONE consumer** `[READ main.cpp:213]`. Widen the callback, keep note behaviour byte-for-byte,
-add `(cc, channel, value)`. **This is prerequisite zero, not step one of three.**
+⭐ **It is cheap: THREE touch points, ONE of them the actual consumer** `[READ, VERIFIED 2026-09-03 16:26:12]`:
+`midi_input.h:7-8` (the type), `midi_input.mm:13` (the stored member) and `:70` (`start()`'s by-value
+parameter) — plus the single consumer `main.cpp:213`. **This is prerequisite zero, not step one of three.**
+
+#### 10.0a THE EVENT SHAPE — **one callback taking a POD struct**, not two callbacks
+
+```c
+enum class MidiKind : uint8_t { NoteOn, NoteOff, CC };
+
+struct MidiEvent {
+  MidiKind kind;
+  uint8_t  channel;    // 0-15, from status & 0x0F — see 10.0b
+  uint8_t  a;          // NoteOn/NoteOff: note      CC: controller number
+  uint8_t  b;          // NoteOn: velocity 1-127    NoteOff: 0    CC: value 0-127
+  double   t;          // SECONDS, from the PACKET's stamp — see 10.0c. The load-bearing field.
+};
+using MidiCallback = std::function<void(const MidiEvent&)>;
+```
+**Why one callback and not a second one for CC — three reasons, in order of weight:**
+1. 🚨 **The log must be ONE time-ordered stream.** Two callbacks would have to be merged by timestamp
+   afterwards, and **merging two streams is exactly where ordering bugs live.** Delivering them already
+   interleaved, in arrival order, means R1 appends and never sorts.
+2. **`start()` takes the callback BY VALUE (`midi_input.mm:70`)**, so every additional callback multiplies the
+   touch points and the lifetime questions. One is one.
+3. ⭐ **A struct can gain a field without changing the signature again** — which is the thing BRAIN asked for:
+   *do not design an interface that has to be widened twice.* Pitch-bend, aftertouch or 14-bit CC (§10.5) can
+   arrive later as a new `MidiKind` **with no change to `MidiCallback` and no change to the consumer.**
+
+⛔ **Do NOT keep the old signature alongside it.** Two entry points into one parser is how the note path and
+the CC path drift apart, and the note path is the one already verified working.
+
+#### 10.0b CHANNEL — always extracted, never assumed
+
+`[READ midi_input.mm:27-28, VERIFIED 2026-09-03 16:26:12]` `status & 0x0F` **appears nowhere in the file** — all 16
+channels currently collapse into one stream. Extract it and carry it in `MidiEvent.channel`, **unconditionally
+and from day one.**
+⛔ **Do not assume he uses one channel.** His automation lanes may address several, and a channel-less log
+**cannot be disambiguated after the fact** — the information is destroyed at capture, so a take recorded
+without it is unrecoverable and has to be replayed. `Mapping` already carries a `channel` field (§3.3) with
+`0 = omni` as the transitional default, so the consumer side is already shaped for it.
+
+#### 10.0c 🚨 THE TIMESTAMP — **MEASURED, and there is a real trap in it**
+
+**The rule: `t` comes from the PACKET's `timeStamp`, never from when the callback happened to run.** A stamp
+taken at callback entry inherits thread-scheduling jitter, and **jitter in the log is jitter in every render
+ever made from that log — permanently.** This is the single decision that determines whether *"accurately"*
+is achievable at all.
+
+`[MEASURED n=3 runs, 3/3 identical, IAC Driver Bus 1, scratchpad probe — no build token, app never launched]`
+
+| what the sender did | what the receiver got | delta vs callback-entry `mach_absolute_time()` |
+|---|---|---|
+| stamped with `mach_absolute_time()` | **the stamp, intact** | **+55 to +80 µs** — the packet stamp is *better* than arrival time by that margin |
+| passed `0` (CoreMIDI's "send now") | 🚨 **`timeStamp == 0`, delivered AS ZERO — NOT rewritten to arrival time** | ≈ **+450,279,000 ms** (mach-time zero ≈ boot) |
+
+🚨 **THE TRAP, and it would corrupt a whole take silently:** a `timeStamp` of **0** is a real, observed
+delivery, and converting it naively places the event **~5 days before the take started.** One such event and
+the log's time origin is destroyed. **Whether Ableton stamps its packets or passes 0 is `[UNVERIFIED]`** — it
+depends on its MIDI output path and I have not measured Ableton itself, only the transport.
+⇒ **MANDATORY: guard it, fall back, and RECORD WHICH WAS USED.**
+```c
+uint64_t raw = packet->timeStamp;
+bool stamped = (raw != 0);
+if (!stamped) raw = mach_absolute_time();     // sender passed "now"
+double t = machToSeconds(raw) - takeStartSeconds;
+```
+**Log a per-take flag saying whether stamps were real or synthesised.** A take from a zero-stamping source is
+still usable — it just carries callback jitter — but it must be **identifiable rather than silently worse**,
+or a jittery render gets blamed on the replay.
+
+⚠️ **AND THE CONVERSION IS NOT A DIVISION BY 1e9.** `[MEASURED on this machine]` `mach_timebase_info` returns
+**numer=125, denom=3 ⇒ one mach tick = 41.6667 ns, NOT 1 ns.** Treating `mach_absolute_time()` as nanoseconds
+is wrong by **41.67×** — a 3-minute take would log as 4.3 seconds. Convert properly, once, at startup:
+```c
+mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+double machToSeconds(uint64_t t){ return (double)t * tb.numer / tb.denom / 1e9; }
+```
+⭐ **This is the same timebase `CACurrentMediaTime()` uses** (`renderer.mm:1779` already calls it), so packet
+time and the app's own clock are **directly comparable with no epoch conversion** — which is what lets a
+recorded `t` be lined up against anything the renderer measures.
+
+#### 10.0d WHAT R1 WRITES — dependency-free, and gitignored
+
+**Format: the same hand-rolled JSON already in the tree** (`preset_manager.cpp:12-36`) — ⛔ no new dependency,
+for the same reason §4 refuses one for the mapping file. One object per take, one array of events:
+```json
+{ "take": "cologne-A", "recorded": "2026-09-03 16:26:12", "stamps": "packet",
+  "events": [ {"t":0.0000,"k":"cc","ch":0,"a":10,"b":64}, {"t":0.4013,"k":"non","ch":0,"a":60,"b":100} ] }
+```
+- **`t` is SECONDS FROM TAKE START**, monotonic, ascending, never re-sorted (10.0a guarantees arrival order).
+- **`stamps` is `"packet"` or `"callback"`** — the 10.0c flag. **Non-optional.**
+- 🚨 **GITIGNORE IT. A recorded take is not source.** Same reasoning as the mapping file in §4, and sharper:
+  `imgui.ini` is TRACKED and rewrites itself on every launch, which is why it dirties the tree in every
+  preflight. A take log is larger and written more often. **Do not repeat that.**
+
+#### 10.0e ✅ DO NOT "FIX" VELOCITY-0 WHILE WIDENING THE STRUCT
+
+`[READ midi_input.mm:34-39]` `[VERIFIED, and independently by SONNET]` velocity-0 Note-On **is** correctly
+treated as Note-Off, via an explicit `if (vel > 0)`. **It is not a bug and it was never the bug.** When the
+struct arrives, a velocity-0 `0x90` must still emit `MidiKind::NoteOff` — **preserve the behaviour, do not
+"clean it up" into a `NoteOn` with `b = 0`**, which would resurrect the stuck-note class this already avoids.
+
+#### 10.0f ⛔ BOUNDARY — what this spec deliberately does NOT decide
+
+This is the **capture interface only.** ⛔ It does not specify the replay loop, the offline clock, or
+resolution decoupling — **R2/R4 are FABLE's and it is mid-design on them.**
+**One constraint this does hand to R2, named rather than decided:** the log's `t` is **seconds from take
+start**, a `double`, in the `CACurrentMediaTime` timebase. **How `t` maps to an output frame index is R2's
+choice** — this spec only guarantees `t` is exact, ascending and origin-anchored. ⭐ If R2 would rather have
+raw mach ticks than seconds-from-start, **that is a one-line change here and FABLE should say so before R1 is
+built, not after a take is recorded.**
 
 
 ### 10.1 ↩️ CORRECTING THE INBOX — and correcting the REASON, because the reason decides the fix

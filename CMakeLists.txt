@@ -20,6 +20,7 @@ set(SOURCES
     # particles.metal. Files deleted; recover from git if ever needed.
     src/core/modes.cpp
     src/core/midi_input.mm
+    src/core/take_recorder.cpp
     src/core/particles.cpp
     src/core/envelope.cpp
     src/core/preset_manager.cpp

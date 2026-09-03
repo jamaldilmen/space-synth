@@ -3,6 +3,7 @@
 #include "core/camera.h"
 #include "core/emitter.h"
 #include "core/midi_input.h"
+#include "core/take_recorder.h"
 #include "core/modes.h"
 #include "core/particles.h"
 #include "core/preset_manager.h"
@@ -210,12 +211,18 @@ int main() {
 
   // ── MIDI Input ──────────────────────────────────────────────────────
   MidiInput midiInput;
+  // S2: the take recorder. push() is the only thing added to the MIDI thread —
+  // one ring slot, no lock, no malloc, no file. Drained and written on the
+  // main thread (frame callback + after window.run()). Disarmed unless
+  // SS_RECORD=<path>; prints its marker CC at launch either way.
+  space::TakeRecorder takeRec;
   // The ONE consumer of MidiEvent (S1, 2026-09-03). Notes reach the synth
   // exactly as before; CC is delivered and printed but has no consumer yet —
-  // the take log (S2) and the mapping apply (S6) attach HERE, not to a second
-  // callback. `t` is absolute seconds (CACurrentMediaTime timebase), `stamped`
-  // says whether it came from the packet or from callback entry.
+  // the mapping apply (S6) attaches HERE, not to a second callback. `t` is
+  // absolute seconds (CACurrentMediaTime timebase), `stamped` says whether it
+  // came from the packet or from callback entry.
   midiInput.start([&](const space::MidiEvent &ev) {
+    takeRec.push(ev);
     switch (ev.kind) {
     case space::MidiKind::NoteOn: {
       float velocity = ev.b / 127.0f;
@@ -2663,6 +2670,12 @@ int main() {
     // settle hold here; it has been measured and it is the wrong end.
     renderer.setEnvelopeState(envState.phase, envState.progress,
                               envState.intensity);
+    // S2: main-thread side of the take recorder — move the ring into the log
+    // and append this frame's envelope ground truth (what S9's frame-clocked
+    // envelope is verified against). No-ops unless SS_RECORD is set.
+    takeRec.drain();
+    takeRec.frame(space::TakeRecorder::nowSeconds(), envState.phase,
+                  envState.progress, synth.totalAmplitude());
     renderer.setDiskThickness(app.uiDiskThickness);
 
     // ── STAR-MAP LIFECYCLE: hold the BLACK HOLE after release ────────────────
@@ -3129,6 +3142,7 @@ int main() {
 
   window.run();
 
+  takeRec.finish();   // S2: write the take (main thread, after the run loop)
   Logger::log("Application Session End");
   Logger::exportToDownloads();
 

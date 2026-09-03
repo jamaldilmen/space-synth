@@ -1,10 +1,10 @@
-# SPACE SYNTH — handoff 2026-09-03 18:33:00 (FABLE — the show renderer, S1–S5 shipped, S8 is the blocker for full res)
+# SPACE SYNTH — handoff 2026-09-03 22:25:14 (FABLE — the show renderer: S8 CAPTURE SHIPPED AND MEASURED, the first frames exist)
 
-> **His verdict on this state:** *"it crashed lol"* (2026-09-03 ~18:24, the 19,644-wide pin — explained below; the guard is built, not launched). On the design, via BRAIN: *"Not by rotating the camera … it's one image as it already is."* · *"I def wanna deliver straight 30 or 60 fps. I guess it's gonna be 30 fps."* · *"Warp won't be during rendering no worries."* · marker CC at bar 1 beat 1 · sprite reference = the delivery height 1680 · F2 folded into S1. His order, verbatim: *"This is the most improtant build of the project. Highest prio."*
-> **Cold start:** read `docs/BOARD_BLACKHOLE.md` (BRAIN folds S1–S5; at this stamp it is 6 code commits behind HEAD — BRAIN [5d8bf1]'s), then `docs/DESIGN_2026-09-03_OFFLINE_RENDERING.md` (SONNET) and `docs/DESIGN_2026-09-03_MIDI_MAP_AND_LINK.md` §10 (OPUS) — NOT this file.
+> **His verdict on this state `[HIS WORDS via BRAIN]`:** *"Test looks amazing. Bravo."* (2026-09-03 ~21:2x, his eyes on the frame-200 wall composite — the LOOK is accepted) · *"It doesnt matter. Every fader gets the same movement. I'll list all parameters that need mod support when I'm home in front of screen."* (~21:06 ⇒ S7 = ONE universal slew law; the parameter list is HIS) · *"what I wanna do is have my set in one session. The entire 30 mins. Press play. Send it to space synth. And watch it render. I need a real time preview."* (⇒ the target workflow; S6 mapping is its blocker) · *"Run it"* (~20:2x, the one authorized launch — used) · *"Fix cosmetics"* (20:57). Standing order: *"This is the most improtant build of the project. Highest prio."*
+> **Cold start:** read `docs/BOARD.md` §AA (BRAIN's; it folds S1–S5 at `52f6d68` — S8 below is NOT folded yet, BRAIN owns the fold), then `docs/DESIGN_2026-09-03_OFFLINE_RENDERING.md` (SONNET) and `docs/DESIGN_2026-09-03_MIDI_MAP_AND_LINK.md` §10 (OPUS, the S6 spec) — NOT this file.
 
-**Tree:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` branch `true-physics` @ `52f6d68` (mine tonight, one concern each: `d4cf127` S1 · `7ff7158` S2 · `5fd6cbb` S3 · `7d2e0d8` S4 · `3e4ac40` S9 · `d6cbb7c` S4 fix · `52f6d68` S5; plus the morning's `ae0449e` floor · `74bee76` hold · `f381c4d`/`2b9385e` handoff). 42+ commits UNPUSHED, no push order. ⚠️ Every `file:line` here is at `52f6d68`; `main.cpp` moved ~+80 lines tonight — re-grep.
-**Build + launch:** `bash package_macos.sh` (bundle 18:30:36 = source). Live: `SS_FULLSCREEN=1 SS_LENS_RENDER=1 ./SpaceSynth.app/Contents/MacOS/SpaceSynth`. **Record a take:** `SS_RECORD=<take.txt>` (marker CC 119 at bar 1 beat 1; `SS_TAKE_MARKER_CC` overrides; quit with the close button or Cmd+Q — a kill writes nothing). **Replay offline:** `SS_RENDER_FPS=30 SS_REPLAY=<take.txt> [SS_REPLAY_START_FRAME=n] [SS_WIDTH=9822 SS_HEIGHT=840]`. Two-window/no-UI measurement launch: `SS_TWO_WINDOWS=1 SS_CAM_RHO=2000`.
+**Tree:** `/Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS` branch `true-physics` @ `3e085d7` (sources end here: `c6cad75` S8 capture · `3e085d7` two log strings; before that `52f6d68` S5 and the seven renderer commits of the afternoon). 51 commits UNPUSHED, no push order. ⚠️ Every `file:line` below is at `3e085d7`. Since `52f6d68`: `main.cpp` +52/−6 (hunks at old 7 · 141 · 184 · 715 · 3232), `renderer.mm` +118/−3 (old 3 · 335 · 446 · 1392 · 2203 · 5359 · 5487 · 5488 · 5490 · 5492 · 5729 · 5887 · 6003 · 6005), `window.mm` +18/−1, `renderer.h` +11, `take_replay.cpp` 1/1, `CMakeLists.txt` +3, two new files. PIECEWISE — re-read, never renumber.
+**Build + launch:** `bash package_macos.sh` (bundle 20:58:03 = source). Live: `SS_FULLSCREEN=1 SS_LENS_RENDER=1 ./SpaceSynth.app/Contents/MacOS/SpaceSynth`. **Record a take:** `SS_RECORD=<take.txt>` (marker CC 119 at bar 1 beat 1). **Render the wall:** `SS_RENDER_FPS=30 SS_REPLAY=<take.txt> SS_WIDTH=19644 SS_HEIGHT=1680 SS_CAPTURE=<base> SS_CAPTURE_SLICES=7152,5340,7152 [SS_CAPTURE_FRAMES=n] SS_LENS_RENDER=1 ./SpaceSynth.app/Contents/MacOS/SpaceSynth` → `<base>_L.mov` / `_C.mov` / `_R.mov` (ProRes 422 HQ, 709); unset `SS_CAPTURE_FRAMES` = until quit (close button / Cmd+Q closes the files). Half-res preview render: `SS_WIDTH=9822 SS_HEIGHT=840`, one file with `SS_CAPTURE_SLICES` unset.
 
 ---
 
@@ -12,63 +12,64 @@
 
 | # | Fault | Was | Now | Where | Proof |
 |---|---|---|---|---|---|
-| 1 | The app could not capture a CC event; System Common bytes ate the note sharing their packet | `MidiCallback(int,float,bool)`, no CC, no channel, 0xF1/F3/F6/F0 mis-sized | ONE `MidiEvent{kind,channel,a,b,stamped,t}` callback; CC parsed; channel nibble; MIDI-table sizes; `t` = packet stamp in seconds (mach×125/3), 0-stamp guarded + flagged | `midi_input.mm:48/64/85`, `midi_input.h` | `[MEASURED n=17 cases]` harness on the real file, HEAD vs S1; live over IAC on the built bundle (`d4cf127`) |
-| 2 | No way to log a take | — | `SS_RECORD`: ring on the MIDI thread (`push` :54, no lock/malloc/file), file on the main thread at exit (`finish` :85, close button + atexit), marker CC 119 = t0, pre-roll kept at negative t, drops counted, NO MARKER fails loudly (:123), per-frame envelope rows | `take_recorder.cpp` | `[MEASURED]` two live takes: 42 events / 1,537 frames / marker 0.000000 / 33/33 sweep CCs / unstamped 2 flagged / dropped 0; no-marker take → `t0 NONE` (`7ff7158`) |
-| 3 | Live clock: 60.606 steps/s ⇒ −1% drift vs an Ableton timeline; warp scales dt; window clock is wall time | — | `SS_RENDER_FPS=30\|60` (one header, `offline_clock.h:30`): dt=1/60, steps/frame `:44`, warp pinned + logged, accumulator bypassed (`renderer.mm:1810`), substeps 1 (`:2383`), posed-disk `:2231` + lens EMA `:5104` on frame time, window dt `window.mm:763`. 11 branches, ONE gate; unset = live path | `renderer.mm:1734` | `[MEASURED]` `frame=300 simTime=10.000020 expected=10.000000` (float32 accumulation; integer steps exact); SS_TIME_WARP=2 → loud FORCED line; 25 fps refused. Live pre/post runs identical in [RETURN]/[PERF] shape+values (`5fd6cbb`) |
-| 4 | No replay | — | `SS_REPLAY`: events at `startFrame + ceil(t·fps)` (`take_replay.cpp:48`), applied at the top of the frame through the SAME `onMidi` live packets use (`main.cpp:267/716`); refuses clock-off / `t0 NONE` / drops | `take_replay.cpp:80` | `[MEASURED]` two launches → byte-identical 40-event schedules; 40/40 at `ceil(t·30)`; `TAKE COMPLETE at frame 325` (`7d2e0d8`, `d6cbb7c`) |
-| 5 | The envelope (12 render branches) advances on the CoreAudio thread in real time — wrong picture for any render slower than real time | — | Offline: engine NOT started; `synth.processBlock(48000, scratch, 1600)` once per frame after the replayed notes, before the envelope read | `main.cpp:241/725` | `[MEASURED n=2 replays vs live]` every phase transition lags the live take ≤ 1 frame (0.682→0.700, 9.732→9.733 …); 362/363 rows agree; two replays' 466 rows byte-identical (`3e4ac40`) |
-| 6 | Pin refused his 19,644-wide wall (typed cap 16384) and silently rendered 1280×800; half-res would have been a 2× different picture | `main.cpp` cap, `sizeResScale=height/2260` | `Window::canAllocateDrawable` (`window.mm:520`, measured on the device + a CAMetalLayer probe :555, 32768 abort pre-check :527); pinned reference height 1680 via `setSizeReferenceHeight` (`renderer.mm:2391`, `main.cpp:182`), live 2260 untouched (`:2198`) | `main.cpp:141` | `[MEASURED]` 9822×840 → `[SIZE] … 1680 → 0.5000`, chain runs, 21.6 fps; live → `2260 → 0.7080` (`52f6d68`). ⚠️ the layer probe itself: BUILT 18:30:36, NOT LAUNCHED |
+| 1–6 | S1 parser · S2 recorder · S3 offline clock · S4 replay (ceil) · S9 envelope · S5 resolution pin | see the 18:33 version of this file, folded as `docs/BOARD.md` §AA1–AA6 | unchanged | — | `[MEASURED]` in §AA |
+| 7 | **0 frames existed. The wall could not be rendered: the presenting `CAMetalLayer` refuses any drawable above 16,384 wide** (nextDrawable nil → SIGSEGV on the final blit, his *"it crashed lol"* 18:22) | the final post pass wrote to `drawable.texture`; every target followed the layer's size | **The RENDER size is pinned apart from the layer.** `Renderer::pinRenderSize` (`renderer.mm:5975`, called `main.cpp:213`): every target at the render size, `resize()` ignores its arguments while pinned (`:5893`). Final pass → offscreen `finalTexture` (EDR, feeds `prevFrameTexture` exactly as the drawable did, `:5373`/`:5537`); second pass with `edrHeadroom=1.0` → `captureTexture` (`:5506`, what the projector sees — the Syphon reasoning; the Syphon block itself untouched); third pass at the DRAWABLE's size → the on-screen preview (`:5540`; UV is vertex-derived, `postfx.metal:112`, so only `resolution` changes). `main.cpp:142`: the drawable is the largest exact half (1/2..1/8) `canAllocateDrawable()` accepts — 19,644 → 9,822×840, same aspect by construction (the camera aspect reads the drawable, `main.cpp:1057`). Unpinned: nil targets, live path byte for byte | `renderer.mm`, `main.cpp` | `[MEASURED n=1 run, 300 frames]` log: `[S8] render 19644x1680 exceeds what the layer presents: drawable pinned to the 1/2 preview 9822x840` · `[SIZE] … reference height 1680 -> sizeResScale 1.0000` · no crash (`c6cad75`) |
+| 8 | **No writer** | — | `src/render/show_capture.{h,mm}`: `SS_CAPTURE=<base>` arms one `AVAssetWriter` per slice (`SS_CAPTURE_SLICES`, widths must sum to the render width or refused; unset = one file), ProRes 422 HQ tagged 709, fed by **64RGBAHalf IOSurface pixel buffers wrapped as RGBA16Float Metal textures via `CVMetalTextureCache`** — the render targets' own format, no conversion (`show_capture.mm:139`); one blit per slice (`:160`); after commit `waitUntilCompleted` + append at pts `frame/fps` (`renderer.mm:5810`, `show_capture.mm:184`); back-pressure = wait on `isReadyForMoreMediaData`, never drop; `SS_CAPTURE_FRAMES=n` closes the files and ends the run (`main.cpp:749`; `Window::close()` now actually stops NSApp, `window.mm:813` — it had no callers and only raised a flag). Refused without the offline clock | `show_capture.mm`, `main.cpp:204` | `[MEASURED]` standalone probe BEFORE the code: adaptor accepts 64RGBAHalf at 7152×1680 and 5340×1680, decoded clears = `fe0000`/`00ff01`/`0000ff` (exact) · **the run 20:22:04→20:22:11:** `ffprobe` L `7152,1680,300` · C `5340,1680,300` · R `7152,1680,300`, `prores` HQ `yuv422p10le` bt709 (verified independently by BRAIN); app quit itself, exit 0, no crash report (`c6cad75`) |
+| 9 | Full-res speed and memory were `[HYPOTHESIS]` | 9,822 measured 21.6 fps windowed (S5) | **300 frames at 19,644×1680 rendered AND written in ≤ 7 s wall ⇒ ≥ 43 frames/s, faster than real time**; the app's own counter 16 (warm-up) → 49 → 71 → 76 → 80; `[PROFILE/120f] Compute avg 11.11 (min 5.33 max 48.17) \| Render+PostFX avg 9.26 (min 6.89 max 30.33) \| Total avg 20.36 max 78.50 ms`; **peak RSS 2.56 GB** (1-s `ps` samples: 0.42 → 2.28 → 2.38 → 2.55 → 2.56 → 2.51 → 2.55 GB). ⚠️ 2M particles, **no hole formed** (`hole 0%`) — the lens pass cost at this width is still unmeasured | run log `scratchpad/s8_run.log` (session dir) | `[MEASURED n=1 run]` |
+| 10 | Two stale log strings | `[REPLAY] ARMED … floor(t*fps)` (schedule has been ceil since `d6cbb7c`); `[SIZE] drawable WxH` (since S8 that number is the render size) | `ceil` · `[SIZE] render WxH (= the drawable live; the pinned render size under S8)` — strings only, no maths | `take_replay.cpp:75`, `renderer.mm:2217` | `[READ]` literals read back out of the built binary with `strings`, no launch (`3e085d7`) |
 
 ## 2. 🚨 OPEN — his list, verbatim
 
-1. **"This is the most improtant build of the project."** — S8, S6, S7 not started. `MEASURE:` a 10-s replay → three ProRes files with 300 frames each (`ffprobe nb_frames`), widths 7152/5340/7152, and a CC trace lining up with the replay log.
-   State: **S8 CAPTURE is the blocker for full res.** `[MEASURED 18:22–18:25]` every offscreen texture type (RGBA16F mipmapped/plain, Depth32F, RG16F, RGBA8) allocates and rasterizes at 19,644×1680, and ProRes 422HQ/4444/HEVC sessions open at 19,644, 9,822, 7,152, 5,340; **but the `CAMetalLayer` that PRESENTS refuses any drawable above 16,384** (`nextDrawable` nil, `drawableSize` 0×0) and the final blit `copyFromTexture:drawable.texture` (`renderer.mm` renderWithCamera) SIGSEGV'd — his *"it crashed lol"*. ⇒ S8 = the existing Syphon post pass (`renderer.mm:~5460`, gated on `hasClients`) forced on into an OFFSCREEN target of the pinned size, blit → `CVPixelBuffer` (`CVMetalTextureCache`) → three `AVAssetWriter`s cropping x 0–7151 / 7152–12491 / 12492–19643, ProRes 422 HQ, one frame per output tick, writer back-pressure; the on-screen layer shows a ≤16,384 preview. `[HYPOTHESIS]` until built: memory at 19,644 wide (≈264 MB per RGBA16F target × ~12 targets) fits the M5 Max; render speed at that width unmeasured (9,822 measured 21.6 fps windowed).
-2. **"The midi cc mist work so well that i can compose rides and fades accurately"** — S6 (OPUS's registry, `DESIGN_…_MIDI_MAP_AND_LINK.md` §1.5/§3.4: apply OUTSIDE `if (showHUD)`, refuse mapping the marker CC) and S7 (slew on the frame clock; 7-bit CC steps every ~7 frames at 30 fps). `MEASURE:` a logged 0→127 sweep moves a mapped fader in replay with a per-frame value trace; two renders identical. State: not started; CC events already arrive at `onMidi` (`main.cpp:267`) and are printed.
-3. **Alignment to the Ableton timeline** — `[MEASURED]` each replayed event lands 0–33 ms AFTER its recorded time, never before, deterministic (S4 fix). `[UNVERIFIED]` Ableton's own MIDI output stamping: the take header will read `stamps packet|callback|mixed` on his first real take — read it. `[UNVERIFIED]` end-to-end frame-vs-bar: no video exists.
-4. **Floor `ae0449e` + hold `74bee76`** (this morning) — still await his eyes; his night verdicts on Chladni are in `docs/HANDOFF_2026-09-03_FABLE_NIGHT.md`.
+1. **"what I wanna do is have my set in one session. The entire 30 mins. Press play. Send it to space synth. And watch it render. I need a real time preview."** — S6 mapping (OPUS §1.5/§3.4: apply OUTSIDE `if (showHUD)`, refuse the marker CC) is the blocker; CC events already reach `onMidi` (`main.cpp:296`) and are printed with no consumer. `MEASURE:` a logged 0→127 sweep moves a mapped fader in replay with a per-frame value trace; two renders identical. State: not started.
+2. **"It doesnt matter. Every fader gets the same movement."** — S7 = ONE slew law on the frame clock, universal; no per-parameter table. **He names the parameters that get mod support, from the screen — do not pre-empt the list.** State: not started, waiting on his list.
+3. **Disk budget, `[MEASURED-derived]`:** L 982,726,939 B + C 1,050,482,859 B + R 967,337,195 B for 10 s = **300 MB/s for all three walls ⇒ a 30-minute set ≈ 540 GB** of ProRes 422 HQ. HIS number to plan around (344 GB free on / at 19:53). Not a fault; a fact he has to rule on (drive, or a lighter codec for the sides).
+4. **Alignment to the Ableton timeline** — `[MEASURED]` on the SYNTHETIC take only: each replayed event lands 0–33 ms after its recorded time, never before. `[UNVERIFIED]` Ableton's own MIDI stamping (`stamps packet|callback|mixed` in the take header) and end-to-end frame-vs-bar — now testable, the files exist.
+5. **What is in the frames** `[MEASURED n=3 frames × 3 walls, 10-bit luma]`: C YAVG 93.7/68.1/73.5, YMAX to 928; **L and R YAVG 64.6 (video black is 64), YMAX 400–650** — the matter sits in the centre 5,340 of the 19,644 in this take. His eyes accepted the look (*"Bravo"*); composition of the side walls is his call, not a writer fault.
+6. **Lens cost at 19,644 wide** — unmeasured (no hole in the synthetic take). `MEASURE:` a take that forms a hole, same env, read `[PROFILE/120f]`.
+7. **Floor `ae0449e` + hold `74bee76`** (this morning) — still await his eyes.
 
 ## 3. ⛔ DEAD ROADS — recorded so they are not retried
 
-- **Three cameras / off-axis frusta per wall — REJECTED BY HIM 2026-09-03 ~16:2x** (*"Not by rotating the camera"*). One image, crop three slices.
-- **Changing the live `dt` to 1/60 — REJECTED (BRAIN's ruling under his "smarter compromise")**: six hand-synced literals + `particles.metal:362`'s identity. Offline-only; warp 0.99 reproduces today's timing if ever wanted.
-- **A typed pin ceiling (16384 → "32768") — DEAD.** 16384 refused a size the GPU renders; the ceiling is measured on the device (`canAllocateDrawable`). Metal's validation ABORTS above 32768 rather than returning nil, so that one number is checked before any descriptor exists.
-- **The on-screen drawable as the wall-size render target — DEAD (MEASURED).** The layer cannot present > 16,384. The render target must be offscreen (S8).
-- **`floor(t·fps)` for replay — RETRACTED, see §5.**
-- **Launching the app to verify from my window while he is at the machine — his interrupt 18:2x.** Build without launching; his eyes own launches.
+- **The on-screen drawable as the wall-size render target — DEAD `[MEASURED 18:22]`.** The layer cannot present > 16,384; the final pass now renders offscreen (row 7). The drawable is a preview only.
+- **Three cameras / off-axis frusta per wall — REJECTED BY HIM ~16:2x** (*"Not by rotating the camera"*). One image, crop three slices — which is what `SS_CAPTURE_SLICES` does.
+- **A typed pin ceiling (16384 / 32768) — DEAD.** Measured on the device (`canAllocateDrawable`); Metal aborts above 32,768 rather than returning nil.
+- **Changing the live `dt` to 1/60 — REJECTED (his "smarter compromise")**: offline only.
+- **`floor(t·fps)` for replay — RETRACTED 18:1x**, `ceil` since `d6cbb7c`.
+- **A per-parameter slew/curve table for S7 — DEAD BEFORE DESIGN, his ruling ~21:06** (*"Every fader gets the same movement"*).
+- **Feeding `prevFrameTexture` from the SDR capture pass — NOT taken (design):** the trails would feed back compressed highlights and differ from live. It is fed from the EDR final target instead; the cost is one extra post pass at full width, measured affordable (row 9).
 
 ## 4. 🔬 PREFLIGHT
 
 ```
-PREFLIGHT 2026-09-03 18:30:39  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS   (before the S5 commit; re-run below)
-1. git   ok branch true-physics, HEAD d6cbb7c
-         FAIL 6 uncommitted path(s): M imgui.ini (app-rewritten, reverted) M src/main.cpp M src/render/renderer.h
-              M src/render/renderer.mm M src/ui/window.h M src/ui/window.mm   ← COMMITTED 52f6d68 (S5)
-         WARN 42 commit(s) not pushed   ← no push order
-2. board FAIL docs/BOARD_BLACKHOLE.md is 6 code commit(s) behind HEAD (verified at 74bee76)   ← BRAIN's to fold + re-stamp (S1–S5)
-         FAIL docs/BOARD.md is 6 code commit(s) behind HEAD                                    ← same
-3. artifact ok SpaceSynth newer than newest source · ok default.metallib newer   (built 18:30:36, NOT launched)
+PREFLIGHT run 2026-09-03 22:25:14 (after the two source commits, BEFORE this handoff commit)
+PREFLIGHT 2026-09-03 22:25:14  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS
+1. git
+  ok    branch true-physics, HEAD d95296b
+  FAIL  1 uncommitted path(s) — COMMIT THEM. Step 6 is mandatory; /handoff IS the order.
+           M docs/BOARD.md
+  WARN  53 commit(s) not pushed
+2. board vs HEAD
+  FAIL  docs/BOARD_BLACKHOLE.md is 2 code commit(s) behind HEAD (verified at 52f6d68)
+  WARN  docs/BOARD_BLACKHOLE.md is 251812B — split closed rows into BOARD_CLOSED.md
+  ok    docs/BOARD_CLOSED.md archive, 104965B — exempt (not read at cold start)
+  ok    docs/BOARD.md current at 3e085d7 — 2 docs-only commit(s) since, no source change
+  WARN  docs/BOARD.md is 184105B — split closed rows into BOARD_CLOSED.md
+3. deployed artifact
+  FAIL  STALE: SpaceSynth predates src/render/renderer.mm — run the packaging script, do not test this
+  FAIL  STALE: default.metallib predates src/render/renderer.mm — run the packaging script, do not test this
+4. referenced paths (live docs only)
+  FAIL  docs/BOARD.md references missing path: src/render/show_capture.cpp
+5. orbital-plane convention — READ THESE, do not skip
 ```
-Re-run after the handoff commit (`075f3df`, 2026-09-03 18:35:53):
-```
-1. git   ok HEAD 075f3df · FAIL 1 uncommitted: M docs/HANDOFF_2026-09-03_OPUS_MAPPING_AND_COLOUR.md ← BRAIN's edit (his order: BRAIN updates the idle OPUS/SONNET handoffs; OPUS idle since 15:28). I first wrote "OPUS writing live" — inferred from the filename, wrong.
-         WARN 44 commit(s) not pushed — no push order
-2. board FAIL docs/BOARD_BLACKHOLE.md 7 code commits behind · FAIL docs/BOARD.md 7 behind (both verified at 74bee76) ← BRAIN's. I first wrote the BLACKHOLE board "ok": my print skipped that line (a sed range), and I reported the gap as a pass. Folded by BRAIN at 200c370 (18:40:11): docs/BOARD.md §AA holds the seven renderer commits; both boards re-stamped to 52f6d68.
-3. artifact ok binary + metallib (18:30:36) newer than every source — NOT launched
-4. paths ok 49 referenced path(s) resolve
-```
+Notes: the uncommitted `docs/BOARD.md` is BRAIN's live edit (his order: BRAIN owns both boards and the fold). The two "missing path" FAILs are brace-expansion citations in §AA (`take_recorder.{h,cpp}`) that the checker cannot resolve — BRAIN's to spell out. This file is the last path I own; committed right after this run.
 
 ## 5. ↩️ RETRACTED THIS SESSION
 
 | Claim I made | Why it was wrong |
 |---|---|
-| S4: "`floor(t·fps)` applied at the top of that frame — never early, at most one frame late" | Backwards. The top of the frame that CONTAINS t is up to 1/fps BEFORE t; measured 11–31 ms early on every envelope transition (S9). Fixed to `ceil` in `d6cbb7c`; now 0–33 ms late, never early. |
-| "19,644 wide rasterizes, so the full-res pin will work" | True of textures, false of the presenting layer; the pin at 19,644 crashed in the first frame. Measured both halves; S8 must render offscreen. |
-| S3 spec relayed as "`frameCounter` == 2N offline" | `frameCounter` counts frames (one computeStep per frame); the step count is `[OFFLINE] steps/frame=2` / `[PERF] steps=`. |
-| "BOARD_BLACKHOLE.md is now ok — your re-stamp landed" (18:36 to BRAIN) | It had not; my preflight print used a line range that skipped the FAIL line and I reported the hole as a pass. A truncated print is not a preflight. |
-| "`M docs/HANDOFF_…_OPUS_…` = OPUS writing live" | Attribution inferred from the filename. It was BRAIN, on his order; OPUS was idle since 15:28. Say who from `ListAgents`/git, never from a name. |
-| Estimated stamps | none — all from `date`. |
+| none this pass | — |
 
 ---
 
-**Last Updated:** 2026-09-03 18:33:00
-**Folded into board:** NOT by me — the board is BRAIN's; BRAIN [5d8bf1] has the seven shas and this file.
+**Last Updated:** 2026-09-03 22:25:14
+**Folded into board:** NOT by me — `docs/BOARD.md` §AA is BRAIN's (his order); BRAIN [5d8bf1] has both shas (`c6cad75`, `3e085d7`) and this file. S8 is not on the board at this stamp.

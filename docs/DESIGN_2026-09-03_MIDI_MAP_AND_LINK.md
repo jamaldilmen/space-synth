@@ -583,19 +583,27 @@ in and validated.** This costs nothing extra at the parser.
 |---|---|---|---|
 | 1 | ✅ **DONE — parser Real-Time guard**, SONNET's, landed 05:50:18, built 05:53:27, **validated §2.1b `[MEASURED n=3]`** | 7/7 Real-Time vectors pass | — |
 | 1b | ⚠️ **System Common size table** §2.1c — `F1`/`F3`/`F6` **still destroy a note** | the 4 vectors in §2.1c | ✅ yes **under the MIDI-clock ruling only** — ⛔ no if anything speaks MTC |
-| 2 | Interface + inbox §3 [1][2]; **one consumer** `main.cpp:213` | note input still works exactly as before | ⛔ no |
+| **0** | 🚨 **PREREQUISITE ZERO §10.0 — widen `MidiCallback` to carry `(cc, channel, value)`; ONE consumer `main.cpp:213`** | note input byte-for-byte unchanged; a CC arrives and can be *named* | ⛔ **NO — the app cannot capture, log or map a CC without it. His record pass is blocked by construction.** |
+| 2 | Event source §10.1 — a **time-ordered `CcEvent` list**, NOT the latest-value slot (see §10.1 for why the slot is wrong and why the fix is small) | live: a fade traces; render: the same log gives the same frames twice | ⛔ no |
 | 3 | `UiSliderFloat`/`UiSliderInt` mapping + learn — **62 params, zero call sites** | **nothing on screen changes until a CC arrives** | ⛔ no — this IS the ask |
 | 3b | **Registry seeding pass** §1.5 — ⛔ **without it, mappings die when he hides the menu** | map a dial, hide the HUD, move the fader | ⛔ **NO — this is what makes step 3 true on stage** |
 | 4 | `main.cpp:1563` → `UiSliderInt` (one word) | that one slider now maps | ✅ yes, costs 1 param |
 | 4b | Kind-B setter targets §1.2 (4 sliders: master vol + 3 chorus) | move a mapped chorus dial | ✅ yes, costs 4 params |
 | 4c | `UiSliderFloat2` for `main.cpp:1885` — **wrapper does not exist**, 2 values, dynamic label/count | an emitter XY moves from 2 CCs | ✅ **yes — the most work for the least surface** |
-| 4d | **Takeover: pickup built, bypassed for relative** (his ruling 3) | a preset load does not jump the dial | ⛔ no if he brings absolute faders |
+| 4d | **Takeover: pickup built, bypassed for relative** (his ruling 3), and ⛔ **REFUSED with a named error for a timeline source** §10.4 | a preset load does not jump the dial; a timeline mapping set to PICKUP **fails loudly at load, never silently** | ⛔ no if he brings absolute faders |
+| **R1** | 🚨 **RECORD PASS §10.2** — log note + CC with timestamps during a low-res play-in | the log replays and reproduces the take | ⛔ **NO — this is his step 1** |
+| **R2** | 🚨 **REPLAY AT `frameIndex/30` §10.3** + the warp **pin** (force to 1, log before frame 1, **both directions** — `setTimeWarp` clamps only to `1e-3`) | two renders of one log are identical; a stale warp cannot silently change the video's length | ⛔ **NO** |
+| **R3** | **Slew §10.5** advanced on the frame-indexed clock | a 30 s ride shows no stepping, and renders identically twice | ⛔ no — 7-bit steps every ~7 frames without it |
+| **R4** | ⚠️ **Resolution decoupling** §10.2 — **FABLE's**, but this design depends on it: `sizeResScale` makes the 840 preview **half** the dot size of the 1680 delivery | the record-pass preview and the render read as the same picture | ⛔ no — a ride authored against the wrong picture is inaccurate however exact the timing |
 | 5 | `UiCheckbox` ×24, `UiCombo` ×2 | pixels identical | ✅ **yes** |
 | 6 | Macros §5 (file-only, no editor) | a CC moves 3 dials | ✅ yes |
 | 7 | MIDI clock §6.3 | phase drive | ✅ yes |
 | 8 | **Ableton Link** | — | ⛔ **NOT BEFORE COLOGNE** |
 
-**Steps 1–3 alone = every fader on the app playable from his controller, nothing moved.**
+**Steps 0–3 alone = every fader on the app playable from his controller, nothing moved.**
+**Steps 0, 2, R1–R4 = his highest-prio build: compose rides and fades in Ableton, render them accurately.**
+⭐ **Note what is NOT on this list: an SMF reader and a tempo map.** His record-then-render ruling deleted
+them — R1/R2 replace the whole of what option B would have cost.
 Saying which are droppable **now, not on Thursday.**
 
 ---
@@ -620,6 +628,21 @@ one frame. **If that reads to him as moving something, it needs his word.**
 ---
 
 ## 10. 🚨 TIMELINE-ACCURATE AUTOMATION — the revision his order forces
+
+### 10.0 ⛔ PREREQUISITE ZERO — **THE APP CANNOT CAPTURE A CC EVENT TODAY, SO IT CANNOT LOG ONE**
+
+**Promoted from §2.3 ("architectural, not stage-urgent") to the FIRST thing that must be built.**
+`[READ midi_input.h:6-8, VERIFIED 2026-09-03 16:21:52 — after `9fbe0ba`, unchanged by it]`
+```
+using MidiCallback = std::function<void(int note, float velocity, bool isNoteOn)>;
+```
+**No CC number. No channel.** `[READ midi_input.mm, grep 0xB0 → ZERO hits]` CC is still not parsed at all.
+⇒ **His step 1 — "play it in once and log it" — is blocked by construction.** You cannot record an event the
+callback cannot represent. Every other section of this design, and the whole record-then-render build, sits
+behind this one interface change.
+⭐ **It is cheap: ONE consumer** `[READ main.cpp:213]`. Widen the callback, keep note behaviour byte-for-byte,
+add `(cc, channel, value)`. **This is prerequisite zero, not step one of three.**
+
 
 ### 10.1 ↩️ CORRECTING THE INBOX — and correcting the REASON, because the reason decides the fix
 
@@ -652,24 +675,41 @@ behaviour, evaluated at the FRAME's time instead of at now.** ⭐ **That is the 
 curve, the range, the three target kinds (§1.2) and §3.4's apply order are untouched, and the live path
 degenerates to exactly today's behaviour when `frameTime == now`.
 
-### 10.2 🔴 THE FORK HIS WORDS DO NOT SETTLE — *"have the app 'read' the midi"*
+### 10.2 ✅ **HIS RULING: RECORD ONCE, THEN RENDER OFFLINE — neither A nor B**
 
-**Two architectures, not one build. I am not guessing which he means.**
+**My A/B fork had a hole and BRAIN found it.** `[HIS RULING 2026-09-03]` he plays the Ableton timeline in
+**once, at low resolution**; the app **logs note + CC with timestamps**; the offline render **replays that log
+at exactly 30 fps at any resolution.** ⛔ **No SMF reader, no tempo map — option B is NOT being built.**
 
-| | **A — LIVE STREAM** | **B — FILE READ** |
-|---|---|---|
-| Source | Ableton plays; CC arrives over IAC | the app parses a `.mid` **file** (notes + CC at ticks) |
-| Clock master | **Ableton** | **the app** |
-| Accuracy | ±1 frame + CoreMIDI jitter | **exact and reproducible** |
-| Render speed | real time only | **any speed — this unlocks the offline tier** |
-| New code | **none beyond §10.1** — rides the parser shipped as `9fbe0ba` | a Standard-MIDI-File reader + tempo map |
-| Cologne-ready | **yes** | not without his word on scope |
+**Why my fork was wrong, recorded because the reasoning is reusable:**
+- **A (live stream) was structurally incapable of being the show render.** At **19644×1680 = 33 Mpx/frame** the
+  render cannot run in real time, so "Ableton is the clock master" can never produce the deliverable. I
+  scoped A against a controller and never checked it against the wall's pixel count.
+- **B (file read) was paying for a parser to solve a problem the existing tap already solves.** The app is
+  already the thing receiving the MIDI; it does not need to re-read what Ableton sent it.
 
-**RECOMMENDATION, one not a menu: BUILD A, DESIGN B, SHARE EVERYTHING BELOW `Mapping`.** A is reachable now
-on the parser already in, and is what he can rehearse with. B is the only thing that makes *"accurately"*
-literally true and is the natural partner to the pre-recorded show and to SONNET's offline design. **They
-differ ONLY in how `CcEvent.t` is produced** — so A costs nothing toward B and forecloses nothing.
-🔴 **HIS CALL: does "read the midi" mean the live stream, or a file the app opens?**
+⭐ **BUT EVERYTHING BELOW `Mapping` SURVIVES WHOLE, AND THAT IS THE POINT OF §10.1.** Record-then-replay is
+**A's capture with B's exactness.** The `CcEvent` abstraction is what makes his ruling a change of *producer*
+rather than a redesign: **the only thing that changed is who produces `t`.**
+```
+record pass : t = wall-clock at arrival, appended live   → written to a log file
+render pass : t = read back from the log                 → evaluated at frameIndex/30
+```
+`Mapping`, the curve, the range, the three target kinds (§1.2), the registry (§3.3) and §3.4's apply order are
+**untouched by this ruling.** ⇒ **§10.1 is now the load-bearing section of the entire build**: a recorded log
+is nothing but timestamped events, and the replay is nothing but evaluating them at a frame index.
+
+🚨 **A NEW PROBLEM HIS RULING CREATES — HE WOULD AUTHOR AGAINST A DIFFERENT PICTURE THAN GETS DELIVERED.**
+He composes the ride watching the **low-res preview**, then renders at wall resolution. But star size is
+resolution-scaled: `[READ renderer.mm:2156]` `cam.sizeResScale = height / 2260.0f`, consumed at
+`[READ render.metal:2525]` `out.pointSize *= max(cam.sizeResScale, 1e-3f)`.
+⇒ **840 → 0.37168 · 1680 → 0.74336: exactly 2× the point size at delivery.** `[READ, both values computed
+from the one constant]` The preview he authors against is **half-size dots** — a visibly sparser, thinner
+image than the render he is authoring FOR. A fade timed to "when the shape reads as solid" lands somewhere
+else at 2× the dot size.
+⇒ **Resolution decoupling is no longer his "half res option" — it is REQUIRED for the record pass to look
+like the render.** ⛔ FABLE's lane and his ruling; noted here as a **dependency of this design**, because a
+ride authored against the wrong picture is inaccurate no matter how exact the timing is.
 
 ### 10.3 ✅ THE CLOCK — HIS RULING SOLVES THIS EXACTLY, AND I HAD IT BOARDED AS AN OPEN RISK
 
@@ -718,9 +758,12 @@ ruling; recorded here because it is a consequence of the clock this section depe
   through an entire authored ride **with no error, no warning and no log line.**
 - **`RELATIVE`** is meaningless — an automation lane has no deltas.
 ⇒ **Make it impossible, not improbable:** a `Mapping` whose source is a timeline **rejects** `PICKUP` and
-`RELATIVE` at load with a named error rather than accepting them and going quiet. **A silent no-op is the
-failure mode this design has been avoiding since §1.5**, and it would be indistinguishable from "the mapping
-didn't load".
+`RELATIVE` at load with a named error — ⛔ **do NOT silently fall back to `JUMP`**, because a silent fallback
+and a silent no-op are equally undebuggable. **A silent no-op is the failure mode this design has been
+avoiding since §1.5**, and it is indistinguishable from *"the mapping didn't load"*.
+🚨 **His record-then-render ruling makes this MORE important, not less:** the log is **authored once and
+rendered UNATTENDED.** Nobody is watching the dial when the render runs, so a mode that produces silence
+produces a finished, wrong video — and the first sign of it is a delivered file with a dead parameter.
 
 ### 10.5 ⭐ WHAT *"ACCURATELY"* COSTS — 7 bits is not enough for a slow ride, and the answer already exists
 
@@ -737,6 +780,9 @@ is the same second-order form `camera.h` already ships (`kSettleConst`, `camera.
 ⚠️ **One conflict to state rather than discover:** a slew filter is **state that persists across frames**, so
 in a deterministic render it must be advanced by the same frame-indexed clock as everything else (§10.3) — or
 **the smoothing itself becomes the thing that differs between two renders.**
+🚨 **Under his ruling this stops being a nicety: reproducibility IS the point of record-then-render.** A slew
+advanced on wall time would make the same log render differently every pass — which defeats the entire reason
+he is recording once instead of playing live.
 ⚠️ **14-bit CC (MSB/LSB on `cc` and `cc+32`) is the textbook alternative and I am NOT recommending it:** it is
 real in the MIDI spec, but **whether Ableton emits 14-bit for an automation lane is `[UNVERIFIED]`** and I will
 not design around a host feature I have not confirmed. **The slew answer needs nothing from the host**, so it

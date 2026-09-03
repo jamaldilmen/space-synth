@@ -40,7 +40,12 @@ TakeReplay::TakeReplay(int fps) : fps_(fps) {
     double t; int kind, ch, a, b, stamped;
     if (sscanf(line, "E %lf %d %d %d %d %d", &t, &kind, &ch, &a, &b, &stamped) != 6) continue;
     if (kind < 0 || kind > 2 || a < 0 || a > 127 || b < 0 || b > 127) continue;
-    int64_t frame = (int64_t)startFrame_ + (int64_t)std::floor(t * (double)fps_);
+    // ceil, not floor: an event is applied at the START of its frame, so the
+    // first frame whose start is >= t is the first that may carry it. That
+    // makes a replayed event NEVER EARLY and at most one frame (1/fps) late —
+    // video lagging audio by <33 ms is inside tolerance, video leading is
+    // not. (floor was measured 11-31 ms early against the live take; S9.)
+    int64_t frame = (int64_t)startFrame_ + (int64_t)std::ceil(t * (double)fps_ - 1e-9);
     if (frame < 0) { preRollSkipped++; continue; }
     if (t < 0.0) preRollKept++;
     MidiEvent ev{(MidiKind)kind, (uint8_t)ch, (uint8_t)a, (uint8_t)b, stamped != 0, t};

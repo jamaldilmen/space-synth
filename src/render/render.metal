@@ -2523,6 +2523,20 @@ vertex VertexOut particle_vertex(
     // need no conversion of their own.
     // == 1.0 at his fullscreen height ⇒ fullscreen unchanged by construction.
     out.pointSize *= max(cam.sizeResScale, 1e-3f);
+    // ── FLOOR IN DEVICE PIXELS (2026-09-03, his ruling) ──────────────────────
+    // "unchanged by construction" held for ONE panel: 2260 was his 08-21
+    // drawable (More-Space mode). Today the panel runs 3024x1900 ⇒ scale
+    // 0.84, and the 1 REFERENCE-px floor above (:1388, and every play sprite
+    // via the point-source collapse) lands at 0.84 DEVICE px. MEASURED on the
+    // M5 Max (standalone Metal, 200 points on a 20° line, random sub-pixel
+    // offsets): size 0.84 → 137/200 lit, 63 empty columns; size 1.00 →
+    // 200/200, continuous. Metal does not clamp a point up to one pixel — a
+    // sub-pixel point lights only when a pixel centre falls inside it. That
+    // is his "straight lines read as unterbrochene Linien wegen dem Angle".
+    // A point source occupies at least ONE device pixel — that is the whole
+    // justification of the 1.0 and it is not a tuned number. Culls above
+    // wrote 0 and stay 0. Display-independent; a projector needs no re-pin.
+    if (out.pointSize > 0.0f) out.pointSize = max(out.pointSize, 1.0f);
     return out;
 }
 

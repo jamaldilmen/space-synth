@@ -78,6 +78,15 @@ struct AppState {
   // recorded here so the reversal is not mistaken for a regression.
   // It no longer REPLACES the physical colour — it blends over it by
   // uiPhaseVizAmount, hue only. See the note at render.metal's phase-tint block.
+  // CC-DRIVEN RIGID SPIN (2026-09-04, his order: the arrow-hold rotation as a
+  // slow ramp instead of a 3-second rip). When uiSpinCcActive, the RIDE owns
+  // the Y spin rate outright: the arrow-hold accel/drag integrator's Y result
+  // is replaced, so the ramp is exactly the curve the driver sends and does
+  // not bleed off at the 0.3/s hold drag or the 2.5/s release drag.
+  // Unit, not rad/s -- the physical ceiling kSpinMax lives in main.cpp and
+  // stays the single source of truth; this is multiplied by it there.
+  bool  uiSpinCcActive = false;
+  float uiSpinCcUnit   = 0.0f; // 0..1 of kSpinMax; direction applied at use
   bool  uiPhaseViz = false; // OFF by default -- his order 2026-09-04 16:0x,
                             // "phase vz off default always ... untick the box".
                             // The consumer is `phaseViz ? phaseVizAmount : 0.0f`

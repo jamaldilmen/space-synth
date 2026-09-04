@@ -330,11 +330,11 @@ int main() {
       // smallest thing that answers whether a ride works at all. Runs on the
       // MIDI thread same as noteOn/noteOff above, so it applies whether the
       // HUD is shown or hidden — no showHUD dependency to satisfy.
-      static double lastLogT[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-      static const char *const kName[11] = {
+      static double lastLogT[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+      static const char *const kName[12] = {
           "zoom",      "camTilt",   "exposure",    "fluid",  "glitch",
           "chromatic", "iscoOrbit", "thetaSpin",   "camPhi", "phaseAmount",
-          "thetaRange"};
+          "thetaRange", "spinRate"};
       // 14-bit zoom (2026-09-04 ~12:30, his verdict "back and forth zoomies,
       // not one consistent ride"): the real take's own log showed the 7-bit
       // step gap running 3.4-98.4s (measured, not the ~1.4s first assumed)
@@ -355,6 +355,7 @@ int main() {
       static bool zoomEverApplied = false;
       static uint8_t thetaMSB = 0, thetaLSB = 0;
       static bool thetaEverApplied = false;
+      static uint8_t spinMSB = 0, spinLSB = 0;
       // THETA RANGE SELECTOR (2026-09-04 ~15:12, OPUS's catch): the 14-bit
       // pair always maps v14/16383 onto [0, thetaRangeMax) -- a 90deg tilt
       // that only ever SENDS v14 up to a quarter of 16383 wastes 3/4 of the
@@ -424,6 +425,27 @@ int main() {
         mapped = (v14 / 16383.0f) * thetaRangeMax;
         camera.setTiltAbs(mapped);
         thetaEverApplied = true;
+        break;
+      }
+      case 34: { // spinRate MSB -> cache only (apply on CC66 LSB), same
+                 // latch pattern as zoom/theta: applying on EITHER half lets
+                 // a fresh MSB pair with a stale LSB for one message.
+        idx = 11;
+        spinMSB = ev.b;
+        mapped = app.uiSpinCcUnit;
+        break;
+      }
+      case 66: { // spinRate LSB -> applies the full 14-bit pair.
+                 // 0 = stopped (the app's own default, so a dropped CC fails
+                 // SAFE), 16383 = kSpinMax, the M87* photon-sphere ceiling.
+                 // Direction is applied where it is used (main loop): RIGHT
+                 // arrow, i.e. dirY = -1, his "spin it to the right".
+        idx = 11;
+        spinLSB = ev.b;
+        uint16_t v14 = ((uint16_t)spinMSB << 7) | spinLSB;
+        app.uiSpinCcUnit = v14 / 16383.0f;
+        app.uiSpinCcActive = true;
+        mapped = app.uiSpinCcUnit;
         break;
       }
       case 33: // thetaRange selector -- raw 0 = full 2pi (ORBIT, the
@@ -1245,6 +1267,15 @@ int main() {
       spinVelX = std::clamp(spinVelX, -kSpinMax, kSpinMax);
       spinVelY = std::clamp(spinVelY, -kSpinMax, kSpinMax);
       spinVelZ = std::clamp(spinVelZ, -kSpinMax, kSpinMax);
+      // ── CC-OWNED SPIN (2026-09-04) ─────────────────────────────────────
+      // When the ride is driving, it OWNS the Y rate: replace, do not add.
+      // Placed AFTER the drag and the clamp on purpose -- the integrator
+      // above would otherwise bleed the ramp off at 0.3/s while "held" and
+      // 2.5/s when not, and no arrow IS held in an offline render.
+      // Negative = the RIGHT arrow's direction (dirY = arrowL - arrowR),
+      // his "spin it to the right". Flip this one sign to reverse it.
+      if (app.uiSpinCcActive)
+        spinVelY = -app.uiSpinCcUnit * kSpinMax;
       // RIGID-FRAME SPIN: the spin is a rigid rotation applied in the RENDER,
       // not in the physics — so the disk/Chladni shape rotates as one solid
       // body (no force-fighting → no rest-scatter, no note-pinning, no jump to

@@ -90,7 +90,9 @@ PREFLIGHT 2026-09-04 02:30:58  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHY
 PREFLIGHT: FAILURES ABOVE — fix before handing off.
 ```
 
-🚩 **The one remaining FAIL is `docs/BOARD.md` + `docs/BOARD_BLACKHOLE.md`: owned by BRAIN, folding in progress at 02:3x, told explicitly not to touch.** It is **not** my uncommitted work and it is **not** unowned. §5 records why it is left standing rather than fixed. Both files already stamp `e750a73`, so §2 of preflight passes — the FAIL is only that BRAIN's commit has not landed yet.
+✅ **CLOSED AT 02:33:49 — PREFLIGHT NOW PASSES WITH ZERO FAILURES.** BRAIN's fold landed as `8b5ee63` *"docs: FABLE handoff + board fold — bloom verdict, smear parked, and the pinned path never forms the hole at launch (§AF)"*, tree clean, HEAD `8b5ee63`, **64 unpushed, still NO push order.** Remaining output is WARNs only: unpushed count, both board files over the size threshold, and the 8 plane sites. The paragraph below is kept as the record of why the FAIL was left standing while it was mine to look at.
+
+🚩 **The one FAIL at 02:30:58 was `docs/BOARD.md` + `docs/BOARD_BLACKHOLE.md`: owned by BRAIN, folding in progress at 02:3x, told explicitly not to touch.** It is **not** my uncommitted work and it is **not** unowned. §5 records why it is left standing rather than fixed. Both files already stamp `e750a73`, so §2 of preflight passes — the FAIL is only that BRAIN's commit has not landed yet.
 
 ## 5. ↩️ RETRACTED THIS SESSION
 
@@ -101,5 +103,5 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 ---
 
-**Last Updated:** 2026-09-04 02:31:40
-**Folded into board:** NOT BY ME — `docs/BOARD.md` + `docs/BOARD_BLACKHOLE.md` are being folded by BRAIN at 2026-09-04 02:3x, both already stamped `e750a73`. This window has **no findings that need a board row**: §1 is process, not mechanism.
+**Last Updated:** 2026-09-04 02:34:10
+**Folded into board:** NOT BY ME — `docs/BOARD.md` + `docs/BOARD_BLACKHOLE.md` are being folded by BRAIN at 2026-09-04 02:3x, both already stamped `e750a73`. This window has **no findings that need a board row**: §1 is process, not mechanism. BRAIN's fold committed `8b5ee63` at 02:33:04; preflight passed clean at 02:33:49.

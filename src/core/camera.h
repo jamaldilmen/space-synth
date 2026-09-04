@@ -231,6 +231,26 @@ public:
     tgtRho = std::max(kMinRho, std::min(kMaxRho, tgtRho - dRho));
   }
 
+  // ABSOLUTE set (2026-09-04, his CC ride order via BRAIN): zoom()/rotate()
+  // are deltas, unsuited to a fader that must land on the SAME position every
+  // time it repeats a value — a ride re-sweeping CC=64 needs the same rho
+  // back, not "nudge from wherever we ended up". Still writes the TARGET only,
+  // so the spring in update() is untouched.
+  void setZoomAbs(float rhoAbs) {
+    tgtRho = std::max(kMinRho, std::min(kMaxRho, rhoAbs));
+  }
+  void setTiltAbs(float thetaAbs) { tgtTheta = thetaAbs; }
+  // Azimuth absolute set (2026-09-04, take 3 "spin" order): at theta=0 phi
+  // has NO visible effect (sinTheta=0 kills it) -- this is the fixed pose
+  // that picks ORBIT (phi=90 deg, stays edge-on through a theta sweep) vs
+  // TUMBLE (phi=0, goes face-on at the quarter point). Same target-only
+  // write as setTiltAbs/setZoomAbs; the spring in update() is untouched.
+  void setPhiAbs(float phiAbs) { tgtPhi = phiAbs; }
+  // See `orbitUpFix` above. Only the orbit ride sets this; every other use
+  // of the camera keeps the original theta-derived up (unchanged, still the
+  // right choice when theta is an elevation, not an orbit angle).
+  void setOrbitUpFix(bool on) { orbitUpFix = on; }
+
   float getRho() const { return rho; }
   float getPhi() const { return phi; }
   float getTheta() const { return theta; }
@@ -255,7 +275,21 @@ public:
     float cosT = std::cos(theta);
     float sinP = std::sin(phi);
     float cosP = std::cos(phi);
-    float refUp[3] = {-cosT * sinP, sinT, -cosT * cosP};
+    // ORBIT MODE ONLY: pin refUp to the disk normal (0,0,-1) instead of the
+    // theta-derived vector -- see `orbitUpFix` above for why. Verified
+    // numerically: this keeps screenUp constant at (0,0,-1) (matching take
+    // 2's own framing) for every theta, while screenRight rotates smoothly
+    // in the disk plane -- a true orbit, no roll.
+    float refUp[3];
+    if (orbitUpFix) {
+      refUp[0] = 0.0f;
+      refUp[1] = 0.0f;
+      refUp[2] = -1.0f;
+    } else {
+      refUp[0] = -cosT * sinP;
+      refUp[1] = sinT;
+      refUp[2] = -cosT * cosP;
+    }
     float right[3] = {refUp[1] * forward[2] - refUp[2] * forward[1],
                       refUp[2] * forward[0] - refUp[0] * forward[2],
                       refUp[0] * forward[1] - refUp[1] * forward[0]};
@@ -330,6 +364,18 @@ private:
   float velRho, velTheta, velPhi; // internal to the spring; nothing else writes
   float posX, posY, posZ;
   bool cinematic = false;
+  // ORBIT UP-VECTOR FIX (2026-09-04, take 3 verdict "the rotation seems
+  // wrong ... not what i wanted"): the theta-derived refUp below is correct
+  // when theta is an ELEVATION -- it exists to avoid a basis flip at the
+  // poles. Take 3 made theta the ORBIT angle instead, so the basis rotated
+  // WITH the orbit: disk sat 90deg rotated on screen (right became the disk
+  // normal instead of up) and screenUp swept a full 360deg in the disk
+  // plane across the take -- the picture rolled, reading as the OBJECT
+  // spinning rather than the camera flying around it. Pinning refUp to the
+  // disk normal (0,0,-1) for orbit mode only keeps the horizon level: right
+  // rotates in-plane as it should, up stays constant, matching take 2's
+  // framing exactly (verified: take 2's own screenUp was (0,0,-1)).
+  bool orbitUpFix = false;
 
   // Wrap an angle to (-π, π].
   static float wrapPi(float a) {

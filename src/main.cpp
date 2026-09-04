@@ -283,6 +283,13 @@ int main() {
     printf("[AUDIO] Engine started successfully.\n");
   }
 
+  // Moved up from its old spot near the HUD state (was line 366) so the CC
+  // ride mapping below (2026-09-04) can capture it by reference — the S6-lite
+  // apply attaches to the MIDI callback, which is built before the HUD block.
+  // Plain data struct, default-initialized; nothing between here and its old
+  // position depended on the old order.
+  static space::AppState app;
+
   // ── MIDI Input ──────────────────────────────────────────────────────
   MidiInput midiInput;
   // S2: the take recorder. push() is the only thing added to the MIDI thread —
@@ -311,10 +318,202 @@ int main() {
       synth.noteOff(ev.a);
       printf("[MIDI] noteOff note=%d ch=%d\n", ev.a, ev.channel);
       break;
-    case space::MidiKind::CC:
+    case space::MidiKind::CC: {
       printf("[MIDI] cc num=%d val=%d ch=%d t=%.6f%s\n", ev.a, ev.b, ev.channel,
              ev.t, ev.stamped ? "" : " (unstamped)");
+      // ── CC RIDE TEST (his order 2026-09-04 ~02:5x, relayed by BRAIN) ──────
+      // Six FADER parameters from his list only: zoom, camera up/down,
+      // exposure, fluid, glitch, chromatic. `pause` excluded on purpose — his
+      // own words, "must be a on off switch in midi not a 1-127 value", and
+      // the registry has no switch type yet (board §AA18, his call to make).
+      // Hardcoded CC numbers for THIS TEST, not the S6 registry — the
+      // smallest thing that answers whether a ride works at all. Runs on the
+      // MIDI thread same as noteOn/noteOff above, so it applies whether the
+      // HUD is shown or hidden — no showHUD dependency to satisfy.
+      static double lastLogT[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+      static const char *const kName[11] = {
+          "zoom",      "camTilt",   "exposure",    "fluid",  "glitch",
+          "chromatic", "iscoOrbit", "thetaSpin",   "camPhi", "phaseAmount",
+          "thetaRange"};
+      // 14-bit zoom (2026-09-04 ~12:30, his verdict "back and forth zoomies,
+      // not one consistent ride"): the real take's own log showed the 7-bit
+      // step gap running 3.4-98.4s (measured, not the ~1.4s first assumed)
+      // against a 0.5s-settle critically-damped spring -- the camera fully
+      // stopped between every CC step. Standard MIDI 14-bit pairing, CC20
+      // MSB + CC52 LSB.
+      // ⚠️ LATCH FIX (2026-09-04 ~13:5x): applying on EITHER half (the
+      // original take-3-prep version) let a fresh MSB apply immediately
+      // against a STALE cached LSB for a moment before the real LSB caught
+      // up -- OPUS measured 23 such lurches (~15 rho, <1ms each) in take 2.
+      // Now MSB only CACHES; the apply happens on LSB, which is always the
+      // fresher, complete pair. `everApplied` is the coarse-sender fallback:
+      // the very FIRST MSB this run applies immediately (coarse, lsb=0) so a
+      // 7-bit-only sender that never sends the LSB half still moves the
+      // camera once, instead of sitting dead forever waiting for a byte that
+      // isn't coming. Same pattern reused for thetaSpin below.
+      static uint8_t zoomMSB = 0, zoomLSB = 0;
+      static bool zoomEverApplied = false;
+      static uint8_t thetaMSB = 0, thetaLSB = 0;
+      static bool thetaEverApplied = false;
+      // THETA RANGE SELECTOR (2026-09-04 ~15:12, OPUS's catch): the 14-bit
+      // pair always maps v14/16383 onto [0, thetaRangeMax) -- a 90deg tilt
+      // that only ever SENDS v14 up to a quarter of 16383 wastes 3/4 of the
+      // quantization density, reproducing take-1's stepping (measured:
+      // 32 crossings over 4800 frames, one per 150 -- the spring's tail
+      // cannot bridge that). The fix is on the RECEIVER: let the driver
+      // always send the FULL 0-16383 range for maximum density, and have
+      // THIS side scale it to whatever span the shot needs. Default is the
+      // orbit's full turn (2pi) so the orbit driver needs no new CC at all;
+      // CC33 nonzero switches it to pi/2 for the tilt shot.
+      static float thetaRangeMax = 2.0f * M_PI_F;
+      const float t01 = ev.b / 127.0f;
+      int idx = -1;
+      float mapped = 0.0f;
+      switch (ev.a) {
+      case 20: { // zoom MSB -> cache only (apply on CC52 LSB), coarse-fallback on first-ever
+        idx = 0;
+        zoomMSB = ev.b;
+        if (!zoomEverApplied) {
+          uint16_t v14 = ((uint16_t)zoomMSB << 7) | zoomLSB;
+          float t14 = v14 / 16383.0f;
+          mapped = space::Camera::kMinRho +
+                  t14 * (space::Camera::kMaxRho - space::Camera::kMinRho);
+          camera.setZoomAbs(mapped);
+          zoomEverApplied = true;
+        } else {
+          mapped = camera.getRho(); // log the unchanged value, not applied
+        }
+        break;
+      }
+      case 52: { // zoom LSB -> applies the full 14-bit pair
+        idx = 0;
+        zoomLSB = ev.b;
+        uint16_t v14 = ((uint16_t)zoomMSB << 7) | zoomLSB;
+        float t14 = v14 / 16383.0f;
+        mapped = space::Camera::kMinRho +
+                t14 * (space::Camera::kMaxRho - space::Camera::kMinRho);
+        camera.setZoomAbs(mapped);
+        zoomEverApplied = true;
+        break;
+      }
+      case 21: // camera up/down -> theta, linear over [0, pi] (7-bit static
+               // hold, take-2 shape; NOT used by the take-3 spin ride, which
+               // drives theta via the 14-bit CC28/29 pair below instead)
+        idx = 1;
+        mapped = t01 * M_PI_F;
+        camera.setTiltAbs(mapped);
+        break;
+      case 28: { // thetaSpin MSB -> cache only, same latch pattern as zoom
+        idx = 7;
+        thetaMSB = ev.b;
+        if (!thetaEverApplied) {
+          uint16_t v14 = ((uint16_t)thetaMSB << 7) | thetaLSB;
+          mapped = (v14 / 16383.0f) * thetaRangeMax;
+          camera.setTiltAbs(mapped);
+          thetaEverApplied = true;
+        } else {
+          mapped = camera.getTheta();
+        }
+        break;
+      }
+      case 29: { // thetaSpin LSB -> applies the full 14-bit pair, linear
+                 // [0, thetaRangeMax) -- see the CC33 selector above
+        idx = 7;
+        thetaLSB = ev.b;
+        uint16_t v14 = ((uint16_t)thetaMSB << 7) | thetaLSB;
+        mapped = (v14 / 16383.0f) * thetaRangeMax;
+        camera.setTiltAbs(mapped);
+        thetaEverApplied = true;
+        break;
+      }
+      case 33: // thetaRange selector -- raw 0 = full 2pi (ORBIT, the
+               // default so the orbit driver needs no change at all),
+               // nonzero = pi/2 (TILT, take 4's edge-on-to-face-on shot).
+               // EXACT selector like camPhi, not a scaled value -- there is
+               // no reason to round when there are only two spans.
+        idx = 10;
+        thetaRangeMax = (ev.b == 0) ? (2.0f * M_PI_F) : (M_PI_F * 0.5f);
+        mapped = thetaRangeMax;
+        break;
+      case 30: // camPhi -> azimuth pose, EXACT selector not a scaled value
+               // (2026-09-04 ~13:59 fix: a 7-bit-scaled t01*2pi cannot land
+               // exactly on pi/2 -- nearest raw was 90.72deg, cos(phi)=
+               // -0.0124, which put posZ = rho*sinTheta*cosPhi at +-24.8
+               // units off the disk plane at rho=2000, once per revolution
+               // -- a slow vertical bob on a shot whose premise is staying
+               // in-plane. phi is never modulated once armed, so there is no
+               // reason to carry any rounding at all: raw 0 = TUMBLE
+               // (phi=0 exactly), any other raw = ORBIT (phi=pi/2 exactly).
+        idx = 8;
+        mapped = (ev.b == 0) ? 0.0f : (M_PI_F * 0.5f);
+        camera.setPhiAbs(mapped);
+        // Take-3 verdict fix (2026-09-04 ~14:58): "the rotation seems
+        // wrong ... not what i wanted" -- the theta-derived up vector rolls
+        // WITH the orbit when theta is the orbit angle (see camera.h
+        // `orbitUpFix`). Same selector as the pose itself: nonzero raw
+        // (ORBIT) arms the fix, raw 0 (TUMBLE) leaves the original
+        // theta-derived up alone -- tumble's whole point is going over the
+        // pole, which needs the basis-flip-avoidance path untouched.
+        camera.setOrbitUpFix(ev.b != 0);
+        break;
+      case 31: // phaseAmount -> uiPhaseVizAmount, 7-bit static hold (his
+               // order 2026-09-04 ~14:44, "phase fx off" for all future
+               // takes). Held at 0, NOT a default change in app_state.h --
+               // this is a per-render override, reversible, and it lands in
+               // the log so the take is provably phase=0 rather than
+               // assumed. Zeroing the amount alone is sufficient regardless
+               // of the separate `uiPhaseViz` bool (renderer.mm:2081 --
+               // `phaseViz ? phaseVizAmount : 0.0f` is 0 either way when
+               // phaseVizAmount is 0).
+        idx = 9;
+        mapped = t01;
+        app.uiPhaseVizAmount = mapped;
+        break;
+      case 22: { // exposure -> logarithmic [0.01,100], matches its own slider's curve
+        idx = 2;
+        const float lo = std::log(0.01f), hi = std::log(100.0f);
+        mapped = std::exp(lo + t01 * (hi - lo));
+        app.uiExposure = mapped;
+        break;
+      }
+      case 23: // fluid -> uiTrailDecay, linear [0, 0.99]
+        idx = 3;
+        mapped = t01 * 0.99f;
+        app.uiTrailDecay = mapped;
+        break;
+      case 24: // glitch -> uiGlitch, linear [0, 1]
+        idx = 4;
+        mapped = t01;
+        app.uiGlitch = mapped;
+        break;
+      case 25: // chromatic -> uiChromatic, linear [0, 0.02]
+        idx = 5;
+        mapped = t01 * 0.02f;
+        app.uiChromatic = mapped;
+        break;
+      case 26: { // ISCO orbit -> uiIscoSeconds, logarithmic [0.02,30] — same
+                 // curve as its own slider (main.cpp:1729-1730). LOWER=faster
+                 // (his order 2026-09-04 morning: park this at the fast end).
+        idx = 6;
+        const float lo = std::log(0.02f), hi = std::log(30.0f);
+        mapped = std::exp(lo + t01 * (hi - lo));
+        app.uiIscoSeconds = mapped;
+        break;
+      }
+      default:
+        break;
+      }
+      // Rate-limited: at most 5/s per parameter, plus always the sweep's
+      // endpoints (raw 0 and 127) so "changed and reset again" is never the
+      // one line that got throttled away.
+      if (idx >= 0 &&
+          (ev.t - lastLogT[idx] >= 0.2 || ev.b == 0 || ev.b == 127)) {
+        printf("[MIDI-MAP] %-9s cc=%d raw=%3d -> %.5f\n", kName[idx], ev.a,
+               ev.b, mapped);
+        lastLogT[idx] = ev.t;
+      }
       break;
+    }
     }
   };
   midiInput.start(onMidi);
@@ -363,7 +562,7 @@ int main() {
 
   // ── HUD State ──────────────────────────────────────────────────────
   static bool showHUD = true;
-  static space::AppState app;
+  // `app` itself moved up to :291 (before the MIDI callback, which needs it).
 
   // TEMP-SLICE3 (remove after slice-3 verdict): the headless shock-tube run
   // (SS_SPH_TEST, see renderer.mm uploadParticles) needs the SPH force +

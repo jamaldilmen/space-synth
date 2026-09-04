@@ -7,7 +7,7 @@ that cost us a take. Created on his order 2026-09-04 15:12:04.
 > file on disk) or HIS RULING (his words, quoted). Nothing here is inferred. If a line has
 > no measurement and no quote behind it, it does not belong in this file.
 
-**Last Updated:** 2026-09-04 15:15:19
+**Last Updated:** 2026-09-04 19:01:04  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
 
 ---
 
@@ -116,6 +116,43 @@ The opening close-up is the expensive part; the run speeds up as the camera pull
 - **The ProRes writer is never the bottleneck** — 57.1 MB/s sustained, zero back-pressure
   stalls. ⚠️ It has NOT been tested at 300 MB/s; a realtime-30fps version of this content
   would demand ~360 MB/s, which is unmeasured.
+### 2026-09-04 evening — SEVEN TAKES, and the cost driver is NOT what I first said
+
+| Take | Content | Frames | Wall | fps |
+|---|---|---|---|---|
+| `take4rev_full` | chromatic, 3 s notes, no spin | 5400 | 355.9 s | **15.17** |
+| `take5_spin` | same + ramped spin | 5400 | 395.7 s | **13.64** |
+| `take6` v1 | 2 notes **SUSTAINED** across their halves | 7200 | 148 s | **48.6** |
+| `take6` v2 | same shot, notes **released after 3 s** | 7200 | 844.9 s | **8.52** |
+| `take7` v1 | 4 notes **SUSTAINED** | 7200 | 146 s | **49.3** |
+| `take7` v2 | same shot, notes **released after 3 s** | 7200 | 543.9 s | **13.24** |
+
+🚨 **A HELD NOTE IS 4–6× CHEAPER TO RENDER THAN A RELEASED ONE.** `[MEASURED n=2 pairs,
+one variable changed]` take6 48.6 → 8.52 fps and take7 49.3 → 13.24 fps; the ONLY difference
+is the note-off frame. A sustained voice parks the field in a settled state; letting go lets
+it evolve, and an evolving field costs both GPU time and ProRes bitrate (74 GB → 90 GB on the
+same shot). **Note behaviour belongs in the render budget next to framing.**
+
+⛔ **"THE SPIN COSTS 3.3×" IS RETRACTED (2026-09-04 18:40:00).** The controlled pair —
+same 3 s notes, same width, same 5400 frames — is `take4rev_full` 15.17 fps vs `take5_spin`
+13.64 fps ⇒ **the spin costs 11%, not 3.3×.** The 3.3× compared a spin take against a
+SUSTAINED-note take and read the note difference as the spin.
+
+📐 **CENTER-ONLY TEST RENDERS: 1.34×** `[MEASURED n=1 pair, 900 frames, matched framing,
+same driver]` 19644 with 3 slices 30.8 s vs 5340 single slice 22.9 s; 3.14 GB vs 9.50 GB out.
+**Narrowing the render width is a TRUE CENTER CROP, not a reframe** — `perspectiveMatrix`
+(`renderer.mm:6186`) fixes vertical FOV and derives horizontal from aspect, so tan of the
+horizontal half-angle scales EXACTLY with width (0.271839 both). ⛔ The "1.37×" I quoted from
+the two full-length takes is RETRACTED — those two runs had different note patterns, so the
+number carried the content change inside it. His ruling `[HIS WORDS ~17:05]`: *"its a pretty
+substantial increase in time for the scale we're at ... i just need to guess that the sides
+are part of the shot. front is more important anyways"* ⇒ **test renders center-only, sides
+only for the final.**
+
+⚠️ **Only writing the centre SLICE saves almost nothing** — the three slices are crops of ONE
+full-width render (`show_capture.mm:159` blits the same source texture three times), and the
+writer idles at 57 MB/s. The saving comes from narrowing `SS_WIDTH`, not from dropping slices.
+
 - **The field loses ~72% of its matter over ten minutes** (two agreeing instruments). That is
   a COMPOSITION fact about a 10-minute part, not only a physics one.
 
@@ -134,7 +171,23 @@ tails the render's own `[CAPTURE] frame N written` markers.
 | **camPhi** | 30 | selector: raw 0 = tumble (φ=0) · nonzero = orbit (φ=π/2 exactly) |
 | **iscoOrbit** | 26 | set-and-hold |
 | **phaseAmount** | 31 | set-and-hold, **0 = phase FX OFF** |
+| **spinRate** (rigid body spin) | **34 MSB / 66 LSB, 14-bit** | 0 = stopped, 16383 = `kSpinMax` 436.8 rad/s. Direction applied receiver-side: NEGATIVE = right arrow |
 | exposure / fluid / glitch / chromatic | 22–25 | available, **not used since take 2** |
+
+**The drivers, all in `logs/` (gitignored, same as every sender):**
+
+| Driver | Shot |
+|---|---|
+| `midi_ride_cmaj_tilt` | take 4 — held C-E-G chord, then tilt 0→90° + zoom OUT, landing together |
+| `midi_ride_cmaj_tilt_rev` | same, zoom **IN** (opens wide at rho 2000, arrives rho 50) |
+| `midi_ride_chromatic_tilt_rev` | 9 notes 60→68, one per 20 s held 3 s, reversed zoom |
+| `midi_ride_chromatic_tilt_spin` | as above + the ramped spin |
+| `midi_ride_shot` | **two modes.** `a` = middle→all-in→all-out + 1 min stillness, 2 notes · `b` = one in→out sweep, 4 notes C→E♭. `<log> <a\|b> [tickMs] [tilt]` |
+
+🚨 **WHY THE CHORD OPENED ON BLACK** `[HIS WORDS ~15:5x]` *"when a chord hits the screen is
+black"*. Take 4 held the camera at `SS_CAM_RHO=50` through the whole 20 s chord — INSIDE the
+matter shell, which sits at 150 r_s — so there was nothing between the camera and the hole.
+Cause is the FRAMING, not the formation. Fixed by opening wide and flying in.
 
 **Framing vocabulary — verified from `camera.h:192-194`, disk is in XY, normal is Z:**
 - **θ = 0, φ = 0** → camera on +Y, **edge-on**, disk HORIZONTAL on screen. *(the approved look)*
@@ -265,6 +318,49 @@ seen real capture output, and confirmed a fix with a falsifiable prediction (23 
 
 ---
 
+### 6.13 Gate the ride on `[MIDI] Listening`, not `[CAPTURE] ARMED` — **cost: one 900-frame smoke**
+
+`[CAPTURE] ARMED` is log line 21; `[MIDI] Listening on N source(s)` is line **46**. A driver
+launched on the ARMED line fires its first notes into a port the app is not yet listening on.
+`[MEASURED]` take 4's smoke logged `noteOn 0 / noteOff 3` — the chord never sounded, and the
+release at frame 600 landed on a note that was never struck.
+
+⚠️ The ride numbers from that run were still valid (the ride is frame-locked and CC33 is
+re-sent every tick), so a run can be half-wrong. Check `noteOn` and `noteOff` COUNTS on every
+take, not just that the log has MIDI in it.
+
+### 6.14 A note-off scheduled at `maxFrames` never sends — **cost: two full takes**
+
+The driver exits at `lastMarkerFrame >= maxFrames - 1`. A release scheduled at frame 7200 when
+the last frame is 7199 is never reached: take 6 logged **2 on / 1 off**, take 7 **4 on / 3
+off**, and the final note of each was still sounding at the end. Every note-off must be clamped
+to `maxFrames - 1`.
+
+`[HIS WORDS 2026-09-04 ~18:38]` *"i meant the note was held and let go. no held for the entire
+run"* — and then, to my "struck": *"not struck. held for a couple secs then let go."* The
+window is ~3 s (90 frames at 30 fps), the same as the chromatic take he approved.
+
+### 6.15 The SSD is exFAT — `cp -p` fails AFTER writing the data
+
+`cp: chflags: Invalid argument`. exFAT has no macOS file flags, so `-p` fails at the flag step,
+returns non-zero, and a script that treats non-zero as "copy failed" will keep the source and
+report a failure that did not happen — the bytes are already there. `[MEASURED]` a 17-file move
+reported 17 failures while T9 usage went 69 → 230 GB. **Use plain `cp` and verify by SIZE.**
+⛔ And do not swallow `cp`'s stderr; the real reason was hidden for a whole round trip.
+
+### 6.16 Which arrow spins WHICH axis — the disk is in XY
+
+`applySpin` (`render.metal:121`): `ay` mixes x and z, `ax` mixes y and z, **`az` mixes x and y**.
+The disk lives in XY (`particles.metal` computes `rXY`), so **`az` — Option+←/→ — is the only
+one that spins it in its own plane** like a record. Plain ←/→ drive `ay` and tumble it
+end-over-end.
+
+⚠️ **But his verdict was that the plain RIGHT arrow is the shot** `[HIS WORDS ~17:08]` *"arrow
+key to the right heeeeld"*, and the CC path already matched it exactly (`dirY = arrowL − arrowR
+= −1` ⇒ `spinVelY` negative). His *"it's the wrong axis, it's up-down not left-right"* was
+against a take whose camera is EDGE-ON for its first half — the read changes with the pose,
+so judge a spin axis at the framing it will actually be seen at.
+
 ## 7. OPEN — carried into the show, not solved
 
 - 🚨 **Black-hole formation is decided by a GPU thread RACE.** `merge_stars` claims stars with
@@ -309,4 +405,4 @@ seen real capture output, and confirmed a fix with a falsifiable prediction (23 
 
 ---
 
-**Last Updated:** 2026-09-04 15:15:19
+**Last Updated:** 2026-09-04 19:01:04  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*

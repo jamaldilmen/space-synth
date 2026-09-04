@@ -9,7 +9,7 @@
 ⚠️ **THIS WINDOW WROTE ZERO SOURCE, RAN NO BUILD, LAUNCHED NOTHING, AND COMMITTED NOTHING.**
 Context was cleared 2026-09-03 23:23. Everything below is verification of other windows' work plus one routing decision. The build token was never mine.
 
-🚨 **THE RUNNING APP IS NOT THE BUNDLE ON DISK.** PID 81680 launched **02:20:56**; the bundle was rebuilt by BRAIN at **02:29:58** and now contains FABLE's unverdicted smear change. The process he is watching **predates that build**. Do not describe them as the same code, and do not read a smear verdict off that window.
+🚨 **THE RUNNING APP IS NOT THE BUNDLE ON DISK.** PID 81680 launched **02:20:56**; the bundle on disk is **02:31:16** (`[MEASURED 02:37:44]` — BRAIN rebuilt at 02:29:58 and again at 02:31:16; the later stamp is the live one) and contains FABLE's unverdicted smear change. **The process is ~10 minutes older than the bundle.** The process he is watching **predates that build**. Do not describe them as the same code, and do not read a smear verdict off that window.
 
 ---
 
@@ -39,7 +39,7 @@ Context was cleared 2026-09-03 23:23. Everything below is verification of other 
    ⚠️ **His parameter list is pending and is HIS to write. Do not pre-empt it.**
 
 4. **FABLE's smear change has no verdict and he has not seen it.** `e750a73`, its own commit message says **UNVERDICTED**.
-   `MEASURE:` launch the **02:29:58** bundle (not PID 81680) at the pinned 19,644 width and look at whether a fast star's streak is a continuous band or a dotted trail.
+   `MEASURE:` launch the **02:31:16** bundle (not PID 81680) at the pinned 19,644 width and look at whether a fast star's streak is a continuous band or a dotted trail.
    State: `[READ src/render/postfx.metal:286-298 @ e750a73]` tap count went from a fixed 48 to `taps = clamp(ceil(length(mv * u.resolution)), 1, 256)`, decay renormalised `pow(decay, t * 48.0)` so the hold dial keeps its meaning. Its comment argues MAX-over-denser-taps can only fill gaps, never brighten. **I did not measure that and it is not my lane.** ⚠️ One thing I did read while checking the comment's premise: the motion attachment is cleared to zero only on the offscreen pass (`renderer.mm:4547-4548`, `MTLLoadActionClear`); `:5724` and `:5874` use `MTLLoadActionLoad`. Whether that matters is FABLE's call, not a finding.
 
 ## 3. ⛔ DEAD ROADS — recorded so they are not retried
@@ -49,7 +49,7 @@ Context was cleared 2026-09-03 23:23. Everything below is verification of other 
 
 ## 4. 🔬 PREFLIGHT
 
-Run at **02:30:58**, after FABLE's `e750a73` and BRAIN's 02:29:58 rebuild. The earlier run at **02:28:17** additionally FAILed `M src/render/postfx.metal` and both artifacts as STALE; all three cleared without my touching anything.
+Run at **02:30:58**, after FABLE's `e750a73` and BRAIN's 02:29:58 rebuild (superseded by a second rebuild at 02:31:16). The earlier run at **02:28:17** additionally FAILed `M src/render/postfx.metal` and both artifacts as STALE; all three cleared without my touching anything.
 
 ```
 PREFLIGHT 2026-09-04 02:30:58  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS
@@ -103,5 +103,5 @@ PREFLIGHT: FAILURES ABOVE — fix before handing off.
 
 ---
 
-**Last Updated:** 2026-09-04 02:34:10
+**Last Updated:** 2026-09-04 02:38:05
 **Folded into board:** NOT BY ME — `docs/BOARD.md` + `docs/BOARD_BLACKHOLE.md` are being folded by BRAIN at 2026-09-04 02:3x, both already stamped `e750a73`. This window has **no findings that need a board row**: §1 is process, not mechanism. BRAIN's fold committed `8b5ee63` at 02:33:04; preflight passed clean at 02:33:49.

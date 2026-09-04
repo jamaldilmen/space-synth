@@ -268,15 +268,34 @@ fragment float4 postfx_fragment(
         // anywhere and the eye reads a smudge. A pixel stretch is the opposite —
         // the dragged pixel KEEPS its colour for the whole length and then stops
         // dead. That hard-edged, full-strength band is the entire look.
-        // So: 48 taps, and the decay is a DIAL that defaults to none.
-        const int SMEAR_TAPS = 48;
+        // So: the decay is a DIAL that defaults to none.
+        //
+        // ── TAP COUNT FOLLOWS THE STREAK'S LENGTH IN DEVICE PIXELS (2026-09-04)
+        // It was a fixed 48. The motion vector is in UV, so the streak's pixel
+        // length scales with the frame: at the pinned 19,644-wide render the
+        // same orbit is 6.5× more pixels than on the 3024-wide laptop view he
+        // tuned on, and 48 taps sat 6.5× further apart — a continuous band
+        // became a dotted trail. One tap per device pixel is the honest
+        // sampling of a long exposure: MAX over denser taps can only FILL gaps,
+        // never brighten, so wherever the band was already continuous it is
+        // unchanged. Capped so the per-pixel cost stays bounded; past the cap
+        // the spacing grows again, and a gap only shows once that spacing
+        // exceeds the sprite's own width. Cost is paid ONLY where a star wrote a
+        // motion vector (attachment 1 is cleared to zero, renderer.mm), so the
+        // sky skips the loop entirely.
+        const int SMEAR_MAX_TAPS = 256;
         float decay = mix(0.90, 1.0, saturate(u.smearHold));
         float2 mv = motionTex.sample(s, uv).rg * u.smearShutter * u.pixelStretch;
         if (length(mv) > 1e-6) {
+            float lenPx = length(mv * u.resolution);
+            int taps = clamp(int(ceil(lenPx)), 1, SMEAR_MAX_TAPS);
             float3 streak = color.rgb;
-            for (int i = 1; i <= SMEAR_TAPS; i++) {
-                float t = float(i) / float(SMEAR_TAPS);
-                float w = pow(decay, float(i));
+            for (int i = 1; i <= taps; i++) {
+                float t = float(i) / float(taps);
+                // Decay is a property of how far along the band we are, not of
+                // the tap index: normalised to the old 48-tap span so the hold
+                // dial means exactly what it meant (far-end weight = decay^48).
+                float w = pow(decay, t * 48.0);
                 // MAX, not average: averaging 48 taps of mostly-black sky is
                 // what turns a bright band into a grey wash. Max keeps the
                 // brightest thing that passed through here at full strength,

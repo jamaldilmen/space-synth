@@ -1,0 +1,167 @@
+diff --git a/src/render/particles.metal b/src/render/particles.metal
+index 6cea694..4c077a0 100644
+--- a/src/render/particles.metal
++++ b/src/render/particles.metal
+@@ -3781,10 +3781,17 @@ kernel void merge_stars(
+     constant SpatialHashUniforms& su [[buffer(4)]],
+     constant PhysicsUniforms& u [[buffer(5)]],
+     device atomic_uint* claimed [[buffer(6)]],         // per-particle merge claim (zeroed each frame)
++    device atomic_uint* diag [[buffer(7)]],            // TEMP-DIAG 2026-09-04 (accDiagBuffer): [5]=star-star merges landed [6]=contact pairs found [7]=refused by bound gate. Cumulative, never cleared. Counts only; no sim path reads it.
+     uint cid [[thread_position_in_grid]])
+ {
+     uint totalCells = uint(su.gridSize) * uint(su.gridSize) * uint(su.gridSizeZ);
+     if (cid >= totalCells) return;
++    if (cid == 0u) {   // TEMP-DIAG 2026-09-04: echo the uniforms THIS kernel reads (float bits), so the host log shows the GPU-side values
++        atomic_store_explicit(&diag[12], as_type<uint>(u.dt), memory_order_relaxed);
++        atomic_store_explicit(&diag[13], as_type<uint>(u.gravGM), memory_order_relaxed);
++        atomic_store_explicit(&diag[14], as_type<uint>(u.massTotal), memory_order_relaxed);
++        atomic_store_explicit(&diag[15], uint(u.particleCount), memory_order_relaxed);
++    }
+     // Attack: hash is stale (not rebuilt during attack) — no merging.
+     if (u.envelopePhase >= 0.5f && u.envelopePhase < 1.5f) return;
+ 
+@@ -3889,11 +3896,12 @@ kernel void merge_stars(
+             }
+         }
+         if (bestRef == 0xFFFFFFFFu) continue;
++        atomic_fetch_add_explicit(&diag[6], 1u, memory_order_relaxed);   // TEMP-DIAG: a contact pair exists
+ 
+         SortedHot b = sorted[bestRef];
+         float mb = b.posW.w;
+         uint bOrig = b.entanglement.y;
+-        if (bOrig >= uint(u.particleCount)) continue;  // stale id
++        if (bOrig >= uint(u.particleCount)) { atomic_fetch_add_explicit(&diag[10], 1u, memory_order_relaxed); continue; }  // stale id (TEMP-DIAG count)
+ 
+         // ── REACTION LADDER rung 1 — the BOUND-PAIR gate (2026-07-07) ────────
+         // Contact fuses ONLY if the pair is gravitationally bound at contact:
+@@ -3919,8 +3927,28 @@ kernel void merge_stars(
+             float rcAB  = MERGE_RSUN_SIM * (pow(ma, 0.8f) + pow(mb, 0.8f));
+             float G1s   = u.gravGM / max(u.massTotal, 1.0f);
+             float vesc2 = 2.0f * G1s * (ma + mb) / max(rcAB, 1e-4f);
+-            if (vrel2 >= vesc2) continue;      // unbound: fly-through, no fusion
++            if (vrel2 >= vesc2) {              // unbound: fly-through, no fusion
++                atomic_fetch_add_explicit(&diag[7], 1u, memory_order_relaxed); // TEMP-DIAG: refused by the bound gate
++                // TEMP-DIAG 2026-09-04 histograms of the gate's terms over REFUSED pairs (32 log2 bins each):
++                //   [16..47]  ratio vrel2/vesc2, half-octave bins from 1 (bin 0) to 2^16
++                //   [48..79]  rcAB, half-octave bins from 2^-6 (0.0156 sim)
++                //   [80..111] vrel2, octave bins from 2^-24     [112..143] vesc2, octave bins from 2^-24
++                float ratioR = vrel2 / max(vesc2, 1e-20f);
++                uint bR = uint(clamp(log2(ratioR) * 2.0f, 0.0f, 31.0f));
++                uint bC = uint(clamp((log2(max(rcAB, 1e-6f)) + 6.0f) * 2.0f, 0.0f, 31.0f));
++                uint bV = uint(clamp(log2(max(vrel2, 1e-30f)) + 24.0f, 0.0f, 31.0f));
++                uint bE = uint(clamp(log2(max(vesc2, 1e-30f)) + 24.0f, 0.0f, 31.0f));
++                atomic_fetch_add_explicit(&diag[16u + bR], 1u, memory_order_relaxed);
++                atomic_fetch_add_explicit(&diag[48u + bC], 1u, memory_order_relaxed);
++                atomic_fetch_add_explicit(&diag[80u + bV], 1u, memory_order_relaxed);
++                atomic_fetch_add_explicit(&diag[112u + bE], 1u, memory_order_relaxed);
++                continue;
++            }
+             mergeViolence = vrel2 / max(vesc2, 1e-20f);
++            {   // TEMP-DIAG: [144..175] ratio for PASSED pairs, half-octave bins from 1 (bin 0) down to 2^-16
++                uint bP = uint(clamp(-log2(max(mergeViolence, 1e-30f)) * 2.0f, 0.0f, 31.0f));
++                atomic_fetch_add_explicit(&diag[144u + bP], 1u, memory_order_relaxed);
++            }
+         }
+         // CLAIM PROTOCOL: own both participants atomically before writing.
+         // Each pair has one initiator, but a PARTICLE can appear in pairs
+@@ -3930,12 +3958,13 @@ kernel void merge_stars(
+         uint expected = 0u;
+         if (!atomic_compare_exchange_weak_explicit(
+                 &claimed[aOrig], &expected, 1u,
+-                memory_order_relaxed, memory_order_relaxed)) continue;
++                memory_order_relaxed, memory_order_relaxed)) { atomic_fetch_add_explicit(&diag[8], 1u, memory_order_relaxed); continue; }  // TEMP-DIAG: a already claimed
+         expected = 0u;
+         if (!atomic_compare_exchange_weak_explicit(
+                 &claimed[bOrig], &expected, 1u,
+                 memory_order_relaxed, memory_order_relaxed)) {
+             atomic_store_explicit(&claimed[aOrig], 0u, memory_order_relaxed);
++            atomic_fetch_add_explicit(&diag[9], 1u, memory_order_relaxed);   // TEMP-DIAG: b already claimed
+             continue;
+         }
+         // The heavier eats (tie → lower id).
+@@ -3965,7 +3994,7 @@ kernel void merge_stars(
+         float tNew = max(w.prevW.w, l.prevW.w) + 2.0f + 4.0f * mergeViolence;
+         // Stale ids can exceed the current buffer (count switched 5M→2M).
+         if (wOrig >= uint(u.particleCount) || lOrig >= uint(u.particleCount))
+-            continue;
++            { atomic_fetch_add_explicit(&diag[10], 1u, memory_order_relaxed); continue; }  // TEMP-DIAG: stale id
+ 
+         // COMPARE-AND-WRITE GUARD — conservation insurance. The merge was
+         // decided from the snapshot; if the LIVE buffer no longer matches
+@@ -3975,7 +4004,7 @@ kernel void merge_stars(
+         // majority) see exact equality — posW.w is untouched between the
+         // snapshot blit and this kernel.
+         if (particles[wOrig].posW.w != mW || particles[lOrig].posW.w != mL)
+-            continue;
++            { atomic_fetch_add_explicit(&diag[11], 1u, memory_order_relaxed); continue; }  // TEMP-DIAG: compare-and-write guard refused
+ 
+         particles[wOrig].posW = float4(posNew, mNew);
+         particles[wOrig].prevW = float4(posNew - vNew, tNew);
+@@ -3985,6 +4014,7 @@ kernel void merge_stars(
+         float park = 4000.0f + float(lOrig % 1024);
+         particles[lOrig].posW = float4(park, park, park, 0.0f);
+         particles[lOrig].prevW = float4(park, park, park, l.prevW.w);
++        atomic_fetch_add_explicit(&diag[5], 1u, memory_order_relaxed);   // TEMP-DIAG: star-star merge landed
+     }
+ }
+ 
+diff --git a/src/render/renderer.mm b/src/render/renderer.mm
+index 39e1c2a..a838607 100644
+--- a/src/render/renderer.mm
++++ b/src/render/renderer.mm
+@@ -1568,7 +1568,7 @@ void renderWithCamera(id<CAMetalDrawable> drawable,
+   // so these cannot be misread the way `feed=` was (a one-frame sample of a
+   // per-frame-cleared buffer). Merge-side only: the capture-refusal counter
+   // this replaced wrapped uint32 in 8 minutes and cost ~1.3e9 atomic adds.
+-  allocIfNeeded(impl_->accDiagBuffer, 8 * sizeof(uint32_t));
++  allocIfNeeded(impl_->accDiagBuffer, 176 * sizeof(uint32_t));  // TEMP-DIAG 2026-09-04: was 8; [8..11] sink split, [12..15] uniform echo, [16..175] 5 x 32-bin gate histograms
+   allocIfNeeded(impl_->sphClosureBuffer, 8 * sizeof(int32_t)); // TEMP-CLOSURE window ledger (+poison count)
+   allocIfNeeded(impl_->cellStartsBuffer, cellSize);
+   size_t blockSumsSize = ((Impl::kTotalCells + 2047) / 2048) * sizeof(uint32_t);
+@@ -3605,6 +3605,7 @@ void renderWithCamera(id<CAMetalDrawable> drawable,
+         [comp setBuffer:spatialHashUniformBuffer offset:0 atIndex:4];
+         [comp setBuffer:uniformBuffer[frameIdx] offset:0 atIndex:5];
+         [comp setBuffer:mergeClaimBuffer offset:0 atIndex:6]; // cross-cell claims
++        [comp setBuffer:accDiagBuffer offset:0 atIndex:7];    // TEMP-DIAG 2026-09-04: star-star merge counters in [5..7] (cumulative)
+         // One thread per CELL (see merge_stars) — only dense cells do work.
+         NSUInteger tgMg = std::min(
+             tgSize, mergeStarsPipeline.maxTotalThreadsPerThreadgroup);
+@@ -4148,7 +4149,7 @@ void renderWithCamera(id<CAMetalDrawable> drawable,
+                   "[GRAV] live=%.0f Mlive=%.0f/%.0f Mmax=%.1f hole=%.2f%s seeds=%u feed=%u/%.1f scan=%u s0[cnt=%u e0m=%.3f e0id=%u exit=%u] com=(%.2f %.2f %.2f) "
+                   "meanR=%.2f maxR=%.1f "
+                   "phase=%.1f amp=%.3f gm=%.3f bh=(%.2f %.2f %.2f) Menc=%.0f peak=%u "
+-                  "mrg=%u/%u/%u\n",   // TEMP A1″: reached-CAS / landed / refused
++                  "mrg=%u/%u/%u smrg=%u/%u/%u sink=%u/%u/%u/%u kU=dt%.5f G%.4f M%.0f n%u\n",   // sink = claimA-fail / claimB-fail / stale-id / guard-refused · kU = uniforms as read INSIDE merge_stars   // TEMP A1″: reached-CAS / landed / refused · TEMP-DIAG 2026-09-04 smrg = star-star pairs / landed / refused-unbound (cumulative)
+                   liveCount, totalSM, physicsUniforms.massTotal, gMaxMass,
+                   bhStrength, bhFormedLatch ? "L" : "",
+ 
+@@ -4182,7 +4183,28 @@ void renderWithCamera(id<CAMetalDrawable> drawable,
+                   bhPosX, bhPosY, bhPosZ, bhMassEnc, bhPeakCount,
+                   accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[2] : 0u,
+                   accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[3] : 0u,
+-                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[4] : 0u);
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[4] : 0u,
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[6] : 0u,   // smrg: pairs found
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[5] : 0u,   // smrg: landed
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[7] : 0u,   // smrg: refused unbound
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[8] : 0u,
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[9] : 0u,
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[10] : 0u,
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[11] : 0u,
++                  accDiagBuffer ? ((const float *)accDiagBuffer.contents)[12] : 0.0f,
++                  accDiagBuffer ? ((const float *)accDiagBuffer.contents)[13] : 0.0f,
++                  accDiagBuffer ? ((const float *)accDiagBuffer.contents)[14] : 0.0f,
++                  accDiagBuffer ? ((const uint32_t *)accDiagBuffer.contents)[15] : 0u);
++          if (accDiagBuffer) {   // TEMP-DIAG 2026-09-04: raw cumulative histograms, one line, differenced offline
++            const uint32_t *hd = (const uint32_t *)accDiagBuffer.contents;
++            const char *names[5] = {"ref_ratio", "ref_rcAB", "ref_vrel2", "ref_vesc2", "pass_ratio"};
++            fprintf(stderr, "[MRGHIST] frame=%u", physicsUniforms.frameCounter);
++            for (int h = 0; h < 5; h++) {
++              fprintf(stderr, " %s:", names[h]);
++              for (int b = 0; b < 32; b++) fprintf(stderr, "%s%u", b ? "," : "", hd[16 + h * 32 + b]);
++            }
++            fprintf(stderr, "\n");
++          }
+         }
+         // ── [SEEDPROBE] (2026-09-03, HIS ORDER "fix the merger issue"; change 1,
+         // his yes 02:4x) — WHERE ARE THE SEEDS? Four runs tonight: mrg refused=0,

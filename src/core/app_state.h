@@ -72,11 +72,18 @@ struct AppState {
   int   uiPhysicsSubsteps = 1;    // N fixed-dt physics steps per frame (2026-07-25). Advances N× time per frame for the FAST sweep that makes real trails + volumetric Chladni fill — but each step is the stable dt=0.0165, so it does NOT detonate like dt×64 (which just scales the step past the stability limit → the field explodes into dots). Leave time-warp at ×1 and dial THIS for speed. Cost: ~N× physics compute (watch FPS). ⚠ rate-based effects (drain/recycle) currently run per-substep = N× per frame — watch for fast depletion; gate them if it bites.
   float uiIscoSeconds = 1.0f;     // DEFAULT 1.0s — HONEST: with the c3 fix (units.h::iscoPeriodWallSec) this now really is ONE ISCO orbit per screen-second. 0.023 was tried 22:14 to reproduce the pre-fix feel and REVERTED 22:33 (Jamal: "there's like a multiplikator there somewhere" — correct, 0.023 was a hidden 43.4334x buried in a default; a hidden factor is the exact thing the c3 fix removed). The dial is logarithmic 0.02..30 now, so pick the tempo on the slider, not in the default. 3.27s = true physical real-time at a 1.5e5 Msun hole. Was 1.0 (2026-07-25 20:15, Jamal — faster so the sweep streaks into trails, not dots; was 3.8). DECLARED time-lapse as PHYSICS: screen-seconds per ISCO orbit; compression DERIVED from the hole (T_isco = 92.3436*GM), never a bare multiplier. 3.8 s = Jamal's chosen 10x at the current hole. ⚠ 0.52 s was tried and REJECTED on sight 2026-07-24 18:10 ("looks even worse"): it was derived by matching CHLADNI_VCAP (1.2 sim/frame = ~72x c, which particles.metal itself flags as superluminal), so anchoring to it inherited its unphysicality — and it also saturated the streak law (elong = clamp(speed*1.4,0,1) pins at 1.0, lengthX maxes at 5x) so every particle drew the same maximal smear and the disk structure dissolved into haze. LOWER = faster. Render clock only.
   float uiSphCoolTau = 2.0f;      // τ₀ [simt] cooling e-fold at T_cap, ρ=1 (~1 simt ≈ 1 s wall at 60fps)
-  // PHASE TINT — DEFAULT ON as of 2026-08-24 22:2x, his order ("the phase
-  // thingy needs to be standard on"). It no longer REPLACES the physical
-  // colour — it blends over it by uiPhaseVizAmount, hue only. See the note
-  // at render.metal's phase-tint block.
-  bool  uiPhaseViz = true;
+  // PHASE TINT — DEFAULT OFF as of 2026-09-04, his order ("phase vz off
+  // default always"). This SUPERSEDES the 2026-08-24 22:2x order ("the phase
+  // thingy needs to be standard on") which had it default ON; that order is
+  // recorded here so the reversal is not mistaken for a regression.
+  // It no longer REPLACES the physical colour — it blends over it by
+  // uiPhaseVizAmount, hue only. See the note at render.metal's phase-tint block.
+  bool  uiPhaseViz = false; // OFF by default -- his order 2026-09-04 16:0x,
+                            // "phase vz off default always ... untick the box".
+                            // The consumer is `phaseViz ? phaseVizAmount : 0.0f`
+                            // (renderer.mm:2081), so this alone forces phase to 0.
+                            // uiPhaseVizAmount stays 0.35 ON PURPOSE: ticking the
+                            // box back on must still do something visible.
   float uiPhaseVizAmount = 0.35f; // 0 = pure physical colour, 1 = full rainbow
 
   // ── Envelope (ADSR) ──

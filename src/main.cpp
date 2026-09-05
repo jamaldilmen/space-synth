@@ -611,6 +611,37 @@ int main() {
   // (after the honest horizon fires); this only keeps it out of test beds.
   if (getenv("SS_NO_CAPTURE")) app.uiTogSeedCapture = false;
 
+  // SS_ORTHO=0 → launch in PERSPECTIVE ("pov") instead of the default
+  // orthographic camera (2026-09-04, his order for the take 6/7 re-runs:
+  // "repeat run 6 and 7 but from non ortho mode .. the pov ish mode").
+  // An offline render has no keyboard, so the "Ortho Camera" checkbox
+  // (main.cpp:1984) is unreachable; this writes the same app.uiOrthoMode the
+  // checkbox writes, so the code path is identical to clicking it.
+  // ⚠️ The two projections do NOT frame the same at the same rho: ortho's
+  // world half-height is rho*1.2 (main.cpp:1299) while perspective's is
+  // d*tan(45°/2) = rho*0.414214 (renderer.mm kTanHalfFov), so perspective is
+  // ~2.9x TIGHTER at the same zoom value. The lens survives it — the
+  // `config.orthoMode &&` term that zeroed bhShadowNdcRadius in perspective
+  // was removed 2026-08-10 and the divisor fixed 2026-08-20 (renderer.mm:2201).
+  if (const char *om = getenv("SS_ORTHO")) {
+    app.uiOrthoMode = (atoi(om) != 0);
+    printf("[CAM] SS_ORTHO=%s -> %s projection\n", om,
+           app.uiOrthoMode ? "ORTHOGRAPHIC" : "PERSPECTIVE");
+  }
+  // SS_LUM_CEIL=<v> -> the "Lum Ceiling" fader (app.uiStarLumCeil, default
+  // 1000) at launch. His order 2026-09-05 01:39: "for all runs lumen ceiling
+  // 520". Offline renders have no menu, so this writes the same field the
+  // fader writes; the log line is the proof it landed.
+  if (const char *lc = getenv("SS_LUM_CEIL")) {
+    float v = (float)atof(lc);
+    if (v >= 10.0f && v <= 65000.0f) {
+      app.uiStarLumCeil = v;
+      printf("[LUM] SS_LUM_CEIL=%s -> Lum Ceiling %.0f\n", lc, app.uiStarLumCeil);
+    } else {
+      fprintf(stderr, "[LUM] SS_LUM_CEIL=%s refused (10..65000), fader stays %.0f\n", lc, app.uiStarLumCeil);
+    }
+  }
+
   // SS_SUBSTEPS=N — pin the physics-substep slider at launch (2026-08-29).
   // Measurement hook ONLY: it writes the same app.uiPhysicsSubsteps the slider
   // writes (main.cpp:1474), so the code path is identical to dragging it. It

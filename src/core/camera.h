@@ -246,7 +246,16 @@ public:
   void setZoomAbs(float rhoAbs) {
     tgtRho = std::max(kMinRho, std::min(kMaxRho, rhoAbs));
   }
-  void setTiltAbs(float thetaAbs) { tgtTheta = thetaAbs; }
+  // NEAREST REPRESENTATIVE (2026-09-05, found by the SS_REPLAY stream check on
+  // the song shot): update() co-wraps the ACTUAL into (-pi, pi] and shifts the
+  // target by the same 2pi, but an absolute set re-asserted every frame put
+  // the target back at its raw value. With a target above pi the error became
+  // ~2pi after every wrap and the camera spun a full turn every 7 frames
+  // (measured: theta cycled -pi..pi at f=4, 11, 18, 25 ...). Take 3's orbit
+  // ran 0 -> 2pi and therefore had this in its second half. The fix: the
+  // target is always the representative of thetaAbs nearest the actual, so a
+  // continuous ramp steps by less than pi and the spring sees the true error.
+  void setTiltAbs(float thetaAbs) { tgtTheta = theta + wrapPi(thetaAbs - theta); }
   // Azimuth absolute set (2026-09-04, take 3 "spin" order): at theta=0 phi
   // has NO visible effect (sinTheta=0 kills it) -- this is the fixed pose
   // that picks ORBIT (phi=90 deg, stays edge-on through a theta sweep) vs

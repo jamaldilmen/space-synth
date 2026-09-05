@@ -7,7 +7,7 @@ that cost us a take. Created on his order 2026-09-04 15:12:04.
 > file on disk) or HIS RULING (his words, quoted). Nothing here is inferred. If a line has
 > no measurement and no quote behind it, it does not belong in this file.
 
-**Last Updated:** 2026-09-05 12:14:00  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
+**Last Updated:** 2026-09-05 12:47:07  *(the `near = 1.0` safety bound is `kMinRho`, added to §6.17 on his order. Previous stamp 2026-09-05 12:14:00.)*  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
 
 ---
 
@@ -400,6 +400,16 @@ so judge a spin axis at the framing it will actually be seen at.
 ### 6.17 The POV "shake" and "flicker" were the perspective NEAR PLANE — **cost: takes 6 and 7 POV (~180 GB), one evening**
 `perspectiveMatrix(…, 0.001f, 5000.0f)`. NDC depth ≈ 1 − n/z: with n = 0.001 every particle beyond a few units lands within float32 spacing of 1.0 (`Depth32Float`), so at z = 1000 two stars < ~60 units apart share one depth value, and the star pass `Less` test against the depth prepass flipped per frame by thread order — *"insane flicker"* live, *"crazy shake"* at 30 fps. Ortho maps depth linearly and never had it. Fix `38170d5`: near 1.0, far 20000. **What it was NOT:** the camera spring (critically damped, `[CAMF]` ripple ±5%), the ride driver, the sim clock, or sprite size (4× sprites at full width still shook — *"crazy shake is back"* 00:54). Rule: when a defect is POV-only, read the projection before measuring pixels.
 
+⚠️ **AND THE BOUND THAT MAKES `near = 1.0` SAFE IS `kMinRho`, NOT LUCK.** A near plane clips
+everything closer to the eye than itself, so `near = 1.0` is only free while the camera cannot
+get within 1 world unit of anything it must draw. `kMinRho = 50` (`camera.h:113`) is what
+guarantees that today. **If anyone ever lowers `kMinRho` below ~1 for a POV shot, particles
+inside 1 world unit of the eye will silently VANISH** — no error, no log line, just missing
+matter at the closest approach, which is exactly the frame a fly-through is built around.
+Raising `near` is what bought the depth precision, so the two numbers are one decision:
+change `kMinRho` and you must re-derive `near`. `[READ main.cpp:1391, camera.h:113]`
+`[NOT MEASURED — no run has gone below kMinRho 50; this is the derivation, not an observation.]`
+
 ### 6.18 A centre-slice smoke cannot judge framing — **cost: three smokes and an argument**
 The 5340 C slice is the middle 27 % of 19,644 and reads "zoomed in" whatever the camera does. Smoke full width when framing is the question; and when he says "not zoomed out", launch the live app in the same config and let HIM zoom — the live `[CAM-LIVE]` line then names the number.
 
@@ -447,4 +457,4 @@ The 5340 C slice is the middle 27 % of 19,644 and reads "zoomed in" whatever the
 
 ---
 
-**Last Updated:** 2026-09-05 12:14:00  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
+**Last Updated:** 2026-09-05 12:47:07  *(the `near = 1.0` safety bound is `kMinRho`, added to §6.17 on his order. Previous stamp 2026-09-05 12:14:00.)*  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*

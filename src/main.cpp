@@ -1357,10 +1357,38 @@ int main() {
       Renderer::orthoMatrix(proj, -frustum * aspect, frustum * aspect, -frustum,
                             frustum, -5000.0f, 5000.0f);
     } else {
-      Renderer::perspectiveMatrix(proj, 45.0f * (M_PI_F / 180.0f),
+      // SS_FOV=<deg> — the PERSPECTIVE vertical field of view, default 45.
+      // ⚠️ 45 deg is a LAPTOP-aspect number. perspectiveMatrix fixes the
+      // VERTICAL fov and derives the horizontal from aspect (renderer.mm:6186),
+      // so the world half-height it shows at distance d is d*tan(fov/2) =
+      // 0.414*d at 45 deg, against ortho's rho*1.2 (:1299) -- perspective is
+      // 2.9x TIGHTER at the same zoom, which spreads the same particles over
+      // 8.4x the area and is why a straight ortho->perspective swap reads dark.
+      // The fov at which the two projections frame IDENTICALLY at EVERY zoom
+      // is derived from ortho's own law, not picked: tan(fov/2) = 1.2 =>
+      // fov = 2*atan(1.2) = 100.389 deg.
+      static float sFovDeg = []{
+        float v = 45.0f;
+        if (const char *f = getenv("SS_FOV")) {
+          float t = (float)atof(f);
+          if (t > 1.0f && t < 179.0f) v = t;
+        }
+        printf("[CAM] perspective vertical FOV %.3f deg (SS_FOV)\n", v);
+        return v;
+      }();
+      // NEAR PLANE 0.001 -> 1.0 (2026-09-05, his POV "insane flicker" live +
+      // "crazy shake" in the render). Depth in NDC is ~1 - n/z, so with n =
+      // 0.001 every particle beyond a few units lands within float spacing of
+      // 1.0: at z = 1000 the buffer cannot separate two stars closer than ~60
+      // units, and the Less test against the depth prepass becomes a
+      // per-frame coin flip (thread-order) -- flicker live, "shake" at 30 fps.
+      // Ortho maps depth linearly over +-5000 and never had this. kMinRho is
+      // 50, so nothing the camera can frame is lost at n = 1 (resolution at
+      // z = 1000 becomes ~0.06 units).
+      Renderer::perspectiveMatrix(proj, sFovDeg * (M_PI_F / 180.0f),
                                   (float)window.drawableWidth() /
                                       (float)window.drawableHeight(),
-                                  0.001f, 5000.0f);
+                                  1.0f, 20000.0f); // far: kMaxRho 5800 + cloud ~7600, margin
     }
 
     // viewProj = proj * view

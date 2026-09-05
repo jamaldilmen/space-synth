@@ -234,6 +234,38 @@ Driver park before frame 0: mode `d` sends zoom14 = 0 (rho 50), mode `e` sends 8
 
 ⚠️ The driver source `logs/midi_ride_shot.mm` and `logs/run_shot.sh` are still gitignored; the table above is sufficient to rebuild them. Build: `clang++ -std=c++17 -O2 -fobjc-arc -framework CoreMIDI -framework CoreFoundation -framework Foundation logs/midi_ride_shot.mm -o logs/midi_ride_shot`.
 
+### 5.1a TAKES 6 AND 7 — the same POV config, five minutes, and the ZOOM BOUND that makes them safe
+
+His order 2026-09-05 ~12:5x: *"make the songs five minutes each not song slol the runs lol"*, after
+*"can we now safely re do th ebroken ones .. nonbhr0okenly ?"*
+
+```
+SS_REF_HEIGHT=420 SS_LUM_CEIL=520 bash logs/run_shot.sh <name> <a|b> <SS_CAM_RHO> 9000 0 19644 "7152,5340,7152"
+#   take 6 → mode a, SS_CAM_RHO=1488   (zUnit 0.25 — the "middle" of the CAPPED range)
+#   take 7 → mode b, SS_CAM_RHO=50     (all the way in)
+```
+| take | shape | notes | measured |
+|---|---|---|---|
+| 6 `take6_pov5m_mid_in_out_still` | middle → all-in → all-out over `rideFrames` 7200, then **1800 f (60 s) of stillness** | C4 at f0, C#4 at f3600, each held 90 f then RELEASED | 9000 f, **545.5 s**, landed zoom14 8192 / theta 90.00° |
+| 7 `take7_pov5m_in_out_4notes` | ONE sweep all-in → all-out across all 9000 f | C4/C#4/D4/D#4 on the quarters — f0 / 2250 / 4500 / 6750, held 90 f | 9000 f, **505.3 s**, landed zoom14 8191 / theta 89.99° |
+
+🚨 **THE ZOOM BOUND — WHY THESE STOP AT rho 2925 AND NOT AT `kMaxRho` 5800.**
+`const double kOutCap = 0.5` in `midi_ride_shot.mm` caps modes a/b at zUnit 0.5. It is there because
+**§6.17's near-plane fix bought a factor, not immunity.** Depth step is `ulp·z²/near`; with near = 1.0
+that is **0.51 world units at z = 2925** but **2.00 at z = 5800**, and past ~2 units apart in depth
+neighbouring stars share a depth value and the star pass `Less` test flips by thread order again.
+His eyes settled it: a 5-minute take 6 at the full 5800 shook on the FIXED bundle (*"i see that the
+take i shsaking right now"*), while 8 and 9 at 2925 are *"amazing no shakies all good"*.
+⭐ **RULE: in PERSPECTIVE, do not zoom past rho ~2925.** ⛔ **ORTHO IS EXEMPT** — it maps depth linearly
+over ±5000, which is why §5.2's orbit reaches 5800 safely. ⚠️ The cap is a WORKAROUND; the real fix is
+reversed-Z depth and is not built.
+
+🚩 **TWO DRIVER FAULTS FIXED HERE, both invisible until the take length changed:** modes a/b hardcoded
+`maxFrames = 7200` *and* their leg boundaries as literal frames (2700/5400) — the legs now derive from
+`rideFrames`; and the `take complete` line printed `rho=2000` from a stale kMaxRho span while the camera
+landed at 5800. **Verify a shot table against a synthetic log before spending a render** — generate a
+file of `[CAPTURE] frame N written` lines 0..N-1 and run the driver against it with no app.
+
 ### 5.2 REPLAY-DRIVEN TAKES — the orbit recipe (take 10) and how to make any ride frame-exact
 
 **Transport:** `SS_REPLAY=<file>` (S4, `src/core/take_replay.cpp`). A "SPACE SYNTH take v1" text file: header lines `# SPACE SYNTH take v1`, `# … t0 MARKER …`, `# … dropped 0 …`, then `E <t seconds> <kind 0=on 1=off 2=cc> <ch> <a> <b> 1`. Each event applies at output frame `ceil(t·30)` through `onMidi` — the same path, latch and mapping as live MIDI. No driver, no `[CAPTURE]` marker tailing, no wall clock. Generator: `scratchpad/gen_take.py`; runner: `scratchpad/run_replay.sh <name> <take> <SS_CAM_RHO> <frames> <SS_ORTHO> <SS_WIDTH> [slices]`; verifier: `scratchpad/check_replay.py <take> <log>` — run it on EVERY take: it compares each applied `[REPLAY]` line to the file (0 mismatches on all six runs so far). ⚠️ The app prints one `[REPLAY]` line per event (a 20k-event take = 20k log lines).

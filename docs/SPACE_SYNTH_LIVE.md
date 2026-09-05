@@ -7,7 +7,7 @@ that cost us a take. Created on his order 2026-09-04 15:12:04.
 > file on disk) or HIS RULING (his words, quoted). Nothing here is inferred. If a line has
 > no measurement and no quote behind it, it does not belong in this file.
 
-**Last Updated:** 2026-09-05 12:47:07  *(the `near = 1.0` safety bound is `kMinRho`, added to §6.17 on his order. Previous stamp 2026-09-05 12:14:00.)*  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
+**Last Updated:** 2026-09-05 15:23:00  *(OPUS: §5 corrections — zoom reaches `kMaxRho` 5800, and FOV is launch-env only so a dolly zoom is not shootable today.)*  *(Previous stamp 2026-09-05 12:47:07: the `near = 1.0` safety bound is `kMinRho`, added to §6.17 on his order. Previous stamp 2026-09-05 12:14:00.)*  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
 
 ---
 
@@ -174,6 +174,20 @@ tails the render's own `[CAPTURE] frame N written` markers.
 | **spinRate** (rigid body spin) | **34 MSB / 66 LSB, 14-bit** | 0 = stopped, 16383 = `kSpinMax` 436.8 rad/s. Direction applied receiver-side: NEGATIVE = right arrow |
 | exposure / fluid / glitch / chromatic | 22–25 | available, **not used since take 2** |
 
+🚩 **Two corrections to the table above, verified 2026-09-05 15:23:00 by OPUS against `74a21d8`
+(the two `[READ]`s below sit in hunks NOT touched by the uncommitted working-tree edits):**
+- **zoom reaches 5800, not 2000.** `kMaxRho` was raised 2000 → 5800 on 2026-09-05
+  `[READ src/core/camera.h:121]`, and the CC20/52 handler maps the 14-bit pair linearly across
+  `kMinRho .. kMaxRho`, so the pair reaches whatever that constant currently holds. The POV
+  takes' rho 2925 is exactly the midpoint of 50..5800 — that is `zUnit = 0.5` landing on the
+  same map, not a second one.
+- **FOV is NOT rideable.** `sFovDeg` is a function-local `static` initialised ONCE from `SS_FOV`
+  on the first perspective frame, and no `case` in the `MidiKind::CC` switch writes it
+  `[READ src/main.cpp, the sFovDeg lambda and the CC switch — symbols, not line numbers, the
+  file has uncommitted edits]`. ⇒ **a dolly zoom (travel in while the lens widens) cannot be
+  shot today**: it needs a new CC plus a per-frame FOV into `perspectiveMatrix`. Every take so
+  far changes framing by rho alone.
+
 **The drivers, all in `logs/` (gitignored, same as every sender):**
 
 | Driver | Shot |
@@ -219,6 +233,21 @@ Driver park before frame 0: mode `d` sends zoom14 = 0 (rho 50), mode `e` sends 8
 **Verified per take (app log):** `[LUM] SS_LUM_CEIL=520`, `[CAM] SS_ORTHO=0 -> PERSPECTIVE`, `[SIZE] … sizeResScale 4.0000`, `[CAMF] f=0 rho=<launch> theta=1.5707963 phi=0`, every `[MIDI] noteOn/noteOff` of the table, `[CAPTURE] frame 8999 written`.
 
 ⚠️ The driver source `logs/midi_ride_shot.mm` and `logs/run_shot.sh` are still gitignored; the table above is sufficient to rebuild them. Build: `clang++ -std=c++17 -O2 -fobjc-arc -framework CoreMIDI -framework CoreFoundation -framework Foundation logs/midi_ride_shot.mm -o logs/midi_ride_shot`.
+
+### 5.2 REPLAY-DRIVEN TAKES — the orbit recipe (take 10) and how to make any ride frame-exact
+
+**Transport:** `SS_REPLAY=<file>` (S4, `src/core/take_replay.cpp`). A "SPACE SYNTH take v1" text file: header lines `# SPACE SYNTH take v1`, `# … t0 MARKER …`, `# … dropped 0 …`, then `E <t seconds> <kind 0=on 1=off 2=cc> <ch> <a> <b> 1`. Each event applies at output frame `ceil(t·30)` through `onMidi` — the same path, latch and mapping as live MIDI. No driver, no `[CAPTURE]` marker tailing, no wall clock. Generator: `scratchpad/gen_take.py`; runner: `scratchpad/run_replay.sh <name> <take> <SS_CAM_RHO> <frames> <SS_ORTHO> <SS_WIDTH> [slices]`; verifier: `scratchpad/check_replay.py <take> <log>` — run it on EVERY take: it compares each applied `[REPLAY]` line to the file (0 mismatches on all six runs so far). ⚠️ The app prints one `[REPLAY]` line per event (a 20k-event take = 20k log lines).
+
+**take10_orbit_wide (DELIVERED 2026-09-05 14:39, DXV3 on LOSTINSPACE/JAMAL):**
+```
+SS_LUM_CEIL=520 SS_CAM_THETA=1.5707963 SS_CAM_PHI=1.5707963 \
+bash scratchpad/run_replay.sh take10_orbit_wide scratchpad/takes/orbit_wide_5400.take 50 5400 1 19644
+```
+ORTHO, 5400 f. The file: CC30 = 32 (φ = π/2 ORBIT, and `orbitUpFix` on — main.cpp case 30), CC33 = 0 (θ range 2π), CC26 = 0, CC31 = 0, re-sent every 150 f; zoom14 = 16383·frac² (rho 50 → 5800, his *"Wider one"*), θ14 = 16383·((0.25 + frac) mod 1) (a full 360° starting at the default π/2 so frame 0 is at rest), one MSB+LSB pair per frame where the value changes; no notes. 65 GB ProRes, ~24 min wall (render-bound, see board §AA29.6). `SS_CAM_THETA/PHI` exist since `7ea4fe8` — without them frame 0 springs 90°.
+
+🚨 **θ TARGETS ABOVE π SPUN THE CAMERA UNTIL `8182846`** — any 2π-range ride (take 3) beyond 180° made the camera do a full turn every 7 frames. Fixed at the camera; documented in §6.19.
+
+**The song shot (cancelled 2026-09-05 ~14:30, plan kept):** `gen_take.py beat <out> <onset.npy>` — 120 BPM = 15 f/beat; kick onsets from a 40–150 Hz spectral-flux peak list snapped to the eighth grid; exposure pump via CC22 (7-bit) or CC22+CC54 (14-bit, `acda80f`); one held chord per section (the §4 cost law: a released note re-evolves the field); audio muxed into the CENTRE slice only: `ffmpeg -i C.mov -i song.mp3 -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -shortest`. The synth is NOT started offline, so the notes are inaudible in the deliverable — they are a physics input; "in key" is a non-question for a render.
 
 🚨 **WHY THE CHORD OPENED ON BLACK** `[HIS WORDS ~15:5x]` *"when a chord hits the screen is
 black"*. Take 4 held the camera at `SS_CAM_RHO=50` through the whole 20 s chord — INSIDE the
@@ -412,6 +441,12 @@ change `kMinRho` and you must re-derive `near`. `[READ main.cpp:1391, camera.h:1
 
 ### 6.18 A centre-slice smoke cannot judge framing — **cost: three smokes and an argument**
 The 5340 C slice is the middle 27 % of 19,644 and reads "zoomed in" whatever the camera does. Smoke full width when framing is the question; and when he says "not zoomed out", launch the live app in the same config and let HIM zoom — the live `[CAM-LIVE]` line then names the number.
+
+### 6.19 An absolute angle target past 180° spun the camera — **cost: take 3's second half, found only on 2026-09-05**
+`Camera::update()` wraps the actual into (−π, π] and shifts the target by the same 2π; `setTiltAbs` re-asserted the raw absolute every frame, so after every wrap the spring saw ~2π of error and raced round again — a full turn every 7 frames (measured on the song-shot smoke). Only a 2π-range ride (the orbit) beyond 180° could hit it; every other take was under π. Fix `8182846`: the target is the representative nearest the actual. Rule: a frame-by-frame absolute set into a wrapped state must always be reduced against the current actual; and **check the stream, not the picture** — the replay differ caught it, no eye had.
+
+### 6.20 Two windows, one job — twice more
+The takes 6/7 conversion was started by both windows eight minutes apart; `/handoff` was run in both windows in the same minute. Rule now: **say "taking it" and get the confirm before touching a job** — app, tree, conversion, docs. The 11:54 regression (25bbfc7) was the first sighting; §6.9 already said the tree is shared.
 
 ## 7. OPEN — carried into the show, not solved
 

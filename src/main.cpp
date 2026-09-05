@@ -1350,7 +1350,7 @@ int main() {
       Renderer::perspectiveMatrix(proj, sFovDeg * (M_PI_F / 180.0f),
                                   (float)window.drawableWidth() /
                                       (float)window.drawableHeight(),
-                                  0.001f, 5000.0f);
+                                  1.0f, 20000.0f); // far: kMaxRho 5800 + cloud ~7600, margin
     }
 
     // viewProj = proj * view

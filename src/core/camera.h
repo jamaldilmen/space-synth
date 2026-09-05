@@ -111,7 +111,14 @@ public:
   static constexpr float kZetaZoom = 1.00f;
 
   static constexpr float kMinRho = 50.0f;
-  static constexpr float kMaxRho = 2000.0f;
+  // kMaxRho 2000 -> 5800 (2026-09-05, his "it was clearly not zoomed out"):
+  // 2000 is ortho's far end (half-height rho*1.2 = 2400 world). Perspective at
+  // 45 deg shows d*tan(22.5) = 0.414*d, so the SAME framing needs
+  // d = 2400/0.414 = 5794. Derived from ortho's own law, not picked. The
+  // rest cloud reaches ~7600 world units (maxR 61-76 sim x plate 100), so at
+  // 2000 a POV camera is still INSIDE it. Ortho keeps its 1.2*rho law and
+  // gains range it never uses.
+  static constexpr float kMaxRho = 5800.0f;
 
   void reset() {
     // 400 puts the horizon at ~12% of half-screen at default zoom

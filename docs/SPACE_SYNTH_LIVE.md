@@ -89,6 +89,12 @@ the codec's theoretical bitrate for this content.**
 300 frames in 5–6 s ≈ **55 fps**. ⇒ a 3-minute take (three slices) ≈ **5 minutes**; a
 10-minute part ≈ **16 minutes**.
 
+🚩 **That 55 fps is the INTERNAL-SSD figure. Reading ProRes off an external drive and writing
+DXV3 back to the SAME drive costs ~25%.** Measured 2026-09-05 16:53:05 → 17:12:36: nine slices,
+48,600 frames, 19 m 31 s wall = **41.5 fps sustained**, source and destination both on
+LOSTINSPACE. Budget from 41.5 whenever the encode does not read from the internal disk —
+a 3-minute take (three slices) ≈ **6.5 minutes** on that path, not 5.
+
 ### Playback ceiling
 No Resolume-imposed max; the limit is GPU texture size, practically **16,384 px**. Each slice
 (≤7152) is far under it. ⚠️ It would only bite if the three were ever loaded as ONE

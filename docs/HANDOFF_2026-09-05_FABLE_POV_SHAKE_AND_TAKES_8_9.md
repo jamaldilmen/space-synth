@@ -19,8 +19,8 @@
 | 3 | POV could not frame what ortho frames at its far end | `kMaxRho` 2000 | 5800 = 2400 / tan 22.5°, derived from ortho's 1.2·rho law (`0cac109`) | `src/core/camera.h` | `[READ camera.h]` |
 | 4 | No way to set Lum Ceiling on an offline render | fader only | `SS_LUM_CEIL=<v>` env, `[LUM]` log line (`a94e76f`) | `src/main.cpp` after the `SS_ORTHO` block | `[READ]` + `[LUM] SS_LUM_CEIL=520` in both take logs |
 | 5 | Takes 8 and 9 (his two POV shots) not rendered | — | rendered 01:40–01:58, 9000 f each, all notes/chords on+off in the logs; DXV3 on `/Volumes/LOSTINSPACE/JAMAL/`, six slices DXD3 verified | `~/Desktop/sweep/take8_*`, `take9_*`; drive | `[MEASURED ffprobe ×6]` |
-| 7 | Proof that takes 8/9 carry the fix | by report | by ordering: bundle 01:40:07 < take8 log end 01:48:35 < take9 01:58:37; 150 profile windows, none paused (BRAIN re-measured) | bundle mtime, `~/Desktop/sweep/take[89]_*.log` | `[MEASURED n=150 windows]` |
-| 6 | take4rev_full, take6 (ortho), take4_chord to delivery format | ProRes only | DXV3: take4rev + take6 on T9/JAMAL (21:38–21:51), take4_chord on LOSTINSPACE/JAMAL (00:45–00:48); take7 (ortho) conversion CUT when T9 dropped off the bus ~21:53 — partial `_L_dxv3.mov` may exist on T9, delete it | drives | `[MEASURED ffprobe]` |
+| 6 | Proof that takes 8/9 carry the fix | by report | by ordering: bundle 01:40:07 < take8 log end 01:48:35 < take9 01:58:37; 150 profile windows, none paused (BRAIN re-measured) | bundle mtime, `~/Desktop/sweep/take[89]_*.log` | `[MEASURED n=150 windows]` |
+| 7 | take4rev_full, take6 (ortho), take4_chord to delivery format | ProRes only | DXV3: take4rev + take6 on T9/JAMAL (21:38–21:51), take4_chord on LOSTINSPACE/JAMAL (00:45–00:48); take7 (ortho) conversion CUT when T9 dropped off the bus ~21:53 — partial `_L_dxv3.mov` may exist on T9, delete it | drives | `[MEASURED ffprobe]` |
 
 ## 2. 🚨 OPEN — his list, verbatim
 

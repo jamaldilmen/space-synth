@@ -88,6 +88,37 @@ Resolution: the FAIL was the uncommitted tree; sources were committed by BRAIN (
 | "Take 7's frozen frames are frames where the physics did not advance" (20:5x, briefly) | Withdrawn within minutes: pixel diffs were nonzero and per-star tracking showed motion on those frames; the phase-correlation metric was locking onto static content. |
 | "For tonight, re-render 6 and 7 with `SS_REF_HEIGHT=420` — env only, no code" (21:19 recommendation) | The re-render at 4x full width shook ("crazy shake is back", 00:54). The recommendation would have shipped the defect. |
 
+### Final preflight after the fold (bundle rebuilt 11:57:55 from the committed sources, identical content to the 01:40:07 build that rendered takes 8/9)
+
+```
+PREFLIGHT 2026-09-05 11:58:21  —  /Users/airy/SPACE SYNTH/SPACE-SYNTH-TRUE-PHYSICS
+
+1. git
+  ok    branch true-physics, HEAD 3e8ad26
+  ok    working tree clean — committed
+  WARN  10 commit(s) not pushed
+
+2. board vs HEAD
+  ok    docs/BOARD_BLACKHOLE.md current at 41609e1 — 2 docs-only commit(s) since, no source change
+  WARN  docs/BOARD_BLACKHOLE.md is 269975B — split closed rows into BOARD_CLOSED.md
+  ok    docs/BOARD_CLOSED.md archive, 104965B — exempt (not read at cold start)
+  ok    docs/BOARD.md current at 41609e1 — 2 docs-only commit(s) since, no source change
+  WARN  docs/BOARD.md is 211559B — split closed rows into BOARD_CLOSED.md
+
+3. deployed artifact
+  ok    SpaceSynth newer than newest source
+  ok    default.metallib newer than newest source
+
+4. referenced paths (live docs only)
+  ok    69 referenced path(s) in live docs all resolve
+
+5. orbital-plane convention — READ THESE, do not skip
+  WARN  8 site(s) carry a plane assumption — confirm each is right HERE, not elsewhere
+
+────────────────────────────────────────────────────────
+PREFLIGHT: no failures.
+```
+
 ---
 
 **Last Updated:** 2026-09-05 11:58:00

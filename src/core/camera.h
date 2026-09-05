@@ -137,6 +137,12 @@ public:
     }
     theta = M_PI_F / 2.0f; // Elevation — face-on horizontal view
     phi = 0.0f;            // Azimuth
+    // SS_CAM_THETA / SS_CAM_PHI (radians, 2026-09-05): launch IN the pose a
+    // replayed take starts from, so frame 0 is at rest instead of springing
+    // 90 deg over the first 15 frames (the orbit needs phi = pi/2 and the
+    // default is 0; there was no launch env for the angle -- bible §5).
+    if (const char *ct = getenv("SS_CAM_THETA")) theta = (float)atof(ct);
+    if (const char *cp = getenv("SS_CAM_PHI")) phi = (float)atof(cp);
     velRho = velTheta = velPhi = 0.0f;
     // The camera starts AT its target, at rest. Anything else would make the
     // app open on a move nobody asked for.

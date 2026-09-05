@@ -259,6 +259,10 @@ public:
   void setOrbitUpFix(bool on) { orbitUpFix = on; }
 
   float getRho() const { return rho; }
+  // [CAMF] instrument 2026-09-04: the spring TARGET, read-only, so a per-frame
+  // log can show actual-vs-target without touching the spring.
+  float getTargetRho() const { return tgtRho; }
+  float getTargetTheta() const { return tgtTheta; }
   float getPhi() const { return phi; }
   float getTheta() const { return theta; }
 

@@ -628,18 +628,6 @@ int main() {
     printf("[CAM] SS_ORTHO=%s -> %s projection\n", om,
            app.uiOrthoMode ? "ORTHOGRAPHIC" : "PERSPECTIVE");
   }
-  // SS_LUM_CEIL=<v> -> the "Lum Ceiling" fader (app.uiStarLumCeil, default
-  // 1000) at launch. His order 2026-09-05 01:39: "for all runs lumen ceiling
-  // 520". Offline renders have no menu, so this writes the same field the
-  // fader writes; the log line is the proof it landed.
-  if (const char *lc = getenv("SS_LUM_CEIL")) {
-    float v = (float)atof(lc);
-    if (v >= 10.0f && v <= 65000.0f) {
-      app.uiStarLumCeil = v;
-      printf("[LUM] SS_LUM_CEIL=%s -> Lum Ceiling %.0f\n", lc, app.uiStarLumCeil);
-    } else {
-      fprintf(stderr, "[LUM] SS_LUM_CEIL=%s refused (10..65000), fader stays %.0f\n", lc, app.uiStarLumCeil);
-    }
   }
 
   // SS_SUBSTEPS=N — pin the physics-substep slider at launch (2026-08-29).
@@ -1319,32 +1307,6 @@ int main() {
       renderer.setSpin(0.0f, 0.0f);
     }
     camera.update(dt);
-    // [CAMF] PER-FRAME CAMERA INSTRUMENT (2026-09-04, POV shake hunt). The
-    // capture marker prints every 30 frames, so the camera's per-frame rho /
-    // world position had never been observed. Offline clock only; one line
-    // per output frame, indexed like "[CAPTURE] frame N written".
-    if (space::OfflineClock::get().enabled) {
-      printf("[CAMF] f=%u rho=%.5f tgt=%.5f theta=%.7f tgtTheta=%.7f phi=%.7f "
-             "pos=%.5f %.5f %.5f\n",
-             outFrame - 1, camera.getRho(), camera.getTargetRho(),
-             camera.getTheta(), camera.getTargetTheta(), camera.getPhi(),
-             camera.getX(), camera.getY(), camera.getZ());
-    } else {
-      // LIVE camera readout (2026-09-05, his "read the log"): the HUD has no
-      // rho line he can read, so print the camera whenever it has moved.
-      static float sLastRho = -1.0f, sLastTheta = -1.0f, sLastPhi = -1.0f;
-      static uint32_t sQuiet = 0;
-      bool moved = std::fabs(camera.getRho() - sLastRho) > 0.5f ||
-                   std::fabs(camera.getTheta() - sLastTheta) > 1e-3f ||
-                   std::fabs(camera.getPhi() - sLastPhi) > 1e-3f;
-      if (moved) sQuiet = 0; else sQuiet++;
-      if (moved && (sQuiet == 0) && (outFrame % 15 == 0 || sLastRho < 0.0f)) {
-        printf("[CAM-LIVE] rho=%.1f tgt=%.1f theta=%.4f phi=%.4f (min %.0f max %.0f)\n",
-               camera.getRho(), camera.getTargetRho(), camera.getTheta(),
-               camera.getPhi(), space::Camera::kMinRho, space::Camera::kMaxRho);
-        sLastRho = camera.getRho(); sLastTheta = camera.getTheta(); sLastPhi = camera.getPhi();
-      }
-    }
     float view[16], proj[16], viewProj[16];
     camera.buildViewMatrix(view);
 
@@ -1388,7 +1350,7 @@ int main() {
       Renderer::perspectiveMatrix(proj, sFovDeg * (M_PI_F / 180.0f),
                                   (float)window.drawableWidth() /
                                       (float)window.drawableHeight(),
-                                  1.0f, 20000.0f); // far: kMaxRho 5800 + cloud ~7600, margin
+                                  0.001f, 5000.0f);
     }
 
     // viewProj = proj * view

@@ -7,7 +7,7 @@ that cost us a take. Created on his order 2026-09-04 15:12:04.
 > file on disk) or HIS RULING (his words, quoted). Nothing here is inferred. If a line has
 > no measurement and no quote behind it, it does not belong in this file.
 
-**Last Updated:** 2026-09-04 19:01:04  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
+**Last Updated:** 2026-09-05 12:14:00  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
 
 ---
 
@@ -182,7 +182,39 @@ tails the render's own `[CAPTURE] frame N written` markers.
 | `midi_ride_cmaj_tilt_rev` | same, zoom **IN** (opens wide at rho 2000, arrives rho 50) |
 | `midi_ride_chromatic_tilt_rev` | 9 notes 60→68, one per 20 s held 3 s, reversed zoom |
 | `midi_ride_chromatic_tilt_spin` | as above + the ramped spin |
-| `midi_ride_shot` | **two modes.** `a` = middle→all-in→all-out + 1 min stillness, 2 notes · `b` = one in→out sweep, 4 notes C→E♭. `<log> <a\|b> [tickMs] [tilt]` |
+| `midi_ride_shot` | **five modes.** `a` = middle→all-in→all-out + 1 min stillness, 2 notes · `b` = one in→out sweep, 4 notes C→E♭ · `c` = static-hold test (zoom to rho ~927 over 300 f, then frozen, tilt off) · **`d` = TAKE 8** · **`e` = TAKE 9** — see the POV recipe below. `<log> <a\|b\|c\|d\|e> [tickMs] [tilt]` |
+
+### 5.1 THE POV SHOTS — takes 8 and 9, the full recipe (his order 2026-09-05 12:1x: "the recipes belong in the bible, not in the gitignored logs folder")
+
+Both rendered 2026-09-05 01:40–01:58 on bundle 01:40:07 (sources = `38170d5`), delivered as DXV3 on `/Volumes/LOSTINSPACE/JAMAL/`, ProRes in `~/Desktop/sweep/`. `docs/BOARD.md` §AA28 has the measurements.
+
+**Common to both — the POV config `[HIS WORDS 2026-09-05 01:02:12 "amazing i think its gone"]`:**
+```
+SS_REF_HEIGHT=420 SS_LUM_CEIL=520 bash logs/run_shot.sh <name> <d|e> <SS_CAM_RHO> 9000 0 19644
+# run_shot.sh sets: SS_FOV=45 SS_RENDER_FPS=30 SS_WIDTH=19644 SS_HEIGHT=1680 SS_CAPTURE=~/Desktop/sweep/<name>
+#                   SS_CAPTURE_FRAMES=9000 SS_LENS_RENDER=1 SS_CAM_RHO=<rho> SS_ORTHO=0 SS_CAPTURE_SLICES=7152,5340,7152
+# then:  ./SpaceSynth.app/Contents/MacOS/SpaceSynth | perl(timestamp) > <name>.log
+#        gate on "[MIDI] Listening on", then ./logs/midi_ride_shot <name>.log <mode> 50 1 > <name>.ride.log
+```
+- `SS_ORTHO=0` perspective, `SS_FOV=45` vertical, near plane **1.0** / far **20000** (the 0.001 near plane WAS the shake — §6.17), `kMaxRho = 5800`.
+- `SS_REF_HEIGHT=420` ⇒ `sizeResScale` 4.0 — 4× sprites, the LOOK he chose (*"that was looking good"* 21:18). It is not a fix for anything.
+- `SS_LUM_CEIL=520` — *"for all runs lumen ceiling 520"* (01:39).
+- **Camera pose: the default.** θ = π/2, φ = 0 (`camera.reset()`), and the driver sends **no** theta/phi/thetaRange CC at all (`noPose`). Holds sent every 5 s: CC26 iscoOrbit = 0, CC31 phaseAmount = 0.
+- Zoom: 14-bit CC20 (MSB) + CC52 (LSB), receiver maps v14/16383 → rho 50..5800 (`main.cpp case 52`). Target updated every 50 ms wall tick from the frame estimate (marker + rate extrapolation, capped at marker + 30). `zUnit` 0 = rho 50, 1 = rho 5800; `smooth(u) = u²(3−2u)`.
+- Notes: velocity 90, sent as note-on at the frame in the table, note-off at on + hold.
+
+🚨 **POV ZOOM READS INVERTED TO HIM `[HIS WORDS 2026-09-05 01:37 "cant believe it was that easy.. okay now we know pov is inverted"]`.** His "all the way out" is **rho 50** (camera at the core, the cloud all around it), his "in" is **rho 5800** (in the outskirts, huge near stars). The rest cloud reaches maxR 61–76 sim × plate 100 ≈ 7600 world, so no POV distance is outside it. Set every POV ride by HIS words, never by the geometry.
+
+| Take | Mode | `SS_CAM_RHO` | Camera over 9000 f (300 s) | Notes (MIDI, on frame → off frame) |
+|---|---|---|---|---|
+| **take8_pov_octaves_50to2925** | `d` | 50 | `zUnit = 0.5·smooth(f/9000)` ⇒ rho 50 → 2925, his "out → half way in" | C every minute rising an octave, each held 90 f (3 s): 60 @0→90 · 72 @1800→1890 · 84 @3600→3690 · 96 @5400→5490 · 108 @7200→7290 |
+| **take9_pov_chords_2925to50** | `e` | 2925 | `zUnit = 0.5 − 0.5·smooth(f/9000)` ⇒ rho 2925 → 50, "start in the middle and zoom out" | chords held 180 f (6 s, *"twice as long as the notes"* 01:51): C maj 60-64-67 @0→180 · D min 62-65-69 @1800→1980 · E min 64-67-71 @3600→3780 · F maj 65-69-72 @5400→5580 · **minute 4–5: nothing** |
+
+Driver park before frame 0: mode `d` sends zoom14 = 0 (rho 50), mode `e` sends 8192 (rho 2925), so frame 0 starts at rest at the launch rho (no spring-in). The driver's own status line prints rho with the OLD 50..2000 formula for modes a/b — cosmetic; the `[CAMF]` line in the app log is the truth.
+
+**Verified per take (app log):** `[LUM] SS_LUM_CEIL=520`, `[CAM] SS_ORTHO=0 -> PERSPECTIVE`, `[SIZE] … sizeResScale 4.0000`, `[CAMF] f=0 rho=<launch> theta=1.5707963 phi=0`, every `[MIDI] noteOn/noteOff` of the table, `[CAPTURE] frame 8999 written`.
+
+⚠️ The driver source `logs/midi_ride_shot.mm` and `logs/run_shot.sh` are still gitignored; the table above is sufficient to rebuild them. Build: `clang++ -std=c++17 -O2 -fobjc-arc -framework CoreMIDI -framework CoreFoundation -framework Foundation logs/midi_ride_shot.mm -o logs/midi_ride_shot`.
 
 🚨 **WHY THE CHORD OPENED ON BLACK** `[HIS WORDS ~15:5x]` *"when a chord hits the screen is
 black"*. Take 4 held the camera at `SS_CAM_RHO=50` through the whole 20 s chord — INSIDE the
@@ -361,6 +393,12 @@ key to the right heeeeld"*, and the CC path already matched it exactly (`dirY = 
 against a take whose camera is EDGE-ON for its first half — the read changes with the pose,
 so judge a spin axis at the framing it will actually be seen at.
 
+### 6.17 The POV "shake" and "flicker" were the perspective NEAR PLANE — **cost: takes 6 and 7 POV (~180 GB), one evening**
+`perspectiveMatrix(…, 0.001f, 5000.0f)`. NDC depth ≈ 1 − n/z: with n = 0.001 every particle beyond a few units lands within float32 spacing of 1.0 (`Depth32Float`), so at z = 1000 two stars < ~60 units apart share one depth value, and the star pass `Less` test against the depth prepass flipped per frame by thread order — *"insane flicker"* live, *"crazy shake"* at 30 fps. Ortho maps depth linearly and never had it. Fix `38170d5`: near 1.0, far 20000. **What it was NOT:** the camera spring (critically damped, `[CAMF]` ripple ±5%), the ride driver, the sim clock, or sprite size (4× sprites at full width still shook — *"crazy shake is back"* 00:54). Rule: when a defect is POV-only, read the projection before measuring pixels.
+
+### 6.18 A centre-slice smoke cannot judge framing — **cost: three smokes and an argument**
+The 5340 C slice is the middle 27 % of 19,644 and reads "zoomed in" whatever the camera does. Smoke full width when framing is the question; and when he says "not zoomed out", launch the live app in the same config and let HIM zoom — the live `[CAM-LIVE]` line then names the number.
+
 ## 7. OPEN — carried into the show, not solved
 
 - 🚨 **Black-hole formation is decided by a GPU thread RACE.** `merge_stars` claims stars with
@@ -405,4 +443,4 @@ so judge a spin axis at the framing it will actually be seen at.
 
 ---
 
-**Last Updated:** 2026-09-04 19:01:04  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*
+**Last Updated:** 2026-09-05 12:14:00  *(POV session: the shake was the near plane (§6.17); POV zoom inverted for him; takes 8 and 9 recipe in §5.1 on his order; §6.18. Previous stamp 2026-09-04 19:01:04.)*  *(evening session: seven takes rendered; the note-sustain cost driver found and the "spin costs 3.3x" claim RETRACTED; center-only test renders ruled in at 1.34x; CC-driven spin shipped `f0cac86`; sections 4, 5 and 6.13-6.16 are new. Previous stamp 2026-09-04 15:15:19.)*

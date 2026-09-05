@@ -356,6 +356,8 @@ int main() {
       static uint8_t thetaMSB = 0, thetaLSB = 0;
       static bool thetaEverApplied = false;
       static uint8_t spinMSB = 0, spinLSB = 0;
+      static uint8_t expMSB = 64, expLSB = 0;   // exposure 14-bit pair (CC22 + CC54), 64 = 1.0
+      static bool expLSBEverSeen = false;
       // THETA RANGE SELECTOR (2026-09-04 ~15:12, OPUS's catch): the 14-bit
       // pair always maps v14/16383 onto [0, thetaRangeMax) -- a 90deg tilt
       // that only ever SENDS v14 up to a quarter of 16383 wastes 3/4 of the
@@ -491,11 +493,34 @@ int main() {
         mapped = t01;
         app.uiPhaseVizAmount = mapped;
         break;
-      case 22: { // exposure -> logarithmic [0.01,100], matches its own slider's curve
+      case 22: { // exposure MSB -> logarithmic [0.01,100], matches its own slider's curve.
+        // 14-BIT PAIR (2026-09-05, the song shot): a beat-locked exposure pump
+        // moves ~5 raw counts per beat at 7-bit (a 7.5 % brightness step per
+        // count) -- stepped, the "zoomies" law of bible §6.2 in the brightness
+        // domain. CC54 is the LSB; same latch as zoom: MSB caches, LSB applies,
+        // the very first MSB applies coarse so a 7-bit sender still works.
         idx = 2;
+        expMSB = ev.b;
         const float lo = std::log(0.01f), hi = std::log(100.0f);
-        mapped = std::exp(lo + t01 * (hi - lo));
+        if (!expLSBEverSeen) {
+          // 7-bit sender (no CC54 ever): every MSB applies, coarse -- the
+          // existing takes and the 7-bit fallback files keep working.
+          mapped = std::exp(lo + t01 * (hi - lo));
+          app.uiExposure = mapped;
+        } else {
+          mapped = app.uiExposure; // 14-bit sender: cache, the LSB applies the pair
+        }
+        break;
+      }
+      case 54: { // exposure LSB -> applies the full 14-bit pair
+        idx = 2;
+        expLSB = ev.b;
+        uint16_t v14 = ((uint16_t)expMSB << 7) | expLSB;
+        float t14 = v14 / 16383.0f;
+        const float lo = std::log(0.01f), hi = std::log(100.0f);
+        mapped = std::exp(lo + t14 * (hi - lo));
         app.uiExposure = mapped;
+        expLSBEverSeen = true;
         break;
       }
       case 23: // fluid -> uiTrailDecay, linear [0, 0.99]
